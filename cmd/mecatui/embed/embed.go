@@ -39,6 +39,7 @@ import (
 	"github.com/stacklok/mecatl/internal/adapter/slogdiag"
 	"github.com/stacklok/mecatl/internal/adapter/telemetry"
 	"github.com/stacklok/mecatl/internal/app"
+	"github.com/stacklok/mecatl/internal/cliconfig"
 )
 
 // socketName is the fixed socket filename inside the per-process temp directory.
@@ -135,6 +136,49 @@ type Server struct {
 	recorderArmed bool
 }
 
+// registerLocalSessionContextServer registers ADR 0296's privileged projection only
+// on this package's owner-private Unix socket. It intentionally accepts no general
+// opt-in flag: starting embedded Mecatui is the v1 opt-in.
+func registerLocalSessionContextServer(grpcSrv *grpc.Server, lis net.Listener, local *server.LocalSessionContextServer) error {
+	if grpcSrv == nil || local == nil {
+		return errors.New("local session context requires a server and service")
+	}
+	if err := verifyEmbeddedPrivateUnixListener(lis); err != nil {
+		return fmt.Errorf("local session context requires embedded private listener: %w", err)
+	}
+	mecatlv1.RegisterLocalSessionContextServiceServer(grpcSrv, local)
+	return nil
+}
+
+// verifyEmbeddedPrivateUnixListener admits only a filesystem Unix socket beneath
+// an owner-only directory. TCP and even loopback are deliberately insufficient:
+// they do not attest a single local user can reach the privileged projection.
+func verifyEmbeddedPrivateUnixListener(lis net.Listener) error {
+	unixLis, ok := lis.(*net.UnixListener)
+	if !ok || unixLis == nil {
+		return errors.New("listener is not a Unix socket")
+	}
+	addr, ok := unixLis.Addr().(*net.UnixAddr)
+	if !ok || addr == nil || addr.Net != "unix" || addr.Name == "" || !filepath.IsAbs(addr.Name) {
+		return errors.New("listener is not a filesystem Unix socket")
+	}
+	dir, err := os.Stat(filepath.Dir(addr.Name))
+	if err != nil {
+		return fmt.Errorf("stat socket directory: %w", err)
+	}
+	if !dir.IsDir() || dir.Mode().Perm() != 0o700 {
+		return errors.New("socket directory is not owner-only")
+	}
+	socket, err := os.Lstat(addr.Name)
+	if err != nil {
+		return fmt.Errorf("stat socket: %w", err)
+	}
+	if socket.Mode()&os.ModeSocket == 0 || socket.Mode().Perm() != 0o600 {
+		return errors.New("socket is not owner-only")
+	}
+	return nil
+}
+
 // Start builds the harness from cfg via internal/app and serves it over a fresh
 // UNIX socket in a private temp directory. The returned Server's Target() is a
 // gRPC dial string a client can connect to immediately (the listener is open
@@ -193,6 +237,13 @@ func Start(ctx context.Context, cfg app.Config, perf PerfConfig) (*Server, error
 	grpcSrv := grpc.NewServer()
 	mecatlv1.RegisterHarnessServiceServer(grpcSrv, server.NewHarnessServer(built.Service))
 	mecatlv1.RegisterScheduleServiceServer(grpcSrv, server.NewScheduleServer(built.Service))
+	if err := registerLocalSessionContextServer(grpcSrv, lis, server.NewLocalSessionContextServer(built.Service)); err != nil {
+		grpcSrv.Stop()
+		built.Close()
+		ps.teardown(ctx)
+		cleanupRuntime()
+		return nil, err
+	}
 
 	// Mount the standard gRPC health service so orchestration tooling can confirm
 	// readiness over the same socket (the TUI client itself dials + creates a
@@ -497,9 +548,21 @@ func setupPerf(ctx context.Context, perf PerfConfig, cfg *app.Config, runtimeDir
 // It returns the slow-turn buffer (nil when the perf MCP server is off) for the
 // mcpperf Deps wiring.
 func wirePerfSinks(cfg *app.Config, metrics *telemetry.Metrics, tracing port.EventSink, mountMCP bool) *telemetry.SlowTurnBuffer {
+	// Capture whatever cfg.Sink/cfg.ToolCallRecorder ALREADY held before either
+	// field is reassigned below — the product-metrics tap main.go wired onto
+	// composition BEFORE Start (and thus before setupPerf/wirePerfSinks ran),
+	// when perf is also enabled. Folding it in here (rather than overwriting)
+	// keeps the tap alive alongside the perf metrics; a nil oldSink/
+	// oldToolCallRecorder (perf-only, no product metrics) is the byte-identical
+	// prior behaviour.
+	oldSink := cfg.Sink
+	oldToolCallRecorder := cfg.ToolCallRecorder
 	mainScoped := metrics.WithRole(telemetry.RoleMain)
 	var slowTurns *telemetry.SlowTurnBuffer
 	sinks := []port.EventSink{mainScoped, tracing}
+	if oldSink != nil {
+		sinks = append(sinks, oldSink)
+	}
 	if mountMCP {
 		// The ring stores scalars only (redaction by shape) and spawns no
 		// goroutine — goleak-clean. Built only when the MCP server will read it.
@@ -507,7 +570,7 @@ func wirePerfSinks(cfg *app.Config, metrics *telemetry.Metrics, tracing port.Eve
 		sinks = append(sinks, slowTurns.WithRole(telemetry.RoleMain))
 	}
 	cfg.Sink = telemetry.NewSink(sinks...)
-	cfg.ToolCallRecorder = mainScoped
+	cfg.ToolCallRecorder = cliconfig.TeeToolCallRecorder(mainScoped, oldToolCallRecorder)
 	// Schedule metrics (issue #233, Phase 2b): wire the metrics callback over the
 	// telemetry adapter's EmitSchedule, mirroring MetricsRoleScoper. Schedule
 	// metrics are NOT a role-family; this is a separate schedule-lifecycle
@@ -515,6 +578,7 @@ func wirePerfSinks(cfg *app.Config, metrics *telemetry.Metrics, tracing port.Eve
 	// byte-identical metrics-silent path — the embed builds metrics only under
 	// perf-on, so this closure is a no-op there until metrics is non-nil.
 	cfg.ScheduleMetricsEmitter = metrics.EmitSchedule
+	cfg.SessionLoadFailureMetricsEmitter = metrics.EmitSessionLoadFailure
 	cfg.MetricsRoleScoper = func(familyRole string) (port.EventSink, port.ToolCallRecorder) {
 		scoped := metrics.WithRole(familyRole)
 		childSinks := []port.EventSink{scoped}
@@ -601,7 +665,7 @@ func listenPrivateUnix(path string) (net.Listener, error) {
 	}
 	if err := os.Chmod(path, 0o600); err != nil {
 		_ = lis.Close()
-		return nil, fmt.Errorf("restrict admin socket %q: %w", path, err)
+		return nil, fmt.Errorf("restrict private socket %q: %w", path, err)
 	}
 	return lis, nil
 }

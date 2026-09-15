@@ -7,11 +7,13 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stacklok/mecatl/engine/adapter/memledger"
 	"github.com/stacklok/mecatl/engine/adapter/mockllm"
 	"github.com/stacklok/mecatl/engine/adapter/nofs"
 	"github.com/stacklok/mecatl/engine/agent"
 	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/team"
+	"github.com/stacklok/mecatl/engine/tool"
 	"github.com/stacklok/mecatl/internal/adapter/agents"
 	"github.com/stacklok/mecatl/internal/adapter/memory"
 	"github.com/stacklok/mecatl/internal/adapter/server"
@@ -55,7 +57,7 @@ func noFSTeamWiring(t *testing.T, provider port.LLMProvider, a catalogAssets) (s
 	sup := agent.NewSupervisor(tm, testEnvironment(nofs.New(), nil),
 		func(spec agent.MemberSpec, routedModel string) agent.MemberBuild {
 			return factory(tm, spec, routedModel)
-		})
+		}, agent.WithTeamReadLedgerFactory(func() tool.ReadLedger { return memledger.New() }))
 	return factory, sup, tm
 }
 
@@ -74,7 +76,7 @@ func TestNoFSTeamMemberSurface(t *testing.T) {
 	if build.Engine == nil {
 		t.Fatal("no-fs member factory returned a nil engine")
 	}
-	for _, name := range []string{"Read", "Edit", "Write", "Grep", "Glob", "Bash", "Parallel", "SkillDraft"} {
+	for _, name := range []string{"Read", "ListDir", "Edit", "Write", "Copy", "Move", "Remove", "Grep", "Glob", "Shell", "Parallel", "SkillDraft"} {
 		if build.Engine.HasTool(name) {
 			t.Errorf("no-fs member catalog carries %q — a file/shell tool leaked into the file-less member surface", name)
 		}

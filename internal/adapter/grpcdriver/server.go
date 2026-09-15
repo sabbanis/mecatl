@@ -109,6 +109,9 @@ func (s *sessionStoreServer) Save(ctx context.Context, req *driverv1.SaveRequest
 			"session_id %q does not match the snapshot payload's session id %q (the top-level session_id is the storage key; the two must agree)",
 			req.GetSessionId(), sess.ID)
 	}
+	if req.GetActivityState() != "" && req.GetActivityState() != string(session.ActivityOf(sess.Conversation.Messages)) {
+		return nil, status.Error(codes.InvalidArgument, "activity_state does not match snapshot")
+	}
 	if err := s.store.Save(ctx, sess); err != nil {
 		return nil, storeStatus(err)
 	}
@@ -127,6 +130,9 @@ func (s *sessionStoreServer) Create(ctx context.Context, req *driverv1.SaveReque
 	sess, err := sessnap.Unmarshal(req.GetSnapshot().GetPayload())
 	if err != nil || string(sess.ID) != req.GetSessionId() {
 		return nil, status.Error(codes.InvalidArgument, "snapshot does not match session_id")
+	}
+	if req.GetActivityState() != "" && req.GetActivityState() != string(session.ActivityOf(sess.Conversation.Messages)) {
+		return nil, status.Error(codes.InvalidArgument, "activity_state does not match snapshot")
 	}
 	if err := creator.Create(ctx, sess); err != nil {
 		if errors.Is(err, port.ErrSessionAlreadyExists) {
@@ -165,8 +171,10 @@ func (s *sessionStoreServer) Capabilities(context.Context, *driverv1.SessionStor
 	}
 	_, lineage := s.store.(port.SessionLineageReader)
 	_, creator := s.store.(port.SessionCreator)
+	activityProjection := port.SupportsActivityProjection(s.store)
 	return &driverv1.SessionStoreCapabilitiesResponse{
 		List: prunable, MetadataPaging: pager, Delete: deleteSupported, Lineage: lineage, Create: creator,
+		ActivityProjection: activityProjection,
 	}, nil
 }
 
@@ -176,7 +184,10 @@ func (s *sessionStoreServer) ReadLineage(ctx context.Context, req *driverv1.Read
 	if !ok {
 		return nil, status.Error(codes.Unimplemented, "the wrapped session store does not support lineage")
 	}
-	query := port.SessionLineageQuery{RootID: session.SessionID(req.GetRootSessionId()), RootIncarnation: session.IncarnationID(req.GetRootIncarnation()), Limit: int(req.GetLimit())}
+	query := port.SessionLineageQuery{
+		RootID: session.SessionID(req.GetRootSessionId()), RootIncarnation: session.IncarnationID(req.GetRootIncarnation()),
+		RecordID: session.SessionID(req.GetRecordSessionId()), RecordIncarnation: session.IncarnationID(req.GetRecordIncarnation()), Limit: int(req.GetLimit()),
+	}
 	if err := port.ValidateSessionLineageQuery(query); err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -184,8 +195,12 @@ func (s *sessionStoreServer) ReadLineage(ctx context.Context, req *driverv1.Read
 	if err != nil {
 		return nil, storeStatus(err)
 	}
-	if len(result.Records) > query.Limit {
+	if len(result.Records) > query.Limit || query.RecordID != "" && (len(result.Records) > 1 || result.Truncated) {
 		return nil, status.Error(codes.Internal, "lineage reader exceeded requested limit")
+	}
+	if query.RecordID != "" && len(result.Records) == 1 &&
+		(result.Records[0].ID != query.RecordID || result.Records[0].Incarnation != string(query.RecordIncarnation)) {
+		return nil, status.Error(codes.Internal, "lineage reader returned the wrong exact record")
 	}
 	resp := &driverv1.ReadSessionLineageResponse{Truncated: result.Truncated, Records: make([]*driverv1.SessionLineageEntry, 0, len(result.Records))}
 	for _, row := range result.Records {
@@ -300,8 +315,9 @@ func metadataToProto(meta port.SessionDiscoveryMeta) (*driverv1.SessionMetadataE
 	}
 	entry := &driverv1.SessionMetadataEntry{
 		SessionId: string(meta.ID), State: string(meta.State), Turns: int32(meta.Turns),
-		ModelId: meta.ModelID, Title: meta.Title, TitleProvenance: string(meta.TitleProvenance),
-		Workspace: meta.Workspace, Kind: string(meta.Kind), EstimatedBytes: meta.EstimatedBytes,
+		ActivityState: string(meta.Activity),
+		ModelId:       meta.ModelID, Title: meta.Title, TitleProvenance: string(meta.TitleProvenance),
+		EnvironmentRef: &driverv1.StoredEnvironmentRef{Kind: string(meta.EnvironmentRef.Kind), Id: meta.EnvironmentRef.ID, Revision: meta.EnvironmentRef.Revision}, Kind: string(meta.Kind), EstimatedBytes: meta.EstimatedBytes,
 		ParentSessionId: string(meta.Relationship.ParentSessionID), ParentIncarnation: string(meta.Relationship.ParentIncarnation), CallId: string(meta.Relationship.CallID),
 		ScheduleName: meta.Relationship.ScheduleName, OriginSessionId: string(meta.Relationship.OriginSessionID), OriginIncarnation: string(meta.Relationship.OriginIncarnation),
 		TeamId: meta.Relationship.TeamID, MemberName: meta.Relationship.MemberName,

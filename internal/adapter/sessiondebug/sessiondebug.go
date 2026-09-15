@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"unicode/utf8"
 
@@ -29,12 +30,10 @@ const (
 	maxProjectedText     = 8 << 10
 	maxProjectedPartText = 1 << 10
 	maxProjectedItems    = 8
-	maxRelatedSessions   = 500
 	maxRelatedDepth      = 8
 	maxHistoryRows       = 20
 	maxManifestRows      = 50
 	maxDelegationRows    = 100
-	maxLineageEventScan  = 10_000
 	errLogNotConfigured  = "event log is not configured"
 	errLogReadFailed     = "event log read failed"
 )
@@ -100,23 +99,22 @@ func (t *inspectTool) revalidateScope(ctx context.Context, binding *lineageNode)
 	if binding == nil {
 		return nil
 	}
-	candidate, err := t.store.Load(ctx, binding.ID)
-	if err != nil || !t.validScopedSession(root, candidate, *binding) {
-		return errors.New("scope handle is stale or inaccessible")
-	}
-	return nil
+	record := port.SessionLineageRecord{ID: binding.ID, Kind: binding.Kind, Relationship: binding.Relationship, Incarnation: binding.Incarnation}
+	_, _, err = t.proveScope(ctx, root, scopeClaim{RootFingerprint: t.expectedFingerprint, ID: binding.ID, Incarnation: binding.Incarnation, EdgeDigest: lineageEdgeDigest(record)})
+	return err
 }
 
 func (*inspectTool) Spec() tool.ToolSpec {
 	return tool.ToolSpec{
 		Name:        ToolName,
-		Description: "Inspect bounded read-only evidence rooted at the debug target. Start with status and related; use returned opaque scope/history handles to inspect retained authorized descendants and archived history. Raw session IDs are never accepted.",
+		Description: "Inspect bounded read-only evidence rooted at the debug target. Start with status and related. Omit scope_handle for root/target views; only opaque scope handles returned by related evidence select retained authorized descendants. Use returned history handles to inspect archived history. Raw session IDs are never accepted.",
 		Schema:      json.RawMessage(`{"type":"object","properties":{"view":{"type":"string","enum":["status","transcript","activity","performance","network","related","delegation","history","manifest"]},"scope_handle":{"type":"string"},"history_handle":{"type":"string"},"offset":{"type":"integer","minimum":0},"limit":{"type":"integer","minimum":1}},"required":["view"],"additionalProperties":false}`),
 	}
 }
 
 func (*inspectTool) ReadOnly() bool { return true }
 
+//nolint:gocyclo // The view dispatch preserves the target-bound evidence contract in one place.
 func (t *inspectTool) Execute(ctx context.Context, call session.ToolCall, _ tool.Environment) (session.ToolResult, error) {
 	var args inspectArgs
 	if msg, ok := session.ParseArgs(call, &args); !ok {
@@ -125,14 +123,28 @@ func (t *inspectTool) Execute(ctx context.Context, call session.ToolCall, _ tool
 	if args.Offset < 0 || args.Limit < 0 {
 		return session.NewToolError(call.ID, "offset must be non-negative and limit must be positive when set"), nil
 	}
+	if args.ScopeHandle == rootScope {
+		args.ScopeHandle = ""
+	}
+	var claim *scopeClaim
+	if args.ScopeHandle != "" {
+		opened, openErr := t.openScopeHandle(args.ScopeHandle)
+		if openErr != nil {
+			return session.NewToolError(call.ID, openErr.Error()), nil
+		}
+		claim = &opened
+	}
 	root, err := t.loadTarget(ctx)
 	if err != nil {
 		return session.NewToolError(call.ID, err.Error()), nil
 	}
-	graph := t.scanLineage(ctx, root)
-	target, scope, scopeBinding, err := t.resolveScope(ctx, root, graph, args.ScopeHandle)
+	target, scope, scopeBinding, err := t.resolveScope(ctx, root, claim, args.ScopeHandle)
 	if err != nil {
 		return session.NewToolError(call.ID, err.Error()), nil
+	}
+	var graph lineageGraph
+	if args.View == "related" || args.View == "delegation" {
+		graph = t.scanLineage(ctx, target)
 	}
 
 	var value any
@@ -165,6 +177,11 @@ func (t *inspectTool) Execute(ctx context.Context, call session.ToolCall, _ tool
 	// lineage-edge changes while a store/log projection was being read invalidate
 	// the result. Root views need only the root reload; scoped views also revalidate
 	// the exact descendant incarnation the opaque handle was minted for.
+	if args.View == "related" || args.View == "delegation" {
+		if refreshed := t.scanLineage(ctx, target); !reflect.DeepEqual(graph, refreshed) {
+			return session.NewToolError(call.ID, "lineage evidence changed while reading; retry"), nil
+		}
+	}
 	if validateErr := t.revalidateScope(ctx, scopeBinding); validateErr != nil {
 		return session.NewToolError(call.ID, validateErr.Error()), nil
 	}

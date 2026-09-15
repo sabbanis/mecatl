@@ -18,7 +18,6 @@ import (
 
 	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
-	"github.com/stacklok/mecatl/internal/app"
 )
 
 // fakeMetricsCollector is a minimal httptest server that accepts the OTLP/HTTP
@@ -112,6 +111,17 @@ func protoAttrsMatch(attrs []*commonv1.KeyValue, want map[string]string) bool {
 	return true
 }
 
+func requestsHaveResourceAttrs(reqs []*otlpmetrics.ExportMetricsServiceRequest, want map[string]string) bool {
+	for _, req := range reqs {
+		for _, rm := range req.GetResourceMetrics() {
+			if protoAttrsMatch(rm.GetResource().GetAttributes(), want) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // freeLoopbackPort asks the OS for a free loopback TCP port and returns its
 // "127.0.0.1:port" address, closing the probe listener so serve can rebind. A
 // tiny TOCTOU window remains (the port could be reclaimed), but it is narrow
@@ -127,6 +137,44 @@ func freeLoopbackPort(t *testing.T) string {
 	return addr
 }
 
+func TestTelemetryInstallationIDFlagAndEnvironment(t *testing.T) {
+	const envID = "123e4567-e89b-12d3-a456-426614174000"
+	const flagID = "018f5e20-8c5a-7d89-b456-426614174001"
+
+	t.Setenv("MECATL_INSTALLATION_ID", envID)
+	cfg, err := parseFlags(nil)
+	if err != nil {
+		t.Fatalf("parseFlags with environment: %v", err)
+	}
+	if cfg.installationID != envID {
+		t.Fatalf("environment installation ID = %q, want %q", cfg.installationID, envID)
+	}
+
+	cfg, err = parseFlags([]string{"--telemetry-installation-id", flagID})
+	if err != nil {
+		t.Fatalf("parseFlags with flag: %v", err)
+	}
+	if cfg.installationID != flagID {
+		t.Fatalf("flag installation ID = %q, want %q", cfg.installationID, flagID)
+	}
+
+	for _, tc := range []struct {
+		name string
+		env  string
+		args []string
+	}{
+		{name: "environment", env: "not-a-uuid"},
+		{name: "flag", args: []string{"--telemetry-installation-id", "123E4567-E89B-12D3-A456-426614174000"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("MECATL_INSTALLATION_ID", tc.env)
+			if _, err := parseFlags(tc.args); err == nil || !strings.Contains(err.Error(), "canonical UUID") {
+				t.Fatalf("parseFlags malformed installation ID error = %v", err)
+			}
+		})
+	}
+}
+
 // TestTelemetryDefaultIsNil pins the byte-identical no-telemetry posture: with no
 // --otlp-* / --metrics-addr flags, buildObservability returns zero handles (Sink
 // nil), so appConfig threads nil seams into app.Config. A regression that wired
@@ -136,7 +184,7 @@ func TestTelemetryDefaultIsNil(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
 	}
-	obs, err := buildObservability(context.Background(), cfg)
+	obs, err := buildObservability(context.Background(), cfg, port.NopDiagnostics{})
 	if err != nil {
 		t.Fatalf("buildObservability: %v", err)
 	}
@@ -185,12 +233,13 @@ func TestTelemetryMetricsAddrServesPrometheus(t *testing.T) {
 		"--metrics-addr", free,
 		"--grpc-addr", "127.0.0.1:0",
 		"--http-addr", "127.0.0.1:0",
+		"--drain-addr", "127.0.0.1:0",
 		"--session-lease-k8s-namespace", "", // no k8s apiserver in a test
 	})
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
 	}
-	obs, err := buildObservability(context.Background(), cfg)
+	obs, err := buildObservability(context.Background(), cfg, port.NopDiagnostics{})
 	if err != nil {
 		t.Fatalf("buildObservability: %v", err)
 	}
@@ -198,7 +247,7 @@ func TestTelemetryMetricsAddrServesPrometheus(t *testing.T) {
 		t.Fatal("scrape-only (--metrics-addr) must build a Registry")
 	}
 
-	built, err := app.Build(context.Background(), appConfig(cfg, port.NopDiagnostics{}, obs))
+	built, err := buildIsolated(t, context.Background(), appConfig(cfg, port.NopDiagnostics{}, obs))
 	if err != nil {
 		t.Fatalf("app.Build: %v", err)
 	}
@@ -206,7 +255,7 @@ func TestTelemetryMetricsAddrServesPrometheus(t *testing.T) {
 
 	// Drive a run so the instruments record data before scraping. mecak8s is a
 	// file-less deployment (ADR 0237), so the session carries no workspace.
-	sess, err := built.Service.CreateSession(context.Background(), "", session.ModeDefault, session.Limits{})
+	sess, err := built.Service.CreateSession(context.Background(), session.ModeDefault, session.Limits{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -222,7 +271,9 @@ func TestTelemetryMetricsAddrServesPrometheus(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- serve(ctx, cfg, built.Service, obs) }()
+	go func() {
+		serveErr <- serve(ctx, cfg, built.Service, obs, built.MCPBrokerHandlers, built.MCPBrokerCallbackPath)
+	}()
 
 	// Wait for /metrics to respond, then assert it carries a mecatl series.
 	var body string
@@ -292,16 +343,18 @@ func TestTelemetryPushesRunMetricsOnExit(t *testing.T) {
 		"--redis-allow-plaintext", // disposable miniredis fixture
 		"--grpc-addr", "127.0.0.1:0",
 		"--http-addr", "127.0.0.1:0",
+		"--drain-addr", "127.0.0.1:0",
 		"--session-lease-k8s-namespace", "", // no k8s apiserver in a test
 		"--otlp-metrics-endpoint", coll.addr(),
 		"--otlp-metrics-protocol", "http",
 		"--otlp-insecure",
 		"--otlp-shutdown-timeout", "2s",
+		"--telemetry-installation-id", "123e4567-e89b-12d3-a456-426614174000",
 	})
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
 	}
-	obs, err := buildObservability(context.Background(), cfg)
+	obs, err := buildObservability(context.Background(), cfg, port.NopDiagnostics{})
 	if err != nil {
 		t.Fatalf("buildObservability: %v", err)
 	}
@@ -309,7 +362,7 @@ func TestTelemetryPushesRunMetricsOnExit(t *testing.T) {
 		t.Fatal("OTLP-push ON path must build a Metrics handle")
 	}
 
-	built, err := app.Build(context.Background(), appConfig(cfg, port.NopDiagnostics{}, obs))
+	built, err := buildIsolated(t, context.Background(), appConfig(cfg, port.NopDiagnostics{}, obs))
 	if err != nil {
 		t.Fatalf("app.Build: %v", err)
 	}
@@ -317,7 +370,7 @@ func TestTelemetryPushesRunMetricsOnExit(t *testing.T) {
 
 	// Drive a run so the instruments record data before the SIGTERM flush. mecak8s
 	// is a file-less deployment (ADR 0237), so the session carries no workspace.
-	sess, err := built.Service.CreateSession(context.Background(), "", session.ModeDefault, session.Limits{})
+	sess, err := built.Service.CreateSession(context.Background(), session.ModeDefault, session.Limits{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -338,7 +391,9 @@ func TestTelemetryPushesRunMetricsOnExit(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- serve(ctx, cfg, built.Service, obs) }()
+	go func() {
+		serveErr <- serve(ctx, cfg, built.Service, obs, built.MCPBrokerHandlers, built.MCPBrokerCallbackPath)
+	}()
 	cancel()
 	select {
 	case <-serveErr:
@@ -352,6 +407,12 @@ func TestTelemetryPushesRunMetricsOnExit(t *testing.T) {
 	reqs := coll.snapshots()
 	if len(reqs) == 0 {
 		t.Fatal("fake OTLP collector received no metric exports; flush-on-SIGTERM did not fire")
+	}
+	if !requestsHaveResourceAttrs(reqs, map[string]string{
+		"service.name":           "mecak8s",
+		"mecatl.installation.id": "123e4567-e89b-12d3-a456-426614174000",
+	}) {
+		t.Fatal("OTLP metrics resource missing mecak8s service name or installation ID")
 	}
 	if got := sumMetricInt(t, reqs, "mecatl.runs", map[string]string{"stop": string(session.StopEndTurn), "role": "main"}); got != 1 {
 		t.Errorf("mecatl.runs{stop=end_turn,role=main} exported = %d, want 1", got)

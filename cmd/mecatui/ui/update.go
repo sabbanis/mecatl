@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/colorprofile"
 
 	"github.com/stacklok/mecatl/cmd/mecatui/client"
+	statusline "github.com/stacklok/mecatl/cmd/mecatui/statusline"
 	"github.com/stacklok/mecatl/cmd/mecatui/theme"
 	"github.com/stacklok/mecatl/cmd/mecatui/ui/welcome"
 )
@@ -41,6 +42,27 @@ func (Model) renderTickCmd() tea.Cmd {
 // quits, otherwise the guard disarms (quitDisarmMsg) and the hint clears. Matches
 // Claude Code's "press ctrl+c again to exit" grace window.
 const quitArmWindow = 3 * time.Second
+
+// doubleEscapeWindow bounds the physical Escape gesture used to abandon an idle
+// draft. The reducer never reads a clock: a generation-tagged Tick message owns
+// expiry, which keeps tests and stale-tick handling deterministic.
+const doubleEscapeWindow = 500 * time.Millisecond
+
+type doubleEscapeExpiryMsg struct{ gen int }
+
+type doubleEscapeTimerFunc func(time.Duration, int) tea.Cmd
+
+func scheduleDoubleEscapeExpiry(after time.Duration, gen int) tea.Cmd {
+	return tea.Tick(after, func(time.Time) tea.Msg { return doubleEscapeExpiryMsg{gen} })
+}
+
+func (m Model) doubleEscapeExpiryCmd(gen int) tea.Cmd {
+	timer := m.doubleEscapeTimer
+	if timer == nil {
+		timer = scheduleDoubleEscapeExpiry
+	}
+	return timer(doubleEscapeWindow, gen)
+}
 
 // disarmQuitGuards clears any armed quit guards the current keypress did NOT itself
 // invoke (pressedQuit / pressedQuitD): an armed guard disarms on any key other than
@@ -169,8 +191,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// keeps the state machine symmetric).
 	wasKittyShowing := m.kittyActive && m.conv.isEmpty()
 
+	m.syncMCPSetup()
 	model, cmd := m.update(msg)
 	if mm, ok := model.(Model); ok {
+		mm.syncMCPSetup()
 		// A non-selectable body owner stops an in-progress prompt drag without
 		// clearing a completed prompt selection. Conversation selection remains
 		// blocked and is cleared when its body owner changes.
@@ -235,15 +259,44 @@ func (m Model) onStreamMsg(sm streamMsg) (tea.Model, tea.Cmd) {
 	return m.update(sm.msg)
 }
 
+func (m Model) blockClearPendingInput(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
+	if m.clearPending == nil {
+		return m, nil, false
+	}
+	switch msg := msg.(type) {
+	case tea.KeyPressMsg:
+		// Clear blocks source-affecting input, but process-wide lifecycle
+		// controls must remain available during a slow handoff.
+		if key.Matches(msg, m.keys.Quit) || key.Matches(msg, m.keys.QuitD) || key.Matches(msg, m.keys.Suspend) {
+			mm, cmd := m.onKey(msg)
+			return mm, cmd, true
+		}
+		return m, nil, true
+	case tea.PasteMsg, primaryReadMsg, tea.ClipboardMsg, tea.MouseClickMsg, tea.MouseReleaseMsg:
+		// Clear owns the source handoff until its correlated response. Keep
+		// rendering/draining old-stream events, but admit no prompt, approval,
+		// duplicate command, paste, or click against the old source.
+		return m, nil, true
+	default:
+		return m, nil, false
+	}
+}
+
 // update is the body of the Elm reducer (see Update, which wraps it with the
 // test-only onPhase observer).
 func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if mm, cmd, handled := m.blockClearPendingInput(msg); handled {
+		return mm, cmd
+	}
 	switch msg := msg.(type) {
 	case streamMsg:
 		return m.onStreamMsg(msg)
 
 	case liveMsg:
 		return m.updateLiveMsg(msg)
+
+	case mcpAuthorizationPollTickMsg:
+		return m.applyMCPAuthorizationPollTick(msg)
 
 	case tea.WindowSizeMsg:
 		return m.onResize(msg)
@@ -262,6 +315,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case autoScrollMsg:
 		return m.onAutoScroll()
+
+	case tea.KeyboardEnhancementsMsg, tea.KeyReleaseMsg:
+		return m.onKeyboardProtocolMsg(msg)
 
 	case tea.KeyPressMsg:
 		return m.onKey(msg)
@@ -289,7 +345,7 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.generatedStatusLine = msg.line
 		return m, m.statusLineWaitCmd()
 
-	case quitDisarmMsg, quitDDisarmMsg, clickDisarmMsg:
+	case quitDisarmMsg, quitDDisarmMsg, clickDisarmMsg, doubleEscapeExpiryMsg:
 		return m.onDisarmMsg(msg)
 
 	case diagnosticsMsg:
@@ -384,8 +440,16 @@ func (m Model) updateInventoryMsgs(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 
 func (m Model) finishStartupResume() (tea.Model, tea.Cmd) {
 	cmd := (&m).maybeKittyTransmit()
+	if contextCmd := m.refreshStatusContextCmd(); contextCmd != nil {
+		cmd = tea.Batch(cmd, contextCmd)
+	}
 	if liveCmd := (&m).armLiveFeed(); liveCmd != nil {
 		cmd = tea.Batch(cmd, liveCmd)
+	}
+	if m.workspaceEnrollmentActive() {
+		m.enrollment = workspaceEnrollmentState{}
+		m.workspaceEnrollmentNotice = "workspace services not connected — /tools-connect to enable protected tools"
+		return m, cmd
 	}
 	if mm, submitCmd, ok := m.startInitialPrompt(); ok {
 		return mm, tea.Batch(cmd, submitCmd)
@@ -398,11 +462,23 @@ func (m Model) finishStartupResume() (tea.Model, tea.Cmd) {
 // server-rejected-selection fallback, issue #41) can reuse it before layering its
 // warning on top.
 func (m Model) applySessionReady(msg client.SessionReadyMsg) (tea.Model, tea.Cmd, bool) {
+	// Only the process's initial create is known to be a fresh pre-prompt
+	// session. Rebinds are conservatively ineligible; /clear sets its known-new
+	// successor after this shared path returns.
+	freshBinding := m.sessionID == "" && !m.restartedThisRun && !m.startupAdopted
+	// A ready message establishes (or re-establishes) the authoritative session
+	// binding. A recovery from any prior binding must never cross it.
+	m.promptRecovery = nil
 	m = m.bindSessionID(msg.SessionID)
+	m.freshSessionBinding = freshBinding
+	if freshBinding {
+		m.sessionState = sessionStateIdle
+	}
 	m = m.syncDebugTarget()
 	m.failedStepRetryTried = false
 	m.browsingStartupSessions = false
 	m.closeModal()
+	m.statusContextRoot = ""
 	m.caps = msg.Capabilities // stored for Phase B; unrendered this phase
 	// The EFFECTIVE provider+model the server resolved this session to (echoed
 	// verbatim). The header shows it from turn zero. The model is FIXED per session,
@@ -412,7 +488,6 @@ func (m Model) applySessionReady(msg client.SessionReadyMsg) (tea.Model, tea.Cmd
 		m.activeMode = client.ModeString(client.ModeFromString(msg.Mode))
 	}
 	m.restartFailed = false // a session is (re)established; any prior failure clears
-	m.restartFailedForkID = ""
 	m.phase = phaseIdle
 	// A model switch arms a transient "switched to <model> — conversation kept" note
 	// (chooseModel); surface it on the rebind instead of the bare "connected", then
@@ -423,6 +498,10 @@ func (m Model) applySessionReady(msg client.SessionReadyMsg) (tea.Model, tea.Cmd
 	} else {
 		m.statusMsg = "connected"
 	}
+	if m.workspaceEnrollmentActive() {
+		m.enrollment = workspaceEnrollmentState{}
+		m.workspaceEnrollmentNotice = "workspace services not connected — /tools-connect to enable protected tools"
+	}
 	// Now that we are idle + (still) empty, the welcome splash shows: transmit the
 	// Kitty mascot if the terminal supports it (no-op otherwise). The WindowSizeMsg
 	// path also fires this, but at connect the phase was still phaseConnecting when
@@ -431,6 +510,9 @@ func (m Model) applySessionReady(msg client.SessionReadyMsg) (tea.Model, tea.Cmd
 	// sibling return operand leaves the copy order UNSPECIFIED (see markDirty's
 	// doc) — the cmd is taken first so the returned model carries the mutation.
 	cmd := (&m).maybeKittyTransmit()
+	if contextCmd := m.refreshStatusContextCmd(); contextCmd != nil {
+		cmd = tea.Batch(cmd, contextCmd)
+	}
 	// Self-heal the terminal window title on the carryover/fork/adopt paths where
 	// the server already set a title this client never saw: if we have NO local
 	// title yet AND a session is bound, fire a GetSession refetch so
@@ -460,8 +542,11 @@ func (m Model) applySessionReady(msg client.SessionReadyMsg) (tea.Model, tea.Cmd
 	// session via resetSession and never reaches this seam).
 	// A "/"-prefixed seed (e.g. -p /clear) is dispatched by submitPrompt's
 	// builtin dispatcher — documented behavior.
-	if mm, submitCmd, ok := m.startInitialPrompt(); ok {
-		return mm, tea.Batch(cmd, submitCmd), true
+	// InitialPrompt remains queued until the complete frozen catalogue is admitted.
+	if !m.workspaceEnrollmentActive() {
+		if mm, submitCmd, ok := m.startInitialPrompt(); ok {
+			return mm, tea.Batch(cmd, submitCmd), true
+		}
 	}
 	if m.deps.ConnectOpen {
 		m.connect.err = m.deps.ConnectError
@@ -525,6 +610,45 @@ func (m Model) updateLifecycle(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		// under the cyclomatic cap.
 		mm, cmd := m.updateReconnectMsg(msg)
 		return mm, cmd, true
+	case effortHandoffReadyMsg:
+		if msg.token != m.modelSwitchRequestToken || m.phase != phaseConnecting || m.sessionID != msg.sourceID {
+			return m, m.closeSessionCmd(msg.targetID), true
+		}
+		caps := mergeSessionCapabilities(m.caps, msg.snapshot.Capabilities)
+		resolved := msg.snapshot.ResolvedModel
+		if resolved == (client.ResolvedModel{}) {
+			resolved = m.resolvedSessionModel
+		}
+		ready := client.SessionReadyMsg{SessionID: msg.targetID, Capabilities: caps,
+			ResolvedModel: resolved, Mode: msg.snapshot.Mode}
+		// The successor has a fresh aggregate, but its transcript is already present
+		// in the local projection. Reset only state derived from the old session.
+		m = m.resetSessionDerived()
+		mm, cmd, handled := m.applySessionReady(ready)
+		m = mm.(Model)
+		// setResolvedSessionModel's merge is model-ID-keyed: a same-model update only
+		// raises the known context window and leaves ReasoningEffort untouched, but an
+		// effort switch's whole point is a new ReasoningEffort at the SAME model — so
+		// the fork's resolved snapshot must be applied verbatim here, not merged.
+		m.resolvedSessionModel = resolved
+		m.sessionState = msg.snapshot.State
+		m.sessionCreatedAt = msg.snapshot.CreatedAt
+		m.activePlacement = msg.snapshot.Placement
+		m.sessionTitle = msg.snapshot.Title
+		m.sessionTitleProvenance = msg.snapshot.TitleProvenance
+		m.sessionTitleRevision = msg.snapshot.TitleRevision
+		m.refreshView()
+		return m, tea.Batch(cmd, m.closeSessionCmd(msg.sourceID)), handled
+	case effortHandoffFailedMsg:
+		if msg.token != m.modelSwitchRequestToken || m.phase != phaseConnecting || m.sessionID != msg.sourceID {
+			return m, nil, true
+		}
+		m.phase = phaseIdle
+		m.statusMsg = m.deps.Theme.Style("errorText").Render(
+			"could not switch to effort " + effortLabel(msg.sel.ReasoningEffort) + ": " + sanitizeTerminal(msg.err.Error()))
+		focusCmd := m.prompt.Focus()
+		m.refreshView()
+		return m, tea.Batch(focusCmd, (&m).armLiveFeed()), true
 	case modelSwitchReadyMsg:
 		// The target's authoritative transcript is already complete and correlated.
 		// Only now may we discard the source projection or arm target interaction.
@@ -554,8 +678,24 @@ func (m Model) updateLifecycle(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		focusCmd := m.prompt.Focus()
 		m.refreshView()
 		return m, tea.Batch(focusCmd, (&m).armLiveFeed()), true
+	case statusContextMsg:
+		if msg.sessionID == m.sessionID {
+			m.statusContextRoot = msg.root
+			statusline.SetCommandCWD(m.deps.StatusSource, msg.root)
+			m.submitStatusLine()
+		}
+		return m, nil, true
 	case client.SessionReadyMsg:
 		return m.applySessionReady(msg)
+	case workspaceEnrollmentMsg:
+		mm, cmd := m.applyWorkspaceEnrollment(msg)
+		return mm, cmd, true
+	case workspaceEnrollmentPresentationMsg:
+		mm, cmd := m.applyWorkspaceEnrollmentPresentation(msg)
+		return mm, cmd, true
+	case workspaceEnrollmentPollTickMsg:
+		mm, cmd := m.applyWorkspaceEnrollmentPollTick(msg)
+		return mm, cmd, true
 	case client.SessionCompactedMsg:
 		if msg.RequestToken != m.compactRequestToken || msg.SessionID != m.sessionID || !m.compactPending {
 			return m, nil, true
@@ -573,14 +713,41 @@ func (m Model) updateLifecycle(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		m.statusMsg = m.deps.Theme.Style("muted").Render("ready")
 		m.refreshView()
 		return m, nil, true
-	case clearSessionReadyMsg:
-		// The replacement exists, so it is now safe to discard the old transcript
-		// and bind through the ordinary SessionReady machinery. Do this before
-		// scheduling the best-effort close: a close failure cannot disturb the
-		// already-active replacement.
+	case worktreeSwitchReadyMsg:
+		if m.sessionID != msg.oldID || m.phase != phaseConnecting {
+			return m, nil, true
+		}
 		m = m.resetSession()
+		m.activePlacement = msg.placement
 		mm, bindCmd, handled := m.applySessionReady(msg.ready)
 		m = mm.(Model)
+		m.statusMsg = m.deps.Theme.Style("success").Render("worktree switched")
+		m.refreshView()
+		return m, tea.Batch(bindCmd, m.closeSessionCmd(msg.oldID)), handled
+	case worktreeSwitchFailedMsg:
+		if m.sessionID != msg.sourceID || m.phase != phaseConnecting {
+			return m, nil, true
+		}
+		m.phase = phaseIdle
+		m.statusMsg = m.deps.Theme.Style("errorText").Render("could not switch worktree: " + sanitizeTerminal(msg.err.Error()) + "; relist and try again")
+		focusCmd := m.prompt.Focus()
+		return m, focusCmd, true
+	case clearSessionReadyMsg:
+		if m.clearPending == nil || m.clearPending.sourceID != msg.oldID || m.clearPending.token != msg.token || m.sessionID != msg.oldID {
+			return m, nil, true
+		}
+		// The server returned only after the exact source lifecycle settled. Invalidate
+		// any locally queued old-stream messages before binding the successor.
+		m.clearPending = nil
+		if m.stream != nil || m.streamCh != nil || m.cancelRun != nil {
+			m = m.endRun("")
+		}
+		m = m.resetSession()
+		m.activePlacement = msg.placement
+		mm, bindCmd, handled := m.applySessionReady(msg.ready)
+		m = mm.(Model)
+		m.freshSessionBinding = true
+		m.sessionState = sessionStateIdle
 		// The replacement was created with desiredMode, so its ready echo confirms
 		// that any deferred old-session mode switch is now settled. Leaving it set
 		// would make onIdleSubmit keep deferring every future prompt.
@@ -589,11 +756,25 @@ func (m Model) updateLifecycle(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		m.refreshView()
 		return m, tea.Batch(bindCmd, m.closeSessionCmd(msg.oldID)), handled
 	case clearSessionFailedMsg:
-		// The old session and all of its derived UI state remain intact; only the
-		// temporary input-blocking phase and status are rolled back.
+		if m.clearPending == nil || m.clearPending.sourceID != msg.sourceID || m.clearPending.token != msg.token || m.sessionID != msg.sourceID {
+			return m, nil, true
+		}
+		failure := "could not clear: " + sanitizeTerminal(msg.err.Error())
+		m.clearPending.failure = failure
+		activeSource := m.clearPending.sourcePhase == phaseRunning || m.clearPending.sourcePhase == phaseAwaitingApproval
+		if activeSource && !m.clearPending.sourceSettled {
+			// Cancellation is irreversible once the server crosses the active-source
+			// boundary. Keep this stream generation blocked until its delayed terminal
+			// event settles it; restoring running/awaiting would admit prompts or verdicts
+			// against a lifecycle the server is already cancelling.
+			m.phase = phaseConnecting
+			m.statusMsg = m.deps.Theme.Style("errorText").Render(failure + "; waiting for the source to settle before retry")
+			return m, nil, true
+		}
+		m.clearPending = nil
 		m.phase = phaseIdle
-		m.statusMsg = m.deps.Theme.Style("errorText").Render("could not clear: " + sanitizeTerminal(msg.err.Error()))
-		return m, nil, true
+		m.statusMsg = m.deps.Theme.Style("errorText").Render(failure + "; retry /clear")
+		return m, m.prompt.Focus(), true
 	case connectFallbackMsg:
 		// The connect-time create REJECTED the saved selection; the zero-selection
 		// retry succeeded (createSessionCmd's fallback leg, issue #41). The session is
@@ -631,31 +812,12 @@ func (m Model) updateLifecycle(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		m.fatalErr = msg.Err.Error()
 		return m, nil, true
 	case restartFailedMsg:
-		// A /models restart-now re-create (or a /worktrees re-create, or an /effort
-		// fork) failed. Unlike ConnectErrMsg this is NOT terminal: we deliberately
-		// destroyed a working session (or attempted a fork), so leave the app
-		// RECOVERABLE (idle, no session) with a loud status naming the failed model and
-		// enter-to-retry armed (the selection still lives in m.createModelSelection). On the
-		// /models + /worktrees paths the transcript is gone, but the app stays usable;
-		// on the /effort path the source session (and transcript) SURVIVES — see
-		// restartFailedForkID.
+		// A restart-now re-create failed. Unlike ConnectErrMsg this is NOT terminal:
+		// leave the app recoverable (idle, no session) with enter-to-retry armed.
 		m.phase = phaseIdle
 		m = m.bindSessionID("")
 		m.restartFailed = true
-		// A carryover create's failure means enter-to-retry re-fires a FRESH
-		// (non-carryover) create (see onIdleSubmit), so the note armed by
-		// chooseModel for the ORIGINAL attempt would otherwise survive to falsely
-		// claim "conversation kept" on the retry's SessionReadyMsg.
 		m.pendingModelSwitchNote = ""
-		// Record the retry origin: an /effort fork failure (msg.viaFork) re-forks from
-		// the SURVIVING source session on retry — m.sessionID is "" by now, so the
-		// source id must ride its own field. A non-fork failure clears it so a stale
-		// origin from an earlier failed fork can't leak into a create retry.
-		if msg.viaFork {
-			m.restartFailedForkID = msg.sourceID
-		} else {
-			m.restartFailedForkID = ""
-		}
 		m.statusMsg = m.deps.Theme.Style("errorText").Render(
 			"could not switch to " + sanitizeTerminal(msg.model) + ": " +
 				sanitizeTerminal(msg.err.Error()) + " — press " + firstKey(m.keys.Submit, "enter") + " to retry")
@@ -663,6 +825,32 @@ func (m Model) updateLifecycle(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		m.refreshView()
 		return m, nil, true
 	case client.StreamErrMsg:
+		if m.phase == phaseAuthorizing && m.authorization.authorizationID != "" && client.IsMCPAuthorizationPending(msg.Err) {
+			// The parked authorization remains authoritative. The original Converse
+			// stream is done, but its card and automatic polling remain active.
+			m.stream = nil
+			m.streamCh = nil
+			m.streamGen++
+			return m, nil, true
+		}
+		if m.clearPending != nil {
+			// The old stream failed while Clear owns the handoff. Preserve the fact,
+			// settle the reader, and suppress every recovery path that could reopen or
+			// continue the source.
+			if msg.Err != nil {
+				m.conv.addError("stream error: " + msg.Err.Error())
+			}
+			m = m.endRun(stopError)
+			m.failedStepRetryRun = false
+			m.failedStepRetryAuthoritative = false
+			m.clearPending.sourceSettled = true
+			m.phase = phaseConnecting
+			if settled, focusCmd, failed := m.settleFailedClearSource(); failed {
+				settled.refreshView()
+				return settled, tea.Batch(settled.refreshCmd(), focusCmd), true
+			}
+			return m, m.refreshCmd(), true
+		}
 		if msg.AuthReason != "" {
 			mm, cmd := m.reduceLiveAuthRecovery(msg.AuthReason)
 			return mm, cmd, true
@@ -682,9 +870,15 @@ func (m Model) updateLifecycle(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 			}
 			return m, tea.Batch(m.refreshCmd(), m.armLiveFeed()), true
 		}
-		// A transport error has no semantic commit fact. Always pause and preserve
-		// staged follow-ups, regardless of legacy transient-looking status text.
-		m.conv.addError("stream error: " + msg.Err.Error())
+		// A transport error has no semantic commit fact. Restore only an
+		// unmodified text-only draft; a server-confirmed enrollment rejection is
+		// the one case eligible for a later exact-once replay.
+		authoritative := isWorkspaceEnrollmentRejection(msg.Err.Error())
+		m.recoverPrompt(authoritative)
+		if authoritative && m.promptRecovery != nil {
+			m.promptRecovery.autoReplay = true
+		}
+		m.conv.addError("stream error: " + friendlyWorkspaceEnrollmentRejection(msg.Err.Error()))
 		m = m.endRun(stopError)
 		liveCmd := m.armLiveFeed()
 		mm, drainCmd := m.drainQueue(stopError)
@@ -705,16 +899,43 @@ func (m Model) updateLifecycle(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 	case client.ModeChangedMsg:
 		return m.onModeChanged(msg), nil, true
 	case client.StreamClosedMsg:
+		// Clear still owns the handoff, but the source stream can settle before the
+		// RPC response arrives. Tear it down without draining queues, retrying steps,
+		// reopening live delivery, or otherwise continuing the source.
+		if m.clearPending != nil {
+			m = m.endRun("closed")
+			m.clearPending.sourceSettled = true
+			m.phase = phaseConnecting
+			if settled, focusCmd, failed := m.settleFailedClearSource(); failed {
+				settled.refreshView()
+				return settled, tea.Batch(settled.refreshCmd(), focusCmd), true
+			}
+			return m, m.refreshCmd(), true
+		}
 		// Clean close. If a run was still active (no terminal result seen),
 		// finalise it; otherwise it's the expected post-result close (no-op).
 		if m.phase == phaseRunning || m.phase == phaseAwaitingApproval {
+			m.recoverPrompt(false)
 			m = m.endRun("closed")
 			modeCmd := m.retryPendingModeCmd()
 			liveCmd := m.armLiveFeed()
 			mm, drainCmd := m.drainQueue("closed")
 			return mm, tea.Batch(m.refreshCmd(), modeCmd, drainCmd, liveCmd), true
 		}
+		if m.phase == phaseAuthorizing {
+			// A parked run's Converse stream closes before its authorization
+			// continuation is reattached. Invalidate that source so afterEvent cannot
+			// re-arm its closed channel into the resumed run.
+			m.stream = nil
+			m.streamCh = nil
+			m.streamGen++
+		}
 		return m, nil, true
+	case client.SessionRenamedMsg:
+		mm, cmd := m.onTitleRenamed(msg)
+		return mm, cmd, true
+	case client.SessionTitleMsg:
+		return m.onSessionTitle(msg), nil, true
 	case client.CommandsMsg:
 		// Slash-command discovery landed: store the set (a failure degrades quietly
 		// to an empty palette) and re-sync so the palette reflects it immediately if
@@ -727,6 +948,29 @@ func (m Model) updateLifecycle(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 	default:
 		return m, nil, false
 	}
+}
+
+// mergeSessionCapabilities preserves the known server-wide capability snapshot when
+// a compatible response contains only the selected session's media capabilities.
+func mergeSessionCapabilities(current, incoming client.Capabilities) client.Capabilities {
+	if incoming == (client.Capabilities{}) {
+		return current
+	}
+	mediaOnly := incoming.SessionMediaPresent
+	image, audio := incoming.Image, incoming.Audio
+	incoming.SessionMediaPresent = false
+	incoming.Image = false
+	incoming.Audio = false
+	if mediaOnly && incoming == (client.Capabilities{}) {
+		current.Image = image
+		current.Audio = audio
+		current.SessionMediaPresent = true
+		return current
+	}
+	incoming.Image = image
+	incoming.Audio = audio
+	incoming.SessionMediaPresent = mediaOnly
+	return incoming
 }
 
 // onResolvedModelMsg handles the ResolvedModelMsg from a GetSession refetch
@@ -751,35 +995,21 @@ func (m Model) onResolvedModelMsg(msg client.ResolvedModelMsg) (Model, tea.Cmd, 
 	if msg.Err != nil || msg.SessionID != m.sessionID {
 		return m, nil, true
 	}
-	// Caps adoption (issue #348): a non-zero Capabilities means the server
-	// returned the feature-advertisement snapshot on the Session proto — adopt
-	// it. A zero value means an older server (field absent) — keep the current
-	// caps untouched (fail-conservative: a dead-builtins window is worse than
-	// stale caps, and the adopted session rides the same server as the prior
-	// sessions tab).
-	// INVARIANT: a real current server always reports non-zero Capabilities
-	// (the Posture field is unconditionally populated by the server). An
-	// all-zero struct can only mean the field was absent (pre-#348 server),
-	// so we keep the prior caps rather than regressing to empty.
-	if msg.Capabilities != (client.Capabilities{}) {
-		m.caps = msg.Capabilities
-	}
-	// Window-title self-heal: adopt the session's stored title from the refetch
-	// ONLY when the local title is still empty (set-once — a title the user
-	// seeded by typing a prompt sticks; this only backfills carryover/fork/adopt
-	// where the server already had one).
-	if m.sessionTitle == "" && msg.Title != "" {
-		m.sessionTitle = msg.Title
-	}
+	m.caps = mergeSessionCapabilities(m.caps, msg.Capabilities)
+	// The snapshot is authoritative after reconnect/session adoption, so unlike the
+	// old first-prompt seed it may replace a local title.
+	m, _ = m.adoptTitle(msg.Title, msg.TitleProvenance, msg.TitleRevision)
 	// Mode update: apply when the refetch carries a mode (the plan-approval
 	// refresh path). On the footer-heal path Mode is the same as m.activeMode
 	// (or empty from an older server), so this is a benign no-op.
 	if msg.Mode != "" {
 		m.activeMode = client.ModeString(client.ModeFromString(msg.Mode))
 	}
-	m.sessionState = msg.State
+	if msg.State != "" {
+		m.sessionState = msg.State
+	}
 	m.sessionCreatedAt = msg.CreatedAt
-	m.activeWorkspace = msg.Workspace
+	m.activePlacement = msg.Placement
 	if (&m).setResolvedSessionModel(msg.Resolved) {
 		m.refreshView()
 	}
@@ -806,6 +1036,18 @@ func (m Model) onRenderTick() (tea.Model, tea.Cmd) {
 		return m, m.renderTickCmd()
 	}
 	return m, nil
+}
+
+func mcpAuthorizationNotice(msg client.MCPAuthorizationMsg) string {
+	displayName := oneLine(sanitizeTerminal(msg.DisplayName))
+	target := ""
+	if displayName != "" {
+		target = " for " + displayName
+	}
+	if msg.Status == mcpAuthorizationStatusPending {
+		return "MCP authorization required" + target + ". Open Browser or Copy Link to start automatic checking, or Cancel."
+	}
+	return fmt.Sprintf("MCP authorization%s: %s.", target, oneLine(sanitizeTerminal(msg.Status)))
 }
 
 // updateStreamEvent reduces the per-event stream msgs into the conversation. It
@@ -882,7 +1124,7 @@ func (m Model) updateStreamEvent(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// at call time (not on the result) so the header reflects intent the moment
 		// the mutation is announced; mutatedPath gates to Edit/Write + dedupes.
 		if p, ok := mutatedPath(msg.Name, msg.Args); ok {
-			m.recordFileChange(p)
+			m.conv.recordFileChange(p)
 		}
 		return m.afterEvent()
 	case client.ToolResultMsg:
@@ -959,6 +1201,8 @@ func (m *Model) beginTurnEvent() {
 // only so neither dispatcher grows past the cyclomatic-complexity bound.
 func (m Model) updateStreamSecondary(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case client.MCPAuthorizationMsg:
+		return m.applyMCPAuthorization(msg)
 	case client.PermissionRetractMsg:
 		// An active approval surface consumes retractions through HandleMsg. A
 		// stale retraction after close is transport-only and needs no approval state.
@@ -1053,12 +1297,12 @@ func (m *Model) mintSteerID() string {
 // or one outstanding bundle's ack racing a recomposed replacement) is
 // idempotently dropped.
 // steerTrace emits a one-line correlation trace into the status bar when
-// Deps.DebugSteer is set (env MECATUI_DEBUG_STEER=1): the ack/echo kind, the
+// Deps.Debug or Deps.DebugSteer is set: the ack/echo kind, the
 // incoming message_id, the live bundle's id, and the decision. It makes a stuck
 // or mis-correlated steer lifecycle visible in the TUI rather than opaque. A nil
 // live bundle renders "-".
 func (m Model) steerTrace(kind, inID, decision string) string {
-	if !m.deps.DebugSteer {
+	if !m.deps.Debug && !m.deps.DebugSteer {
 		return ""
 	}
 	live := "-"
@@ -1245,21 +1489,51 @@ func (m Model) applySteerEcho(msg client.SteerEchoMsg) (tea.Model, tea.Cmd) {
 	return m.afterEvent()
 }
 
+func (m Model) settleFailedClearSource() (Model, tea.Cmd, bool) {
+	if m.clearPending == nil || m.clearPending.failure == "" {
+		return m, nil, false
+	}
+	failure := m.clearPending.failure
+	m.clearPending = nil
+	m.phase = phaseIdle
+	m.statusMsg = m.deps.Theme.Style("errorText").Render(failure + "; retry /clear")
+	return m, m.prompt.Focus(), true
+}
+
 // applyResult handles a terminal ResultMsg: it folds the run's usage into the running
 // totals, surfaces a terminal error, ends the run, and drains any queued prompts.
 // Extracted from updateStreamEvent's switch to keep that dispatcher flat.
 func (m Model) applyResult(msg client.ResultMsg) (tea.Model, tea.Cmd) {
+	// A terminal result is a server-side run fact, so this prompt cannot be replayed
+	// by a later unrelated control response.
+	m.promptRecovery = nil
 	// ResultMsg.Usage is the run's CUMULATIVE total; fold it into the session
 	// total exactly once here. The per-turn TurnEndMsg feeds only the
 	// context-occupancy meter (m.contextTokens), never m.usage — adding both
 	// would double-count.
 	m.usage = sumUsage(m.usage, msg.Usage)
 	if msg.Stop == stopError && msg.Error != "" {
+		rejection := friendlyWorkspaceEnrollmentRejection(msg.Error)
 		if msg.Permanent {
-			m.conv.addPermanentError(msg.Error)
+			m.conv.addPermanentError(rejection)
 		} else {
-			m.conv.addError(msg.Error)
+			m.conv.addError(rejection)
 		}
+	}
+	if m.clearPending != nil {
+		// The terminal facts still belong in the source projection, but Clear owns
+		// what happens next. Settle only: no queued prompt, failed-step retry,
+		// pending-mode retry, plan continuation, live-feed rearm, or other source run.
+		m = m.endRun(msg.Stop)
+		m.failedStepRetryRun = false
+		m.failedStepRetryAuthoritative = false
+		m.clearPending.sourceSettled = true
+		m.phase = phaseConnecting
+		if settled, focusCmd, failed := m.settleFailedClearSource(); failed {
+			settled.refreshView()
+			return settled, tea.Batch(settled.refreshCmd(), focusCmd)
+		}
+		return m, m.refreshCmd()
 	}
 	retryDeferred := m.failedStepRetryRun && !m.failedStepRetryAuthoritative
 	m = m.endRun(msg.Stop)
@@ -1372,9 +1646,9 @@ func applySubagentTo(c *conversation, msg client.SubagentMsg) {
 
 // applyParallel routes a BOUNDED Parallel fork-join projection into the GROUPED
 // parallelGroups state (keyed by ParentCallID), which backs the fleet footer segment and
-// the ctrl+a Parallel tab. Unlike Subagent it has no second inline-card destination: a
-// Parallel run's deliverable (the winner + fork paths) rides the tool RESULT text the
-// model reads; these events are the client observability channel only. The previews
+// the f6 Parallel tab. Unlike Subagent it has no second inline-card destination: a
+// Parallel run's deliverable (the winner summary + opaque artifact handle) rides
+// the tool RESULT text the model reads; these events are the client observability channel only. The previews
 // are bounded/scrubbed/client-only (gauntlet #7).
 func (m *Model) applyParallel(msg client.ParallelMsg) {
 	applyParallelTo(&m.conv, msg)
@@ -1393,9 +1667,9 @@ func applyParallelTo(c *conversation, msg client.ParallelMsg) {
 	case client.ParallelBranchTool:
 		c.parallelBranchTool(msg)
 	case client.ParallelBranchEnd:
-		c.parallelBranchEnd(msg.ParentCallID, msg.BranchIndex, msg.ChildID, msg.Usage, msg.ToolCount, msg.Stop, msg.Failed, msg.Workspace, msg.DurationMs)
+		c.parallelBranchEnd(msg.ParentCallID, msg.BranchIndex, msg.ChildID, msg.Usage, msg.ToolCount, msg.Stop, msg.Failed, msg.DurationMs)
 	case client.ParallelEnd:
-		c.parallelEnd(msg.ParentCallID, msg.Join, msg.BranchCount, msg.Winner, msg.WinnerWorkspace, msg.Stop)
+		c.parallelEnd(msg.ParentCallID, msg.Join, msg.BranchCount, msg.Winner, msg.Stop)
 	}
 }
 
@@ -1448,6 +1722,8 @@ func applyTeamTo(c *conversation, msg client.TeamMsg) {
 // chrome (which relayout measures) reflect the NEW width before the body height is
 // computed from them.
 func (m Model) onResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
+	widthChanged := m.width != msg.Width
+	viewportHeight := m.vp.Height()
 	m.width = msg.Width
 	m.height = msg.Height
 	m.vp.SetWidth(m.width)
@@ -1465,10 +1741,18 @@ func (m Model) onResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	m.rend.setWidth(m.width)
 	// relayout sizes the viewport height from the measured layout (header + transients
 	// + input + footer) and, when the height changed, re-renders + re-derives
-	// auto-follow — the tail onResize used to do inline. The magic taH=4/footerH=2 and
+	// auto-follow — the tail onResize used to do inline. A width-only resize leaves
+	// that layout unchanged, so re-render below to replace any stale wrapped lines.
+	// The magic taH=4/footerH=2 and
 	// the header arithmetic are GONE; the heights are measured via lipgloss.Height of
 	// the rendered regions in chrome().
 	m.relayout()
+	m.clampHelpScroll()
+	m.clampAgentsDetailScroll()
+	if widthChanged && m.vp.Height() == viewportHeight {
+		m.refreshView()
+		m.conversationView.observe(m.vp)
+	}
 	// Open modal surfaces derive geometry at Render time; no resize fan-out is needed.
 	return m, m.maybeKittyTransmit()
 }
@@ -1578,8 +1862,8 @@ func (m *Model) maybeKittyTransmit() tea.Cmd {
 // common case (no layout change) is a cheap chrome render + compare with no re-render.
 // When the height DID change it mirrors onResize's old
 // tail: SetHeight, refreshView (re-render the conversation into the resized viewport),
-// then syncStuck (SetHeight can clamp YOffset so AtBottom flips — re-derive
-// auto-follow, otherwise the "↑ NN%" cue would lie). Width is NOT touched here (it is
+// then observes the viewport (SetHeight can clamp YOffset so AtBottom flips —
+// re-derive auto-follow, otherwise the "↑ NN%" cue would lie). Width is NOT touched here (it is
 // an onResize concern). A pointer receiver: it mutates the viewport in place.
 func (m *Model) relayout() {
 	if m.width <= 0 || m.height <= 0 {
@@ -1595,7 +1879,45 @@ func (m *Model) relayout() {
 	}
 	m.vp.SetHeight(bodyHeight)
 	m.refreshView()
-	m.syncStuck()
+	m.conversationView.observe(m.vp)
+}
+
+// physicalEscape reports the non-remappable hardware gesture. Bubble Tea's
+// repeat metadata is authoritative when available; repeats remain owner-visible
+// but can never arm or complete the draft-clear gesture.
+func physicalEscape(msg tea.KeyPressMsg) bool {
+	return msg.Code == tea.KeyEscape && msg.Mod == 0
+}
+
+func (m Model) hasDoubleEscapeDraft() bool {
+	return m.prompt.Value() != "" || len(m.stagedMedia) > 0 || len(m.stagedPastes) > 0 ||
+		len(m.pendingPromptMedia.Parts) > 0 || len(m.pendingPromptMedia.Descriptors) > 0
+}
+
+// doubleEscapeEligible is intentionally narrower than ordinary prompt input:
+// every selection, menu, overlay, modal, paused queue, and running-cancel owner
+// gets Escape first. Only the focused, plain idle composer can use the gesture.
+func (m Model) doubleEscapeEligible() bool {
+	return m.keyboardEventTypes && m.phase == phaseIdle && m.prompt.Focused() && m.hasDoubleEscapeDraft() &&
+		!m.sel.active && !m.prompt.HasSelection() && !m.palette.open && !m.mention.open &&
+		m.queuePaused == "" && !bodyOwnerOpen(m)
+}
+
+func (m Model) onKeyboardProtocolMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.KeyboardEnhancementsMsg:
+		m.keyboardEventTypes = msg.SupportsEventTypes()
+		if !m.keyboardEventTypes {
+			m.doubleEscapeArmed = false
+			m.doubleEscapeReleased = false
+		}
+	case tea.KeyReleaseMsg:
+		releasedKey := msg.Key()
+		if m.doubleEscapeArmed && m.doubleEscapeEligible() && releasedKey.Code == tea.KeyEscape && releasedKey.Mod == 0 {
+			m.doubleEscapeReleased = true
+		}
+	}
+	return m, nil
 }
 
 // onKey routes key presses by phase. ctrl+c is handled first, with a graceful
@@ -1606,6 +1928,14 @@ func (m *Model) relayout() {
 // (SIGINT/SIGTERM via tea.WithContext in main) is unaffected; this is the in-TUI
 // key path only.
 func (m Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	// Any intervening key breaks consecutiveness. Escape owned by another surface
+	// also disarms before that owner handles it; a repeat is never a gesture press.
+	if !physicalEscape(msg) || !m.doubleEscapeEligible() {
+		m.doubleEscapeArmed = false
+		m.doubleEscapeReleased = false
+	}
+
+	// Global lifecycle controls retain precedence over every overlay.
 	if key.Matches(msg, m.keys.Quit) {
 		return m.onQuitKey()
 	}
@@ -1629,6 +1959,12 @@ func (m Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// re-syncs on resume.
 	if key.Matches(msg, m.keys.Suspend) {
 		return m.onSuspend()
+	}
+
+	// Help owns the remaining keys while open: its documented navigation and close
+	// controls act on the overlay and every ordinary key is swallowed.
+	if m.showHelp {
+		return m.onHelpKey(msg)
 	}
 
 	// Disarm whichever quit guards are armed: any non-ctrl+c key disarms the Quit
@@ -1667,19 +2003,6 @@ func (m Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return mm, cmd
 	}
 
-	// An open help overlay owns the keyboard: "?" or esc closes it, everything
-	// else is swallowed. Routed AFTER the MCP/agents overlays (they never coexist;
-	// those handlers return handled=false when closed) and BEFORE the ctrl+t
-	// toggle and the phase switch — so a "?" pressed while help is up closes it
-	// rather than reopening or leaking to the textarea.
-	if m.showHelp {
-		if key.Matches(msg, m.keys.Help) || key.Matches(msg, m.keys.Close) {
-			m.showHelp = false
-			_ = m.prompt.Focus()
-		}
-		return m, nil
-	}
-
 	// ctrl+t is a global render toggle (full vs capped tool output); it works in
 	// any phase and never feeds the textarea.
 	if key.Matches(msg, m.keys.ExpandTools) {
@@ -1696,9 +2019,9 @@ func (m Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.onClipboardPaste()
 	}
 
-	// alt+m cycles permission mode. It is handled here — before the phase switch —
-	// for idle + running so the key never feeds the textarea. Ctrl+M collides with
-	// Enter on real terminals, so the binding deliberately uses Alt+M.
+	// shift+tab cycles permission mode. It is handled here — before the phase switch —
+	// for idle + running so the key never feeds the textarea. It also avoids relying
+	// on macOS Option being configured as Meta.
 	if m.deps.DebugTarget == "" && key.Matches(msg, m.keys.ModeSwitch) && (m.phase == phaseIdle || m.phase == phaseRunning) {
 		return m.switchMode(client.NextMode(m.desiredMode()))
 	}
@@ -1706,7 +2029,48 @@ func (m Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m.dispatchPhaseKey(msg)
 }
 
-// clearAnySelection gives esc priority over ordinary phase actions when either
+// onHelpKey handles the help overlay's complete keyboard contract. It runs before
+// phase routing, so navigation never reaches the conversation and every other key
+// remains swallowed.
+func (m Model) onHelpKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	m.clampHelpScroll()
+	total, window := m.helpScrollGeometry()
+	switch {
+	case key.Matches(msg, m.keys.Help), key.Matches(msg, m.keys.Close):
+		m.showHelp = false
+		m.helpScroll = 0
+		_ = m.prompt.Focus()
+	case key.Matches(msg, m.keys.ScrollD):
+		m.helpScroll = clampScroll(m.helpScroll+window, total, window)
+	case key.Matches(msg, m.keys.ScrollU):
+		m.helpScroll = clampScroll(m.helpScroll-window, total, window)
+	case key.Matches(msg, m.keys.Down):
+		m.helpScroll = clampScroll(m.helpScroll+1, total, window)
+	case key.Matches(msg, m.keys.Up):
+		m.helpScroll = clampScroll(m.helpScroll-1, total, window)
+	case key.Matches(msg, m.keys.ScrollBottom):
+		m.helpScroll = maxScrollOffset(total, window)
+	case key.Matches(msg, m.keys.ScrollTop):
+		m.helpScroll = 0
+	}
+	return m, nil
+}
+
+// helpScrollGeometry derives the same complete rendered lines and window used by
+// renderHelpOverlay, keeping key navigation and height-bounded rendering aligned.
+func (m Model) helpScrollGeometry() (total, window int) {
+	lines := helpRenderedLines(helpBody(m.deps.Theme, m.caps, m.helpKeyMarkings()))
+	return len(lines), helpWindowHeight(m.deps.Theme, m.vp.Height(), len(lines))
+}
+
+// clampHelpScroll keeps a retained offset valid after a relayout changes the
+// viewport geometry. It deliberately preserves a still-valid offset rather than
+// pinning an earlier End selection to the new bottom.
+func (m *Model) clampHelpScroll() {
+	total, window := m.helpScrollGeometry()
+	m.helpScroll = clampScroll(m.helpScroll, total, window)
+}
+
 // selection owner is active.
 func (m Model) clearAnySelection(msg tea.KeyPressMsg) (Model, bool) {
 	if !key.Matches(msg, m.keys.Cancel) || (!m.sel.active && !m.prompt.HasSelection()) ||
@@ -1745,6 +2109,8 @@ func (m Model) dispatchPhaseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch m.phase {
 	case phaseAwaitingApproval:
 		return m, nil
+	case phaseAuthorizing:
+		return m.onMCPAuthorizationKey(msg)
 	case phaseRunning:
 		return m.onRunningKey(msg)
 	case phaseIdle:
@@ -1797,6 +2163,12 @@ func (m Model) dispatchSurfaceKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool
 	if m.modal == nil {
 		return m, nil, false
 	}
+	// A clear command composed while running stays actionable if a permission ask
+	// opens before Enter is pressed. Route it ahead of the approval surface:
+	// ClearSession cancels the ask and must never become Allow/Deny/Learn.
+	if clearCommandSubmitted(msg, m.keys.Submit, m.prompt.Value()) {
+		return m.dispatchBareBuiltin(m.prompt.Value())
+	}
 	cmd, handled, closed := m.modal.HandleKey(msg)
 	if !handled {
 		return m, nil, false
@@ -1814,6 +2186,10 @@ func (m Model) dispatchSurfaceKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool
 		return m, tea.Batch(cmd, m.prompt.Focus()), true
 	}
 	return m, cmd, true
+}
+
+func clearCommandSubmitted(msg tea.KeyPressMsg, submit key.Binding, prompt string) bool {
+	return key.Matches(msg, submit) && strings.EqualFold(strings.TrimSpace(prompt), "/clear")
 }
 
 // dispatchSurfaceMsg routes a NON-input Msg through the open modal surface
@@ -1884,8 +2260,6 @@ func (m Model) applySessionsSurfaceIntent(intent surfaceIntent) (model tea.Model
 			m.prompt.Blur()
 		}
 		return m, nil, true, false
-	case sessionsAdoptionPreflightIntent:
-		return m, m.adoptionPreflightCmd(intent.row), true, false
 	case sessionsMigrationJobIntent:
 		m.maintenanceMigrationJobID = intent.jobID
 		return m, nil, true, false
@@ -1918,7 +2292,7 @@ func (m Model) applySessionsSurfaceIntent(intent surfaceIntent) (model tea.Model
 		return m, m.createSessionCmd(), true, true
 	case sessionsActiveTitleIntent:
 		if intent.id == m.sessionID {
-			m.sessionTitle = intent.title
+			m, _ = m.adoptTitle(intent.title, intent.provenance, intent.revision)
 		}
 		m.statusMsg = m.deps.Theme.Style("success").Render(intent.successNotice)
 		return m, nil, true, false
@@ -2010,15 +2384,21 @@ func (m Model) retryPendingModeCmd() tea.Cmd {
 // while armed quits; the fatal screen quits on the first press; a first press with
 // staged input clears it (no arm); a first press on an empty prompt arms the guard,
 // shows the hint, and schedules the timed disarm. See onKey's doc for the rationale.
+func (m Model) quitNow() (tea.Model, tea.Cmd) {
+	if m.cancelRun != nil {
+		m.cancelRun()
+	}
+	return m, tea.Quit
+}
+
+// onQuitKey implements the guarded ctrl+c exit behavior. The immediate exit is
+// shared with /quit so both paths cancel an active run before Bubble Tea exits.
 func (m Model) onQuitKey() (tea.Model, tea.Cmd) {
 	// Already armed → a second ctrl+c within the window: quit now. The fatal
 	// (dead-connection) screen also exits on a single press — there is no input to
 	// clear and no run to protect, so the guard would only add friction.
 	if m.quitArmed || m.phase == phaseFatal {
-		if m.cancelRun != nil {
-			m.cancelRun()
-		}
-		return m, tea.Quit
+		return m.quitNow()
 	}
 	// First ctrl+c with staged input: clear the input (mirrors esc's clear-the-line)
 	// and do NOT arm — a single press to wipe a draft is expected.
@@ -2103,10 +2483,7 @@ func (m Model) resumeNotice() string {
 // deliberately separate chords + separate state so neither confirms the other.
 func (m Model) onQuitDKey() (tea.Model, tea.Cmd) {
 	if m.quitDArmed || m.phase == phaseFatal {
-		if m.cancelRun != nil {
-			m.cancelRun()
-		}
-		return m, tea.Quit
+		return m.quitNow()
 	}
 	// The caller's gate keeps the prompt empty here (a populated prompt keeps the
 	// chord in the textarea).
@@ -2155,10 +2532,9 @@ func (m Model) onClickDisarm(msg clickDisarmMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// onDisarmMsg fans the two timed-disarm messages (the double-Ctrl+C quit guard and
-// the multi-click count reset) out to their reducers: one switch case in update()
-// that re-discriminates the concrete type here — the onPasteMsg/onMouseMsg pattern,
-// keeping update()'s cyclomatic complexity bounded.
+// onDisarmMsg fans the timed-disarm messages out to their reducers: one switch
+// case in update() that re-discriminates the concrete type here — the
+// onPasteMsg/onMouseMsg pattern, keeping update()'s cyclomatic complexity bounded.
 func (m Model) onDisarmMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case quitDisarmMsg:
@@ -2167,6 +2543,12 @@ func (m Model) onDisarmMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.onQuitDDisarm(msg)
 	case clickDisarmMsg:
 		return m.onClickDisarm(msg)
+	case doubleEscapeExpiryMsg:
+		if m.doubleEscapeArmed && msg.gen == m.doubleEscapeGen {
+			m.doubleEscapeArmed = false
+			m.doubleEscapeReleased = false
+		}
+		return m, nil
 	default:
 		return m, nil
 	}
@@ -2291,7 +2673,7 @@ func (m Model) onRunningKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// the running turn without changing the queue.
 		return m.editBackQueue()
 	case key.Matches(msg, m.keys.Agents):
-		// ctrl+a opens the unified agents overlay MID-RUN (Gap B): the deep view is
+		// f6 opens the unified agents overlay MID-RUN (Gap B): the deep view is
 		// most useful while agents stream. openAgents permits phaseRunning, reads the
 		// live lanes/fleet, and picks the context-sensitive default tab; pre-empt the
 		// textarea default so the keypress drives the overlay, never the input.
@@ -2319,9 +2701,15 @@ func (m Model) onRunningKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // composition state. ClearPrompt is the explicit action for dropping a draft.
 func (m Model) onRunningCancel() (tea.Model, tea.Cmd) {
 	stream := m.stream
+	authorizationStream := m.authorization.controlStream
+	if m.authorization.runningControlGen != m.authorization.controlGen {
+		authorizationStream = nil
+	}
 	m.statusMsg = "cancelling…"
 	return m, func() tea.Msg {
-		if stream != nil {
+		if authorizationStream != nil {
+			_ = authorizationStream.SendCancel()
+		} else if stream != nil {
 			_ = stream.SendCancel()
 		}
 		return nil
@@ -2593,6 +2981,7 @@ func (m Model) onIdleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// inserts literally. The overlay claims the keyboard via the m.showHelp gate
 		// in onKey; blur the input while it is up.
 		m.showHelp = true
+		m.helpScroll = 0
 		m.prompt.Blur()
 		return m, nil
 	case key.Matches(msg, m.keys.MCPPanel):
@@ -2604,7 +2993,7 @@ func (m Model) onIdleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Agents):
 		return m.openAgents()
 	case key.Matches(msg, m.keys.Effort) && m.deps.DebugTarget == "":
-		// ctrl+e opens the /effort reasoning-effort picker — the same surface the
+		// f7 opens the /effort reasoning-effort picker — the same surface the
 		// /effort command opens (runEffort → openEffort). openEffort self-gates on
 		// idle + caps.ModelSelection, so when model selection is unavailable this
 		// returns the model unchanged and the key never opens an empty picker.
@@ -2618,6 +3007,8 @@ func (m Model) onIdleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.statusMsg = m.deps.Theme.Style("muted").Render("queue cleared")
 		m.refreshView()
 		return m, nil
+	case physicalEscape(msg):
+		return m.onIdleDoubleEscape(msg)
 	case key.Matches(msg, m.keys.Newline):
 		m.prompt.InsertNewline()
 		return m.afterInputEdit(nil)
@@ -2632,6 +3023,24 @@ func (m Model) onIdleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
+func (m Model) onIdleDoubleEscape(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if msg.IsRepeat || !m.doubleEscapeEligible() {
+		return m, nil
+	}
+	if m.doubleEscapeArmed {
+		if !m.doubleEscapeReleased {
+			return m, nil
+		}
+		m.doubleEscapeArmed = false
+		m.doubleEscapeReleased = false
+		return m.clearPrompt()
+	}
+	m.doubleEscapeArmed = true
+	m.doubleEscapeReleased = false
+	m.doubleEscapeGen++
+	return m, m.doubleEscapeExpiryCmd(m.doubleEscapeGen)
+}
+
 // onIdleSubmit handles enter at idle, in priority order (extracted from onIdleKey to
 // keep its cyclomatic complexity under the cap):
 //   - RETRY a failed restart-now re-create: in the recoverable state (restartFailed +
@@ -2644,12 +3053,6 @@ func (m Model) onIdleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 //     the resolving msg owns its lifecycle (SessionReadyMsg clears it on success;
 //     restartFailedMsg re-sets it on a re-failure). The in-flight phaseConnecting
 //     window swallows idle keys, so the un-cleared flag can't misfire meanwhile.
-//   - RETRY a failed /effort FORK (restartFailedForkID != ""): re-fire the FORK from
-//     the surviving source session (switchEffortCmd), NOT restartOnModelCmd — the
-//     source session is still open, and re-forking PRESERVES the transcript where a
-//     create-fresh retry would wipe it (the exact thing the fork-resume switch exists
-//     to prevent). The effort rides m.createModelSelection (the switch applied it
-//     synchronously before the fork failed).
 //   - RESUME a paused queue: enter on an EMPTY line fires the next staged prompt.
 //   - otherwise a normal submitPrompt (a no-op on an empty sessionID).
 func (m Model) onIdleSubmit() (tea.Model, tea.Cmd) {
@@ -2660,9 +3063,6 @@ func (m Model) onIdleSubmit() (tea.Model, tea.Cmd) {
 		m.refreshView()
 		// m.sp.Tick re-arms the spinner for the idle→connecting transition (the
 		// phase-gated TickMsg handler dropped the chain at idle).
-		if m.restartFailedForkID != "" {
-			return m, tea.Batch(m.switchEffortCmd(m.restartFailedForkID, m.createModelSelection), m.sp.Tick)
-		}
 		return m, tea.Batch(m.restartOnModelCmd("", m.createModelSelection), m.sp.Tick)
 	}
 	if m.queuePaused != "" && len(m.queued) > 0 && empty {
@@ -2734,6 +3134,12 @@ func (m Model) dispatchSelectedBuiltin() (tea.Model, tea.Cmd, bool) {
 	if !row.Builtin {
 		return m, nil, false
 	}
+	// Argument-taking built-ins complete into the editor so the operator can
+	// supply their required input; dispatching /title here would incorrectly run
+	// its bare read action.
+	if b, ok := builtinByName(m.caps, m.wiredCollaborators(), row.Name); ok && b.acceptsArgs {
+		return m, nil, false
+	}
 	return m.dispatchBareBuiltin("/" + row.Name)
 }
 
@@ -2761,6 +3167,7 @@ var errStartupRunEntry = &sessionTranscriptError{"the chat could not be attached
 
 func (m Model) failStartupRunEntry() Model {
 	m = m.endRun("")
+	m = m.resetDocumentProjection()
 	m.conv = conversationFromTranscript(m.deps.Resume.Transcript.Messages)
 	m.modal = &sessionsState{
 		selected:        m.deps.Resume.Row,
@@ -2791,7 +3198,7 @@ func (m Model) preparePromptContent(text string) (string, client.MediaResult, bo
 		text = strings.TrimSpace(expandPastePlaceholders(text, m.stagedPastes))
 	}
 	var media client.MediaResult
-	if files := attachableMentions(m.deps.Workspace, text); len(files) > 0 {
+	if files := attachableMentions(m.deps.Workspace, text, mentionHomeDir(m.deps)); len(files) > 0 {
 		res, err := client.ExpandMentions(files, m.caps)
 		if err != nil {
 			return "", client.MediaResult{}, hadPastes, false, err
@@ -2816,6 +3223,24 @@ func (m Model) preparePromptContent(text string) (string, client.MediaResult, bo
 		return "", client.MediaResult{}, hadPastes, hadStaged, err
 	}
 	return strings.TrimSpace(text), media, hadPastes, hadStaged, nil
+}
+
+// recoverPrompt restores a text-only prompt only while it still belongs to this
+// exact run. An existing draft is user-authored replacement state and wins.
+func (m *Model) recoverPrompt(authoritative bool) {
+	r := m.promptRecovery
+	if r == nil || r.sessionID != m.sessionID || r.streamGen != m.streamGen {
+		m.promptRecovery = nil
+		return
+	}
+	if m.prompt.Value() != "" {
+		m.promptRecovery = nil
+		return
+	}
+	m.prompt.Rewrite(r.text)
+	if !authoritative {
+		m.promptRecovery = nil
+	}
 }
 
 // submitPrompt opens a fresh Converse run for the textarea text, sends the
@@ -2870,6 +3295,12 @@ func (m Model) submitPrompt() (tea.Model, tea.Cmd) {
 	// This is a genuine new user turn, so it starts a fresh one-retry budget.
 	// Automatic failed-step retry bypasses submitPrompt and therefore cannot re-arm itself.
 	m.failedStepRetryTried = false
+	m.promptRecovery = nil
+	// Only a plain text prompt is recoverable. Attachments, media, and staged file
+	// parts have one-shot lifecycle and must never be replayed implicitly.
+	if text != "" && len(media.Parts) == 0 && !hadPastes && !hadStaged {
+		m.promptRecovery = &promptRecovery{text: text, sessionID: m.sessionID, streamGen: m.streamGen + 1}
+	}
 	if len(media.Descriptors) > 0 {
 		m.conv.addUserWithMedia(text, media.Descriptors)
 	} else {
@@ -2882,6 +3313,7 @@ func (m Model) submitPrompt() (tea.Model, tea.Cmd) {
 	// GetSession refetch on the carryover/fork/adopt paths (onResolvedModelMsg).
 	if m.sessionTitle == "" {
 		m.sessionTitle = text
+		m.sessionTitleProvenance = "first-prompt"
 	}
 	m.prompt.Reset()
 	// A fresh run clears any queue pause: whether this is the auto-drain (popAndSubmit
@@ -2964,8 +3396,16 @@ func (m Model) startFailedStepRetry() (Model, tea.Cmd) {
 // openRun owns the common one-Converse-run transport setup. firstFrame must send
 // exactly one Prompt or RetryStart before any control frame.
 func (m Model) openRun(retry bool, firstFrame func(*client.Stream) error) (Model, tea.Cmd) {
+	m.streamGen++ // reserve this generation before OpenConverse so open failures are correlated too
+	m.authorization.runningControlGen = 0
 	runCtx, cancel := context.WithCancel(m.deps.Ctx)
-	stream, err := m.deps.Conv.OpenConverse(runCtx)
+	var stream *client.Stream
+	var err error
+	if bound, ok := m.deps.Conv.(SessionBoundConverser); ok {
+		stream, err = bound.OpenConverseForSession(runCtx, m.sessionID)
+	} else {
+		stream, err = m.deps.Conv.OpenConverse(runCtx)
+	}
 	if err != nil {
 		return m.handleOpenError(err, cancel, retry)
 	}
@@ -2973,12 +3413,12 @@ func (m Model) openRun(retry bool, firstFrame func(*client.Stream) error) (Model
 	m.stream = stream
 	m.streamCh = ch
 	m.cancelRun = cancel
-	m.streamGen++
 	go stream.ReadLoop(runCtx, ch)
 
+	gen := m.streamGen
 	send := func() tea.Msg {
 		if err := firstFrame(stream); err != nil {
-			return authStreamErr(m, err)
+			return streamMsg{gen: gen, msg: authStreamErr(m, err)}
 		}
 		return nil
 	}
@@ -3107,6 +3547,9 @@ func (m Model) updateLiveMsg(sm liveMsg) (tea.Model, tea.Cmd) {
 		m.liveCh = nil
 		m.liveStop = nil
 		return m, (&m).startReconnect(nil)
+	case client.SessionTitleMsg:
+		mm := m.onSessionTitle(msg)
+		return mm, mm.waitLiveCmd()
 	default:
 		// A real event from the current reader proves the feed is healthy. Do not
 		// let replay/catch-up events or probe success reset this sequence.
@@ -3230,7 +3673,11 @@ func (m Model) updateReconnectMsg(rm reconnectMsg) (tea.Model, tea.Cmd) {
 		// stale reader.
 		(&m).disarmReconnect()
 		// Re-arm the live reader off a FRESH live channel.
-		return m, (&m).armLiveFeed()
+		liveCmd := (&m).armLiveFeed()
+		if m.deps.Session != nil && m.sessionID != "" {
+			return m, tea.Batch(liveCmd, client.RefreshResolvedModelCmd(m.deps.Ctx, m.deps.Session, m.sessionID))
+		}
+		return m, liveCmd
 	case client.StreamClosedMsg, client.StreamErrMsg:
 		// The reconnect channel closed without a LiveReconnectedMsg (ctx
 		// cancelled — session switch / TUI exit). Clear the degraded state; a
@@ -3246,8 +3693,12 @@ func (m Model) updateReconnectMsg(rm reconnectMsg) (tea.Model, tea.Cmd) {
 		if _, ok := msg.(client.ResultMsg); ok {
 			return m, m.waitReconnectCmd()
 		}
-		// Delivery notes reduce through the normal event path and are deduped by FireID.
-		if _, isDelivery := msg.(client.DeliveryNoteMsg); !isDelivery {
+		// Delivery notes and pending authorization markers reduce through the normal
+		// event path. The latter restores the actionable card after reconnect; its
+		// durable payload contains correlation only, never a presentation URL.
+		switch msg.(type) {
+		case client.DeliveryNoteMsg, client.MCPAuthorizationMsg:
+		default:
 			return m, m.waitReconnectCmd()
 		}
 		mm, cmd := m.updateStreamEvent(msg)
@@ -3426,7 +3877,7 @@ func (m Model) onMouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 	// A wheel event changes the scroll offset: invalidate the vpView cache so the
 	// next View() renders the new position rather than the stale pre-wheel output.
 	m.rend.invalidateVPView()
-	m.syncStuck()
+	m.conversationView.observe(m.vp)
 	return m, cmd
 }
 
@@ -3504,7 +3955,7 @@ func (m Model) onModalMousePress(mo tea.Mouse) (tea.Model, tea.Cmd, bool) {
 // convenience over the copy-on-release default). A press outside the conversation
 // region (header/input/footer) or while an overlay owns the body starts nothing.
 func (m Model) onMousePress(mo tea.Mouse) (tea.Model, tea.Cmd) {
-	if m.deps.DebugMouse {
+	if m.deps.Debug || m.deps.DebugMouse {
 		m.mouseDebug = m.mouseDebugLine(mo)
 	}
 	switch mo.Button {
@@ -3590,7 +4041,7 @@ func (m Model) onMousePress(mo tea.Mouse) (tea.Model, tea.Cmd) {
 // because copySelection's signature is shared with the right-click and
 // release-on-drag paths (which carry no disarm) and must stay unchanged.
 func (m Model) clickCopy(disarm tea.Cmd) (tea.Model, tea.Cmd) {
-	mm, cmd := m.copyPayload(selectedText(m.vp.GetContent(), m.sel))
+	mm, cmd := m.copySelection()
 	return mm, tea.Batch(cmd, disarm)
 }
 
@@ -3650,7 +4101,7 @@ func (Model) autoScrollCmd() tea.Cmd {
 // the pointer is held still at the edge. A motion back INSIDE the region disarms
 // autoscroll and resets the acceleration ramp.
 func (m Model) onMouseMotion(mo tea.Mouse) (tea.Model, tea.Cmd) {
-	if m.deps.DebugMouse {
+	if m.deps.Debug || m.deps.DebugMouse {
 		m.mouseDebug = m.mouseDebugLine(mo)
 	}
 	if (&m).promptMouseMotion(mo) {
@@ -3722,7 +4173,7 @@ func (m Model) armAutoScroll(dir autoScrollDir, x int) (tea.Model, tea.Cmd) {
 	}
 	alreadyRunning := m.sel.autoScroll != scrollNone
 	m.sel.autoScroll = dir
-	m.syncStuck()
+	m.conversationView.observe(m.vp)
 	m.extendHeadToEdge(dir, x)
 	snapshotSelection(&m)
 	if alreadyRunning {
@@ -3753,7 +4204,7 @@ func (m Model) onAutoScroll() (tea.Model, tea.Cmd) {
 		snapshotSelection(&m)
 		return m, nil
 	}
-	m.syncStuck()
+	m.conversationView.observe(m.vp)
 	m.extendHeadToEdge(dir, m.sel.dragX)
 	snapshotSelection(&m)
 	return m, m.autoScrollCmd()
@@ -3824,14 +4275,19 @@ func (m Model) onMouseRelease(mo tea.Mouse) (tea.Model, tea.Cmd) {
 	if !m.sel.active {
 		return m, nil
 	}
+	wasAutoScroll := m.sel.autoScroll != scrollNone
 	m.sel.autoScroll = scrollNone // the drag is over: kill any pending autoscroll tick
 	m.sel.autoScrollRamp = 0      // self-reset acceleration so release is a true reset seam
-	if line, col, ok := screenToContent(m, mo.X, mo.Y); ok {
-		m.sel.headL = line
-		m.sel.headC = col
+	if !wasAutoScroll {
+		if line, col, ok := screenToContent(m, mo.X, mo.Y); ok {
+			m.sel.headL = line
+			m.sel.headC = col
+		}
 	}
-	if m.sel.empty() {
+	if m.sel.empty() && m.sel.copied == "" && !wasAutoScroll {
 		m.sel = selection{}
+		// Do not let the next press re-install this completed selection's old projection.
+		m.selBase = ""
 		m.refreshView() // repaint the now-UNSTYLED content (no native highlight to clear)
 		return m, nil
 	}
@@ -3847,7 +4303,10 @@ func (m Model) onMouseRelease(mo tea.Mouse) (tea.Model, tea.Cmd) {
 // (shellWriteCmd, batched). It sets a muted "copied N chars" status. An empty
 // payload is a no-op (defensive — release already clears empties).
 func (m Model) copySelection() (tea.Model, tea.Cmd) {
-	return m.copyPayload(selectedText(m.vp.GetContent(), m.sel))
+	if !m.sel.active {
+		return m.copyPayload("")
+	}
+	return m.copyPayload(m.sel.copied)
 }
 
 // snapshotSelection records the selection's identity anchor and RE-SPLICES the
@@ -3858,11 +4317,13 @@ func (m Model) copySelection() (tea.Model, tea.Cmd) {
 // SetHighlights/ClearHighlights and no YOffset save/restore to neutralise an
 // EnsureVisible scroll-jump — re-splicing the SAME-length content never moves YOffset.
 //
-// It works off m.selBase (the unstyled conversation render, captured when the
-// selection became active and refreshed by refreshView) rather than re-rendering the
-// whole conversation, so a gesture does not rebuild the transcript or disturb the
-// viewport's scroll/line geometry. The snapshot (selectedText against the unstyled
-// base) is the identity anchor refreshView compares against to drop the selection on a
+// It works off m.selBase (the unstyled currently displayed conversation render,
+// captured when the selection became active and refreshed by refreshView) rather
+// than re-rendering the whole conversation, so a gesture does not rebuild the
+// transcript or disturb the viewport's scroll/line geometry. A pending coalesced
+// delta remains hidden until its ordinary render tick: snapshot and copy both use
+// this displayed frame. The snapshot (selectedText against the unstyled base) is
+// the identity anchor refreshView compares against to drop the selection on a
 // reflow. A pointer receiver: it mutates m.vp in place.
 func snapshotSelection(m *Model) {
 	if !m.sel.active {
@@ -3872,19 +4333,7 @@ func snapshotSelection(m *Model) {
 	// vpView cache must be invalidated so the next View() reflects the new content.
 	m.rend.invalidateVPView()
 	base := m.selBase
-	// selBase is refreshed by refreshView, but a streamed delta only marks the view
-	// dirty (deferred to the frame-cadence tick) — it does NOT re-render. A gesture
-	// that lands in that dirty window (delta arrived, tick not yet fired) would
-	// otherwise re-splice the STALE base and SetContent it, reverting the viewport to
-	// the pre-delta conversation (a "flash back" to an earlier state). Re-capture the
-	// base from the LIVE conversation whenever it is dirty so the splice always starts
-	// from current content. This re-renders the conversation, but only on a gesture
-	// that races a pending delta — never on the streaming hot path (which has no
-	// active selection gesture between deltas).
-	if m.viewDirty {
-		base = m.rend.renderConversation(&m.conv, m.expandTools)
-		m.selBase = base
-	}
+	frame := m.conversationView.frame
 	if base == "" {
 		// Defensive: no base captured (e.g. a test that set raw viewport content then
 		// pointed a selection at it without a press). Adopt the current viewport content
@@ -3892,8 +4341,15 @@ func snapshotSelection(m *Model) {
 		base = m.vp.GetContent()
 		m.selBase = base
 	}
-	m.sel.snapshot = selectedText(base, m.sel)
-	m.vp.SetContent(styleSelection(base, m.sel, m.deps.Theme.Style("selection")))
+	if !m.sel.snapshotLogical(frame, base) {
+		// Some derived rows have no canonical text provenance. Keep their existing
+		// gesture behaviour; a later replacement will still clear them rather than
+		// claiming logical survival.
+		m.sel.anchorPoint, m.sel.headPoint = selectionPoint{}, selectionPoint{}
+		m.sel.snapshot = selectedText(base, m.sel)
+		m.sel.copied = m.sel.snapshot
+	}
+	m.conversationView.replaceProjection(&m.vp, styleSelection(base, m.sel, m.deps.Theme.Style("selection")))
 }
 
 // clearSelection drops any active text selection (including a pending edge-
@@ -3949,20 +4405,26 @@ func (m Model) shellWriteCmd(payload string) tea.Cmd {
 	}
 }
 
-// syncStuck re-derives the auto-follow flag from the viewport's actual position:
-// stuck is true exactly when the viewport is at the bottom. Called after every
-// scroll/wheel/nav so a scroll-up unsticks (next streaming delta then re-renders
-// in place without yanking to bottom — see refreshView) and scrolling/jumping
-// back to the bottom re-sticks (auto-follow resumes).
-func (m *Model) syncStuck() {
-	m.stuck = m.vp.AtBottom()
+// primaryWriteCmd is the PRIMARY-selection twin of shellWriteCmd: it mirrors
+// payload into the X11/Wayland primary selection (wl-copy --primary / xclip
+// -selection primary) so a selection copied inside mecatui can be middle-click
+// pasted elsewhere. Same best-effort contract — a nil Clipboard, a platform with
+// no primary selection, or any backend error is swallowed into a no-op result.
+func (m Model) primaryWriteCmd(payload string) tea.Cmd {
+	cb := m.deps.Clipboard
+	if cb == nil {
+		return nil
+	}
+	ctx := m.deps.Ctx
+	return func() tea.Msg {
+		err := cb.WritePrimary(ctx, []byte(payload))
+		return shellWriteResultMsg{err: err}
+	}
 }
 
 // onScrollKey is the shared conversation-scroll handler used by both onIdleKey and
 // onRunningKey: pgup/pgdn delegate to the viewport (which does its own scroll
-// math), home/end jump to top/bottom, then syncStuck re-derives auto-follow. End
-// naturally re-sticks; home (and a partial pgup) unsticks so streaming no longer
-// yanks the view to the bottom. The caller has already matched one of these keys.
+// math), home/end jump to top/bottom, then conversationView observes the result.
 func (m Model) onScrollKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	switch {
@@ -3976,8 +4438,21 @@ func (m Model) onScrollKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// Any scroll-key changes the scroll offset: invalidate the vpView cache so the
 	// next View() renders the new position rather than the stale pre-scroll output.
 	m.rend.invalidateVPView()
-	m.syncStuck()
+	m.conversationView.observe(m.vp)
 	return m, cmd
+}
+
+// conversationContent produces the complete current projection, including the expanded
+// changed-files appendix which is outside the conversation renderer's block rows.
+func (m *Model) conversationContent() string {
+	frame := m.rend.renderConversationFrame(&m.conv, m.expandTools)
+	content := strings.Join(frame.lines, "\n")
+	if m.expandTools {
+		if list := m.rend.renderChangedFiles(m.conv.filesChanged); list != "" {
+			content += "\n" + list
+		}
+	}
+	return content
 }
 
 // refreshView re-renders the conversation into the viewport, keeping the view
@@ -3986,26 +4461,20 @@ func (m Model) onScrollKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // settles the flag — making "rendered ⟺ not dirty" an invariant and force-flushing
 // the tail at every turn/tool/result/error boundary regardless of tick timing.
 //
-// It re-pins ONLY when m.stuck (auto-follow). A scroll-up sets stuck=false (via
-// syncStuck), so a streaming delta re-renders the growing content in place without
-// yanking the view back to the bottom — the user's scroll-up survives streaming.
-// Scrolling/jumping back to the bottom re-sets stuck, and auto-follow resumes.
+// It re-pins only in tail-follow mode. A scroll-up switches to anchored mode, so
+// a streaming delta re-renders the growing content in place without yanking the
+// view back to the bottom. Scrolling/jumping back to the bottom resumes tail follow.
 //
-// Cost shape: renderConversation re-renders only blocks whose rev/width/expand
-// changed since the last frame (the renderer's blockCache; in practice the live
-// tail block) — settled blocks join from cache — and memoizes the WHOLE joined
-// string (joinCache), so a frame that changed no block (a cursor move, scroll, or
-// the twice-per-message renderInput) reuses the join verbatim instead of rebuilding
-// it. The residual O(scrollback) per-frame cost is vp.SetContent's line
-// split/measure of the full content. On TOP of refreshView, View() memoizes the
-// vp.View() output (renderer.vpView) so a spinner-only frame that does NOT call
-// refreshView skips the lipgloss grapheme-width pad entirely (issue #139).
+// Cost shape: renderConversationFrame reuses cached block renders and the cached
+// settled prefix; content post-processing still joins the current frame when needed.
+// View() memoizes the viewport output for spinner-only frames.
 func (m *Model) refreshView() {
 	m.viewDirty = false
 	// Any refreshView call changes the viewport content, so the vpView cache must be
 	// invalidated — the caller may be a spinner-only frame that skips refreshView
 	// entirely, in which case the vpView cache correctly serves the prior content.
 	m.rend.invalidateVPView()
+	frame := m.rend.renderConversationFrame(&m.conv, m.expandTools)
 	// FAST PATH: the line-slice handoff. When no selection is active AND the
 	// changed-files footer is not in play (it renders only under the global expand
 	// toggle), feed vp.SetContentLines directly with the incrementally-joined line
@@ -4016,19 +4485,14 @@ func (m *Model) refreshView() {
 	// selection and footer paths both post-process the JOINED STRING, so they fall
 	// back to the byte-identical string path below.
 	if !m.sel.active && !m.expandTools {
-		m.vp.SetContentLines(m.rend.renderConversationLines(&m.conv, m.expandTools))
-		if m.stuck {
-			m.vp.GotoBottom()
-		}
+		m.conversationView.replace(&m.vp, frame)
 		return
 	}
-	content := m.rend.renderConversation(&m.conv, m.expandTools)
-	// When the global details toggle is on, fold the session's changed-files list
-	// in beneath the scrollback so the muted "Δ N files" header indicator has a
-	// discoverable, scannable expansion — without a dedicated key or overlay.
+	content := strings.Join(frame.lines, "\n")
 	if m.expandTools {
-		if list := m.rend.renderChangedFiles(m.filesChanged); list != "" {
+		if list := m.rend.renderChangedFiles(m.conv.filesChanged); list != "" {
 			content += "\n" + list
+			frame = frameWithAppendix(frame, content, m.conv.changedFilesAppendixID)
 		}
 	}
 	// An active text selection is now rendered by US (styleSelection splices the
@@ -4039,14 +4503,11 @@ func (m *Model) refreshView() {
 	// so it covers every refreshView caller — the highlight survives a streaming
 	// re-render (Req 2).
 	//
-	// Identity check FIRST, against the UNSTYLED content: the anchor/head are absolute
-	// line indices, so a reflow that changed the line count above/within the selection
-	// (ctrl+t expand/collapse, compaction) now re-points them at different text. If the
-	// text under the selection no longer matches what was selected, DROP it rather than
-	// highlight/copy the wrong runes. selectedText must read the UNSTYLED content, so it
-	// runs before the splice. A pure append below leaves the selected lines untouched, so
-	// this does NOT fire for streaming (Req 2 preserved).
-	if m.sel.active && selectedText(content, m.sel) != m.sel.snapshot {
+	// A selection survives only when both logical endpoint contexts resolve and the
+	// resulting ANSI-free copied text remains byte-identical. Reading anchors may
+	// fall back; selections deliberately may not.
+	if m.sel.active && ((m.sel.anchorPoint.blockID == 0 && selectedText(content, m.sel) != m.sel.snapshot) ||
+		(m.sel.anchorPoint.blockID != 0 && !m.sel.resolveLogical(frame))) {
 		*m = m.clearSelection()
 	}
 	if m.sel.active {
@@ -4056,10 +4517,7 @@ func (m *Model) refreshView() {
 		m.selBase = content
 		content = styleSelection(content, m.sel, m.deps.Theme.Style("selection"))
 	}
-	m.vp.SetContent(content)
-	if m.stuck {
-		m.vp.GotoBottom()
-	}
+	m.conversationView.replaceContent(&m.vp, content, frame)
 }
 
 // drainQueue MERGES staged follow-ups into ONE prompt only after a healthy
@@ -4179,12 +4637,13 @@ func (m Model) handleOpenError(err error, cancel context.CancelFunc, retry bool)
 		mm, connectCmd := m.reduceLiveAuthRecovery(streamErr.AuthReason)
 		return mm.(Model), connectCmd
 	}
+	m.recoverPrompt(false)
 	m = m.endRun(stopError)
 	if retry {
 		m.failedStepRetryRun = false
 		m.statusMsg = m.deps.Theme.Style("warning").Render("retry transport failed: " + sanitizeTerminal(err.Error()) + " — use /retry to try again")
 	} else {
-		m.conv.addError("open run: " + err.Error())
+		m.conv.addError("open run: " + friendlyWorkspaceEnrollmentRejection(err.Error()))
 	}
 	if len(m.queued) > 0 {
 		m.queuePaused = stopError

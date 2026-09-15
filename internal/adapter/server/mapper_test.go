@@ -11,6 +11,7 @@ import (
 
 	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
 	"github.com/stacklok/mecatl/engine/agent"
+	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/team"
 	"github.com/stacklok/mecatl/internal/adapter/mcp"
@@ -151,13 +152,13 @@ func TestToProtoTable(t *testing.T) {
 		{
 			name: "hook",
 			in: session.Event{Type: session.EvHook, Seq: 7, Turn: 1, Text: "blocked-by-policy",
-				Hook: &session.HookPayload{Phase: "PreToolUse", Tool: "Bash", Decision: session.HookBlocked, CallID: "call-7"}},
+				Hook: &session.HookPayload{Phase: "PreToolUse", Tool: "Shell", Decision: session.HookBlocked, CallID: "call-7"}},
 			assert: func(t *testing.T, got *mecatlv1.Event) {
 				if got.GetType() != "hook" || got.GetText() != "blocked-by-policy" {
 					t.Fatalf("got %+v", got)
 				}
 				h := got.GetHook()
-				if h == nil || h.GetPhase() != "PreToolUse" || h.GetTool() != "Bash" ||
+				if h == nil || h.GetPhase() != "PreToolUse" || h.GetTool() != "Shell" ||
 					h.GetDecision() != mecatlv1.HookDecision_HOOK_DECISION_BLOCKED ||
 					h.GetCallId() != "call-7" {
 					t.Fatalf("hook payload mismatch: %+v", h)
@@ -689,13 +690,12 @@ func TestToProtoTable(t *testing.T) {
 			in: session.Event{Type: session.EvParallelBranch, Seq: 43, Turn: 1,
 				Parallel: &session.ParallelPayload{ParentCallID: "p1", Kind: session.ParallelBranchEnd,
 					BranchIndex: 2, ChildID: "parallel-p1-2", ToolCount: 4, Failed: true,
-					Workspace: "/fork/branch-3",
-					Stop:      session.StopError, DurationMs: 555,
+					Stop: session.StopError, DurationMs: 555,
 					Usage: session.Usage{InputTokens: 12, OutputTokens: 3}}},
 			assert: func(t *testing.T, got *mecatlv1.Event) {
 				p := got.GetParallel()
 				if p == nil || p.GetKind() != "branch_end" || p.GetBranchIndex() != 2 ||
-					!p.GetFailed() || p.GetWorkspace() != "/fork/branch-3" ||
+					!p.GetFailed() ||
 					p.GetStop() != "error" || p.GetDurationMs() != 555 || p.GetToolCount() != 4 {
 					t.Fatalf("parallel branch_end payload mismatch: %+v", p)
 				}
@@ -711,14 +711,14 @@ func TestToProtoTable(t *testing.T) {
 			name: "parallel.end winner",
 			in: session.Event{Type: session.EvParallelEnd, Seq: 44, Turn: 1,
 				Parallel: &session.ParallelPayload{ParentCallID: "p1", Join: "judge", BranchCount: 3,
-					Winner: 1, WinnerWorkspace: "/fork/branch-2", Stop: session.StopEndTurn,
+					Winner: 1, Stop: session.StopEndTurn,
 					Usage: session.Usage{InputTokens: 100, OutputTokens: 20}}},
 			assert: func(t *testing.T, got *mecatlv1.Event) {
 				p := got.GetParallel()
 				if got.GetType() != "parallel.end" {
 					t.Fatalf("type = %q, want parallel.end", got.GetType())
 				}
-				if p == nil || p.GetWinner() != 1 || p.GetWinnerWorkspace() != "/fork/branch-2" ||
+				if p == nil || p.GetWinner() != 1 ||
 					p.GetJoin() != "judge" || p.GetBranchCount() != 3 || p.GetStop() != "end_turn" {
 					t.Fatalf("parallel.end payload mismatch: %+v", p)
 				}
@@ -733,7 +733,7 @@ func TestToProtoTable(t *testing.T) {
 				Parallel: &session.ParallelPayload{ParentCallID: "p1", Join: "all", BranchCount: 2, Winner: -1}},
 			assert: func(t *testing.T, got *mecatlv1.Event) {
 				p := got.GetParallel()
-				if p == nil || p.GetWinner() != -1 || p.GetWinnerWorkspace() != "" {
+				if p == nil || p.GetWinner() != -1 {
 					t.Fatalf("parallel.end (all) should carry Winner=-1, no workspace: %+v", p)
 				}
 			},
@@ -832,7 +832,7 @@ func TestToProtoLogOnlyPayloads(t *testing.T) {
 		Approval: &session.ApprovalPayload{
 			AskID:       "s1:1:c1:r0",
 			Verdict:     session.VerdictStringAllowAlways,
-			Tool:        "Bash",
+			Tool:        "Shell",
 			Call:        session.ToolCallID("c1"),
 			AllowAlways: true,
 		},
@@ -841,7 +841,7 @@ func TestToProtoLogOnlyPayloads(t *testing.T) {
 		t.Fatal("approval submessage not projected")
 	}
 	if apr.GetAskId() != "s1:1:c1:r0" || apr.GetVerdict() != session.VerdictStringAllowAlways ||
-		apr.GetTool() != "Bash" || apr.GetCallId() != "c1" || !apr.GetAllowAlways() {
+		apr.GetTool() != "Shell" || apr.GetCallId() != "c1" || !apr.GetAllowAlways() {
 		t.Fatalf("approval projected wrong: %+v", apr)
 	}
 
@@ -869,7 +869,7 @@ func TestToProtoLogOnlyPayloads(t *testing.T) {
 	// w/ result, user w/ media).
 	tr := session.NewToolResult("c1", "ok")
 	assistantMsg := session.NewAssistantMessage("calling", "reason", []session.ToolCall{
-		session.NewToolCall("c1", "Bash", json.RawMessage(`{"cmd":"ls"}`)),
+		session.NewToolCall("c1", "Shell", json.RawMessage(`{"cmd":"ls"}`)),
 	})
 	assistantMsg.ReasoningItemID = "rs_1"
 	arch := toProto(session.Event{
@@ -901,7 +901,7 @@ func TestToProtoLogOnlyPayloads(t *testing.T) {
 		t.Errorf("replaced[1].ReasoningItemId = %q, want rs_1 (the reasoning-item id must project alongside Reasoning/ProviderPhase)", arch.GetReplaced()[1].GetReasoningItemId())
 	}
 	if len(arch.GetReplaced()[1].GetToolCalls()) != 1 ||
-		arch.GetReplaced()[1].GetToolCalls()[0].GetName() != "Bash" {
+		arch.GetReplaced()[1].GetToolCalls()[0].GetName() != "Shell" {
 		t.Errorf("replaced[1].ToolCalls wrong: %+v", arch.GetReplaced()[1].GetToolCalls())
 	}
 	if arch.GetReplaced()[2].GetRole() != "tool" || arch.GetReplaced()[2].GetToolResult() == nil ||
@@ -1011,11 +1011,14 @@ func TestToProtoTeamOutcomeQuiescentBudgetExhausted(t *testing.T) {
 // TestSessionMapping checks the session snapshot mapping including mode and
 // limits round-trips.
 func TestSessionMapping(t *testing.T) {
-	sess := session.New("s1", session.ModePlan, "/ws",
+	sess := session.New("s1", session.ModePlan, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/ws", Revision: "in-tree-v1"},
 		session.Limits{MaxTurns: 4, MaxToolCalls: 8, MaxConsecutiveFailures: 2}, time.Unix(1000, 0))
-	got := toProtoSession(sess, ResolvedModel{ProviderID: "openai", ModelID: "gpt-x", ContextWindow: 2048}, nil)
+	got := toProtoSession(sess, ResolvedModel{ProviderID: "openai", ModelID: "gpt-x", ContextWindow: 2048}, nil, port.ProviderCapabilities{Image: true})
 	if got.GetSessionId() != "s1" || got.GetState() != "idle" {
 		t.Fatalf("got %+v", got)
+	}
+	if !got.GetSessionCapabilities().GetImage() {
+		t.Fatal("session image capability was not projected")
 	}
 	if got.GetMode() != mecatlv1.PermissionMode_PERMISSION_MODE_PLAN {
 		t.Fatalf("mode = %v", got.GetMode())
@@ -1340,7 +1343,7 @@ func TestToProtoNeverFailsMarshalOnInvalidUTF8(t *testing.T) {
 		Text:          "txt " + badUTF8,
 		Reasoning:     "reason " + badUTF8,
 		ProviderPhase: "phase " + badUTF8,
-		ToolCalls:     []session.ToolCall{session.NewToolCall("c1", "Bash", json.RawMessage(`{"cmd":"`+badUTF8+`"}`))},
+		ToolCalls:     []session.ToolCall{session.NewToolCall("c1", "Shell", json.RawMessage(`{"cmd":"`+badUTF8+`"}`))},
 	}
 	emb := mustEmbedded(t, "https://x/"+badUTF8, "application/octet-stream", "", []byte{0xff, 0xfe}, []string{badUTF8})
 	parts := []session.Content{
@@ -1356,12 +1359,12 @@ func TestToProtoNeverFailsMarshalOnInvalidUTF8(t *testing.T) {
 			CallID: "c1", Content: "out " + badUTF8, Parts: parts,
 		}},
 		"permission.ask": {Type: session.EvPermissionAsk, Ask: &session.PendingAsk{
-			AskID: "a1", Tool: "Bash" + badUTF8, Args: json.RawMessage(`{"x":"` + badUTF8 + `"}`), Reason: "why " + badUTF8,
+			AskID: "a1", Tool: "Shell" + badUTF8, Args: json.RawMessage(`{"x":"` + badUTF8 + `"}`), Reason: "why " + badUTF8,
 		}},
 		"result": {Type: session.EvResult, Result: &session.ResultPayload{Stop: session.StopEndTurn, Text: "final " + badUTF8, Error: "err " + badUTF8}},
-		"hook":   {Type: session.EvHook, Hook: &session.HookPayload{Phase: "PreToolUse", Tool: "Bash" + badUTF8}},
+		"hook":   {Type: session.EvHook, Hook: &session.HookPayload{Phase: "PreToolUse", Tool: "Shell" + badUTF8}},
 		"approval": {Type: session.EvApproval, Approval: &session.ApprovalPayload{
-			AskID: "a1", Verdict: session.VerdictStringAllowOnce, Tool: "Bash" + badUTF8, Call: "c1",
+			AskID: "a1", Verdict: session.VerdictStringAllowOnce, Tool: "Shell" + badUTF8, Call: "c1",
 		}},
 		"user_prompt": {Type: session.EvUserPrompt, UserPrompt: &session.UserPromptPayload{Text: "ask " + badUTF8}},
 		"compaction.archive": {Type: session.EvCompactionArchive, CompactionArchive: &session.CompactionArchivePayload{
@@ -1380,7 +1383,7 @@ func TestToProtoNeverFailsMarshalOnInvalidUTF8(t *testing.T) {
 		}},
 		"parallel": {Type: session.EvParallelBranch, Parallel: &session.ParallelPayload{
 			ParentCallID: "p1", Kind: session.ParallelBranchTool, BranchLabel: "bl " + badUTF8, Goal: "g " + badUTF8,
-			Text: "t " + badUTF8, Detail: "d " + badUTF8, Workspace: "/ws/" + badUTF8, WinnerWorkspace: "/ww/" + badUTF8,
+			Text: "t " + badUTF8, Detail: "d " + badUTF8,
 		}},
 		"schedule": {Type: session.EvScheduleFired, Schedule: &session.SchedulePayload{
 			ScheduleName: "s", FireID: "f", SessionID: "sid", Kind: "fired", Err: "e " + badUTF8,
@@ -1415,7 +1418,7 @@ func TestMapperBackstopNonEventMessages(t *testing.T) {
 	check("McpPrompt", toProtoMcpPrompt(mcp.Prompt{Server: "s", Name: "n" + badUTF8, Title: "t" + badUTF8, Description: "d" + badUTF8, Arguments: []mcp.PromptArgument{{Name: "a" + badUTF8, Title: "at" + badUTF8, Description: "ad" + badUTF8}}}))
 	check("McpPromptMessage", toProtoMcpPromptMessage(mcp.PromptMessage{Role: "user" + badUTF8, Text: "x" + badUTF8}))
 	check("McpSource", toProtoMcpSource(source.SourceInfo{Name: "n" + badUTF8, Kind: "k", Group: "g" + badUTF8, Servers: []source.ServerInfo{{Name: "sv" + badUTF8, URL: "u" + badUTF8, Transport: "http", Group: "g" + badUTF8}}, Diagnostics: []string{"d" + badUTF8}}))
-	check("Worktree", toProtoWorktree(Worktree{Path: "/p" + badUTF8, Branch: "b" + badUTF8, Head: "h" + badUTF8}))
+	check("Worktree", toProtoScopedWorktrees([]ScopedWorktree{{Selector: "s" + badUTF8, Label: "l" + badUTF8, Branch: "b" + badUTF8, Revision: "h" + badUTF8}})[0])
 	check("SessionSummary", toProtoSessionSummary(SessionSummary{SessionID: "s", State: "idle", ModelID: "m", Title: "t" + badUTF8}))
 	check("TeamMember", toProtoTeamMember(team.Member{Name: "n" + badUTF8, AgentType: "a" + badUTF8}))
 	check("TeamTask", toProtoTeamTask(team.Task{ID: "1", Description: "d" + badUTF8, Assignee: "a" + badUTF8, Deps: []team.TaskID{team.TaskID("x" + badUTF8)}}))

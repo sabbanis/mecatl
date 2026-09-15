@@ -78,12 +78,16 @@ func (s *Server) callTool(ctx context.Context, tool string, args json.RawMessage
 		// failure (errReconnectFailed) is a terminal "server unavailable" —
 		// surface the clear message, not the raw transport string. Any other
 		// fault is surfaced verbatim. (Mirrors remoteTool.Execute.)
-		if isConnectionDrop(callErr) || errors.Is(callErr, errReconnectFailed) {
-			return CallResult{}, fmt.Errorf("mcp call failed: MCP server %q unavailable after reconnect", s.name)
+		if message := unavailableMessage(callErr, "mcp call failed", s.name); message != "" {
+			return CallResult{}, errors.New(message)
 		}
 		return CallResult{}, fmt.Errorf("mcp call failed: %w", callErr)
 	}
 
+	return rawCallResult(s.name, tool, res), nil
+}
+
+func rawCallResult(server, tool string, res *mcpsdk.CallToolResult) CallResult {
 	var structured json.RawMessage
 	if res.StructuredContent != nil {
 		// The SDK unmarshals structuredContent into an any; re-marshal to a
@@ -124,24 +128,24 @@ func (s *Server) callTool(ctx context.Context, tool string, args json.RawMessage
 				content = []ResourceContents{{Text: text}}
 			}
 			return CallResult{
-				Server:            s.name,
+				Server:            server,
 				Tool:              tool,
 				Content:           content,
 				StructuredContent: structured,
 				IsError:           res.IsError,
-			}, nil
+			}
 		}
 	}
 
 	out := callResultContent(res.Content)
 
 	return CallResult{
-		Server:            s.name,
+		Server:            server,
 		Tool:              tool,
 		Content:           out,
 		StructuredContent: structured,
 		IsError:           res.IsError,
-	}, nil
+	}
 }
 
 // jqInputPreview locates the JSON source CallMcpWithQuery.Execute will choose

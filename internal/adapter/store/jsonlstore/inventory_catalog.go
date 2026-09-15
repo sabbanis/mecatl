@@ -275,6 +275,7 @@ func (st *Store) readInventoryScope(scope inventoryCatalogScope) ([]port.Session
 		if err := json.Unmarshal(scanner.Bytes(), &row); err != nil {
 			return nil, err
 		}
+		row.Activity = session.ValidActivity(row.Activity)
 		rows = append(rows, row)
 	}
 	if err := scanner.Err(); err != nil {
@@ -298,7 +299,7 @@ func validInventoryRows(rows []port.SessionDiscoveryMeta) bool {
 		seen[row.ID] = struct{}{}
 		if row.State == "" {
 			if row.Turns != 0 || row.ModelID != "" || !row.CreatedAt.IsZero() || row.Title != "" ||
-				row.TitleProvenance != "" || row.Owner != nil || row.Workspace != "" || row.Kind != "" ||
+				row.TitleProvenance != "" || row.Owner != nil || row.EnvironmentRef != (session.EnvironmentRef{}) || row.Kind != "" ||
 				row.Relationship != (session.SessionRelationship{}) {
 				return false
 			}

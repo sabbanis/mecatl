@@ -73,7 +73,7 @@ func realMain(argv []string, stdout, stderr io.Writer) int {
 	// Observability (issue #343, ADR 0098): OPT-IN OTLP push. Built right after
 	// flag parse so the flush-on-exit defer covers EVERY exit path (setup-failure
 	// included). With no --otlp-* flags this is a no-op (byte-identical default).
-	obs, oerr := buildObservability(context.Background(), f)
+	obs, oerr := buildObservability(context.Background(), f, diag, stderr)
 	if oerr != nil {
 		_, _ = fmt.Fprintf(stderr, "mecatequi: telemetry: %v\n", oerr)
 		return 2
@@ -117,7 +117,7 @@ func realMain(argv []string, stdout, stderr io.Writer) int {
 	// Drive the run. The per-event human render goes to stderr. --max-turns rides as
 	// the session's MaxTurns; a zero value inherits the deployment default in
 	// CreateSession (per-field, so the tool-call / failure caps survive regardless).
-	outcome, err := run(ctx, built.Service, f.workspace, session.Limits{MaxTurns: f.maxTurns}, prompt, stderr)
+	outcome, err := run(ctx, built.Service, session.Limits{MaxTurns: f.maxTurns}, prompt, stderr)
 	if err != nil {
 		// A setup failure inside run (e.g. CreateSession). Emit whatever summary we
 		// have (it carries at least the session id when known) before exiting 2.

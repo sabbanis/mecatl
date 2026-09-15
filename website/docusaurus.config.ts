@@ -2,8 +2,12 @@ import {themes as prismThemes} from 'prism-react-renderer';
 import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 
+// Tracking is enabled only for Vercel production deployments. Local
+// development and Vercel previews omit it to avoid polluting analytics data.
+const isProductionDeploy = process.env.VERCEL_ENV === 'production';
+
 const config: Config = {
-  title: 'mecatl',
+  title: 'Mecatl',
   tagline: 'A cloud-native harness for agentic systems',
   favicon: 'img/favicon.svg',
 
@@ -18,7 +22,7 @@ const config: Config = {
   markdown: {
     mermaid: true,
     hooks: {
-      onBrokenMarkdownLinks: 'warn',
+      onBrokenMarkdownLinks: 'throw',
     },
   },
   themes: [
@@ -31,6 +35,46 @@ const config: Config = {
         docsDir: '../user-docs',
         indexBlog: false,
         highlightSearchTermsOnTargetPage: true,
+      },
+    ],
+  ],
+  plugins: [
+    [
+      'vercel-analytics',
+      {
+        debug: false,
+      },
+    ],
+    [
+      '@signalwire/docusaurus-plugin-llms-txt',
+      {
+        depth: 2,
+        content: {
+          includeBlog: false,
+          includePages: true,
+          includeDocs: true,
+          includeGeneratedIndex: false,
+          enableLlmsFullTxt: false,
+          enableMarkdownFiles: true,
+          excludeRoutes: ['/search'],
+        },
+        includeOrder: [
+          '/docs/mecatui/**',
+          '/docs/building/**',
+          '/docs/features/**',
+          '/docs/reference/**',
+        ],
+        optionalLinks: [
+          {
+            title: 'Mecatl on GitHub',
+            url: 'https://github.com/stacklok/mecatl',
+            description: 'Source code for Mecatl.',
+          },
+          {
+            title: 'Community Discord',
+            url: 'https://discord.gg/stacklok',
+          },
+        ],
       },
     ],
   ],
@@ -54,6 +98,9 @@ const config: Config = {
           showLastUpdateAuthor: true,
         },
         blog: false,
+        googleTagManager: isProductionDeploy
+          ? {containerId: 'GTM-KCC7R6SS'}
+          : undefined,
         theme: {
           customCss: './src/css/custom.css',
         },
@@ -68,31 +115,41 @@ const config: Config = {
       respectPrefersColorScheme: false,
     },
     navbar: {
-      title: 'mecatl',
+      title: 'Mecatl',
       logo: {
-        alt: 'mecatl — stylized rope knot mark',
+        alt: 'Mecatl — stylized rope knot mark',
         src: 'img/logo.svg',
       },
       style: 'dark',
       items: [
         {
-          to: '/docs/mecatui',
+          to: '/docs/mecatui/getting-started',
           position: 'left',
-          label: 'mecatui',
+          label: 'Get started',
+        },
+        {
+          to: '/docs/building/cloud-native-harness',
+          position: 'left',
+          label: 'Cloud-native harness',
         },
         {
           to: '/docs/building',
           position: 'left',
-          label: 'Building',
+          label: 'Build',
         },
         {
-          to: '/colophon',
-          label: 'Colophon',
-          position: 'right',
+          to: '/docs/building/deployment',
+          position: 'left',
+          label: 'Deploy',
         },
         {
           href: 'https://github.com/stacklok/mecatl',
           label: 'GitHub',
+          position: 'right',
+        },
+        {
+          href: 'https://discord.gg/stacklok',
+          label: 'Discord',
           position: 'right',
         },
       ],
@@ -101,12 +158,18 @@ const config: Config = {
       style: 'dark',
       links: [
         {
-          title: 'Guides',
+          title: 'Get started',
           items: [
-            {label: 'Use mecatui', to: '/docs/mecatui'},
-            {label: 'Build on mecatl', to: '/docs/building'},
-            {label: 'Getting Started', to: '/docs/building/getting-started/demo'},
-            {label: 'Extension Points', to: '/docs/building/extension-points'},
+            {label: 'Use it now', to: '/docs/mecatui/getting-started'},
+            {label: 'Run on Kubernetes', to: '/docs/building/deployment/mecak8s'},
+            {label: 'What is a cloud-native harness?', to: '/docs/building/cloud-native-harness'},
+          ],
+        },
+        {
+          title: 'Build',
+          items: [
+            {label: 'Build on Mecatl', to: '/docs/building'},
+            {label: 'Extension points', to: '/docs/building/extension-points'},
             {label: 'Deployment', to: '/docs/building/deployment'},
           ],
         },
@@ -114,16 +177,19 @@ const config: Config = {
           title: 'More',
           items: [
             {label: 'GitHub', href: 'https://github.com/stacklok/mecatl'},
+            {label: 'Discord', href: 'https://discord.gg/stacklok'},
+            {label: 'Colophon', to: '/colophon'},
+            {label: 'Stacklok', href: 'https://stacklok.com'},
           ],
         },
       ],
-      copyright: `Copyright © ${new Date().getFullYear()} Stacklok, Inc. Built with Docusaurus.`,
+      copyright: `Copyright © ${new Date().getFullYear()} Stacklok, Inc.`,
     },
     prism: {
       // Dark-only site — only need the dark theme.
       theme: prismThemes.dracula,
       darkTheme: prismThemes.dracula,
-      additionalLanguages: ['bash', 'go', 'yaml', 'toml', 'json'],
+      additionalLanguages: ['bash', 'go', 'yaml', 'toml', 'json', 'protobuf', 'ini'],
     },
   } satisfies Preset.ThemeConfig,
 };

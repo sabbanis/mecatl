@@ -70,7 +70,27 @@ func seedAndCheckDiscovery(t *testing.T, st lineageStore) fixture {
 	if result.Records[0].Incarnation == "" || result.Records[1].Incarnation == "" {
 		t.Fatalf("incarnations not preserved: %+v", result.Records)
 	}
+	checkExactLookup(t, st, f)
 	return f
+}
+
+func checkExactLookup(t *testing.T, st lineageStore, f fixture) {
+	t.Helper()
+	ctx := context.Background()
+	exact, err := st.ReadSessionLineage(ctx, port.SessionLineageQuery{
+		RootID: f.root.ID, RootIncarnation: f.root.Incarnation(),
+		RecordID: f.child.ID, RecordIncarnation: f.child.Incarnation(), Limit: 1,
+	})
+	if err != nil || exact.Truncated || len(exact.Records) != 1 || exact.Records[0].ID != f.child.ID || exact.Records[0].Incarnation != string(f.child.Incarnation()) {
+		t.Fatalf("exact direct edge = %+v, %v", exact, err)
+	}
+	missing, err := st.ReadSessionLineage(ctx, port.SessionLineageQuery{
+		RootID: f.scheduled.ID, RootIncarnation: f.scheduled.Incarnation(),
+		RecordID: f.child.ID, RecordIncarnation: f.child.Incarnation(), Limit: 1,
+	})
+	if err != nil || len(missing.Records) != 0 || missing.Truncated {
+		t.Fatalf("unrelated exact edge = %+v, %v", missing, err)
+	}
 }
 
 func checkCollisionDeleteRecreate(t *testing.T, st lineageStore, f fixture) {
@@ -145,6 +165,9 @@ func checkBoundsAndConcurrency(t *testing.T, st lineageStore, root *session.Sess
 	if _, err := st.ReadSessionLineage(ctx, port.SessionLineageQuery{RootID: root.ID, RootIncarnation: root.Incarnation(), Limit: port.MaxSessionLineageRecords + 1}); !errors.Is(err, port.ErrInvalidSessionLineageQuery) {
 		t.Fatalf("over-limit query = %v", err)
 	}
+	if _, err := st.ReadSessionLineage(ctx, port.SessionLineageQuery{RootID: root.ID, RootIncarnation: root.Incarnation(), RecordID: "child", Limit: 1}); !errors.Is(err, port.ErrInvalidSessionLineageQuery) {
+		t.Fatalf("partial exact query = %v", err)
+	}
 	var wg sync.WaitGroup
 	errs := make(chan error, 32)
 	for range 16 {
@@ -181,7 +204,7 @@ func readAll(t *testing.T, st lineageStore, root *session.Session) port.SessionL
 
 func mustSession(t *testing.T, id session.SessionID, kind session.SessionKind, rel session.SessionRelationship, owner *session.Principal) *session.Session {
 	t.Helper()
-	s := session.New(id, session.ModeDefault, "", session.Limits{}, time.Unix(1, 0))
+	s := session.New(id, session.ModeDefault, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/workspace", Revision: "in-tree-v1"}, session.Limits{}, time.Unix(1, 0))
 	if err := s.RestoreSessionMetadata(kind, rel); err != nil {
 		t.Fatal(err)
 	}

@@ -15,10 +15,10 @@ description: >-
 
 ## Purpose
 
-Every mecatl test answers four questions in order: what invariant or ADR
-does it defend? what layer does it live at? what naming convention does it
-follow? what fake or fixture does it need? This skill walks you through
-those four questions and emits a test stub.
+Every mecatl test answers four questions in order: what behavior, invariant, ADR, or
+acceptance scenario does it defend? what layer does it live at? what naming convention does it
+follow? what fake or fixture does it need? This skill walks you through those four questions
+and emits a test stub.
 
 ## Prerequisites
 
@@ -48,9 +48,10 @@ Name the test after the rule it defends. The first two patterns are what
   ordinary coverage, but an AC's `verify:` line should name one of the
   pinned forms above when the AC defends a rule.
 
-Rule: every test answers "if this fails, which invariant / ADR / scenario
-is now wrong?" If the answer is "none", consider whether the test earns
-its place.
+Rule: every test answers "if this fails, which behavior, invariant, ADR, or scenario is now
+wrong?" Descriptive unit behavior is enough for Routine and Bounded work; do not manufacture
+an ADR or repository-wide invariant merely to name a test. If the answer is "nothing
+observable", consider whether the test earns its place.
 
 ### Step 2: Pick the layer
 
@@ -109,26 +110,12 @@ adapters implement them.
 
 ### Step 4: Emit the test stub
 
-Engine app-layer shape (a loop test over the reference adapters — the
-canonical shape most orchestration tests use):
-
-```go
-func TestInvariant_no_progress_nudge_bounded(t *testing.T) {
-    t.Parallel()
-    llm := mockllm.New(
-        mockllm.Turn(mockllm.Text("")), // empty turn → nudge
-        mockllm.Turn(mockllm.Text("")), // empty again → StopNoProgress
-    )
-    eng := agent.NewEngine(agent.Deps{
-        LLM:   llm,
-        Tools: catalog.Empty(),
-        Diag:  diag.Nop(),
-    })
-    sess := session.New("s1")
-    // ... run; assert the run ends StopNoProgress after MaxNoProgressNudges,
-    // never loops forever.
-}
-```
+Do not copy a constructor from this document: test helpers and `agent.Deps`
+change as the engine evolves. Locate the nearest current test that exercises the
+same layer and seam, then adapt its fixture and constructor shape. Confirm every
+field and helper against the current package before writing the failing test.
+Prefer an existing `newTest*` helper or reference-adapter fixture over creating a
+new harness.
 
 ### Step 4.5: Make sure the test can actually fail
 
@@ -158,12 +145,13 @@ task test          # both modules + the engine-standalone hygiene proof
 cd engine && go test ./agent/ -run TestYourNewTest   # a single engine test
 ```
 
-Then check: did the work introduce a new invariant or ADR claim along the
-way? If so, the ADR (copy `docs/adr/template.md`) or the AGENTS.md /
-IMPLEMENTATION-NOTES.md invariant entry lands in *this* branch, not a
-follow-up, with its `TestInvariant_<id>` / `TestADR_NNNN_*` pin. And if
-you touched the engine's exported API: `task api:update` + the
-`engine/CHANGELOG.md` note.
+Then check whether the implementation contradicts its declared work classification or
+introduces an unplanned durable decision. Stop as contract drift rather than silently
+upgrading/downgrading it. Only Architectural work with a genuinely new or superseding durable
+decision adds an ADR and its `TestADR_NNNN_*` pin; a current invariant may instead belong in
+AGENTS.md / IMPLEMENTATION-NOTES.md with `TestInvariant_<id>`. Routine and Bounded rationale
+stays in the issue, PR, plan, or ordinary test name. If you touched the engine's exported API:
+`task api:update` plus the `engine/CHANGELOG.md` note.
 
 ## Anti-patterns
 
@@ -173,6 +161,7 @@ you touched the engine's exported API: `task api:update` + the
   conformance suite runs against the real adapter. Fake-only is not proven.
 - "I'll hit the real provider to check." Never — offline only; the SSE
   adapters are fixture-tested, and `task e2e` is a separate, manual gate.
+- "I'll assert that a guide contains these phrases." Do not pin arbitrary prose or keyword lists. Test links/anchors, parsed executable examples, schemas, and generated-output freshness; leave prose semantics and completeness to human review. Model-visible prompt affordance tests remain required because runtime behavior depends on them.
 - "I changed a test because the implementation changed." When tests fail,
   fix the implementation, not the tests.
 - "My negative test passes." Did you watch it fail when the violation is

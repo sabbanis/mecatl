@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/stacklok/mecatl/internal/cliconfig"
+	"github.com/stacklok/mecatl/internal/flaghelp"
 )
 
 // flagApplicability annotates a registered mecatui flag for mode-specific
@@ -60,11 +60,11 @@ const (
 // mode and vice versa.
 var flagApplicabilityByFlag = map[string]flagApplicability{
 	// ── Transport (remote-only) ───────────────────────────────────────────
-	"auth-token":    {group: groupTransport, common: true, local: false, connect: true},
-	"tls":           {group: groupTransport, common: true, local: false, connect: true},
-	"tls-ca":        {group: groupTransport, common: false, local: false, connect: true},
-	"insecure":      {group: groupTransport, common: false, local: false, connect: true},
-	"no-saved-auth": {group: groupTransport, common: false, local: false, connect: true},
+	"auth-token": {group: groupTransport, common: true, local: false, connect: true},
+	"anonymous":  {group: groupTransport, common: true, local: false, connect: true},
+	"tls":        {group: groupTransport, common: true, local: false, connect: true},
+	"tls-ca":     {group: groupTransport, common: false, local: false, connect: true},
+	"insecure":   {group: groupTransport, common: false, local: false, connect: true},
 
 	// ── Session (shared) ──────────────────────────────────────────────────
 	"workspace":     {group: groupSession, common: true, local: true, connect: true},
@@ -80,6 +80,7 @@ var flagApplicabilityByFlag = map[string]flagApplicability{
 	"theme":           {group: groupUI, common: true, local: true, connect: true},
 	"theme-dir":       {group: groupUI, common: false, local: true, connect: true},
 	"list-themes":     {group: groupUI, common: false, local: true, connect: true},
+	"debug":           {group: groupUI, common: true, local: true, connect: true},
 	"no-alt-screen":   {group: groupUI, common: true, local: true, connect: true},
 	"inline":          {group: groupUI, common: false, local: true, connect: true},
 	"no-mouse":        {group: groupUI, common: false, local: true, connect: true},
@@ -97,9 +98,9 @@ var flagApplicabilityByFlag = map[string]flagApplicability{
 	"openrouter-base-url":   {group: groupProvider, common: false, local: true, connect: false},
 	"anthropic-base-url":    {group: groupProvider, common: false, local: true, connect: false},
 	"opencode-base-url":     {group: groupProvider, common: false, local: true, connect: false},
-	"auth-file":             {group: groupProvider, common: true, local: true, connect: false},
+	"api-key-file":          {group: groupProvider, common: true, local: true, connect: false},
 	"mock":                  {group: groupProvider, common: true, local: true, connect: false},
-	"no-bash":               {group: groupProvider, common: false, local: true, connect: false},
+	"no-shell":              {group: groupProvider, common: false, local: true, connect: false},
 	"no-steer":              {group: groupProvider, common: false, local: true, connect: false},
 	"toolhive-llm":          {group: groupProvider, common: false, local: true, connect: false},
 	"toolhive-llm-base-url": {group: groupProvider, common: false, local: true, connect: false},
@@ -163,6 +164,8 @@ var flagApplicabilityByFlag = map[string]flagApplicability{
 	"perf-addr":                     {group: groupObservability, common: false, local: true, connect: false},
 	"perf-goroutine-warn-threshold": {group: groupObservability, common: false, local: true, connect: false},
 	"perf-mcp":                      {group: groupObservability, common: false, local: true, connect: false},
+	"product-metrics":               {group: groupObservability, common: true, local: true, connect: false},
+	"product-metrics-dry-run":       {group: groupObservability, common: false, local: true, connect: false},
 
 	// ── Info (meta-flags) ───────────────────────────────────────────────────
 	"help-all":   {group: groupInfo, common: false, local: true, connect: true},
@@ -363,7 +366,7 @@ func renderGroupedCommon(out io.Writer, fs *flag.FlagSet, common map[string]bool
 		sort.Slice(entries, func(i, j int) bool { return entries[i].name < entries[j].name })
 		_, _ = fmt.Fprintf(out, "%s:\n", grp)
 		for _, e := range entries {
-			cliconfig.PrintFlagDefault(out, e.f)
+			flaghelp.PrintFlagDefault(out, e.f)
 		}
 		_, _ = fmt.Fprintf(out, "\n")
 	}
@@ -386,17 +389,16 @@ func writeSessionsHelpAll(out io.Writer, fs *flag.FlagSet, mode transportMode) {
 			}
 		}
 	}
-	cliconfig.PrintDefaultsExcluding(out, fs, exclude)
+	flaghelp.PrintDefaultsExcluding(out, fs, exclude)
 }
 
 // writeBareHelpAll renders the exhaustive flag list for the bare `mecatui
-// --help-all` (the embedded default). It uses the single cliconfig formatter
-// (byte-identical to flag.PrintDefaults).
+// --help-all` (the embedded default). It uses the single cliconfig formatter.
 func writeBareHelpAll(out io.Writer, fs *flag.FlagSet) {
 	_, _ = fmt.Fprintf(out, "Usage: mecatui [flags]\n\n")
 	writeCommandSummary(out)
 	_, _ = fmt.Fprintln(out, "\nFlags:")
-	cliconfig.PrintDefaultsExcluding(out, fs, nil)
+	flaghelp.PrintDefaultsExcluding(out, fs, nil)
 }
 
 // writeConnectHelpAll renders the exhaustive connect-applicable flag list for
@@ -410,5 +412,5 @@ func writeConnectHelpAll(out io.Writer, fs *flag.FlagSet) {
 			exclude[name] = true
 		}
 	}
-	cliconfig.PrintDefaultsExcluding(out, fs, exclude)
+	flaghelp.PrintDefaultsExcluding(out, fs, exclude)
 }

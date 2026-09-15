@@ -34,6 +34,7 @@ package permconfig
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -62,14 +63,16 @@ const MaxContextWindowTokens = 2_000_000
 // Claude-Code permissions shape so a user familiar with one can read the other.
 //
 // Each list entry is a RULE SPEC string of the form "Tool(pattern)" or bare
-// "Tool" (tool-wide). For Bash the pattern is a command glob, e.g.
-// "Bash(go test*)". See parseSpec / normalizeGlob for the exact grammar.
+// "Tool" (tool-wide). For Shell the pattern is a command glob, e.g.
+// "Shell(go test*)". See parseSpec / normalizeGlob for the exact grammar.
 //
 // The TOP level of Config stays LENIENT (other keys — trustedWorkspaces etc. —
 // must keep parsing); strictness applies only INSIDE the permissions: subtree,
 // where a typo'd key would silently disable a rule list (see the custom
 // UnmarshalYAML on Permissions / SubagentPermissions).
 type Config struct {
+	// CredentialStore is the shared operator-owned OIDC credential-store configuration.
+	CredentialStore *CredentialStoreSection `yaml:"credential_store"`
 	// Providers holds strict, operator-tier custom LLM provider definitions. Project
 	// values are ignored by Resolver with a value-free warning.
 	Providers ProviderDefinitions `yaml:"providers"`
@@ -151,6 +154,14 @@ type Config struct {
 	// key was absent. The composition layer reads + validates the maps; permconfig
 	// only carries them.
 	OpenRouter *OpenRouterSection `yaml:"openrouter"`
+	// Telemetry holds the OPERATOR-TIER `telemetry:` subtree (opt-out product/
+	// adoption metrics). Like OpenRouter/Guardrails/Posture it is honoured ONLY
+	// from the user-global + CLI tiers; a project-tier file's telemetry: block
+	// is IGNORED with a WARN (a project repo cannot flip a user's own telemetry
+	// choice in either direction). Parsed STRICTLY (unknown keys error). A nil
+	// Telemetry means the key was absent — composition then falls through the
+	// DO_NOT_TRACK env var and finally defaults to enabled.
+	Telemetry *TelemetrySection `yaml:"telemetry"`
 	// MCP holds named global Streamable HTTP MCP server profiles. It is strict and
 	// OPERATOR-TIER ONLY: project files cannot choose endpoints, authentication,
 	// credential references, or egress policy. Values are metadata only; parsing
@@ -162,6 +173,74 @@ type Config struct {
 	// StorageManagement names the verified OIDC identities allowed to operate on
 	// process-wide storage. It is strict and operator-tier only.
 	StorageManagement *StorageManagementSection `yaml:"storage_management"`
+	// TemporaryStorage controls managed command temporary storage. It is strict and
+	// read exclusively from the user-global settings.yaml; project-tier and explicit
+	// CLI configuration values are ignored by the Resolver.
+	TemporaryStorage *TemporaryStorageSection `yaml:"temporary_storage"`
+}
+
+// TemporaryStorageSection is the strict operator policy for command temporary
+// storage. Durations are parsed during decoding so invalid settings fail before
+// composition can enable a runner.
+type TemporaryStorageSection struct {
+	Mode                string        `yaml:"mode"`
+	ManagedRoot         string        `yaml:"managed_root"`
+	SystemTempDir       string        `yaml:"system_temp_dir"`
+	CommandReapAfter    time.Duration `yaml:"command_reap_after"`
+	ReapInterval        time.Duration `yaml:"reap_interval"`
+	ReapTimeout         time.Duration `yaml:"reap_timeout"`
+	ShutdownReapTimeout time.Duration `yaml:"shutdown_reap_timeout"`
+}
+
+// UnmarshalYAML strictly decodes the temporary-storage policy and applies its
+// defaults. Paths are lexically validated here; host ownership checks happen in
+// composition where filesystem access belongs.
+func (s *TemporaryStorageSection) UnmarshalYAML(node ast.Node) error {
+	s.Mode, s.ManagedRoot = "managed", "mecatl"
+	s.CommandReapAfter, s.ReapInterval = time.Hour, time.Hour
+	s.ReapTimeout, s.ShutdownReapTimeout = 5*time.Minute, time.Minute
+	var commandReapAfter, reapInterval, reapTimeout, shutdownReapTimeout permconfigNodeValue
+	if err := decodeStrictMapping(node, "temporary_storage", map[string]any{
+		"mode": &s.Mode, "managed_root": &s.ManagedRoot, "system_temp_dir": &s.SystemTempDir,
+		"command_reap_after": &commandReapAfter, "reap_interval": &reapInterval,
+		"reap_timeout": &reapTimeout, "shutdown_reap_timeout": &shutdownReapTimeout,
+	}); err != nil {
+		return err
+	}
+	s.Mode, s.ManagedRoot, s.SystemTempDir = strings.TrimSpace(s.Mode), strings.TrimSpace(s.ManagedRoot), strings.TrimSpace(s.SystemTempDir)
+	if s.Mode != "managed" && s.Mode != "system" {
+		return fmt.Errorf("temporary_storage.mode: must be managed or system")
+	}
+	for name, path := range map[string]string{"managed_root": s.ManagedRoot, "system_temp_dir": s.SystemTempDir} {
+		if path != "" && !filepath.IsAbs(path) && (filepath.Clean(path) == ".." || strings.HasPrefix(filepath.Clean(path), ".."+string(filepath.Separator))) {
+			return fmt.Errorf("temporary_storage.%s: relative path escapes system temporary directory", name)
+		}
+	}
+	for _, value := range []struct {
+		name string
+		node permconfigNodeValue
+		dst  *time.Duration
+		min  time.Duration
+		max  time.Duration
+	}{
+		{"command_reap_after", commandReapAfter, &s.CommandReapAfter, time.Minute, 30 * 24 * time.Hour},
+		{"reap_interval", reapInterval, &s.ReapInterval, time.Minute, 24 * time.Hour},
+		{"reap_timeout", reapTimeout, &s.ReapTimeout, time.Second, time.Hour},
+		{"shutdown_reap_timeout", shutdownReapTimeout, &s.ShutdownReapTimeout, time.Second, 5 * time.Minute},
+	} {
+		if value.node.Node == nil {
+			continue
+		}
+		d, err := durationScalar(value.node.Node, "temporary_storage."+value.name)
+		if err != nil {
+			return err
+		}
+		if d < value.min || d > value.max {
+			return fmt.Errorf("temporary_storage.%s: must be between %s and %s", value.name, value.min, value.max)
+		}
+		*value.dst = d
+	}
+	return nil
 }
 
 // StorageManagementSection is the explicit operator authority for process-wide
@@ -300,10 +379,22 @@ func ParseRetentionDuration(raw string) (time.Duration, error) {
 	return d, nil
 }
 
-// MCPSection is the strict operator-only mcp: subtree.
+// MCPSection is the strict operator-only mcp: subtree. Mode-specific
+// requirements are applied once by the canonical authority resolver after the
+// command root supplies its default.
 type MCPSection struct {
-	// Servers is the ordered list of named global Streamable HTTP servers.
+	// Mode selects global or broker authority. Empty uses the command-root default.
+	Mode string `yaml:"mode"`
+	// Broker contains options meaningful only in broker mode.
+	Broker MCPBrokerProfile `yaml:"broker"`
+	// Servers is the ordered list of neutral Streamable HTTP route declarations.
 	Servers []MCPServerProfile `yaml:"servers"`
+}
+
+// MCPBrokerProfile contains broker-only trusted configuration.
+type MCPBrokerProfile struct {
+	// CallbackURL is required exactly when broker mode contains an OAuth route. It must be an absolute HTTPS URL without userinfo, query, or fragment; an omitted path or / is normalized to /.
+	CallbackURL string `yaml:"callback_url"`
 }
 
 // MCPServerProfile is one named Streamable HTTP endpoint and its explicit auth mode.
@@ -335,32 +426,93 @@ type MCPStaticBearerProfile struct {
 
 // MCPOAuthProfile is the metadata-only OAuth configuration for one server.
 type MCPOAuthProfile struct {
-	// Profile is the required operator-defined credential identity profile.
+	// Profile is the required global-mode credential identity profile and is forbidden in broker mode.
 	Profile string `yaml:"profile"`
-	// Principal is the required operator-defined credential identity principal.
+	// Principal is the required global-mode credential identity principal and is forbidden in broker mode.
 	Principal string `yaml:"principal"`
-	// Issuer is the required canonical exact HTTP(S) origin of the authorization server.
+	// Issuer is the canonical exact origin used by OIDC discovery. It is forbidden
+	// when Upstream explicitly selects generic OAuth2.
 	Issuer string `yaml:"issuer"`
-	// Client selects exactly one preregistered or CIMD client declaration.
+	// Upstream optionally selects OIDC discovery or explicit generic OAuth2.
+	// Omitted defaults to OIDC.
+	Upstream *MCPOAuthUpstreamProfile `yaml:"upstream"`
+	// Client selects exactly one preregistered, CIMD, or DCR client declaration.
 	Client MCPOAuthClientProfile `yaml:"client"`
-	// Scopes is the non-empty allowlist of OAuth scopes the client may request.
+	// Scopes is the non-empty OAuth scope allowlist, except direct/global DCR may omit it and uses exactly openid.
 	Scopes []string `yaml:"scopes"`
-	// RequestRefreshToken asks the authorization server for refresh capability.
+	// RequestRefreshToken asks the authorization server for refresh capability; direct/global DCR defaults false and rejects true.
 	RequestRefreshToken bool `yaml:"request_refresh_token"`
-	// Credentials selects exactly one local or environment credential source.
+	// Credentials selects one global-mode local or environment credential source and is forbidden in broker mode.
 	Credentials MCPOAuthCredentialProfile `yaml:"credentials"`
-	// Network is required and declares immutable exact-origin egress policy.
+	// Network is required. Global profiles enforce its exact-origin egress policy;
+	// broker OAuth accepts only an explicit empty mapping until ToolHive can enforce it equivalently.
 	Network *MCPOAuthNetworkProfile `yaml:"network"`
+	// Tools optionally declares this protected backend's tool catalogue
+	// statically. Declarations are visible before connection; the first call
+	// starts ToolHive's aggregate authorization for every protected backend.
+	// The granted bundle unlocks the declared surface only. Omitted, the backend
+	// remains discoverable only through pre-prompt workspace enrollment.
+	Tools []MCPStaticToolProfile `yaml:"tools"`
 }
 
-// MCPOAuthClientProfile is a closed preregistered/CIMD tagged union. DCR is unsupported.
+// MCPStaticToolProfile is one trusted protected-backend tool declaration.
+type MCPStaticToolProfile struct {
+	Name        string          `yaml:"name"`
+	Description string          `yaml:"description"`
+	InputSchema json.RawMessage `yaml:"input_schema"`
+	ReadOnly    bool            `yaml:"read_only"`
+}
+
+// UnmarshalYAML strictly decodes one protected tool declaration.
+func (t *MCPStaticToolProfile) UnmarshalYAML(node ast.Node) error {
+	var schema any
+	if err := decodeStrictMapping(node, "mcp.servers[].auth.oauth.tools[]", map[string]any{
+		"name": &t.Name, "description": &t.Description, "input_schema": &schema, "read_only": &t.ReadOnly,
+	}); err != nil {
+		return err
+	}
+	if err := validateMCPSafeValue("mcp.servers[].auth.oauth.tools[].name", t.Name); err != nil {
+		return err
+	}
+	if err := validateMCPSafeValue("mcp.servers[].auth.oauth.tools[].description", t.Description); err != nil {
+		return err
+	}
+	if schema == nil {
+		return errors.New("mcp.servers[].auth.oauth.tools[].input_schema is required")
+	}
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		return fmt.Errorf("mcp.servers[].auth.oauth.tools[].input_schema: %w", err)
+	}
+	t.InputSchema = raw
+	return nil
+}
+
+// MCPOAuthUpstreamProfile is a strict OIDC/OAuth2 tagged union. Omitted means OIDC.
+type MCPOAuthUpstreamProfile struct {
+	Mode   string                    `yaml:"mode"`
+	OAuth2 *MCPOAuth2UpstreamProfile `yaml:"oauth2"`
+}
+
+// MCPOAuth2UpstreamProfile contains trusted explicit generic OAuth2 endpoints.
+type MCPOAuth2UpstreamProfile struct {
+	AuthorizationEndpoint string `yaml:"authorization_endpoint"`
+	// TokenEndpoint is a canonical HTTPS URL with no query string or fragment:
+	// the hardened runtime token client pins the exact origin and controls the
+	// request query itself.
+	TokenEndpoint string `yaml:"token_endpoint"`
+}
+
+// MCPOAuthClientProfile is a closed preregistered/CIMD/DCR tagged union.
 type MCPOAuthClientProfile struct {
-	// Mode is exactly preregistered or cimd.
+	// Mode is exactly preregistered, cimd, or dcr.
 	Mode string `yaml:"mode"`
 	// Preregistered declares a confidential client registered with the issuer.
 	Preregistered *MCPPreregisteredClientProfile `yaml:"preregistered"`
 	// CIMD declares an HTTPS client-id metadata document URL.
 	CIMD *MCPCIMDClientProfile `yaml:"cimd"`
+	// DCR selects dynamic registration: direct/global profiles require an empty payload, discover from issuer, and use omitted scopes as openid; broker profiles require discovery_url and nonempty scopes. Ready direct-DCR identity drift is reset-required and uses --reset-dcr-registration; pending identity drift is pending-identity-mismatch and cannot reset or retry until the matching profile, principal, canonical resource, and exact issuer are restored. Corrupt direct-DCR state is not resettable: preserve its records and configuration without editing, deleting, or renaming them, then contact the deployment operator or support team with only the server name and redacted command error—never credential contents, OAuth URLs, client IDs, tokens, keys, or a raw response.
+	DCR *MCPDCRClientProfile `yaml:"dcr"`
 }
 
 // MCPPreregisteredClientProfile contains client identity metadata and a secret reference.
@@ -375,6 +527,12 @@ type MCPPreregisteredClientProfile struct {
 type MCPCIMDClientProfile struct {
 	// DocumentURL is the required HTTPS metadata-document URL.
 	DocumentURL string `yaml:"document_url"`
+}
+
+// MCPDCRClientProfile carries broker-only RFC 8414 discovery metadata; direct/global DCR requires an empty payload.
+type MCPDCRClientProfile struct {
+	// DiscoveryURL is required for broker DCR and forbidden for direct/global DCR, which discovers from issuer instead.
+	DiscoveryURL string `yaml:"discovery_url"`
 }
 
 // MCPOAuthCredentialProfile is a closed local/environment tagged union.
@@ -418,9 +576,24 @@ var (
 	mecatlSecretReference = regexp.MustCompile(`^MECATL_[A-Z0-9_]+$`)
 )
 
-const modeKey = "mode"
+const (
+	modeKey       = "mode"
+	mcpOAuth2Mode = "oauth2"
+)
 
-func (s *MCPSection) strictFields() map[string]any { return map[string]any{"servers": &s.Servers} }
+func (s *MCPSection) strictFields() map[string]any {
+	return map[string]any{modeKey: &s.Mode, "broker": &s.Broker, "servers": &s.Servers}
+}
+
+func (b *MCPBrokerProfile) strictFields() map[string]any {
+	return map[string]any{"callback_url": &b.CallbackURL}
+}
+
+// UnmarshalYAML strictly decodes broker-only metadata. Selection-specific
+// validation belongs to the canonical authority resolver.
+func (b *MCPBrokerProfile) UnmarshalYAML(node ast.Node) error {
+	return decodeStrictMapping(node, "mcp.broker", b.strictFields())
+}
 
 // UnmarshalYAML strictly decodes and validates an MCP operator section.
 func (s *MCPSection) UnmarshalYAML(node ast.Node) error {
@@ -460,8 +633,11 @@ func (s *MCPServerProfile) UnmarshalYAML(node ast.Node) error {
 	if s.Auth.Mode != "none" && u.Scheme != providerHTTPS && !mcpLoopback(u.Hostname()) {
 		return errors.New("mcp.servers[].url must use https for authenticated profiles except loopback http")
 	}
-	if s.Auth.OAuth != nil {
-		allowed := map[string]struct{}{mcpURLOrigin(u): {}, s.Auth.OAuth.Issuer: {}}
+	if s.Auth.OAuth != nil && s.Auth.OAuth.Network != nil {
+		allowed := map[string]struct{}{mcpURLOrigin(u): {}}
+		for _, origin := range s.Auth.OAuth.upstreamOrigins() {
+			allowed[origin] = struct{}{}
+		}
 		for _, origin := range s.Auth.OAuth.Network.AdditionalOrigins {
 			allowed[origin] = struct{}{}
 		}
@@ -469,6 +645,12 @@ func (s *MCPServerProfile) UnmarshalYAML(node ast.Node) error {
 			document, _ := url.Parse(client.DocumentURL)
 			if _, ok := allowed[mcpURLOrigin(document)]; !ok {
 				return errors.New("mcp.servers[].auth.oauth.client.cimd.document_url origin must match the issuer or resource origin, or appear in mcp.servers[].auth.oauth.network.additional_origins")
+			}
+		}
+		if client := s.Auth.OAuth.Client.DCR; client != nil && client.DiscoveryURL != "" {
+			discovery, _ := url.Parse(client.DiscoveryURL)
+			if _, ok := allowed[mcpURLOrigin(discovery)]; !ok {
+				return errors.New("mcp.servers[].auth.oauth.client.dcr.discovery_url origin must match the issuer or resource origin, or appear in mcp.servers[].auth.oauth.network.additional_origins")
 			}
 		}
 		for _, origin := range s.Auth.OAuth.Network.PrivateOrigins {
@@ -521,10 +703,11 @@ func (s *MCPStaticBearerProfile) UnmarshalYAML(node ast.Node) error {
 }
 
 func (o *MCPOAuthProfile) strictFields() map[string]any {
-	return map[string]any{"profile": &o.Profile, "principal": &o.Principal, "issuer": &o.Issuer, "client": &o.Client, "scopes": &o.Scopes, "request_refresh_token": &o.RequestRefreshToken, "credentials": &o.Credentials, "network": newPermconfigNodePointer(&o.Network)}
+	return map[string]any{"profile": &o.Profile, "principal": &o.Principal, "issuer": &o.Issuer, "upstream": newPermconfigNodePointer(&o.Upstream), "client": &o.Client, "scopes": &o.Scopes, "request_refresh_token": &o.RequestRefreshToken, "credentials": &o.Credentials, "network": newPermconfigNodePointer(&o.Network), "tools": &o.Tools}
 }
 
-// UnmarshalYAML strictly decodes and validates OAuth profile metadata.
+// UnmarshalYAML strictly decodes lossless OAuth metadata. Authority-specific
+// required/forbidden fields are validated after the root default is resolved.
 func (o *MCPOAuthProfile) UnmarshalYAML(node ast.Node) error {
 	if err := decodeStrictMapping(node, "mcp.servers[].auth.oauth", o.strictFields()); err != nil {
 		return err
@@ -532,20 +715,26 @@ func (o *MCPOAuthProfile) UnmarshalYAML(node ast.Node) error {
 	if !mappingHasKey(node, "client") {
 		return errors.New("mcp.servers[].auth.oauth.client is required")
 	}
-	if !mappingHasKey(node, "credentials") {
-		return errors.New("mcp.servers[].auth.oauth.credentials is required")
+	if o.Upstream != nil && o.Upstream.Mode == mcpOAuth2Mode && mappingHasKey(node, "issuer") {
+		return errors.New("mcp.servers[].auth.oauth.issuer is forbidden for oauth2 upstream")
 	}
-	if err := validateMCPSafeValue("mcp.servers[].auth.oauth.profile", o.Profile); err != nil {
-		return err
-	}
-	if err := validateMCPSafeValue("mcp.servers[].auth.oauth.principal", o.Principal); err != nil {
-		return err
-	}
-	if err := validateMCPOrigin("mcp.servers[].auth.oauth.issuer", o.Issuer); err != nil {
-		return err
-	}
-	if len(o.Scopes) == 0 {
+	if len(o.Scopes) == 0 && o.Client.Mode != "dcr" {
 		return errors.New("mcp.servers[].auth.oauth.scopes is required")
+	}
+	if o.Profile != "" {
+		if err := validateMCPSafeValue("mcp.servers[].auth.oauth.profile", o.Profile); err != nil {
+			return err
+		}
+	}
+	if o.Principal != "" {
+		if err := validateMCPSafeValue("mcp.servers[].auth.oauth.principal", o.Principal); err != nil {
+			return err
+		}
+	}
+	if o.Issuer != "" {
+		if err := validateMCPOrigin("mcp.servers[].auth.oauth.issuer", o.Issuer); err != nil {
+			return err
+		}
 	}
 	for _, scope := range o.Scopes {
 		if err := validateMCPSafeValue("mcp.servers[].auth.oauth.scopes[]", scope); err != nil {
@@ -558,26 +747,90 @@ func (o *MCPOAuthProfile) UnmarshalYAML(node ast.Node) error {
 	return nil
 }
 
-func (c *MCPOAuthClientProfile) strictFields() map[string]any {
-	return map[string]any{modeKey: &c.Mode, "preregistered": newPermconfigNodePointer(&c.Preregistered), "cimd": newPermconfigNodePointer(&c.CIMD)}
+func (o *MCPOAuthProfile) upstreamOrigins() []string {
+	if o.Upstream != nil && o.Upstream.Mode == mcpOAuth2Mode && o.Upstream.OAuth2 != nil {
+		authorize, _ := url.Parse(o.Upstream.OAuth2.AuthorizationEndpoint)
+		token, _ := url.Parse(o.Upstream.OAuth2.TokenEndpoint)
+		return []string{mcpURLOrigin(authorize), mcpURLOrigin(token)}
+	}
+	return []string{o.Issuer}
 }
 
-// UnmarshalYAML strictly decodes the closed preregistered/CIMD client union.
+func (u *MCPOAuthUpstreamProfile) strictFields() map[string]any {
+	return map[string]any{modeKey: &u.Mode, "oauth2": newPermconfigNodePointer(&u.OAuth2)}
+}
+
+// UnmarshalYAML strictly decodes an optional upstream protocol selector.
+func (u *MCPOAuthUpstreamProfile) UnmarshalYAML(node ast.Node) error {
+	if err := decodeStrictMapping(node, "mcp.servers[].auth.oauth.upstream", u.strictFields()); err != nil {
+		return err
+	}
+	switch u.Mode {
+	case providerAuthOIDC:
+		if mappingHasKey(node, "oauth2") {
+			return errors.New("mcp.servers[].auth.oauth.upstream: oidc must not contain an oauth2 payload")
+		}
+	case "oauth2":
+		if u.OAuth2 == nil {
+			return errors.New("mcp.servers[].auth.oauth.upstream: oauth2 requires only oauth2 payload")
+		}
+	default:
+		return errors.New("mcp.servers[].auth.oauth.upstream.mode must be exactly oidc or oauth2")
+	}
+	return nil
+}
+
+func (u *MCPOAuth2UpstreamProfile) strictFields() map[string]any {
+	return map[string]any{"authorization_endpoint": &u.AuthorizationEndpoint, "token_endpoint": &u.TokenEndpoint}
+}
+
+// UnmarshalYAML strictly decodes explicit generic OAuth2 endpoints.
+func (u *MCPOAuth2UpstreamProfile) UnmarshalYAML(node ast.Node) error {
+	if err := decodeStrictMapping(node, "mcp.servers[].auth.oauth.upstream.oauth2", u.strictFields()); err != nil {
+		return err
+	}
+	if _, err := validateMCPHTTPURL("mcp.servers[].auth.oauth.upstream.oauth2.authorization_endpoint", u.AuthorizationEndpoint, true); err != nil {
+		return err
+	}
+	tokenEndpoint, err := validateMCPHTTPURL("mcp.servers[].auth.oauth.upstream.oauth2.token_endpoint", u.TokenEndpoint, true)
+	if err != nil {
+		return err
+	}
+	// RFC 6749 §3.2 permits a query component on the token endpoint, but the
+	// hardened runtime token client (internal/adapter/mcp.NewHardenedOAuthTokenClient)
+	// pins the exact origin and controls the request query itself, so it
+	// rejects one outright. Reject here too for a clear config-time error
+	// instead of an opaque runtime construction failure.
+	if tokenEndpoint.RawQuery != "" {
+		return errors.New("mcp.servers[].auth.oauth.upstream.oauth2.token_endpoint must not contain a query string")
+	}
+	return nil
+}
+
+func (c *MCPOAuthClientProfile) strictFields() map[string]any {
+	return map[string]any{modeKey: &c.Mode, "preregistered": newPermconfigNodePointer(&c.Preregistered), "cimd": newPermconfigNodePointer(&c.CIMD), "dcr": newPermconfigNodePointer(&c.DCR)}
+}
+
+// UnmarshalYAML strictly decodes the closed preregistered/CIMD/DCR client union.
 func (c *MCPOAuthClientProfile) UnmarshalYAML(node ast.Node) error {
 	if err := decodeStrictMapping(node, "mcp.servers[].auth.oauth.client", c.strictFields()); err != nil {
 		return err
 	}
 	switch c.Mode {
 	case "preregistered":
-		if c.Preregistered == nil || mappingHasKey(node, "cimd") {
+		if c.Preregistered == nil || mappingHasKey(node, "cimd") || mappingHasKey(node, "dcr") {
 			return errors.New("mcp.servers[].auth.oauth.client: preregistered requires only preregistered payload")
 		}
 	case "cimd":
-		if c.CIMD == nil || mappingHasKey(node, "preregistered") {
+		if c.CIMD == nil || mappingHasKey(node, "preregistered") || mappingHasKey(node, "dcr") {
 			return errors.New("mcp.servers[].auth.oauth.client: cimd requires only cimd payload")
 		}
+	case "dcr":
+		if c.DCR == nil || mappingHasKey(node, "preregistered") || mappingHasKey(node, "cimd") {
+			return errors.New("mcp.servers[].auth.oauth.client: dcr requires only dcr payload")
+		}
 	default:
-		return errors.New("mcp.servers[].auth.oauth.client.mode must be exactly preregistered or cimd")
+		return errors.New("mcp.servers[].auth.oauth.client.mode must be exactly preregistered, cimd, or dcr")
 	}
 	return nil
 }
@@ -612,6 +865,29 @@ func (c *MCPCIMDClientProfile) UnmarshalYAML(node ast.Node) error {
 	}
 	if u.Path == "" || u.Path == "/" {
 		return errors.New("mcp.servers[].auth.oauth.client.cimd.document_url must include a document path")
+	}
+	return nil
+}
+
+func (c *MCPDCRClientProfile) strictFields() map[string]any {
+	return map[string]any{"discovery_url": &c.DiscoveryURL}
+}
+
+// UnmarshalYAML strictly decodes the shared DCR payload. Direct authority uses
+// an empty mapping; broker authority requires and validates discovery_url later.
+func (c *MCPDCRClientProfile) UnmarshalYAML(node ast.Node) error {
+	if err := decodeStrictMapping(node, "mcp.servers[].auth.oauth.client.dcr", c.strictFields()); err != nil {
+		return err
+	}
+	if !mappingHasKey(node, "discovery_url") {
+		return nil
+	}
+	u, err := validateMCPHTTPURL("mcp.servers[].auth.oauth.client.dcr.discovery_url", c.DiscoveryURL, true)
+	if err != nil {
+		return err
+	}
+	if u.Path == "" || u.Path == "/" {
+		return errors.New("mcp.servers[].auth.oauth.client.dcr.discovery_url must include a discovery document path")
 	}
 	return nil
 }
@@ -810,7 +1086,9 @@ type LearningSection struct {
 	Sensitivity string `yaml:"sensitivity"`
 	// Skills controls learned-skill lifecycle policy.
 	Skills *LearningSkillsSection `yaml:"skills"`
-	// Automatic is operator-only process-local rate policy.
+	// Automatic is operator-only admission policy. Standard non-off composition
+	// applies it through a durable ledger, making count/token windows, cooldown,
+	// and deduplication deployment-wide across cooperating processes.
 	Automatic *LearningAutomaticSection `yaml:"automatic"`
 }
 
@@ -833,15 +1111,16 @@ func (s *LearningSkillsSection) UnmarshalYAML(node ast.Node) error {
 	return nil
 }
 
-// LearningAutomaticSection is the strict process-local automatic-admission budget.
+// LearningAutomaticSection is the strict automatic-admission budget. Standard
+// composition enforces it through the selected durable ledger.
 type LearningAutomaticSection struct {
 	// Cooldown is the per-principal weighted-admission cooldown; zero disables it.
 	Cooldown time.Duration `yaml:"cooldown"`
 	// Window is the sliding count/token window, strictly 1m..24h.
 	Window time.Duration `yaml:"window"`
-	// MaxReflections is the process-wide count cap; zero disables automatic reflection.
+	// MaxReflections is the global count cap; zero disables automatic reflection.
 	MaxReflections int `yaml:"max_reflections"`
-	// MaxTokens is the process-wide reserved-token cap; zero disables automatic reflection.
+	// MaxTokens is the global reserved-token cap; zero disables automatic reflection.
 	MaxTokens int `yaml:"max_tokens"`
 	// MaxReflectionsPerPrincipal is the per-principal count cap; zero disables automatic reflection.
 	MaxReflectionsPerPrincipal int `yaml:"max_reflections_per_principal"`
@@ -964,6 +1243,46 @@ func (m *OpenRouterModelRoute) strictFields() map[string]any {
 		"order":           &m.Order,
 		"allow_fallbacks": newPermconfigNodePointer(&m.AllowFallbacks),
 	}
+}
+
+// TelemetrySection is the `telemetry:` operator-tier YAML subtree: the opt-out
+// switch for community/adoption product metrics. Parsed STRICTLY (unknown
+// keys error), mirroring OpenRouterSection/GuardrailsSection.
+type TelemetrySection struct {
+	// ProductMetrics is the opt-out product/adoption metrics config.
+	ProductMetrics *ProductMetricsSection `yaml:"productMetrics"`
+}
+
+func (s *TelemetrySection) strictFields() map[string]any {
+	return map[string]any{
+		"productMetrics": newPermconfigNodePointer(&s.ProductMetrics),
+	}
+}
+
+// UnmarshalYAML decodes the telemetry: mapping STRICTLY: an unknown key
+// (e.g. a typo'd product-metrics:) is a parse error, same discipline as
+// openrouter:/guardrails:.
+func (s *TelemetrySection) UnmarshalYAML(node ast.Node) error {
+	return decodeStrictMapping(node, "telemetry", s.strictFields())
+}
+
+// ProductMetricsSection is the `telemetry.productMetrics:` subtree.
+type ProductMetricsSection struct {
+	// Enabled is a *bool so ABSENT (nil) is distinguishable from an explicit
+	// false: nil = absent (composition falls through to DO_NOT_TRACK then the
+	// enabled-by-default posture); a non-nil value is honoured exactly.
+	Enabled *bool `yaml:"enabled"`
+}
+
+func (s *ProductMetricsSection) strictFields() map[string]any {
+	return map[string]any{
+		"enabled": newPermconfigNodePointer(&s.Enabled),
+	}
+}
+
+// UnmarshalYAML decodes the productMetrics: mapping STRICTLY.
+func (s *ProductMetricsSection) UnmarshalYAML(node ast.Node) error {
+	return decodeStrictMapping(node, "telemetry.productMetrics", s.strictFields())
 }
 
 // UnmarshalYAML decodes an openrouter.models.<id> entry STRICTLY.

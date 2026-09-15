@@ -1,7 +1,7 @@
 # Session storage continuity — acceptance plan
 
 **Phase:** Large historical stores, migration, cleanup, and writable legacy continuity.
-**Status:** landed, 2026-08-18. All implementation waves, aggregate gates, and final panel review completed.
+**Status:** draft historical record, partially superseded 2026-09-02 by [ADR 0291](../adr/0291-server-owned-session-placement.md). Storage migration/cleanup landed; writable legacy-adoption criteria and their deleted proofs are no longer current acceptance claims.
 **Issue:** [stacklok/mecatl#583](https://github.com/stacklok/mecatl/issues/583), with sub-issues [#586](https://github.com/stacklok/mecatl/issues/586)–[#596](https://github.com/stacklok/mecatl/issues/596).
 **ADR:** [ADR-0226](../adr/0226-session-storage-maintenance.md) — bounded current snapshots, indexed metadata, distinct maintenance jobs, and explicit legacy adoption.
 **Accumulator branch:** `acc/session-storage-continuity` (off `main`).
@@ -213,15 +213,15 @@ sessions**. The capability-driven client and explicit vocabulary follow [ADR-021
 A daemon operator follows tested systemd or macOS launchd examples, inspects policy and dry-run
 impact, and performs a quiesced backup/migration/restore. The daemon remains the sole automatic
 cleanup owner under [ADR-0226](../adr/0226-session-storage-maintenance.md), with storage privacy
-and lifecycle documented in [`docs/usage/configuration.md`](../usage/configuration.md).
+and lifecycle documented in [`user-docs/reference/configuration.md`](https://mecatl.dev/docs/reference/configuration).
 
 **Acceptance:**
 - AC9.1: Tested systemd user-service and launchd examples parse, resolve the intended executable/config/state paths, preserve each argument exactly, and invoke the daemon-owned retention configuration rather than an external deletion command.
   - verify: `TestSessionStorageContinuity_Scenario9_ServiceExamplesExecuteConfiguredArgs`
 - AC9.2: Documentation explicitly rejects cron/find/glob deletion, explains embedded-local versus connected-remote management, and shows effective-policy inspection plus dry-run before apply.
-  - verify: `TestSessionStorageContinuity_Scenario9_NoUnsafeDeletionRecipe`
+  - verify: none — deletion-safety guidance is reviewed by humans; `task docs` checks links and structure
 - AC9.3: The runbook covers plaintext sensitivity/permissions, space forecasting, unsupported backends, and stop → backup → migrate/apply → verify → start with restore-to-new-directory validation.
-  - verify: `TestSessionStorageContinuity_Scenario9_BackupMigrationRunbook`
+  - verify: none — backup and migration runbook completeness is reviewed by humans; `task docs` checks links and structure
 
 ## Out of scope
 
@@ -236,7 +236,7 @@ and lifecycle documented in [`docs/usage/configuration.md`](../usage/configurati
 
 ## Cross-cutting deliverables
 
-- Update `docs/architecture.md`, `docs/design/IMPLEMENTATION-NOTES.md`, `docs/design/PRODUCTION-READINESS.md`, `docs/tui.md`, `docs/usage/`, and `user-docs/` with the shipped behavior.
+- Update `docs/architecture.md`, `docs/design/IMPLEMENTATION-NOTES.md`, `docs/design/PRODUCTION-READINESS.md`, `docs/tui.md`, and relevant `user-docs/` pages with the shipped behavior.
 - Inventory every catalog, maintenance-job registry, cache, goroutine, semaphore, and durable file in ADR 0027 Lists 1/2 as required by `AGENTS.md`.
 - Extend store/driver conformance and engine compatibility artifacts for any exported optional port surface.
 - Keep every test offline; no live model, Redis service, or network dependency.
@@ -257,7 +257,7 @@ The scenario test names are the `verify:` identifiers above. `TestInvariant_rete
 ## Definition of done
 
 1. `task lint` and `task test` pass across root, engine, authn, and provider modules with race detection.
-2. `task docs` regenerates `llms.txt`; matlatl strict and the user-docs Docusaurus build are green.
+2. `task docs` regenerates the configuration reference; matlatl strict and the user-docs Docusaurus build are green.
 3. `task api:check` passes, or intentional engine additions update `engine/api/*.txt` and `engine/CHANGELOG.md` per `engine/COMPATIBILITY.md`.
 4. `task ac-trace-strict` resolves every `verify:` proof after this plan is `landed`.
 5. Every scenario test and `TestInvariant_retention_requires_durable_taxonomy` is green and grep-locatable.

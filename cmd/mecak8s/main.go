@@ -8,12 +8,27 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"time"
 
+	"github.com/stacklok/mecatl/internal/adapter/mockscript"
 	"github.com/stacklok/mecatl/internal/adapter/slogdiag"
 	"github.com/stacklok/mecatl/internal/app"
 	"github.com/stacklok/mecatl/internal/buildinfo"
 	"github.com/stacklok/mecatl/internal/cliconfig"
 )
+
+func boundedClose(closeFn func(), timeout time.Duration) {
+	done := make(chan struct{})
+	go func() {
+		closeFn()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
+		slog.Warn("application cleanup timed out; process exit will end remaining cleanup", "timeout", timeout)
+	}
+}
 
 func main() {
 	if buildinfo.IsVersion(os.Args) {
@@ -37,6 +52,13 @@ func run() error {
 		return err
 	}
 
+	if cfg.mockScript != "" {
+		cfg.mockProvider, err = mockscript.Load(cfg.mockScript)
+		if err != nil {
+			return err
+		}
+	}
+
 	logger := cliconfig.NewTextLogger(os.Stderr, cfg.logLevel, cfg.logLevelWarning)
 	// slog.SetDefault stays for the daemon: this is the DELIBERATE, PERMANENT
 	// third-party-slog bridge — a server's operational output belongs on
@@ -54,7 +76,7 @@ func run() error {
 	// flags this is a no-op (byte-identical default). The flush defer runs BEFORE
 	// built.Close() (LIFO), so the OTLP flush completes before the service tears
 	// down on the SIGTERM path.
-	obs, oerr := buildObservability(ctx, cfg)
+	obs, oerr := buildObservability(ctx, cfg, diag)
 	if oerr != nil {
 		return fmt.Errorf("telemetry: %w", oerr)
 	}
@@ -65,8 +87,8 @@ func run() error {
 		flushTelemetry(os.Stderr, obs, cfg.otlpShutdownTimeout)
 		return err
 	}
-	defer built.Close()
+	defer boundedClose(built.Close, cfg.closeTimeout)
 	defer flushTelemetry(os.Stderr, obs, cfg.otlpShutdownTimeout)
 
-	return serve(ctx, cfg, built.Service, obs)
+	return serve(ctx, cfg, built.Service, obs, built.MCPBrokerHandlers, built.MCPBrokerCallbackPath)
 }

@@ -54,12 +54,13 @@ var ErrNotFound = fmt.Errorf("grpcdriver: session not found: %w", port.ErrSessio
 // driver. Encode/decode happens HERE (sessnap), harness-side: the driver only
 // ever sees the opaque envelope.
 type SessionStore struct {
-	client         driverv1.SessionStoreServiceClient
-	list           bool
-	metadataPaging bool
-	delete         bool
-	lineage        bool
-	create         bool
+	client             driverv1.SessionStoreServiceClient
+	list               bool
+	metadataPaging     bool
+	activityProjection bool
+	delete             bool
+	lineage            bool
+	create             bool
 }
 
 // compile-time assertions that SessionStore satisfies the base port and keeps
@@ -67,12 +68,13 @@ type SessionStore struct {
 // negotiated flags are authoritative: unsupported calls return the existing
 // port sentinels without advertising those operations to inventory consumers.
 var (
-	_ port.SessionStore         = (*SessionStore)(nil)
-	_ port.SessionCreator       = (*SessionStore)(nil)
-	_ port.PrunableStore        = (*SessionStore)(nil)
-	_ port.SessionMetadataPager = (*SessionStore)(nil)
-	_ port.SessionDeleteSupport = (*SessionStore)(nil)
-	_ port.SessionLineageReader = (*SessionStore)(nil)
+	_ port.SessionStore                   = (*SessionStore)(nil)
+	_ port.SessionCreator                 = (*SessionStore)(nil)
+	_ port.PrunableStore                  = (*SessionStore)(nil)
+	_ port.SessionMetadataPager           = (*SessionStore)(nil)
+	_ port.SessionActivityProjectionPager = (*SessionStore)(nil)
+	_ port.SessionDeleteSupport           = (*SessionStore)(nil)
+	_ port.SessionLineageReader           = (*SessionStore)(nil)
 )
 
 const sessionCapabilityTimeout = 5 * time.Second
@@ -93,6 +95,7 @@ func NewSessionStore(ctx context.Context, conn grpc.ClientConnInterface) (*Sessi
 	}
 	st.list = caps.GetList()
 	st.metadataPaging = caps.GetMetadataPaging()
+	st.activityProjection = caps.GetActivityProjection()
 	st.delete = caps.GetDelete()
 	st.lineage = caps.GetLineage()
 	st.create = caps.GetCreate()
@@ -103,6 +106,10 @@ func NewSessionStore(ctx context.Context, conn grpc.ClientConnInterface) (*Sessi
 // keeps implementing PrunableStore unconditionally for compatibility.
 func (st *SessionStore) SupportsSessionDelete() bool { return st.delete }
 
+// SupportsSessionActivityProjection reports the driver's negotiated atomic
+// activity projection capability.
+func (st *SessionStore) SupportsSessionActivityProjection() bool { return st.activityProjection }
+
 // Save encodes s via sessnap and persists it under s.ID on the driver,
 // overwriting any prior snapshot. A nil session fails client-side with
 // sessnap.ErrNilSession (no RPC), matching the local stores.
@@ -111,10 +118,13 @@ func (st *SessionStore) Save(ctx context.Context, s *session.Session) error {
 	if err != nil {
 		return err
 	}
-	if _, err := st.client.Save(ctx, &driverv1.SaveRequest{
-		SessionId: string(s.ID),
-		Snapshot:  &driverv1.SessionSnapshot{Format: SnapshotFormat, Payload: line},
-	}); err != nil {
+	request := &driverv1.SaveRequest{
+		SessionId: string(s.ID), Snapshot: &driverv1.SessionSnapshot{Format: SnapshotFormat, Payload: line},
+	}
+	if st.activityProjection {
+		request.ActivityState = string(session.ActivityOf(s.Conversation.Messages))
+	}
+	if _, err := st.client.Save(ctx, request); err != nil {
 		return rpcErr(ctx, "save", err)
 	}
 	return nil
@@ -129,7 +139,11 @@ func (st *SessionStore) Create(ctx context.Context, s *session.Session) error {
 	if err != nil {
 		return err
 	}
-	if _, err := st.client.Create(ctx, &driverv1.SaveRequest{SessionId: string(s.ID), Snapshot: &driverv1.SessionSnapshot{Format: SnapshotFormat, Payload: line}}); err != nil {
+	request := &driverv1.SaveRequest{SessionId: string(s.ID), Snapshot: &driverv1.SessionSnapshot{Format: SnapshotFormat, Payload: line}}
+	if st.activityProjection {
+		request.ActivityState = string(session.ActivityOf(s.Conversation.Messages))
+	}
+	if _, err := st.client.Create(ctx, request); err != nil {
 		if status.Code(err) == codes.AlreadyExists {
 			return fmt.Errorf("grpcdriver: create %q: %w", s.ID, port.ErrSessionAlreadyExists)
 		}
@@ -149,21 +163,21 @@ func (st *SessionStore) Load(ctx context.Context, id session.SessionID) (*sessio
 		if status.Code(err) == codes.NotFound {
 			return nil, fmt.Errorf("%w: %q", ErrNotFound, id)
 		}
-		return nil, rpcErr(ctx, "load", err)
+		return nil, port.NewSessionLoadFailure(port.SessionLoadFailureStore, rpcErr(ctx, "load", err))
 	}
 	snap := resp.GetSnapshot()
 	if got := snap.GetFormat(); got != SnapshotFormat {
-		return nil, fmt.Errorf("grpcdriver: load %q: unknown snapshot format %q (this client speaks %q)", id, got, SnapshotFormat)
+		return nil, port.NewSessionLoadFailure(port.SessionLoadFailureSnapshot, fmt.Errorf("grpcdriver: load %q: unknown snapshot format %q (this client speaks %q)", id, got, SnapshotFormat))
 	}
 	sess, err := sessnap.Unmarshal(snap.GetPayload())
 	if err != nil {
-		return nil, fmt.Errorf("grpcdriver: load %q: %w", id, err)
+		return nil, port.NewSessionLoadFailure(port.SessionLoadFailureSnapshot, fmt.Errorf("grpcdriver: load %q: %w", id, err))
 	}
 	// Wrong-session guard: a driver that mis-keys its storage (or always
 	// returns "the" session) must surface as a loud infra failure here, never
 	// as a silently-adopted foreign session.
 	if sess.ID != id {
-		return nil, fmt.Errorf("grpcdriver: load %q: driver returned the snapshot of a DIFFERENT session %q (mis-keyed driver)", id, sess.ID)
+		return nil, port.NewSessionLoadFailure(port.SessionLoadFailureSnapshot, fmt.Errorf("grpcdriver: load %q: driver returned the snapshot of a DIFFERENT session %q (mis-keyed driver)", id, sess.ID))
 	}
 	return sess, nil
 }
@@ -207,11 +221,14 @@ func (st *SessionStore) ReadSessionLineage(ctx context.Context, query port.Sessi
 	if !st.lineage {
 		return port.SessionLineageResult{}, fmt.Errorf("grpcdriver: lineage: %w", port.ErrSessionLineageUnsupported)
 	}
-	resp, err := st.client.ReadLineage(ctx, &driverv1.ReadSessionLineageRequest{RootSessionId: string(query.RootID), RootIncarnation: string(query.RootIncarnation), Limit: int32(query.Limit)}) // #nosec G115 -- bounded to 256
+	resp, err := st.client.ReadLineage(ctx, &driverv1.ReadSessionLineageRequest{
+		RootSessionId: string(query.RootID), RootIncarnation: string(query.RootIncarnation), Limit: int32(query.Limit), // #nosec G115 -- bounded to 256
+		RecordSessionId: string(query.RecordID), RecordIncarnation: string(query.RecordIncarnation),
+	})
 	if err != nil {
 		return port.SessionLineageResult{}, rpcErr(ctx, "read lineage", err)
 	}
-	if len(resp.GetRecords()) > query.Limit {
+	if len(resp.GetRecords()) > query.Limit || query.RecordID != "" && (len(resp.GetRecords()) > 1 || resp.GetTruncated()) {
 		return port.SessionLineageResult{}, fmt.Errorf("grpcdriver: lineage response exceeds requested limit")
 	}
 	result := port.SessionLineageResult{Truncated: resp.GetTruncated(), Records: make([]port.SessionLineageRecord, 0, len(resp.GetRecords()))}
@@ -219,6 +236,9 @@ func (st *SessionStore) ReadSessionLineage(ctx context.Context, query port.Sessi
 		row, err := lineageRecordFromProto(entry)
 		if err != nil {
 			return port.SessionLineageResult{}, err
+		}
+		if query.RecordID != "" && (row.ID != query.RecordID || row.Incarnation != string(query.RecordIncarnation)) {
+			return port.SessionLineageResult{}, fmt.Errorf("grpcdriver: lineage response did not match exact record")
 		}
 		if row.ID != query.RootID && !lineageRecordDirectlyRelated(row, query) {
 			return port.SessionLineageResult{}, fmt.Errorf("grpcdriver: lineage response escaped requested incarnation")
@@ -370,7 +390,7 @@ func (st *SessionStore) PageSessionMetadata(ctx context.Context, request port.Se
 		}
 		return port.SessionMetadataPage{}, rpcErr(ctx, "page metadata", err)
 	}
-	page, err := metadataPageFromProto(resp)
+	page, err := metadataPageFromProto(resp, st.activityProjection)
 	if err != nil {
 		return port.SessionMetadataPage{}, err
 	}
@@ -404,7 +424,7 @@ func pageMetadataRequest(request port.SessionMetadataPageRequest) (*driverv1.Pag
 	return req, nil
 }
 
-func metadataPageFromProto(resp *driverv1.PageSessionMetadataResponse) (port.SessionMetadataPage, error) {
+func metadataPageFromProto(resp *driverv1.PageSessionMetadataResponse, activityProjection bool) (port.SessionMetadataPage, error) {
 	page := port.SessionMetadataPage{TotalCount: int(resp.GetTotalCount()), Sessions: make([]port.SessionDiscoveryMeta, 0, len(resp.GetSessions()))}
 	for _, entry := range resp.GetSessions() {
 		if entry == nil {
@@ -416,7 +436,7 @@ func metadataPageFromProto(resp *driverv1.PageSessionMetadataResponse) (port.Ses
 		if ts := entry.GetCreatedAt(); ts != nil && ts.CheckValid() != nil {
 			return port.SessionMetadataPage{}, fmt.Errorf("grpcdriver: page metadata: driver returned an invalid creation time")
 		}
-		page.Sessions = append(page.Sessions, metadataFromProto(entry))
+		page.Sessions = append(page.Sessions, metadataFromProto(entry, activityProjection))
 	}
 	if cursor := resp.GetNextCursor(); cursor != nil {
 		if cursor.GetModifiedAt() == nil || cursor.GetModifiedAt().CheckValid() != nil || cursor.GetSessionId() == "" ||
@@ -431,7 +451,11 @@ func metadataPageFromProto(resp *driverv1.PageSessionMetadataResponse) (port.Ses
 	return page, nil
 }
 
-func metadataFromProto(entry *driverv1.SessionMetadataEntry) port.SessionDiscoveryMeta {
+func metadataFromProto(entry *driverv1.SessionMetadataEntry, activityProjection bool) port.SessionDiscoveryMeta {
+	activity := session.ActivityUnknown
+	if activityProjection {
+		activity = session.ValidActivity(session.ActivityState(entry.GetActivityState()))
+	}
 	meta := port.SessionDiscoveryMeta{
 		ID:              session.SessionID(entry.GetSessionId()),
 		State:           session.State(entry.GetState()),
@@ -439,9 +463,10 @@ func metadataFromProto(entry *driverv1.SessionMetadataEntry) port.SessionDiscove
 		ModelID:         entry.GetModelId(),
 		Title:           entry.GetTitle(),
 		TitleProvenance: session.TitleProvenance(entry.GetTitleProvenance()),
-		Workspace:       entry.GetWorkspace(),
+		EnvironmentRef:  environmentRefFromProto(entry.GetEnvironmentRef()),
 		Kind:            session.SessionKind(entry.GetKind()),
 		EstimatedBytes:  entry.GetEstimatedBytes(),
+		Activity:        activity,
 		Relationship: session.SessionRelationship{
 			ParentSessionID:        session.SessionID(entry.GetParentSessionId()),
 			ParentIncarnation:      session.IncarnationID(entry.GetParentIncarnation()),
@@ -472,6 +497,13 @@ func metadataFromProto(entry *driverv1.SessionMetadataEntry) port.SessionDiscove
 		}
 	}
 	return meta
+}
+
+func environmentRefFromProto(ref *driverv1.StoredEnvironmentRef) session.EnvironmentRef {
+	if ref == nil {
+		return session.EnvironmentRef{}
+	}
+	return session.EnvironmentRef{Kind: session.EnvironmentKind(ref.GetKind()), ID: ref.GetId(), Revision: ref.GetRevision()}
 }
 
 // Delete removes the snapshot stored under id on the driver. It is idempotent

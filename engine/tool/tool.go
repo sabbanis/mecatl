@@ -21,9 +21,18 @@ import (
 
 // ErrNoShell is the sentinel a CommandRunner returns when it has no shell to
 // execute against (e.g. the in-memory runner, or a shell-less remote pod). The
-// Bash tool surfaces it to the model as a tool-level error rather than aborting
+// Shell tool surfaces it to the model as a tool-level error rather than aborting
 // the harness.
 var ErrNoShell = errors.New("tool: no shell available")
+
+// ErrDirectoryNotEmpty is returned when a non-recursive Remove targets a
+// directory that still has children.
+var ErrDirectoryNotEmpty = errors.New("tool: directory not empty")
+
+// ErrFileOperationUnsupported is returned by a Workspace whose backing protocol
+// cannot represent a namespace operation (for example ACP has no delete/rename
+// RPC). Callers should surface it as a model-addressable capability limitation.
+var ErrFileOperationUnsupported = errors.New("tool: filesystem operation unsupported")
 
 // ToolSpec is what the model sees for a tool: its name, a documentation-quality
 // description (when to use / when not / example / limits), and the JSON schema
@@ -109,21 +118,21 @@ type FileInfo struct {
 	IsDir bool
 }
 
-// BashToolName is the catalog name of the Bash tool. It is the single authority
-// for the name the Bash tool registers under (used in its Spec().Name) so a
+// ShellToolName is the catalog name of the Shell tool. It is the single authority
+// for the name the Shell tool registers under (used in its Spec().Name) so a
 // consumer can probe the catalog for bash enablement by referencing the constant
 // rather than a local literal that could drift on a rename (see
 // internal/adapter/server.Service.capabilities). It lives in the PORT package
 // (not an adapter) because the permission evaluator special-cases the literal
 // name — a tool named anything else would silently bypass the bash gate — so
-// every Bash implementation must register under exactly this name, and
-// engine/agent's own BashTool cannot import the fstools adapter to get it.
-const BashToolName = "Bash"
+// every Shell implementation must register under exactly this name, and
+// engine/agent's own ShellTool cannot import the fstools adapter to get it.
+const ShellToolName = "Shell"
 
 // CommandRunner executes a shell command. Implementations may run it locally
 // (/bin/sh), in a remote environment, or refuse it (no shell available). The
-// agent loop never references this type — only the Bash tool depends on it,
-// which is what makes the Bash tool (and therefore any command execution)
+// agent loop never references this type — only the Shell tool depends on it,
+// which is what makes the Shell tool (and therefore any command execution)
 // optional in the catalog.
 //
 // BOUND RUNNER (issue #462). A CommandRunner is bound to a single namespace at
@@ -139,6 +148,64 @@ type CommandRunner interface {
 	// (cancellation, timeout, or a missing shell — see ErrNoShell). The command
 	// runs in the runner's bound namespace root.
 	Run(ctx context.Context, command string) (CommandResult, error)
+}
+
+// TemporaryScope selects the runner-owned temporary-storage overlay for one Shell
+// invocation. It is a lifecycle choice, never a filesystem sandbox.
+type TemporaryScope string
+
+const (
+	// TemporaryScopeManaged selects runner-owned disposable storage.
+	TemporaryScopeManaged TemporaryScope = "managed"
+	// TemporaryScopeSystem selects the configured/inherited system directory.
+	TemporaryScopeSystem TemporaryScope = "system"
+)
+
+// CommandTemporaryScopeRunner is the optional CommandRunner capability for a
+// trusted temporary-storage scope selection. Tool arguments select only these
+// closed values; paths and environment values never cross this seam.
+type CommandTemporaryScopeRunner interface {
+	CommandRunner
+	RunWithTemporaryScope(ctx context.Context, command string, scope TemporaryScope) (CommandResult, error)
+}
+
+// CommandTemporaryScopeStreamer is CommandTemporaryScopeRunner's streaming
+// counterpart for background Shell jobs.
+type CommandTemporaryScopeStreamer interface {
+	CommandStreamer
+	RunStreamingWithTemporaryScope(ctx context.Context, command string, scope TemporaryScope, out io.Writer) (exitCode int, err error)
+}
+
+// CommandEnvironmentOverlay is a trusted, per-invocation set of
+// temporary-storage values. It is overlaid onto the runner's complete base
+// environment for one command only; it never changes the runner's bound
+// namespace or later calls.
+//
+// TempDir, GoTempDir, and TestHomeMarker respectively set TMPDIR, GOTMPDIR,
+// and MECATL_TEST_TEMP_LEASE when non-empty. The deliberately narrow shape
+// prevents this capability from restoring or overriding scrubbed credentials.
+// Tool arguments must never supply it.
+type CommandEnvironmentOverlay struct {
+	TempDir        string
+	GoTempDir      string
+	TestHomeMarker string
+}
+
+// CommandEnvironmentRunner is the optional CommandRunner capability for a
+// one-invocation environment overlay. A caller requiring an overlay must fail
+// honestly when its bound runner does not implement this interface; it must not
+// interpolate values into shell text or fall back to Run.
+type CommandEnvironmentRunner interface {
+	CommandRunner
+	RunWithEnvironment(ctx context.Context, command string, overlay CommandEnvironmentOverlay) (CommandResult, error)
+}
+
+// CommandEnvironmentStreamer is the optional streaming counterpart to
+// CommandEnvironmentRunner. It preserves CommandStreamer's bound namespace and
+// output semantics while applying its overlay to one invocation only.
+type CommandEnvironmentStreamer interface {
+	CommandStreamer
+	RunStreamingWithEnvironment(ctx context.Context, command string, overlay CommandEnvironmentOverlay, out io.Writer) (exitCode int, err error)
 }
 
 // CommandStreamer is an OPTIONAL CommandRunner capability for callers that need
@@ -225,18 +292,23 @@ func NewFileVersion(token string) FileVersion {
 	return FileVersion{token: token, valid: true}
 }
 
-// Token returns the adapter-private opaque token this FileVersion carries, and
-// ok reports whether the version is valid (a non-zero FileVersion). The zero
-// value returns ("", false) — it is never an "any version" sentinel — so a
-// caller can distinguish "no version recorded" from "an adapter minted the
-// empty-string token". It is the serializer hook for a planned remote backend
-// that must round-trip an adapter-minted version over the wire: the backend
-// stores the token verbatim and reconstructs the FileVersion with
-// NewFileVersion(token) on the way back. Callers MUST treat the token as
-// opaque (compare with Equal, never inspect its bytes); only a serializer
-// owned by the SAME adapter that minted the version ever reads it.
-func (f FileVersion) Token() (token string, ok bool) {
-	return f.token, f.valid
+// ErrInvalidFileVersion reports an attempt to persist the unusable zero value.
+var ErrInvalidFileVersion = errors.New("tool: invalid zero FileVersion")
+
+// EncodeFileVersion returns the byte-exact transport representation of a valid
+// opaque version. It rejects the zero value; callers must not interpret the
+// returned string.
+func EncodeFileVersion(f FileVersion) (string, error) {
+	if !f.valid {
+		return "", ErrInvalidFileVersion
+	}
+	return f.token, nil
+}
+
+// DecodeFileVersion reconstructs a valid opaque version from its byte-exact
+// transport representation. An empty representation is a valid opaque token.
+func DecodeFileVersion(encoded string) FileVersion {
+	return NewFileVersion(encoded)
 }
 
 // WorkspaceReader is the READ-ONLY subset of Workspace: a rooted, path-scoped
@@ -280,9 +352,9 @@ type AuthorityResourceResolver interface {
 
 // Workspace is the session-scoped seam every Tool executes against. It scopes
 // all paths to a single session root (rejecting escapes such as "../"), exposes
-// the read/search operations the 7 core tools need, and carries the per-session
-// read-ledger + the explicit, unambiguous mutation operations the built-in
-// Edit/Write tools enforce their invariants through (ADR 0208).
+// the read/search operations the core file tools need, and carries the explicit,
+// unambiguous versioned mutation operations the built-in Edit/Write tools use
+// with the Environment's independently selected ReadLedger (ADR 0208, ADR 0281).
 //
 // All paths are relative to the session root unless documented otherwise;
 // adapters must reject any path that resolves outside the root.
@@ -293,8 +365,10 @@ type AuthorityResourceResolver interface {
 //
 //   - ReadVersion returns the content AND the authoritative FileVersion the
 //     adapter currently holds for path. The built-in Read tool records that
-//     version via RecordRead (a pure in-memory store, NO I/O) so a later
-//     Edit/Write can assert read-before-mutate-and-unchanged.
+//     version in the Environment's ReadLedger under LedgerKey(ws.Root(), path)
+//     (ADR 0281: fresh in-memory by default, or explicitly injected durable
+//     storage; the ledger performs NO file-content I/O), so a
+//     later Edit/Write can assert read-before-mutate-and-unchanged.
 //   - Existing-file Write and Edit: require a recorded version, ReadVersion
 //     again to get the CURRENT version, compare the recorded version with the
 //     current version (unchanged-since), and finish with ReplaceFile against
@@ -323,8 +397,8 @@ type Workspace interface {
 
 	// ReadVersion returns the contents of the file at path AND the authoritative
 	// FileVersion the adapter currently holds for it. It is the version-bearing
-	// read the built-in Read tool uses (recording the returned version via
-	// RecordRead). It reads the SAME backing store as the plain Read; the only
+	// read the built-in Read tool uses; that tool records the returned version in
+	// its Environment's separate ReadLedger. It reads the SAME backing store as the
 	// difference is it also mints and returns a FileVersion.
 	ReadVersion(ctx context.Context, path string) ([]byte, FileVersion, error)
 
@@ -354,27 +428,31 @@ type Workspace interface {
 	// Grep returns the matches of a regular expression across files selected by
 	// an optional path glob. Results are capped/shaped by the adapter.
 	Grep(ctx context.Context, pattern, pathGlob string) ([]GrepMatch, error)
+}
 
-	// RecordRead records that path was read at the authoritative version. It is
-	// a PURE IN-MEMORY store: it performs NO I/O and stores the EXACT version
-	// passed (the caller supplies the FileVersion its ReadVersion returned). A
-	// later RecordedVersion lookup compares against this stored token. The
-	// built-in Read tool calls it with the version ReadVersion minted; the
-	// built-in Edit/Write tools call it after a successful CreateFile/ReplaceFile
-	// so a subsequent same-turn Edit stays valid. Ledger-key normalization must
-	// also perform NO I/O: ordinary absolute <root>/<rel> and relative <rel>
-	// forms should converge lexically, while physical symlink aliases may
-	// conservatively miss and force another Read.
-	RecordRead(path string, version FileVersion)
-
-	// RecordedVersion returns the version previously recorded for path via
-	// RecordRead, performing NO I/O. ok is false if path was never recorded or
-	// the live Workspace/ledger was rebuilt. It is the I/O-free
-	// read-before-mutate lookup: the agent-facing Edit/Write tools call it to
-	// assert the file was read this session; they then separately ReadVersion
-	// for the CURRENT version and compare, so a file that changed since the
-	// recorded read is caught by the version comparison, not by this lookup.
-	RecordedVersion(path string) (version FileVersion, ok bool)
+// WorkspaceNamespace is the additive namespace-operation extension implemented
+// by workspaces that can list and mutate path names beyond content replacement.
+// Keeping it separate from Workspace preserves compatibility for consumers whose
+// backing protocol exposes only read/write, while allowing the built-in namespace
+// tools to fail honestly when the capability is absent. An adapter may implement
+// only the operations its protocol can express and return ErrFileOperationUnsupported
+// for the rest.
+//
+// Adapters without explicit directory records may derive directories from file
+// path prefixes. In those adapters empty directories do not exist: ReadDir lists
+// only derived children, and Remove on a derived directory necessarily reports
+// ErrDirectoryNotEmpty. Namespace operations deliberately do not consult or
+// update the Environment's read ledger; that ledger protects content-derived
+// Edit and overwrite-Write operations only.
+type WorkspaceNamespace interface {
+	// ReadDir returns immediate children sorted by name.
+	ReadDir(ctx context.Context, path string) ([]FileInfo, error)
+	// Remove removes one file or empty physical directory, never recursively.
+	Remove(ctx context.Context, path string) error
+	// Rename moves a file or directory and refuses an existing destination.
+	Rename(ctx context.Context, oldPath, newPath string) error
+	// CopyFile copies one regular file to an absent destination and returns its version.
+	CopyFile(ctx context.Context, source, destination string) (FileVersion, error)
 }
 
 // VersionMismatchError is the error ReplaceFile returns when the file's current
@@ -454,7 +532,7 @@ type MemoryEntry struct {
 
 // MemoryStore is the seam for conservative, cross-session ("tiered") memory
 // (harness pattern 3). It is defined here, alongside Workspace and CommandRunner,
-// for the same layering reason: the memory tools depend on it the way the Bash
+// for the same layering reason: the memory tools depend on it the way the Shell
 // tool depends on CommandRunner, and keeping the interface in engine/tool
 // avoids the port↔tool import cycle a separate package would risk.
 //

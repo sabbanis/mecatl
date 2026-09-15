@@ -1,5 +1,10 @@
 # Compiled binaries
 /bin/
+# GoReleaser output (task release:snapshot). Ignored so a local snapshot
+# does not pollute the `git status -sb` check in the cut-release procedure,
+# and so generated markdown inside it stays out of the matlatl corpus
+# (.matlatl.yml sets respectGitignore: true).
+/dist/
 /mecated
 /mecademo
 *.exe
@@ -14,6 +19,9 @@ coverage.*
 # Local scratch
 /.scratch/
 
+# Retired generated documentation index; do not re-add without an explicit decision.
+/llms.txt
+
 # Disposable ToolHive Kind fixture kubeconfig
 /deploy/mecak8s-vmcp/kconfig.yaml
 
@@ -27,6 +35,7 @@ coverage.*
 /.claude/agent-memory/
 
 # Local Claude Code runtime artifacts
+/.claude/plans/
 /.claude/worktrees/
 /.claude/scheduled_tasks.lock
 /mecatui

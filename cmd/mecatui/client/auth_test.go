@@ -25,6 +25,7 @@ func TestAuthFailureUsesTypedLocalCausesAndBearerProvenance(t *testing.T) {
 		{"issuer", &AuthError{Reason: AuthStorageUnavailable}, true, AuthStorageUnavailable},
 		{"cleanup", &AuthError{Reason: AuthCredentialCleanup}, true, AuthCredentialCleanup},
 		{"anonymous server rejection", status.Error(codes.Unauthenticated, "anything"), false, AuthNotEnrolled},
+		{"explicit anonymous server rejection", &credentialFreeAuthError{cause: status.Error(codes.Unauthenticated, "anything"), reason: AuthAnonymousRejected, msg: "rejected"}, false, AuthAnonymousRejected},
 		{"bearer server rejection", status.Error(codes.Unauthenticated, "anything"), true, AuthRejected},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -51,10 +52,34 @@ func TestAuthFailureUsesTypedLocalCausesAndBearerProvenance(t *testing.T) {
 		t.Fatalf("unknown source error classified as %q; want unclassified", reason)
 	}
 	// A reason label never carries caller-supplied text, whichever path produced it.
-	for _, r := range []AuthReason{AuthNotEnrolled, AuthSessionExpired, AuthCredentialUnusable, AuthCredentialUnusable, AuthStorageUnavailable, AuthStorageUnavailable, AuthCredentialCleanup, AuthRejected} {
+	for _, r := range []AuthReason{AuthNotEnrolled, AuthAnonymousRejected, AuthSessionExpired, AuthCredentialUnusable, AuthCredentialUnusable, AuthStorageUnavailable, AuthStorageUnavailable, AuthCredentialCleanup, AuthRejected} {
 		if got := (&AuthError{Reason: r}).Error(); got != "authentication unavailable: "+string(r) {
 			t.Fatalf("AuthError text = %q; must be the closed label alone", got)
 		}
+	}
+}
+
+func TestStorageAuthErrorAddsOnlyClosedActionableDetail(t *testing.T) {
+	for _, tc := range []struct {
+		stage AuthStorageStage
+		want  string
+	}{
+		{AuthStorageTLSCA, "authentication unavailable: storage_unavailable: TLS CA file could not be read; check the --tls-ca path and file permissions"},
+		{AuthStorageConfigDirectory, "authentication unavailable: storage_unavailable: authentication config directory is unavailable; check its ownership and permissions"},
+		{AuthStorageKeyring, "authentication unavailable: storage_unavailable: OS keyring is unavailable; unlock or enable the keyring, then retry"},
+		{AuthStorageCredentialStore, "authentication unavailable: storage_unavailable: encrypted credential store is unavailable; check the authentication config directory ownership and permissions"},
+		{AuthStorageRegistry, "authentication unavailable: storage_unavailable: login registry is unavailable; check the authentication config directory ownership and permissions"},
+	} {
+		err := &AuthError{Reason: AuthStorageUnavailable, StorageStage: tc.stage}
+		if got := err.Error(); got != tc.want {
+			t.Errorf("AuthError{%q}.Error() = %q, want %q", tc.stage, got, tc.want)
+		}
+		if reason, ok := AuthFailure(err, true); !ok || reason != AuthStorageUnavailable {
+			t.Errorf("AuthFailure(AuthError{%q}) = %q, %v", tc.stage, reason, ok)
+		}
+	}
+	if got := (&AuthError{Reason: AuthStorageUnavailable, StorageStage: "untrusted detail"}).Error(); got != "authentication unavailable: storage_unavailable" {
+		t.Fatalf("unknown storage stage leaked into AuthError text: %q", got)
 	}
 }
 

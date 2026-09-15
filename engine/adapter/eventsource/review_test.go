@@ -9,6 +9,7 @@ import (
 
 	"github.com/stacklok/mecatl/engine/adapter/eventsource"
 	"github.com/stacklok/mecatl/engine/adapter/memfs"
+	"github.com/stacklok/mecatl/engine/adapter/memledger"
 	"github.com/stacklok/mecatl/engine/adapter/memstore"
 	"github.com/stacklok/mecatl/engine/adapter/mockllm"
 	"github.com/stacklok/mecatl/engine/adapter/permpolicy"
@@ -32,8 +33,8 @@ import (
 // RecordAssistant in reconstructAwaiting makes this test fail (message count drops to
 // 1 and the final message is the user prompt, not the assistant turn).
 func TestFoldAwaitingPreservesTrailingAssistantTurn(t *testing.T) {
-	call := toolCall("c1", "Bash", `{"command":"ls"}`)
-	ask := session.PendingAsk{AskID: "s1:0:c1:r0", Tool: "Bash", Reason: "needs approval"}
+	call := toolCall("c1", "Shell", `{"command":"ls"}`)
+	ask := session.PendingAsk{AskID: "s1:0:c1:r0", Tool: "Shell", Reason: "needs approval"}
 	evs := []session.Event{
 		{Type: session.EvUserPrompt, Turn: 0, UserPrompt: &session.UserPromptPayload{Text: "run ls"}},
 		{Type: session.EvTurnStart, Turn: 0},
@@ -121,7 +122,7 @@ func TestFoldedAwaitingSessionIsDrivable(t *testing.T) {
 	})
 
 	ws := memfs.NewWorkspace("/ws")
-	env := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: "/ws"}, ws, nil)
+	env := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/ws", Revision: "in-tree-v1"}, ws, memledger.New(), nil)
 	r := e.ResumeApproval(context.Background(), folded, env, askID, session.VerdictAllowOnce)
 	var result *session.ResultPayload
 	for ev := range r.Events() {
@@ -172,10 +173,10 @@ func TestFoldReasoningProviderDivergesOnSnapshotOnlyFields(t *testing.T) {
 		Policy:  permpolicy.NewPolicy(permpolicy.AllowAllFloorRules(), nil),
 		Model:   "test-model",
 	})
-	sess := session.New(sessID, session.ModeDefault, "/ws", session.Limits{}, time.Unix(0, 0))
+	sess := session.New(sessID, session.ModeDefault, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/ws", Revision: "in-tree-v1"}, session.Limits{}, time.Unix(0, 0))
 	ctx := context.Background()
 	ws := memfs.NewWorkspace("/ws")
-	env := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: "/ws"}, ws, nil)
+	env := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/ws", Revision: "in-tree-v1"}, ws, memledger.New(), nil)
 	r := e.Run(ctx, sess, env, agent.RunRequest{Text: "think"})
 	for ev := range r.Events() {
 		if err := log.Append(ctx, sessID, ev); err != nil {
@@ -192,7 +193,7 @@ func TestFoldReasoningProviderDivergesOnSnapshotOnlyFields(t *testing.T) {
 	}
 	folded, err := eventsource.Fold(eventsource.SessionMeta{
 		ID: sessID, Mode: session.ModeDefault, Limits: session.Limits{},
-		Workspace: "/ws", CreatedAt: time.Unix(0, 0),
+		EnvironmentRef: session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/ws", Revision: "in-tree-v1"}, CreatedAt: time.Unix(0, 0),
 	}, log.Read(ctx, sessID))
 	if err != nil {
 		t.Fatalf("fold: %v", err)
@@ -241,23 +242,19 @@ func TestFoldContractDocMatchesSessionFields(t *testing.T) {
 	//     TitleProvenance fallback (seeded from the first genuine EvUserPrompt via
 	//     SetTitle)
 	//   run-scoped (latest segment): Counters
-	//   supplied via SessionMeta (not event-carried): ID, Mode, Limits, Workspace,
-	//     Profile, ProviderID, ModelID, ReasoningEffort, DebugMCPServers,
-	//     DebugMCPTools, DebugTargetFingerprint, Title, TitleProvenance,
-	//     Kind, Relationship, CreatedAt; adoption metadata is supplied via
-	//     SessionMeta and restored as optional Session.Adoption metadata
-	//   not-event-carried identity labels (ADR 0204/0214): Owner, Authority,
-	//     EnvironmentRef — the event annotation is log-only and the fold neither
-	//     requires nor re-derives any of them, so a folded session keeps the
-	//     snapshot-restored value (ownerless stays ownerless, a zero ref stays
-	//     zero — composition stamps it from the first resolved live Environment on
-	//     the next run — never fabricated)
+	//   supplied via SessionMeta (not event-carried): ID, Mode, Limits,
+	//     EnvironmentRef, Placement, Profile, ProviderID, ModelID, ReasoningEffort,
+	//     DebugMCPServers, DebugMCPTools, DebugTargetFingerprint, Title,
+	//     TitleProvenance, TitleGeneration, TitleRevision, Kind, Relationship, CreatedAt, ExternalBinding
+	//   not-event-carried identity labels (also supplied via SessionMeta, via a
+	//     validating helper rather than direct assignment): Owner, Authority
 	wantSessionFields := map[string]struct{}{
 		"ID": {}, "State": {}, "Mode": {}, "Conversation": {}, "Limits": {},
-		"Counters": {}, "Usage": {}, "Workspace": {}, "Profile": {},
+		"Counters": {}, "Usage": {}, "Profile": {}, "EnvironmentRef": {}, "Placement": {},
 		"ProviderID": {}, "ModelID": {}, "ReasoningEffort": {}, "DebugMCPServers": {}, "DebugMCPTools": {}, "DebugTargetFingerprint": {}, "Kind": {},
-		"Relationship": {}, "Adoption": {}, "CreatedAt": {},
-		"Title": {}, "TitleProvenance": {}, "Owner": {}, "Authority": {}, "EnvironmentRef": {},
+		"Relationship": {}, "CreatedAt": {},
+		"Title": {}, "TitleProvenance": {}, "TitleGeneration": {}, "TitleRevision": {}, "Owner": {}, "Authority": {},
+		"ExternalBinding": {},
 	}
 	assertExportedFields(t, reflect.TypeOf(session.Session{}), wantSessionFields,
 		"session.Session — classify the new field in COMPATIBILITY.md's reconstruction contract")
@@ -308,7 +305,7 @@ func keys(m map[string]struct{}) []string {
 // clean — the folded session's latest-segment ConsecutiveFailures must be 0 (the
 // counter is per-run; a terminal EvResult resets the segment).
 func TestFoldMultiRunResetsConsecutiveFailures(t *testing.T) {
-	failCall := toolCall("c1", "Bash", `{}`)
+	failCall := toolCall("c1", "Shell", `{}`)
 	evs := []session.Event{
 		// Run 1: a tool failure, then terminal.
 		{Type: session.EvUserPrompt, Turn: 0, UserPrompt: &session.UserPromptPayload{Text: "first"}},
@@ -367,10 +364,10 @@ func TestFoldRecoversLiveCompactionArchiveHead(t *testing.T) {
 		Model:         "test-model",
 		ContextWindow: func() int { return 1 }, // tiny window → compaction fires
 	})
-	sess := session.New(sessID, session.ModeDefault, "/ws", session.Limits{}, time.Unix(0, 0))
+	sess := session.New(sessID, session.ModeDefault, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/ws", Revision: "in-tree-v1"}, session.Limits{}, time.Unix(0, 0))
 	ctx := context.Background()
 	ws := memfs.NewWorkspace("/ws")
-	env := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: "/ws"}, ws, nil)
+	env := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/ws", Revision: "in-tree-v1"}, ws, memledger.New(), nil)
 	r := e.Run(ctx, sess, env, agent.RunRequest{Text: "do work"})
 	sawArchive := false
 	for ev := range r.Events() {
@@ -387,7 +384,7 @@ func TestFoldRecoversLiveCompactionArchiveHead(t *testing.T) {
 
 	folded, err := eventsource.Fold(eventsource.SessionMeta{
 		ID: sessID, Mode: session.ModeDefault, Limits: session.Limits{},
-		Workspace: "/ws", CreatedAt: time.Unix(0, 0),
+		EnvironmentRef: session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/ws", Revision: "in-tree-v1"}, CreatedAt: time.Unix(0, 0),
 	}, log.Read(ctx, sessID))
 	if err != nil {
 		t.Fatalf("fold: %v", err)

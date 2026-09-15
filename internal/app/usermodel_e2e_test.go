@@ -172,7 +172,7 @@ func TestUserModelE2E(t *testing.T) {
 		OperatorProfileSource: storeB,
 	})
 
-	sess := session.New("sB", session.ModeDefault, "/ws", session.Limits{MaxTurns: 3}, time.Now())
+	sess := session.New("sB", session.ModeDefault, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/ws", Revision: "in-tree-v1"}, session.Limits{MaxTurns: 3}, time.Now())
 	run := eng.Run(ctx, sess, memEnvironment("/ws"), agent.RunRequest{Text: "hello"})
 	for ev := range run.Events() {
 		_ = ev
@@ -216,7 +216,7 @@ func TestUserModelE2E(t *testing.T) {
 	// — the composition-level ephemeral guard. (The Build mock provider is not
 	// request-observable, so the request-side prepend proof stays at the engine layer
 	// above; here we guard the persistence side end to end through the Service.)
-	built, err := Build(ctx, Config{
+	built, err := buildIsolated(t, ctx, Config{
 		Workspace:    workspace,
 		UseMock:      true,
 		UserModelDir: userModelDir,
@@ -228,7 +228,7 @@ func TestUserModelE2E(t *testing.T) {
 	defer built.Close()
 
 	svc := built.Service
-	svcSess, err := svc.CreateSession(ctx, workspace, session.ModeDefault, defaultLimits())
+	svcSess, err := svc.CreateSession(ctx, session.ModeDefault, defaultLimits())
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}

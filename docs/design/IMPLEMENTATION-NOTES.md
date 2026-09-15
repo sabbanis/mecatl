@@ -85,6 +85,54 @@ a future Kubernetes Secret `resourceVersion` CAS backend. See
 
 ---
 
+## Provider OIDC lifecycle
+
+`internal/cliconfig/native_endpoint.go` (`NativeEndpointRuntime`) is the host-owned
+lifecycle reused by an operator-defined OIDC provider. Composition derives its
+canonical provider identity and independently configured issuer and gateway trust
+clients from `providers.<name>.auth.oidc` before opening protected storage. The
+encrypted record is in `mecatl/provider-oidc/v1` beneath the shared
+`credential_store.oidc.home`. `credential_store.oidc.key` defaults to
+`source: keyring`; explicit `source: environment` requires a valid `MECATL_*`
+`key_env` reference containing canonical padded base64 for exactly 32 bytes, reusing
+the MCP OAuth local encrypted-store decoder. The environment source never opens a
+keyring; no fallback, key generation, record migration, or re-encryption is implicit.
+Source/reference are not record identity. Invalid key material fails before storage
+mutation or OAuth, and enrollment checks existing ciphertext before authorization.
+The record identity binds provider name, canonical gateway, exact issuer and client,
+optional resource audience, normalized scopes, redirect, and both trust policy/CA
+digests. A configured audience remains part of the exact identity and is requested and
+matched; omission skips both. No plaintext, environment fallback, migration,
+discovery, or credential material is persisted in sessions/events or exposed over
+RPC.
+
+Only embedded local mecatui supplies the bounded browser/loopback presenter.
+`mecatui providers login PROVIDER` uses the ToolHive-compatible registered redirect
+`http://localhost:8666/callback`; it binds only that host, port, and path, while remote
+`mecatui login ADDRESS` retains `http://127.0.0.1:18473/oauth/callback`. Sharing the
+registered redirect does not share credentials: Mecatl's provider storage remains
+isolated and no ToolHive credential is read or copied. Mecated's loader is browser-free
+and holds its opened source runtimes until Build close. Status uses existing local
+read-only state only, and logout makes exact local deletion authoritative before
+bounded best-effort revocation. The transaction locker is hashed, owner-only,
+context-aware, and holds the lifecycle through exchange and CAS commit; a crash after
+upstream rotation but before local commit may require login. The access token is the
+authorization-code exchange result only—not an ID token or a caller bearer—and gateway
+requests use one pre-stream 401 refresh/retry at most.
+
+The provider inventory is deployment-wide, not a caller entitlement. Mecated drops
+inbound caller bearers after verification and retains only the principal for ownership.
+All admitted callers share the configured gateway identity, quota, gateway-side
+audit/retention posture, and model availability; deploy a dedicated service identity
+and separate deployments for mutually untrusted/per-user upstream authorization until
+an explicit forwarded-token or RFC 8693 exchange contract exists. ADR 0333 replaces
+ADR 0329's configuration façade while retaining that ADR's credential lifecycle and
+custody semantics. See
+[ADR 0333](../adr/0333-unified-provider-configuration-and-mecatui-provider-commands.md)
+and [ADR 0329](../adr/0329-native-llm-endpoint-gateway-credentials.md).
+
+---
+
 ## Caller identity embedding and OIDC module boundary
 
 The engine accepts identity only after verification. `session.PrincipalFromClaims`
@@ -103,7 +151,31 @@ do not project to a principal, and owns an explicit `Close` for the background r
 `internal/cliconfig` adapts those errors to the unchanged server sentinels and retains
 the server-root system context and all existing flag behavior.
 
-### mecak8s projected credentials and Helm runtime contract
+### RFC 9728 protected-resource profile
+
+The optional profile is shared by `mecated` and `mecak8s`: `--oidc-resource`,
+`--oidc-client-id`, and CSV `--oidc-scopes` are parsed once in
+`internal/cliconfig` and projected by the HTTP metadata handler. RFC fields
+`resource`, `authorization_servers`, `bearer_methods_supported: ["header"]`, and
+optional `scopes_supported` are kept distinct from mecatl extensions for audience
+and client ID. Discovery is
+anonymous HTTPS bootstrap and transport-separated from authenticated gRPC; it
+never adopts private issuer trust settings. The discovery client uses its configured
+15-second `http.Client` timeout (rather than calling its transport directly), and
+root resources with or without a trailing slash derive the same metadata URL. A
+saved root-resource hostname and its full resource URL are aliases; legacy
+`host:port` targets remain supported and ambiguity fails closed. `scopes_supported`
+is a narrow operator-configured public-client request allowlist, not authorization
+policy: discovered login requests an advertised `scopes_supported` set exactly, while
+an omitted member selects the fixed `openid,profile,offline_access` baseline. Discovery
+rejects `--scopes`; administrators configure `oidc.scopes` for other scopes. It never
+expands a saved enrollment from later metadata. Explicit identity login retains its
+`--scopes` override. API 401s on subordinate routes remain generic `Bearer`; only the
+direct configured well-known route serves metadata. Public-client
+token exchange and refresh use `client_id` parameters, never HTTP Basic. ToolHive/
+ToolHive-Core are recorded
+as implementation provenance for the client path, not imported by the engine.
+
 
 `internal/adapter/tlsreload` owns mecak8s server-certificate loading, complete-chain
 validation, atomic last-valid publication, projected-Secret watching, and a fixed periodic
@@ -112,16 +184,25 @@ retains only static client-CA loading and lifecycle closure. Invalid rotations r
 prior generation. Expiry diagnostics warn once per published generation with only an
 `expiring`/`expired` reason and rounded remaining duration; they never disable the published
 certificate or expose paths, subjects, serials, or PEM. Close joins watcher and observer.
-`internal/adapter/redisstore` similarly swaps a fully probed client generation for file-backed
-CA/ACL changes while leases keep displaced clients alive for in-flight work. Acquisition returns
-the concrete client explicitly through every helper and iterator; only the migration acquisition
-identity remains in context. A followed credential target must be regular. Shutdown rejects new
-work first, closes the watcher, cancels reload, and separately bounds the worker join; an
-uncancellable late read cannot publish into the closed generation manager. Generation retirement
-claims close once and executes it asynchronously. One fixed generation grace bounds both live
-leases and close completion without force-closing active clients; a timeout emits one count-only
-warning and eventual releases/closes continue. Reload retries use bounded jittered exponential
-delay, with a newer projection event explicitly restarting at attempt one. Partial or invalid
+`internal/adapter/redisstore` swaps a fully probed client pair for file-backed
+CA/ACL changes while leases keep displaced generations alive for in-flight work.
+Each generation contains a durability client with the standard connection
+defaults and an isolated follow client built through ToolHive Core v0.0.46 and
+`redisconn` v0.0.2. The follow client's `PoolSize` and `MaxActiveConns` equal
+`Config.FollowPoolSize`; a separate `followerRegistry` admits at most
+`Config.MaxFollowers` full iterators. Zero selects 32 for both, and
+configuration requires `1 <= MaxFollowers <= FollowPoolSize`. Acquisition
+returns the selected concrete client through every helper and iterator; only the
+migration acquisition identity remains in context. A followed credential target
+must be regular.
+Shutdown rejects new work first, closes the watcher, cancels reload, and
+separately bounds the worker join; an uncancellable late read cannot publish
+into the closed generation manager. Generation retirement claims close once and
+runs asynchronously. Store shutdown cancels admitted followers, waits
+cooperatively, and may force-close only isolated follow clients before the fixed
+total grace expires. Durability clients remain lease-safe. Reload retries use
+bounded jittered exponential delay, with a newer projection event explicitly restarting
+at attempt one. Partial or invalid
 rotations retain the previous generation. The
 server client-CA pool remains static and requires restart; CA rotation should overlap old
 and new roots before removing the old root.
@@ -138,7 +219,11 @@ Chart-owned annotations (`mecatl.stacklok.com/unsafe-real-provider`,
 release cannot forge or clear its own posture stamp. Empty provider/model
 and null token ceilings emit no flags; explicit ceilings are positive. Scheduling controls
 are empty by default and map directly to pod-spec topology spread, affinity, node selector,
-and toleration fields. The comprehensive production fixtures pin external verified Redis,
+and toleration fields. `redis.follow.poolSize` and
+`redis.follow.maxFollowers` default to 32. The schema requires positive
+integers,
+and the template helper requires the follower limit to fit within the pool. The
+comprehensive production fixtures pin external verified Redis,
 both secure transport options, provider/model, finite run/team ceilings, and hostname
 spreading; Kind remains mock and secret-free.
 
@@ -158,18 +243,14 @@ non-main kinds. `engine/adapter/sessnap/sessnap.go`, every SessionStore adapter
 Restore rejects invalid combinations; a legacy absent kind becomes fail-closed
 `unknown` rather than gaining main-session continuation posture.
 
-Explicit legacy adoption (issue #593) remains a server/composition authority boundary,
-not an aggregate transition. `PreflightSessionAdoption` accepts only an authenticated,
-caller-owned `unknown` snapshot with a complete tool-paired transcript at an idle/terminal
-boundary and no reserved child/team/parallel/scheduled prefix or relationship. It reports
-stable reason codes and requires explicit workspace/`EnvironmentRef` plus provider/model
-bindings; resolution failures never fall through to defaults. `AdoptSession` repeats the
-checks while holding the source's `runEntryMu` and mutation lease, copies through the
-existing cross-provider state-stripping discipline, and saves one fresh main aggregate with
-optional `Adoption` metadata containing the source ID and a caller/source/request-bound digest. The deterministic opaque target
-ID makes a lost-response retry return that complete snapshot. Foreign and absent sources are
-both `ErrNotFound`; the source is never reopened, relabelled, or saved. There is no bulk,
-automatic, or client-transcript-upload path.
+Legacy/custom `unknown` sessions remain inspect-only. There is no adoption or
+preflight operation, no adoption metadata, and no client-supplied replacement workspace or
+placement authority. New writable main sessions come only from ordinary server-owned creation
+or from `ClearSession`/`ForkSession` successors of an owned main source: Clear starts with empty
+history, Fork copies valid history, and both inherit the source's exact `EnvironmentRef` unless
+they consume a fresh source-scoped worktree selector. The successor path reauthorizes and
+serializes the source under the mutation lease; failure publishes no partial target and leaves
+the source unchanged.
 
 ---
 
@@ -305,10 +386,18 @@ expected report sections → delimited debugger-runtime context. The objective i
 or custom `--prompt`; the runtime block is compatibility/transport context, never target
 evidence. A safely classified lookup failure leaves unavailable fields but does not block
 that turn or expose the raw error. Durable authority, safety, and source hierarchy remain in
-`applyDebugSessionPosture`'s stable Role rather than dynamic runtime text. The ordinary padded header carries
-amber/bold `DEBUG target #<digest>` immediately after `mecatui`; width pressure removes
+`applyDebugSessionPosture`'s stable Role rather than dynamic runtime text. The ordinary padded
+header carries amber/bold `DEBUG target <handle>` immediately after `mecatui`; its fixed
+12-column handle renders safe `[A-Za-z0-9._-]` bytes literally except that a leading `-` is
+encoded as `%2D`, and renders every other UTF-8 byte as uppercase `%HH`, keeping only complete
+atoms that fit. It has no leading `#`. A syntactically valid short target consults the complete
+caller-visible inventory: exact full-ID equality wins, otherwise one unique projected match
+resolves. Multiple projected matches stop before create and direct the operator to copy the exact
+ID from `/session` and pass it as `TARGET` through the same command. A zero match or inventory
+failure passes `TARGET` unchanged to the server's existing exact-ID authorization/not-found path.
+Width pressure removes
 model/mode/server detail before that complete identity, `/session` shows and copies the
-safely quoted exact target ID, and the target-derived title remains. Binding-breaking
+safely quoted exact target ID, and the target-derived title uses the same handle. Binding-breaking
 controls stay disabled. Live target following, raw audit/tool-record inspection, packet capture,
 raw logs/pprof, and support bundles remain out of scope. See [ADR 0254](../adr/0254-session-debugger-admin-transport.md) and [ADR 0255](../adr/0255-sanitized-network-attempt-evidence.md).
 
@@ -374,16 +463,35 @@ transient provider failure). Regression:
 
 ---
 
+## Agent-facing model discovery (issue #1064, phase 1)
+
+`internal/app/agent_model_discovery.go` owns both the atomic resolved inventory and the
+read-only `DiscoverModels` tool. `buildCatalog` seeds that inventory once from
+`modelSnapshot`; `server.Config.ModelInventory` makes `Service.ListModels` read the same
+source, and `Service.SetModels` publishes live refreshes through it. There is no second
+lister, registry, cache, provider probe, or config path. The common `assembleCatalog`
+registration gives shared, selector-session, and no-FS catalogs the tool without a
+filesystem dependency.
+
+The model-facing projection carries only `provider_id`, `model_id`, display name,
+image/reasoning flags, and context limit. Exact provider/model filters plus a limit are
+the complete argument vocabulary; unknown fields are rejected with a fixed error that
+does not echo input. Results default to 20 entries, cap at 50 complete handles and 32
+KiB, and preserve duplicate model IDs under distinct providers. The stable prompt Role
+states that the provider/model pair is the exact selection handle and that discovery
+does not mutate the current session.
+
+---
+
 ## Model-switch context carryover (issue #20)
 
 When the mecatui `/models` picker confirms a model switch, the client calls
-`CreateSessionWithCarryover` (`cmd/mecatui/client/client.go`) which sets
-`source_session_id` on the `CreateSessionRequest`. A model switch ALWAYS keeps the
+`CreateSessionWithCarryover` (`cmd/mecatui/client/client.go`), a wrapper over the
+server-owned `ForkSession` successor operation. A model switch ALWAYS keeps the
 conversation (seamless UX — no confirm overlay, no same-provider gate; `/clear` is the
-fresh-start verb). The server-side `Service.validateCarryover`
-(`internal/adapter/server/service.go`) loads the source session, canonicalises each
-side's provider (empty ⇒ the server default), and snapshots the conversation via
-`session.ForkSnapshot` (the ADR-0065 fork primitive). Carryover is allowed across ANY
+fresh-start verb). `createPlacedSuccessor` (`internal/adapter/server/placement_successor.go`)
+loads and mutation-leases the source, inherits its exact placement, resolves model/provider
+overrides, and snapshots the conversation through `providerCarryoverSnapshot`. Carryover is allowed across ANY
 provider: SAME provider → the snapshot is returned VERBATIM (provider-private replay
 blobs — `Message.Reasoning`/`ProviderPhase`/`ToolCall.ItemID` — replay intact, keeping
 the prompt-cache prefix warm); DIFFERENT provider → the snapshot is STRIPPED to a
@@ -485,7 +593,7 @@ explicit/declarative/remembered trust works on both roots. Thus every valid trus
 steering and shell, and a headless untrusted repo gets neither. No second synchronized ingestion or
 shell grant exists. `narratePosture` runs after `resolveTrust`, so its `trust_project` and
 `project_ingestion` fields are authoritative and cannot contradict `narrateTrust`. No engine API
-change — composition-only. See ADR 0095 and `docs/usage/workspace-trust.md`.
+change — composition-only. See ADR 0095 and `user-docs/features/permissions-and-posture.md`.
 
 `AllowAllTools` is still implemented as a **rule** (a single `ScopeCLI` allow-all from the shared
 `yoloAllowAllRule` in `internal/app/build.go`), NOT a `PermissionMode` and NOT an evaluator bypass —
@@ -650,6 +758,16 @@ flushes the assistant and reconstructs StateCompleted, exactly matching
 `terminateComplete`; the latter intentionally remains a completed state because the
 provider delivered a clean terminal chunk rather than an interrupted iterator.
 
+**Safe HTTP rejection display.** `engine/port/httpdisplay.go`
+(`AppendHTTPErrorDisplay`) gives independently versioned providers one stdlib-only
+projection for structured HTTP/API rejections: the actual target's scheme, host, optional
+valid port, and clean escaped path plus at most one bounded opaque request/correlation ID.
+It strips userinfo, query, and fragment and omits malformed values. The SDK error remains
+unwrap-only, retry/classification metadata is unchanged, and in-band SSE failures do not
+invent HTTP evidence. Raw bodies, headers, arbitrary URLs, prompts, credentials, and IDs
+remain absent from user-visible display and durable attempt evidence. See
+[ADR 0309](../adr/0299-safe-http-rejection-display-evidence.md).
+
 **Prompt-free failed-step retry.** `engine/session/session.go` (`PrepareFailedStepRetry`) accepts
 only a failed typed Retryable attempt at Precommit or Visible, repairs an interrupted
 tool tail, resets to idle, and records aggregate-owned retry intent. The intent stays
@@ -700,7 +818,11 @@ URLs, headers, and credentials never enter emitted fields.
 
 The three provider modules attach only safe facts exposed by their wire protocols:
 `provider/openai/stream.go`, `provider/openaichat/openaichat.go`, and
-`provider/anthropic/anthropic.go`. ToolHive is composed over the same OpenAI Responses
+`provider/anthropic/anthropic.go`. For an HTTP API rejection, each keeps the typed
+SDK error unwrap-visible for classification but projects only its structured type or
+code plus message to terminal `Result.error` (`type-or-code: message`); raw response
+bodies, request URLs, and request/correlation IDs remain undisplayed. In-band SSE
+errors retain their existing rich presentation. ToolHive is composed over the same OpenAI Responses
 adapter in `internal/app/registry.go` (`newGatewayEntry`), so it can report only what
 the gateway and adapter expose. Missing metadata stays missing; no text parsing or
 fabrication fills it in.
@@ -724,20 +846,78 @@ config resolves per-session against that root without a mutate-capable handle; `
 `engine/adapter/wallclock`, wired in `engineDepsForProvider`/`newChildEngineWithHooks`
 (issue #53 — previously never injected, leaving all latency observations zero).
 
-**Provider request session correlation (issue #543).**
-`engine/agent/loop.go` (`startRun`) overwrites the run context with the exact
-loaded `session.SessionID` via `engine/port/sessioncontext.go` (`WithSessionID`),
-shipped in `engine/v0.11.0`, so regular and awaiting-resume runs share one binding seam and nested engines replace a
-parent binding with their own child/member/auxiliary ID. Compaction receives that
-same context and therefore uses the parent run ID. The three real HTTP adapters read
-it at request time and add `X-Mecatl-Session-ID` through SDK per-request options:
-`provider/openai/openai.go` (`Stream`),
-`provider/openaichat/openaichat.go` (`Stream`), and
-`provider/anthropic/anthropic.go` (`Stream`). No provider instance stores
-session identity. Absent or Go-illegal header values are omitted without changing
-the inference request; legal values remain exact. The proprietary field is
-correlation-only, never auth, tracing, idempotency, provider state, user/safety
-identity, or cache identity ([ADR 0216](../adr/0216-provider-session-correlation-header.md)).
+**Provider request session correlation and ingress affinity (ADR 0294).**
+The stdlib-only root transport package `contracts/sessionaffinity` owns `HeaderName`,
+`MaxValueBytes`, and `ValidValue`: `X-Mecatl-Session-ID` must be at most 256 bytes of
+non-empty printable ASCII
+(`0x20`–`0x7e`) without leading or trailing space, and consumers preserve its bytes
+exactly. External session IDs outside that cross-transport set remain usable while
+clients omit affinity and remove a stale caller-supplied affinity header while retaining
+unrelated headers; only an explicit raw `withSessionAffinity` bind throws. Debug-session creates bind the target ID; ordinary creates carry no affinity because server-owned placement removed source-session creation. gRPC and HTTP accept a
+missing value for compatibility but reject duplicates, illegal values, and byte
+mismatches before work with one non-disclosing error. The HTTP side compares against
+the decoded path ID. Routing grants no authority; caller authentication/ownership and
+lease admission run independently.
+
+`engine/agent/loop.go` (`startRun`) overwrites the context with the loaded aggregate ID
+through `engine/port/sessioncontext.go` (`WithSessionID`). Therefore regular,
+awaiting-resume, child/member, compaction, retry, and fallback requests agree: the
+provider ID comes from the run context, never from ingress metadata or provider-instance
+state. `provider/openai/openai.go`, `provider/openaichat/openaichat.go`, and
+`provider/anthropic/anthropic.go` attach it through per-request SDK options. Absent or
+illegal run values are omitted without changing inference. Their private validators
+deliberately retain ADR 0216's broader outbound-provider rules (including values outside
+the official browser/gRPC affinity set) because independently versioned provider modules
+stay release-independent and do not import the root transport package.
+
+**Session mutation ownership, lease loss, close, and drain (ADR 0294).**
+`internal/adapter/server/mutation_capability.go` (`SessionMutationCapability`) is the
+process-local gate shared by the `Service`, guarded SessionStore, EventLog, and
+ToolCallRecorder paths. `acquireMutationLease` extends lease ownership from prompt entry
+to every out-of-band session-family mutation. No-lease mode leaves the gate disabled
+and behavior unchanged; `ErrLeaseUnsupported` disables it with the existing sticky
+fallback.
+
+`internal/adapter/server/service.go` (`onLeaseLost`) invalidates the session capability
+before removing/cancelling the local run. Run, retry, and awaiting-resume install a
+cancellable provisional `runState` before acquisition or engine construction, then
+atomically promote it only while the drain gate and exact held lease remain valid.
+Thus later save/delete/event/tool/metadata and sidecar operations fail locally; local invalidation is not backend fencing:
+a call admitted before loss may still complete,
+and stores carry no lease token or epoch. For an awaiting run, `persistMu` orders the
+save, local awaiting marker, live approval, and live cancellation as one lifecycle
+transaction. A control that arrives during the save waits for it to finish. A control
+that wins before the relay starts marks the ask stale before waking the run, so the
+delayed relay skips the awaiting snapshot. After crossing the barrier, each control
+revalidates that the captured `runState` is still the exact registry entry before it
+signals the run. The Service retracts local ask delivery and prevents later relay
+persistence, but leaves the durable `PendingAsk` unresolved and byte-identical for TTL
+takeover. Settled stale run
+references remove heavyweight held-lease/capability tombstones; the lightweight
+`lostOwnership` denial otherwise fails every ordinary caller fast so that a stale
+Service cannot reacquire. It is cleared by explicit local session teardown
+(`CloseSession`), or automatically by the composition-level stale-session sweep's
+`ReconcileLeaseLossTombstone` (issue #1334): a bounded trial Acquire+immediate-Release
+against the real backend proves the lease is genuinely free before the tombstone is
+dropped, letting the next real run-entry repair the session (Interrupt for cancelled,
+the awaiting-resume machinery for awaiting) without waiting for teardown or a process
+restart. That trial is serialized against `onLeaseLost`'s own Release for the same id
+via a dedicated per-id lock (`leaseLossMu`), since `engine/port.SessionLease`'s
+same-id calls are caller-serialized and a conforming backend need not make an
+overlapping Acquire/Release safe on its own.
+
+The gRPC in-stream approval path also enters a Service-owned live-run gate: holding the
+Service mutex orders the verdict against lease invalidation before it reaches the parent
+run's approval router, including surfaced child asks. `CloseSession` rejects a live running or awaiting owner before teardown or lease
+release. A runless persisted awaiting session may close resources without modifying its
+resume point. `GracefulDrain` calls `Drain` first, snapshots local runs, marks awaiting
+ones preserve-durable, releases lease-only sessions, cancels executing runs, waits for
+the relay's settlement, and consults that sticky preserve-durable bit (not the relay's
+mutable awaiting marker) before any terminal save, then releases. Timeout
+uses `retainLeaseForTTL`: stop renewal and invalidate locally, but never explicitly
+release an unjoined owner. The modeled handoff is stream drop plus client retry after
+TTL, successor acquisition, Redis reload, and existing `Abandon` repair; it is not a
+Gateway/EndpointSlice proof or live owner forwarding.
 
 ## Application — `engine/agent/` (subagent workspace policy)
 
@@ -796,14 +976,17 @@ was observed announcing actions without emitting the tool calls). `EvNoProgress`
 `type`/`stop` are strings, not enums), so no proto regen was needed; mecatui renders
 `EvNoProgress` as a muted notice and `StopNoProgress` as a `stopped · no progress` footer label.
 
-**Token budget — the shared loop-level ceiling (`StopBudget`).** `agent.Deps.MaxRunTokens`
+**Token budget — the per-engine loop-level ceiling (`StopBudget`).** `agent.Deps.MaxRunTokens`
 (0 = disabled) is a cumulative token ceiling checked at each turn BOUNDARY in
 `Engine.drive` (Step 2, after the existing `sess.StopReason()` and `ctx.Err()` checks, before
-`BeginTurn`) against the session aggregate's accumulated `session.Usage` via
-`Usage.TotalTokens()` (`engine/session/session.go` (`RecordUsage`)). Usage is persisted and
-survives `Reopen`/`Interrupt`/`Recover`, so the ceiling remains cumulative across resumed runs
-and restart; a resumed child can therefore stop before new work when its inherited budget is
-already spent. Input+output count; cache tokens are excluded because `CacheReadTokens` is a
+`BeginTurn`) against lifetime main usage since the run's immutable baseline. The
+baseline is zero for ordinary runs, so persisted `session.Usage` — the deprecated
+compatibility mirror of canonical `token_usage[main].Total` — keeps the ceiling cumulative
+across `Reopen`/`Interrupt`/`Recover` and restart. The team lead's final synthesis run
+and exactly one cleanup re-drive for a free-text Subagent that stopped at `StopBudget`
+capture the current main total as their baseline, giving each bounded deliverable phase a
+fresh allowance without resetting durable accounting. All ordinary calls, other retries,
+and auxiliary operations retain the zero baseline. Input+output count; cache tokens are excluded because `CacheReadTokens` is a
 subset of `InputTokens`, `CacheWriteTokens` is a side cost, and `ReasoningTokens` is likewise a
 subset of `OutputTokens` (providers bill reasoning as part of the inclusive output total, so
 adding it would double-count). The subset invariant holds CROSS-PROVIDER because the
@@ -815,7 +998,7 @@ UNDERCOUNTED Anthropic runs (cache-served prompt tokens never hit the budget). T
 breakdown is surfaced the same way: OpenAI's `output_tokens_details.reasoning_tokens` and
 Anthropic's `output_tokens_details.thinking_tokens` map to `ReasoningTokens` at the same two
 adapter mapping sites, as an additive observability field (NOT a budget-semantics change).
-When `total.TotalTokens() >= MaxRunTokens` the loop ends via
+When `sess.Usage.TotalTokens() >= MaxRunTokens` the loop ends via
 `terminateComplete(…, session.StopBudget, …)` — a NON-error completed-state terminal
 (Reopen-recoverable), not a promise that a delegated deliverable is complete. The boundary check
 means an in-flight turn always COMPLETES (no mid-stream abort → no-replay-after-first-chunk holds);
@@ -823,14 +1006,18 @@ a turn whose usage massively overshoots still finishes, then the budget trips be
 It is NOT a `port.LLMRequest` field (the request stays provider-neutral) — it is composition-tunable
 (`app.Config.MaxRunTokens` → `--max-run-tokens`) and INHERITED by every engine via
 `engineDepsForProvider`; `childEngineDepsForProvider` delegates there and does NOT clear it, so
-Subagent/team-member/lead/Parallel children inherit the same ceiling. `StopBudget` is the
+Subagent/team-member/lead/Parallel children inherit the configured value as an
+independent ceiling against their own persisted session usage. Parent usage and
+`EvResult` do not fold in child spend, so a delegation tree can exceed `MaxRunTokens`;
+cross-tree aggregate observability and enforcement are deferred and out of scope.
+`StopBudget` is the
 PER-ENGINE half of the AGENT-TEAMS-SPIKE's named "Deferred 4A" brake — landed once for every
-delegation path and cumulative over that session's persisted usage; the team-AGGREGATE half is the
-separate `WithTeamTokenBudget` below. `Reopen` does not reset usage. The deliberate delivery-only
-exceptions reset it explicitly: an empty budget-stopped Subagent's single salvage attempt in
-`engine/agent/subagent.go` (`salvageEmptyStop`) and the lead's required team synthesis in
-`engine/agent/teamsupervisor.go` (`synthesise`). Neither makes a best-effort summary guaranteed.
-`StopBudget` is a STRING passthrough on the wire (`session.StopBudget = "budget"`, no proto enum).
+delegation path and cumulative over that session's persisted usage. The team lead's
+synthesis baseline is internal run state; it is neither persisted nor externally selectable.
+A budget-stopped free-text Subagent gets exactly one cleanup re-drive with the same
+non-mutating current-main-usage baseline; other salvage/retry paths retain the zero
+baseline. `StopBudget` is a
+STRING passthrough on the wire (`session.StopBudget = "budget"`, no proto enum).
 Guards: `agent.TestBudget*`, `session.TestStopBudgetIsCleanReopenableTerminal`,
 `server.TestServiceBudgetSurfacesAndReopens`, `app.TestMaxRunTokensPropagatesToParentAndChild`.
 
@@ -856,7 +1043,7 @@ status:" line both state the budget stop, so BOTH entry points surface it. It is
 (`app.Config.MaxTeamTokens` → `--max-team-tokens`; `server.Config.TeamTokenBudget` for the gRPC
 CreateTeam path; `agent.WithTeamToolTokenBudget` for the in-catalog Team tool) and a per-call Team
 `max_team_tokens` may only TIGHTEN it (`tightenLimit`). It is ORTHOGONAL to the per-engine
-`MaxRunTokens` (which bounds each member session's cumulative usage); both compose. The Supervisor
+`MaxRunTokens` (which bounds each member session's own cumulative usage); both compose. The Supervisor
 sum (`TeamOutcome.Usage`) is authoritative for the budget gate; the TeamTool sink's `turn.end` sum
 (`memberEventUsage`) stays authoritative for the `EvTeamEnd` payload — they are equal by
 construction, documented not reconciled. Guards: `agent.TestTeamTokenBudget*` /
@@ -1130,7 +1317,7 @@ ever reached `cfg.Model`) — the review must-fix that closed the chain.
 **Per-slot scoping (deliberate non-goal this slice).** The allowlist is a FLAT set with no per-slot
 dimension: a model allowlisted as a cheap default may also be bound by a trusted project to the
 `guardrail`/`ask-reviewer` safety-checker slots. Acceptable (the operator approved the model) but
-coarser than "approved models" implies — documented in usage.md + ADR 0030 as an operator caveat;
+coarser than "approved models" implies — documented in `user-docs/features/choose-models.md` + ADR 0030 as an operator caveat;
 per-slot scoping is a future follow-up.
 
 **CLI-key survival (the precedence mechanism).** `captureCLIModelKeys(cfg)` snapshots which model keys
@@ -1387,7 +1574,7 @@ classifications + the parent-usage folds, so NO new lock is added to `parallel.g
 cancelled-before-start branch carries neither (never routed). Composition's
 `buildParallelEngineFactory` (`internal/app/build.go`, sibling of `buildSubagentEngineFactory`)
 mints the routed branch engine through `childEngineDepsForProvider` over the parallel branch
-catalog (Read/Grep/Glob/Edit/Write + Bash), using the routed model DIRECTLY (NOT
+catalog (Read/Grep/Glob/Edit/Write + Shell), using the routed model DIRECTLY (NOT
 `resolveDefaultChildModel`, which would re-run the def-less chain and discard the routed id);
 `registerParallelTool` wires it unconditionally (inert without a `routeTask`).
 NO new outlives-a-call resource (ADR 0027 List 1): the routed engines are per-call /
@@ -1406,7 +1593,7 @@ surface end-to-end on the proto/client wire, NOT session-struct-only: `routed_ca
 `Parallel` message (branch_start, fields 19/20). `toProtoTeam`/`toProtoParallel` populate
 them from the payload (both relays flow through the one mapper), the mecatui client structs
 (`client.TeamMemberSpec`, `client.ParallelMsg`) carry them via the generated getters, and
-mecatui renders a muted `routed: <category> → <model>` cue on the ctrl+a Teams roster row
+mecatui renders a muted `routed: <category> → <model>` cue on the f6 Teams roster row
 (`teamRosterLine`) and the Parallel group-focus branch row (`parallelBranchLine`) — reusing
 the Subagent router's `subagentRoutedLabel` helper, absent when unrouted. Bare metadata only
 (gauntlet #7). The LIVE e2e specs (`team_router_test.go` / `parallel_router_test.go`) assert
@@ -1462,10 +1649,10 @@ child's Role appends `explorerReferencesInstruction` (via `explorerPromptConfig`
 so the child ENDS its summary with a `References:` block listing relevant file paths (path or
 path:line) — model-visible by construction (it shapes the child's output → the RESULT text). It is
 DISTINCT from the shared `defaultTone` "Cite code as file_path:line" inline-citation sentence. The
-read-only explorer tool surface `{Read, Grep, Glob, +sandboxed Bash when runner != nil}` is now
+read-only explorer tool surface `{Read, Grep, Glob, +sandboxed Shell when runner != nil}` is now
 `readOnlyExplorerCatalog(runner)` — ONE definition shared by `buildChildEngine`,
 `buildSubagentEngineFactory` (byte-identical), and `buildForkChildEngine`'s read-only base (which then
-layers Edit/Write). The team-member catalog is DELIBERATELY NOT built from it (its Bash gating
+layers Edit/Write). The team-member catalog is DELIBERATELY NOT built from it (its Shell gating
 differs: `spec.Mutating || roIsolationAvailable` + the `isolateReadOnly` side-effect). Guard:
 `app.TestExplorerPromptInstructsReferences`.
 
@@ -1505,7 +1692,7 @@ the mecatui fleet lane, and the SAME payload field is appended to the ACP `subag
 `ParallelPayload` deliberately gains NO proto field: a branch failure already
 reaches the model through the `Parallel` ToolResult text, which is what `failReason` feeds. In
 mecatui the inline Subagent card needs no new slot (the server-composed error body already carries
-the cause and the card renders it in its result slot); the ctrl+a fleet FOCUS pane gains a
+the cause and the card renders it in its result slot); the f6 fleet FOCUS pane gains a
 `failed: <cause>` block (`subagentFailureLine`) — rune-clamped for HEIGHT and word-wrapped to
 `cardTextWidth(width)` via the same `indentWrap` pair the /skills + /agents inventory panels use, because
 `renderSubagentFocus`'s widest line directly sets the overlay card's width and `centerCard`/
@@ -1553,9 +1740,10 @@ limit/budget stops only; it is now ANY empty terminal stop — `isEmptyTerminalS
 `StopMaxTurns`/`StopMaxToolCalls`/`StopBudget`/`StopNoProgress`/(defense-in-depth) `StopEndTurn`,
 gated by a blank-finalText guard so a normal text answer is untouched. Stage 1 is `salvageEmptyStop`
 (renamed from `salvageEmptyLimitStop`): ONE bounded wrap-up turn (`child.Reopen()` + `MaxTurns=1` pin
-+ the `salvageWrapUpPrompt`) to coax a partial summary — `ResetUsage` runs for `StopBudget` ONLY
-(mirroring `Supervisor.synthesise`; `StopNoProgress`/`StopEndTurn` keep their carried budget braking
-the salvage turn). Stage 2, if the salvage ALSO produced nothing, is `digestChildActivity`: the
++ the `salvageWrapUpPrompt`) to coax a partial summary. For exactly one `StopBudget`
+cleanup re-drive, the current main total is its non-mutating baseline; all other salvage
+paths retain the zero baseline. Stage 2,
+if the salvage ALSO produced nothing, is `digestChildActivity`: the
 child's last non-empty `RoleAssistant` text walked backwards out of its own history (the
 `closeOutInterruptedTurn` idiom), clamped (`clampRunes`, not `clampPreview` — multi-line own-output,
 not a peer preview) and framed by `recoveredDigestPrefix`. Only when BOTH stages are empty does the
@@ -1668,11 +1856,11 @@ TextconvDoesNotFire)`.
 0040's writable path).** `Subagent` has a `mode` arg (closed set
 `{"","read-only","read-write"}`); a `mode:"read-write"` call runs its child
 DIRECTLY against the REAL parent workspace — NO fork, NO copy, NO merge-back. Its
-Edit/Write/Bash mutate the real tree IN PLACE, exactly as the main agent does, and
+Edit/Write/Shell mutate the real tree IN PLACE, exactly as the main agent does, and
 git is the rollback layer. The writable child engine
 (`buildWritableSubagentChildEngine`, role `task:read-write`) LAYERS Edit/Write onto
 the read-only explorer catalog and uses the MAIN session's command runner
-(`buildCommandRunner` — main-session parity: a writable child's Bash hits the real
+(`buildCommandRunner` — main-session parity: a writable child's Shell hits the real
 repo, so it must resolve as the main session's does under the operator's
 posture/policy, not the trust-ungated force-copy runner). It is DEFAULT-wired (no
 flag, no `Config`; the no-FS profile excludes it); the per-call default stays
@@ -1692,7 +1880,7 @@ in the tree — there is no fork to quarantine them; that is the accepted direct
 trade-off. The
 writable child posture is `isolated:false` (it shares the real tree), so
 `governance.IsolationApprovable` (the A2 isolation auto-approve) does NOT apply to
-its Bash. Wired via `WithWritableChildEngine` only (the now-removed
+its Shell. Wired via `WithWritableChildEngine` only (the now-removed
 `WithWritableChildForker`/`WithSubagentAutoMerge` were a clean break — see
 `engine/CHANGELOG.md`). **Dispatch-serial (the LOAD-BEARING correctness fix).** A
 direct-write child mutates the real tree DURING its run, so the dispatcher MUST keep
@@ -1767,7 +1955,7 @@ investigator stalled, resume it with write access to apply the fix" is legal —
 worktree is gone. `editsSurvived` is `writable && the resumed snapshot's persisted Workspace == the
 real parent root` (captured BEFORE `buildChildSession`'s `Rehome` overwrites it, so no new persisted
 field is needed). The INVERSE falsehood
-is the worse one: a read-only child has no Edit/Write but DOES have Bash in that worktree, so it may
+is the worse one: a read-only child has no Edit/Write but DOES have Shell in that worktree, so it may
 genuinely have applied edits, and a child that trusts absent edits builds on nothing. The third cell
 exists because keying only on the edits axis handed that same call `resumeStalenessNote` — "you are
 running in a FRESH workspace checkout" — while it held Edit/Write on the operator's REAL repository
@@ -1929,7 +2117,7 @@ worded FAMILY-NEUTRALLY ("child agent …") so it stays truthful when team/paral
 store fallback ErrNotFound/ErrNoActiveRun) backs HTTP `POST /v1/sessions/{id}/cancel-child`. The
 SAME regen landed the three DORMANT fields for the next iterations (A10): `Subagent.background=10`
 (now written by the mapper since I3a), `Parallel.child_id=18`, `Team.member_session_id=18` (17 is
-taken by dispositions — A1; both written since I2). mecatui: the ctrl+a Subagents tab gains an `x` cancel key (roster + focus pane,
+taken by dispositions — A1; both written since I2). mecatui: the f6 Subagents tab gains an `x` cancel key (roster + focus pane,
 non-terminal lanes only, confirm-less — recoverable) sending `client.Stream.SendCancelChild`;
 `permission.retract` maps to `PermissionRetractMsg`; mecatui keeps a FIFO ask queue behind the
 visible modal (`m.ask` is always the head — concurrent subagents surface asks concurrently), so a
@@ -2199,31 +2387,31 @@ pre-existing I3a tests `TestBackgroundChildCancelledAtRunEnd` and `TestBackgroun
 now script a second clean end (their first one legitimately draws the nudge). No diagnostics
 change: the loop still emits exactly THREE operator lines.
 
-**Background Bash commands (issue #23 commands half — `background: true` on Bash +
-BashStatus; ADR 0201).** The open half of #23 after ADR 0015's background subagents:
+**Background Shell commands (issue #23 commands half — `background: true` on Shell +
+ShellStatus; ADR 0201).** The open half of #23 after ADR 0015's background subagents:
 a long-running shell command (a dev server, a watch loop, a slow build) detaches
-instead of blocking the turn. **The tool is the AGENT loop's own Bash**
-(`engine/agent/bashtool.go`, `BashTool` / `NewBashTool`), NOT the fstools adapter's —
+instead of blocking the turn. **The tool is the AGENT loop's own Shell**
+(`engine/agent/shelltool.go`, `ShellTool` / `NewShellTool`), NOT the fstools adapter's —
 the background half needs the parent run's `childRunRegistry`, an agent-package type
 fstools cannot import, so the foreground half is RE-IMPLEMENTED byte-identical to the
 fstools body (same arg validation, timeout ctx, `runner.Run`, combined-output shaping,
-the 25 000-byte cap, the exit-code error — `bashToolMaxOutputBytes` /
-`bashToolTruncationMarker` mirror `fstools.MaxOutputBytes` / `TruncationMarker`
+the 25 000-byte cap, the exit-code error — `shellToolMaxOutputBytes` /
+`shellToolTruncationMarker` mirror `fstools.MaxOutputBytes` / `TruncationMarker`
 EXACTLY, kept identical by discipline) and the background half rides the
 `childCapableTool` seam (`ExecuteWithParent`), the same dispatcher seam Subagent /
 SubagentStatus reach `parentCaps` through. It registers under the literal name
-`"Bash"` — the ONE gated name the permission evaluator special-cases
+`"Shell"` — the ONE gated name the permission evaluator special-cases
 (`engine/governance/evaluator.go`: `resolve` / `planModeDecision` /
-`LearnableRule` match `tool == "Bash"`) — so a background start resolves through the
+`LearnableRule` match `tool == "Shell"`) — so a background start resolves through the
 IDENTICAL deny/ask/allow fold, compound-command split, plan-mode gate, and guardrail
-modelhook `Bash` rules as a foreground call; a second tool name would silently bypass
+modelhook `Shell` rules as a foreground call; a second tool name would silently bypass
 the bash gate (D1: any new shell affordance must register under the gated name or
 extend it). The name's single authority moved to `engine/tool/tool.go`
-(`BashToolName`); `engine/adapter/fstools/bash.go` aliases it
-(`fstools.BashToolName = tool.BashToolName`) so the adapter and the agent tool share
+(`ShellToolName`); `engine/adapter/fstools/shell.go` aliases it
+(`fstools.ShellToolName = tool.ShellToolName`) so the adapter and the agent tool share
 one constant. **Registry family (D4):** a background call registers a
-`childFamilyBashCmd` ("bash-cmd") entry on the parent run's registry under
-`bashcmd-<callID>` (`BashCmdJobPrefix` — names NO session, so the InspectSubagent
+`childFamilyShellCmd` ("bash-cmd") entry on the parent run's registry under
+`bashcmd-<callID>` (`ShellCmdJobPrefix` — names NO session, so the InspectSubagent
 prefix gate and the child-session retention GC must never learn it), a NON-delegation
 family: no child session, no engine, no `subagent.*` events (the ChildActivity
 trip-wire deliberately unfired). It rides the registry ONLY for the run-scoped
@@ -2232,10 +2420,10 @@ registry gained three bash-only fields (`outputTail *tailBuffer`, `exitCode int`
 `childEntry`) plus FAMILY-FILTERED seams — `statusSnapshotMatching` /
 `collectMatching` / `liveBackgroundIDsMatching` (nil exclude ⇒ every entry) — so the
 SHARED registry serves two DISJOINT projections: `SubagentStatus` filters bash-cmd
-OUT (`delegationFamiliesOnly`), `BashStatus` filters the three delegation families
-out (`bashCmdFamiliesOnly`); one stored body, exactly-once delivery, two doors, and
+OUT (`delegationFamiliesOnly`), `ShellStatus` filters the three delegation families
+out (`shellCmdFamiliesOnly`); one stored body, exactly-once delivery, two doors, and
 neither tool can drift its view of an entry or deliver through the other. The
-background detach is FAIL-FAST on the job-count gate (`maxBackgroundBashJobs` = 8 —
+background detach is FAIL-FAST on the job-count gate (`maxBackgroundShellJobs` = 8 —
 the Subagent gate's scale; a job holds its slot ACROSS turns so blocking could
 deadlock the model against itself; the ids read runs BEFORE the job's own
 registration so the error never lists the failing call's own id), mints
@@ -2258,12 +2446,12 @@ by type assertion; a runner lacking it declines and the background call fails so
 sharing ONE private `run` spawn/wait tail between `Run` (capped head buffers) and
 `RunStreaming` (the caller's sink) so the two cannot drift. Each job streams into
 `engine/agent/tailbuffer.go` (`tailBuffer`) — a mutex-guarded sliding-window ring
-retaining the LAST `maxBashJobTailBytes` = 64 KiB (retention exceeds the 25 000-byte
-render cap so BashStatus shows more than one render; 8 jobs ≈ 512 KiB worst case,
+retaining the LAST `maxShellJobTailBytes` = 64 KiB (retention exceeds the 25 000-byte
+render cap so ShellStatus shows more than one render; 8 jobs ≈ 512 KiB worst case,
 bounded) over a 2×capacity scratch (append + slide, one bounded memmove per write,
 zero reallocations), with a `Truncated` flag set the first time a byte drops.
-**BashStatus** (`engine/agent/bashstatus.go`, `BashStatusTool` /
-`NewBashStatusTool`, read-only — `ReadOnly() == true` so a `wait_ms` park overlaps
+**ShellStatus** (`engine/agent/shellstatus.go`, `ShellStatusTool` /
+`NewShellStatusTool`, read-only — `ReadOnly() == true` so a `wait_ms` park overlaps
 other tools in the turn) is the SOLE status/collect/cancel channel: no args → the
 roster of THIS run's bash jobs (ids + state + stop ONLY — the command text is
 model-authored untrusted and never rides a bulk roster, the A9 posture);
@@ -2281,7 +2469,7 @@ waits for the terminal. Its floor-scoped Allow rides `defaultRules` alongside
 `engine/agent/loop.go`) are FAMILY-AWARE — the delegation clause keeps its
 byte-exact historical wording (the substrings "background subagent(s) finished" /
 "background subagent(s) still running" are stable test keys) and a "background
-command(s) finished / still running" clause naming `BashStatus` is APPENDED only
+command(s) finished / still running" clause naming `ShellStatus` is APPENDED only
 when bash jobs are among the finished/live, so a subagent-only run renders
 byte-identically to before. **procgroup pre-fix (D9):** `internal/adapter/procgroup`
 (extracted from `hookexec`, which already had the code) puts a child process in its
@@ -2289,26 +2477,26 @@ own process group and kills the WHOLE group on ctx cancel (POSIX `Setpgid` + a
 `Cancel` signalling the negative PID; a no-op elsewhere); the osfs `CommandRunner`
 now configures it unconditionally, so a backgrounded grandchild (`sleep 30 &`,
 `make`'s compiler children) dies with the shell instead of being orphaned — fixing
-grandchild orphans for FOREGROUND Bash too, and load-bearing here because cancel is a
-background job's primary lifecycle (a run-end drain or `BashStatus` cancel that left
+grandchild orphans for FOREGROUND Shell too, and load-bearing here because cancel is a
+background job's primary lifecycle (a run-end drain or `ShellStatus` cancel that left
 grandchildren would leak processes at scale). **Catalog wiring:** the composition
-root registers `agent.NewBashTool()` + `agent.NewBashStatusTool()` together in
+root registers `agent.NewShellTool()` + `agent.NewShellStatusTool()` together in
 `internal/app/build.go` (`registerCoreTools`) under the ONE shell gate (the pair
-cannot drift apart; pinned by `TestBackgroundBashCatalogWiring`), and swaps EVERY
-other Bash construction to the agent tool — the read-only explorer catalog
+cannot drift apart; pinned by `TestBackgroundShellCatalogWiring`), and swaps EVERY
+other Shell construction to the agent tool — the read-only explorer catalog
 (`readOnlyExplorerCatalog`), per-def scoped catalogs (`buildAgentDefEngine`,
 `baseSubagentTools`), and team members (`buildMemberEngine` /
 `registerDefaultMemberTools`) — so a CHILD backgrounds a command against its OWN
-run's registry (run-scoped, drained at the child's run end) but gets NO BashStatus
-(the collection channel stays main-catalog-only, mirroring the SubagentStatus rule).
-The no-fs profile's excluded set gained `BashStatus` (no Bash ⇒ no jobs to status;
+run's registry (run-scoped, drained at the child's run end); Shell-enabled child catalogs
+include **`ShellStatus`** for that child run's status/collection channel.
+The no-fs profile's excluded set gained `ShellStatus` (no Shell ⇒ no jobs to status;
 `noFSExcludedTools` in `internal/app/nofs_profile_test.go`). **Permissions (D5) are
-identical to foreground Bash:** the start is the ONE main-run ask when policy says
+identical to foreground Shell:** the start is the ONE main-run ask when policy says
 Ask (PauseForApproval before anything detaches); once started the job runs to
 completion/cancel/drain with no further gating, exactly as a foreground command is
-gated once at start. Guards: `engine/agent/bashtool_internal_test.go` +
-`bashstatus_internal_test.go` + `tailbuffer_internal_test.go` +
-`background_bash_e2e_test.go` (the offline end-to-end), `internal/adapter/osfs/
+gated once at start. Guards: `engine/agent/shelltool_internal_test.go` +
+`shellstatus_internal_test.go` + `tailbuffer_internal_test.go` +
+`background_shell_e2e_test.go` (the offline end-to-end), `internal/adapter/osfs/
 osfs_stream_test.go` + `command_procgroup_unix_test.go` (the streaming seam + the
 group-kill), and the composition pins above. DEFERRED (v2): foreground→background
 mid-flight promotion (Ctrl+B — the blocking `CommandRunner.Run` seam has no detach
@@ -2346,7 +2534,8 @@ finishes"). The Spec guard test grew to require SubagentStatus + background. Doc
 design promoted to `docs/adr/0015-background-subagents.md` (as-built, amendments folded, I1-I4
 hashes), architecture §8 gained the background/SubagentStatus/cancel paragraph (+ the stale
 forking-only-gate and blanket-auto-deny bullets corrected to the childGate/4-step reality),
-docs/tui.md gained the marker/notice/footer-count notes, docs/usage.md's delegation note gained
+docs/tui.md gained the marker/notice/footer-count notes, and
+`user-docs/building/what-you-get/subagents-teams-parallel.md` gained
 background + per-child cancel (and the child-concurrency default corrected 10→4). Guards:
 `client.TestEventToMsg` (background decode), `ui.TestSubagentRosterLineBackgroundMarker` /
 `TestSubagentRosterBackgroundMarkerEndToEnd` / `TestSubagentFocusBackgroundNote` /
@@ -2398,16 +2587,16 @@ structure neutral, contents provider-private, never displayed/interpreted/valida
 the enum, and NOT a `port.LLMRequest` field.
 
 **Team-member workspace policy is THREE-TIER** (isolation is the security boundary; capability
-flows down from the parent, which has Bash): a base-sharing read-only member (no forker wired)
+flows down from the parent, which has Shell): a base-sharing read-only member (no forker wired)
 gets NO shell; a read-only member the factory marks `MemberBuild.IsolateReadOnly` runs in a
 cheap git **worktree** (shares the base repo's `.git` ⇒ full history) with Read/Grep/Glob +
-**Bash** but never Edit/Write — so it can `git log`/`git show`/build/test, confined to a
+**Shell** but never Edit/Write — so it can `git log`/`git show`/build/test, confined to a
 throwaway checkout; a Mutating member runs in a **force-copy** fork (own `.git`) with
-Edit/Write/Bash. The Supervisor holds TWO forkers (`s.forker` force-copy, `s.roForker`
+Edit/Write/Shell. The Supervisor holds TWO forkers (`s.forker` force-copy, `s.roForker`
 worktree via `WithReadOnlyForker`); `AddMember`'s mutating-tool backstop gates on
-**base-sharing** (`!needFork`), so an isolated member's Bash is exempt.
+**base-sharing** (`!needFork`), so an isolated member's Shell is exempt.
 
-A read-only member's Bash runs through a **sandboxed** command runner
+A read-only member's Shell runs through a **sandboxed** command runner
 (`buildSandboxedCommandRunner`) that neutralises the **fixed-key** git config-driven
 code-execution vectors in the shared `.git` (`core.pager`/`hooksPath`/`fsmonitor`/external
 diff + scrubbed `GIT_*`/`PAGER`); it does **NOT** close attacker-named `.gitattributes` driver
@@ -2474,7 +2663,7 @@ isolation guarantee is unchanged (the overlay reads the parent, writes the child
 limitation: an uncommitted submodule-POINTER change rides the diff as a gitlink update but the
 submodule's own working tree is not recursively overlaid (best-effort by design).
 
-**Subagent Bash permission asks resolve in a 4-step model (NOT a blanket auto-deny).** The
+**Subagent Shell permission asks resolve in a 4-step model (NOT a blanket auto-deny).** The
 old contract auto-DENIED every subagent permission ask, so a team member / Subagent child could
 NEVER run a command containing substitution/subshell — the `$(go list ./...)`-per-package
 coverage loop hard-failed with a misleading "denied by user". The fix (`handleChildEvent` →
@@ -2484,9 +2673,9 @@ coverage loop hard-failed with a misleading "denied by user". The fix (`handleCh
 - **Step 1 — A1 read-only substitution (GLOBAL).** `governance.SubstitutionReadOnly(seg)`
   extracts every recursively-nested inner command (`extractSubstitutions`) and blanks the outer
   (`outerWithSubstitutionsBlanked` → an inert `MECATL_SUBST` placeholder); if every inner is
-  `ReadOnlyBash` and the blanked outer is `simpleReadOnly`, `resolveBash` does NOT floor at Ask
-  (the ordinary fold stands). It is a SEPARATE classifier — `ReadOnlyBash`/`simpleReadOnly`/
-  plan-mode and the `FuzzReadOnlyBash`/`FuzzSplitCommands` Inv-5 are byte-for-byte unchanged. A
+  `ReadOnlyShell` and the blanked outer is `simpleReadOnly`, `resolveShell` does NOT floor at Ask
+  (the ordinary fold stands). It is a SEPARATE classifier — `ReadOnlyShell`/`simpleReadOnly`/
+  plan-mode and the `FuzzReadOnlyShell`/`FuzzSplitCommands` Inv-5 are byte-for-byte unchanged. A
   bare `(subshell)` is safe grouping; `$(...)`/backticks in command position are NOT (the output
   is executed), so a lone-placeholder outer is accepted only for `isPureSubshell`. Shell
   control-flow keywords (`for … in …; do …; done`) are stripped (`stripShellKeywords`) so the
@@ -2510,7 +2699,7 @@ coverage loop hard-failed with a misleading "denied by user". The fix (`handleCh
   (interactivity + a register-then-emit `surfaceAsk`) to a `childCapableTool`
   (Subagent/Team/Parallel's `ExecuteWithParent`). `resolveChildAsk` registers the child Run in the
   parent router and emits a REDACTED parent `EvPermissionAsk` (command `clampPreview`'d, framed
-  "subagent requests approval to run Bash: …", raw `Args` dropped — gauntlet #7), then returns
+  "subagent requests approval to run Shell: …", raw `Args` dropped — gauntlet #7), then returns
   WITHOUT resolving; the child parks in its own goroutine. The parent's `Run.Approve` routes the
   verdict to the child by the child-namespaced askID (`childAskRouter.route` → `child.Approve`);
   NO proto change (the child session id IS the namespace). A parked team member blocks only its
@@ -2560,7 +2749,7 @@ coverage loop hard-failed with a misleading "denied by user". The fix (`handleCh
   `flooredAllowSafe` (a sibling classifier in `bash.go`). Its bound (panel-hardened): **the
   configured Allow vouches ONLY for the OUTER literal — every recursively-extracted INNER must
   independently classify positively read-only** (the SAME A1 inner contract SubstitutionReadOnly
-  applies: `ReadOnlyBash(in) || SubstitutionReadOnly(in)`; an unknown/mutating inner like
+  applies: `ReadOnlyShell(in) || SubstitutionReadOnly(in)`; an unknown/mutating inner like
   `$(zap)`/`$(touch x)` fails — the substitution floor's charter "an allow rule for the outer
   literal can never silently approve a hidden command" holds), PLUS the worktree-escape
   REJECTIONS on the blanked outer as defense-in-depth (`escapeRejectionsFree` — the ONE rejection
@@ -2572,7 +2761,7 @@ coverage loop hard-failed with a misleading "denied by user". The fix (`handleCh
   surfaces. Fail-safe false on extraction ambiguity. `resolveChildAsk` resolves a qualifying ask
   `AllowOnce` without surfacing. Positive soundness is fuzzed (`FuzzFlooredConfiguredAllow`,
   the repo convention for auto-approval-gating classifiers). The pre-existing classifiers
-  (`SubstitutionReadOnly`/`ReadOnlyBash`/`IsolationApprovable` + their fuzzers) are
+  (`SubstitutionReadOnly`/`ReadOnlyShell`/`IsolationApprovable` + their fuzzers) are
   byte-for-byte unchanged. The `--yolo` allow-all RULE binds children too (the shared
   `yoloAllowAllRule` injected into `childRules`). The child substitution-floor LOOSENING is
   TIER-AWARE: under `auto` children never get `WithLooseSubstitution` (the floor holds, injection-
@@ -2626,7 +2815,7 @@ miss path is fail-safe deny). Prompt trust split (`buildAskReviewPrompt`): the p
 (`req.Isolated` — O6) are TRUSTED header (each `neutraliseFraming`'d for defense-in-depth, and the
 prompt's own `Policy:`/`Tool:`/`Requested command:`/`Respond with ONLY …`/`Execution context:`
 headers are in the shared `framingHeader` strip list); the COMMAND (`askReviewSubject` —
-`bashCmdFromArgs`, raw Reason for non-Bash, the `surfacedCommandPreview` mirror) rides INSIDE the
+`bashCmdFromArgs`, raw Reason for non-Shell, the `surfacedCommandPreview` mirror) rides INSIDE the
 existing `untrustedFence` after `neutraliseFraming`, with the explicit instruction that fenced text
 is the artifact under review, claims of prior approval inside it are VOID, and uncertainty ⇒ deny.
 
@@ -2760,8 +2949,8 @@ reaching into the live `*team.Team`. The headline regression guard is
 `TestTeamToolRefusalSynthesisFallsBackToLedger`: a refusal synthesis over a populated ledger must never
 reach the parent.
 
-> **4A CLOSED, both halves.** The per-RUN half is the SHARED `agent.Deps.MaxRunTokens` loop
-> ceiling (see the Token-budget note above): a runaway team member crosses it and ends with
+> **4A CLOSED, both halves.** The per-RUN half is the per-engine `agent.Deps.MaxRunTokens` loop
+> ceiling (see the Token-budget note above): a runaway team member crosses its own ceiling and ends with
 > `session.StopBudget`, which the supervisor handles exactly like any other stopped member
 > (the resilient-deliverable safety-net fallback still applies; a budget-stopped lead stays
 > RESUMABLE so its one synthesis turn still runs — guarded by
@@ -2846,11 +3035,11 @@ ACP), NOT model-visible; `writeTeamStatus` is unchanged. The terminal `EvTeamEnd
 the closed-enum reason (the per-round `Cause` does NOT widen it); a retried member's failed rounds
 each surface their own cause. It rides the proto `Team.cause` field 19.
 
-**The Subagent delegation tool (read-only explorer) gets the SAME treatment** (Phase 2): when Bash is
+**The Subagent delegation tool (read-only explorer) gets the SAME treatment** (Phase 2): when Shell is
 configured, `SubagentTool` holds a worktree `childForker` (`WithChildForker`) and forks each child
-run into a throwaway git worktree BEFORE running it (`buildChildEngine` registers Bash via the
+run into a throwaway git worktree BEFORE running it (`buildChildEngine` registers Shell via the
 SAME `buildSandboxedCommandRunner`; `buildSubagentTool` wires the worktree forker iff a runner
-exists; per-def Subagent engines keep Bash via `scopedToolNamesMode`'s `allowShell` and share the
+exists; per-def Subagent engines keep Shell via `scopedToolNamesMode`'s `allowShell` and share the
 one forker; that forker carries `WithDirtyOverlay` — see the dirty-aware-fork note above — so the
 child's worktree mirrors the operator's uncommitted state instead of a clean HEAD). So a `Subagent`
 to "investigate X" can now `git log`/`git show`/`cat`/build/test in an isolated checkout that
@@ -2865,7 +3054,7 @@ the Subagent-concurrency-cap note above). Same
 `gitenv` hardening + same untrusted-`.gitattributes` residual as team members; the
 workspace-trust gate — the SHARED mitigation for both Team + Subagent — is DONE (issue #40):
 an untrusted workspace nils the sandboxed runner, so Subagent children and read-only members
-run Bash-less (no forker wired, honest Spec note + member prompt line), while Mutating
+run Shell-less (no forker wired, honest Spec note + member prompt line), while Mutating
 members and Parallel branches keep their hardened shells (`buildForceCopyRunner`: force-copy
 fork creation runs no git, so the fork-time checkout RCE can't fire; their run-time git over
 the verbatim-copied untrusted `.git` is the accepted main-session-parity residual).
@@ -3435,19 +3624,18 @@ so the loosening is made loud.
 surface. It builds ONE model of the four permconfig subtrees (`permissions`,
 `guardrails`, `posture`, `models`) and renders BOTH operator-facing artifacts from it —
 the commented skeleton `mecated config init` writes (`RenderSkeleton`) and the Markdown
-`docs/configuration-reference.md` table (`RenderReference`) — so the two surfaces cannot
+`user-docs/reference/configuration.md` table (`RenderReference`) — so the two surfaces cannot
 drift from each other, and because the model is built by REFLECTING over the
 `permconfig.*Section` structs and harvesting their field doc-comments, neither can drift
 from the code. **Flag-driven features (soul/memory/commands/user-model/session-lease) are
 OUT of the YAML reference by design** — they are configured via CLI flags + their own
-files, so the reference carries only a hand-written pointer block to `usage.md`, not an
+files, so the reference carries only a hand-written pointer block to the user docs, not an
 auto-harvested flag dump.
 
 The go/ast doc-comment harvest lives ONLY in the build-time generator
 (`internal/configgen/cmd/configref`, run by `task docs:configref`); it emits the two
 COMMITTED artifacts, and `config init` ships by `//go:embed`-ing the committed
-skeleton — so the shipped `mecated` binary never imports go/ast (the matlatl
-llms.txt generate→commit→CI-diff-guard pattern; the docs job fails on drift). The
+skeleton — so the shipped `mecated` binary never imports go/ast; the docs job fails on drift. The
 write path (`config init`) and the read path (the resolver's `loadUserRules`) share the
 ONE relative-path const (`permconfig.UserSettingsRelPath`, re-exported as
 `configgen.SettingsRelPath`), so they provably resolve the same file.
@@ -3485,15 +3673,41 @@ flag; ACP help excludes it. See ADR 0088.
 
 ### Remote mecatui OIDC client authentication (ADR 0277)
 
-The command taxonomy is deliberately explicit. `mecatui llm login` is the existing
-ToolHive gateway login and has no server/session meaning. `mecatui login ADDRESS` is
-remote enrollment: it requires `--issuer`, `--client-id`, `--audience`, and `--tls-ca`,
-then runs public Authorization Code + PKCE and saves the target metadata plus
-credential. The registry saves the issuer CA path/reference, never the CA contents, for
+The command taxonomy is deliberately explicit. ToolHive owns its gateway credential
+lifecycle through `thv llm` tooling and has no server/session meaning.
+`mecatui login ADDRESS` is remote enrollment: it requires `--issuer`, `--client-id`,
+and `--audience`; it defaults
+to public issuer address admission with system roots, while optional `--tls-ca` replaces
+them. `--private-issuer` requires that CA and selects scoped private admission. The registry
+saves the issuer policy and CA path/reference, never CA contents, for
 discovery/token/JWKS/refresh/revocation; the optional
 `connect --tls-ca` is separately the gRPC server trust root. `mecatui connect ADDRESS`
-only dials; it never implicitly opens a browser.
-A missing target enrollment returns the CLI-login instruction. The UI `/connect`
+only dials; it never implicitly opens a browser. `cmd/mecatui/config.go`
+(`resolveRemoteTLSPolicy`) resolves omitted `--tls` after target parsing: non-loopback
+and unparseable targets verify TLS, loopback defaults plaintext, and `--tls=false` is
+the explicit downgrade. `cmd/mecatui/client/client.go` (`Dial`) independently refuses
+remote plaintext without that explicit authorization and never permits a bearer there.
+Both layers classify targets with the SINGLE predicate `cmd/mecatui/client/client.go`
+(`IsLocalTarget`) — loopback host:port OR a `unix://` socket — which also feeds
+`bearerCreds.allowInsecure`, so the policy default, the two pre-dial guards, and the
+per-RPC credential can never disagree about one target.
+A registry hit overrides the loopback default to verified gRPC TLS and rejects explicit
+plaintext or `--insecure`; the saved issuer CA is passed only to the issuer client, never
+to `DialConfig.TLSCAFile`. Credential resolution is static `--auth-token`, explicit
+`--anonymous`, saved OIDC enrollment, then a credential-free dial on any clean enrollment
+miss. The server is authoritative: only an actual `Unauthenticated` RPC establishes that
+caller authentication is required. Corrupt or unreadable registry, keyring, and credential
+state remains a storage failure rather than a miss. A static token flag or environment
+fallback wins even when `--anonymous` is also present; otherwise `--anonymous` bypasses saved
+state. Remote use retains
+verified-TLS-by-default with `--tls=false` as a separate plaintext decision. Neither a
+private IP nor a DNS/Tailscale-like name changes those TLS rules. In a credential-free
+Tailscale deployment, tailnet membership and ACLs become the shared authority, so every
+admitted peer shares the unauthenticated server authority. `--no-saved-auth` is removed under
+the ADR-0089 one-spelling rule. On the server side, startup listener posture counts only
+static bearer, OIDC, or verified client certificates as caller authentication. Ordinary
+TLS is transport encryption/server authentication and therefore does not suppress the
+prominent non-loopback anonymous warning. The UI `/connect`
 overlay lists public saved-target metadata, confirms a selection, and requests a
 restart; a new-target selection exits to the same CLI login flow before reconnecting.
 Ordinary target selection and every target switch start a new remote session. During
@@ -3503,7 +3717,20 @@ or failed session may be adopted.
 The credential record is keyed by the canonical target and complete public OIDC
 identity. Numeric ports canonicalize to ordinary decimal spelling, so a legacy
 credential identity containing a zero-padded port needs one login after upgrade. The
-host-internal credential store is encrypted by a root-scoped OS-keyring account. A
+host-internal credential store is selected by `internal/adapter/clientauth/credential_backend.go`
+(`ResolveCredentialStore`) and pinned before OAuth in strict non-secret metadata.
+Login-only `auto|keyring|file` uses the read-only 500 ms helper on fresh Linux auto;
+macOS auto uses keyring. Only absent/joined detection timeout permits file selection;
+parent cancellation and other failures fail closed. Pinned lifecycle paths use
+`OpenExistingCredentialStore`, never detection or migration. The file substrate in
+`internal/adapter/credentialstore/plain_file.go` shares the encrypted store's local
+CAS/lock/atomic-sync protections, with fresh generations and complete-record versions,
+but records are plaintext at rest under `clientauth-plaintext/`. Directories are 0700,
+files 0600; same-account access is outside confidentiality guarantees. The initial
+file notice is emitted once before OAuth. All clients sharing a file root must be
+upgraded. Valid legacy registry evidence pins keyring before secret access; corrupt
+metadata or registry evidence fails closed. On the keyring route, encryption uses a
+root-scoped OS-keyring account. A
 stable root-local flock serializes first creation and copies the old unsuffixed keyring
 entry into that account without deleting it only when the encrypted namespace contains
 an actual credential record; an empty namespace created by opening the old store is not
@@ -3687,29 +3914,30 @@ three layers to keep the engine importable and the verdict shape in the adapter:
 **Default-on with no rules.** A configured checker model is the opt-in-to-spend; with
 no explicit rule list guardrails take the built-in **default block rule set**
 (`defaultGuardrailSpecs`: WebSearch pre+post, WebFetch post, `mcp__*` pre+post, and
-`Bash` pre — all block, the headline default; ADR 0053 flipped advisory→block, ADR
-0060 added `Bash`). The `Bash` rule carries a **read-only pre-filter**
-(`SkipReadOnlyBash`): the modelhook adapter skips the checker entirely for a Pre Bash
-command it can prove read-only (reusing `governance.ReadOnlyBash`/`SplitCommands`/
+`Shell` pre — all block, the headline default; ADR 0053 flipped advisory→block, ADR
+0060 added `Shell`). The `Shell` rule carries a **read-only pre-filter**
+(`SkipReadOnlyShell`): the modelhook adapter skips the checker entirely for a Pre Shell
+command it can prove read-only (reusing `governance.ReadOnlyShell`/`SplitCommands`/
 `SubstitutionReadOnly` — fail-safe: substitution/ambiguity is inspected), so a
 guardrail-protected shell costs an LLM call ONLY on a mutating/outward command (e.g.
-`gh pr merge`), not on every `ls`. The OTHER local tools (Read/Edit/Write/Grep/Glob)
-remain deliberately unmatched. An explicit `guardrails.rules` list replaces the
-defaults (an operator's explicit `Bash` rule does NOT inherit the pre-filter — it
+`gh pr merge`), not on every `ls`. The OTHER local tools
+(Read/ListDir/Edit/Write/Copy/Move/Remove/Grep/Glob) remain deliberately unmatched. An
+explicit `guardrails.rules` list replaces the
+defaults (an operator's explicit `Shell` rule does NOT inherit the pre-filter — it
 inspects every command). There is no per-session call-count cap — the checker runs per
 matched call, and cost control lives in the operator's provider/billing layer (checker
 token spend is not folded into `MaxRunTokens`).
 
 **Per-tool rubric routing (ADR 0060).** `buildCheckPrompt` calls `rubric(phase, rule)`,
 which prefers a rule's non-empty `prompt` over the built-in default — the SAME seam
-operator custom prompts use. The default **Bash** rule wires `Prompt:
-modelhook.DefaultBashPrePrompt` (an EXPORTED const), so a Pre Bash check routes to a
-Bash-SPECIFIC rubric; **Web/MCP** rules leave `Prompt` empty and keep the generic
+operator custom prompts use. The default **Shell** rule wires `Prompt:
+modelhook.DefaultShellPrePrompt` (an EXPORTED const), so a Pre Shell check routes to a
+Shell-SPECIFIC rubric; **Web/MCP** rules leave `Prompt` empty and keep the generic
 `defaultPrePrompt`. Why: `defaultPrePrompt` is an exfiltration rubric for network/MCP
 boundaries — its "sensitive local data transmitted off the machine" + "if uncertain,
 judge unsafe" clauses false-positive on local-shell args (a real incident blocked a
 legitimate write to a sibling repo as "exfiltration"; a local write is data STAYING on
-the machine). `DefaultBashPrePrompt` flags only FIVE concrete dangerous categories
+the machine). `DefaultShellPrePrompt` flags only FIVE concrete dangerous categories
 (off-machine upload, `curl … | sh`, irreversible remote actions incl. `gh pr merge`,
 destructive local ops, AND local-PERSISTENCE writes to sensitive targets — authorized_keys
 / shell rc / crontab / systemd / git-hooks — which never leave the machine so the first
@@ -3719,7 +3947,7 @@ sibling repo stays SAFE, only the named sensitive targets are UNSAFE), replacing
 blanket "if uncertain, judge unsafe" with "judge SAFE unless a specific dangerous action
 is identifiable" — a deliberate precision-over-recall posture for the local shell, with
 the out-of-band approve-once ask (ADR 0062) as the residual recovery. An operator's
-explicit `Bash` rule with no `prompt:` falls back to `defaultPrePrompt` (least-surprising
+explicit `Shell` rule with no `prompt:` falls back to `defaultPrePrompt` (least-surprising
 — an explicit rule opts out of the default-set conveniences).
 
 **The #1 constraint — `PostToolUse` Block is INERT.** The tool has already run by the
@@ -3787,7 +4015,7 @@ prompt directive.
   (`LearnHookApproval(ctx, governance.HookEvent)`) is type-asserted on `Deps.Hooks` and
   called by `askHookApproval` ONLY on a `VerdictAllowAlways` verdict for a hook ask (no
   method added to `HookRunner` — that would break the API). The `modelhook.Runner`
-  implements it by arming `modelhook.WaiverHolder` (session-keyed; tool-exact + Bash
+  implements it by arming `modelhook.WaiverHolder` (session-keyed; tool-exact + Shell
   command-substring, the matching shape inherited from the deleted `OverrideScope`). The
   Runner's `check` consults the waiver FIRST on a Pre phase — a hit returns the empty
   allow outcome WITHOUT an LLM call and logs a `guardrail-waived` audit line. In-memory
@@ -3827,9 +4055,11 @@ tool call refined into an askable ask, a serialized provenance marker, a verdict
   the model KNOWS to call `PresentPlan`).** Three reinforcing layers make the workflow
   explicit so the model does not improvise it (the reported bug: a model treated an
   inline "acceptable" as approval and kept executing, never surfacing the gate): (1)
-  `Spec().Description` (`engine/agent/presentplan.go` (`Spec`)) — call EXACTLY ONCE when
-  the plan is complete, then STOP; an inline "acceptable"/"looks good"/"approved" in chat
-  is NOT approval. (2) `internal/app/build.go` (`applyPlanModePosture` /
+  `Spec().Description` (`engine/agent/presentplan.go` (`Spec`)) — call exactly once
+  **per current presentation**, then STOP. If that review is denied for iteration or
+  its run is cancelled, wait for new user input; then present the revised or unchanged
+  plan through a NEW `PresentPlan` call and stop again. Later chat assent requests a
+  fresh gated review and is never execution approval. (2) `internal/app/build.go` (`applyPlanModePosture` /
   `planModePostureNote`) — appended to a plan-mode session engine's Role in
   `sessionEngineFactory` on create-in-plan AND on the CASE-1 rebuild when the session
   flips into plan mode. (3) `engine/prompt/builder.go` — the plan-mode volatile suffix
@@ -3854,7 +4084,7 @@ tool call refined into an askable ask, a serialized provenance marker, a verdict
   The plan content rides the args through the EXISTING channel: `surfacePlanAsk` copies
   `c.Args` into `PendingAsk.Args` (the model passes the plan in the PresentPlan `plan`
   argument), so proto `PermissionAsk.args` carries it to the mecatui plan-approval modal —
-  the SAME posture as every other permission ask (Write/Bash asks carry their args for
+  the SAME posture as every other permission ask (Write/Shell asks carry their args for
   operator review); the operator is the intended audience. Gauntlet #7 holds: the
   `EvApproval` payload carries ONLY tool NAME + verdict + askID + call id — NO args.
 - **The scrollable plan-approval view (`cmd/mecatui/ui/approval_render.go`
@@ -3871,7 +4101,7 @@ tool call refined into an askable ask, a serialized provenance marker, a verdict
   never breaks the modal). **The non-diff ask-args surface (issue #488, ADR
   0108 — `cmd/mecatui/ui/approval_render.go` (`openAskArgsView`))** mirrors this
   trio one-for-one: a non-diff, non-plan ask's args WRAP inside the centered
-  card (a Bash `{"command": …}` decodes to the command text), cap at six rows
+  card (a Shell `{"command": …}` decodes to the command text), cap at six rows
   plus a scroll/full-args hint, and `ctrl+t` opens the full-screen argsVP view
   (raw JSON via the bare-`r` RawArgs toggle; the verdict keys/buttons work from
   inside it) — ctrl+t routing by ask type is `isDiffCapableAskTool` (Edit/Write
@@ -3892,7 +4122,11 @@ tool call refined into an askable ask, a serialized provenance marker, a verdict
   feedback; `runLoop` terminates with `StopPlanIterate` at the SAME two sites (EARLY
   + post-dispatch) — the run ENDS so the operator's next typed prompt drives the
   revision (the model does NOT continue iterating in-turn with no operator input,
-  the old behaviour the operator reported). The session stays `ModePlan` on Deny (no
+  the old behaviour the operator reported). Cancelling the pending plan run is a
+  separate terminal: no deny verdict is synthesized, `ModePlan` remains, and the next
+  prompt uses the ordinary cancelled-session `Interrupt` recovery to close the
+  interrupted tool pair before a new presentation. In both cases the next current
+  presentation gets a NEW call and fresh gate. The session stays `ModePlan` on Deny (no
   mode flip — `terminateComplete` only flips when `planApprovedTarget != ""`).
   `engine/agent/loop.go` (`terminateComplete`) flips the mode AT the terminal boundary:
   AFTER `sess.Stop(reason)` → `StateCompleted`, `sess.SetMode(planApprovedTarget)` is legal
@@ -4081,15 +4315,42 @@ instruction-like prose. Both reference stores retain 64 revisions per key and pe
 origin-known/truncated marker; Undo may remove a value only when retained history proves the target
 was its creation, and fails without mutation at a truncated predecessor boundary.
 
-**Optional learning and evidence reflection (#507 / #509 Chunk A):** `engine/learning`
-owns `Mode`, the owned completed `Trajectory`, and synchronous `Observer`, plus the
-storage-neutral reflection domain: closed candidate/outcome/signal types, bounded input,
-content-addressed canonical message/event evidence projections, structural within-input signal
-detection, and `Reflector`. Evidence projections omit binary and provider reasoning data, actor
-identity, permission arguments, and unbounded delegation content; every proposed handle is
-resolved against the exact input, while existing facts remain comparison-only. Candidate
-validation reuses the canonical memory secret/directive classifiers and rejects transient or
-unsupported durable claims.
+**Optional learning and evidence reflection (#507 / #509 Chunk A; ADR 0300 refinement):**
+`engine/learning` owns `Mode`, the owned completed `Trajectory`, and synchronous `Observer`, plus
+the storage-neutral reflection domain. `engine/learning/materializer.go` (`MaterializeEvidence`)
+is the single exported selection choke point: it accepts the caller context, returns a closed-disposition `Materialization`,
+whose selected arm contains the bounded `Input`, canonical bytes, and immutable aggregate manifest;
+its no-work arms contain no source excerpt. Component discovery advances linearly through the canonical
+assistant-plus-contiguous-results turn shape and checks cancellation between source records and within each
+bounded component; it never rescans the retained tail once per tool call. Automatic admission passes the
+borrowed completed trajectory through a context-aware policy, streams the full eligible source and
+verified current span with bounded counters/coordinates/digests, and does not build an unbounded
+`learning.Input`. Caller cancellation and Build closure interrupt that admission scan. After admission,
+the shared `reflection-evidence/v1` selector used by explicit
+reflection ranks whole connected tool-turn components (assistant + every call/result), emits selected
+content in source order, and prioritizes mandatory current span/closure, explicit remember/learn
+intent, correction/failure-recovery/repeated-tool-sequence context, recent eligible user/assistant
+context, then events, with original coordinates as tie-breakers. Existing canonical per-field
+projection applies first; an individually oversized component is omitted whole and required closure
+that cannot fit skips automatic work or explicitly abstains. Raw retained size is not an independent
+rejection.
+
+Each selection carries an immutable aggregate manifest with protocol, exact source boundary
+`{domain: "mecatl/reflection-evidence/source/v1", session_id}`, all selected original message
+coordinates and zero-based session-wide event-log ordinals in source order, entry digests/component
+bindings, and a domain-separated
+aggregate digest. Model handles are selected-local `m:n`/`e:n`; durable original coordinates stay
+distinct. Candidate references carry aggregate digest plus selected manifest entry index and exactly
+match that entry's locator/coordinate/digest/binding rather than replacing the manifest. Pre-version
+ADR-0109 records decode only as `reflection-evidence/legacy-v0`, where `EvidenceRef.Ordinal` remains
+input-local; new records write v1 and readers dispatch by resolved version, never new-field presence.
+Host signal, invocation mode, and existing-memory comparison context are outside selected-evidence
+identity. Projections retain only canonical bounded
+user/assistant and safe tool text, call ID/name, admitted public textual media metadata, and eligible
+content-free event metadata; they omit reasoning/provider IDs, binary media/data, actor, permission/raw
+arguments, credentials/secret-shaped fields, and delegation payloads/previews before copying. Existing
+facts remain comparison-only. Candidate validation reuses canonical memory secret/directive classifiers
+and rejects transient or unsupported durable claims.
 
 `engine/agent/evidencereflector.go` (`EvidenceReflector`) is the optional model-backed
 implementation: one direct provider-neutral turn, no catalog/tools/Engine loop or writes, with
@@ -4150,15 +4411,50 @@ retrieval because the request may already have applied.
 and both reviewed atomic store capabilities exist, and ownership enforcement disables the entire
 manual surface in v1. No provider/model identity is projected.
 
-**Standard coordinator and staged wiring (#509 Chunk C):** `internal/app/reflection_coordinator.go`
-owns one dormant Build-lifetime coordinator in every mode, never one goroutine per completion. Workers start only after first admission, so Off starts none until explicit reflection. Its global and per-principal
-queues are count- and byte-bounded, preserve principal FIFO, and rotate principals fairly; default concurrency is one.
-The effective receipt cap is at least queue capacity plus workers and admission reserves a live receipt first, so completion publication cannot be dropped. Oversized raw trajectory/event input is rejected before projection/marshal and queue allocation.
-Principal+session+input-digest singleflight collapses pending duplicates. Every job has a timeout and
-runs only under the Build lifecycle context, so automatic work detaches from request cancellation only
-after the observer has copied the verified session principal and bounded trajectory. `Built.Close`
-stops admission, publishes closed receipts for queued waiters, clears pending state, cancels active work, and joins workers. Queue-full, duplicate, completion, and failure diagnostics carry only bounded
-job IDs and counts. Queue/singleflight/receipt state resets by design; proposal state is durable.
+**Standard coordinator and staged wiring (#509 Chunk C; ADR 0259 durable admission):** `internal/app/reflection_coordinator.go`
+retains the bounded legacy synchronous/off scheduling implementation, but admitted durable attempts do not enter it. Hard and weighted admission create or converge the authoritative `AttemptRepository` record directly; `DiscoverWork` is the sole execution queue, so no process-local retained `learning.Input` can drive an admitted attempt. Off without `LearningStoreURL` constructs no coordinator worker or attempt repository, and explicit reflection stays on its synchronous lazy proposal path. A configured remote store is an explicit repository opt-in even while automatic mode is Off: composition dials/probes the repository set and may start attempt recovery for already-admitted work, but ordinary completions do not automatically admit new attempts. Oversized raw trajectory/event input is rejected before projection or durable admission.
+`internal/app/reflection_observer.go` (`createDurableAttempt`) now verifies the trajectory's exact non-empty ADR-0249 RunID by reloading the source session from the authoritative `SessionStore`, derives the caller/session/run/canonical-digest attempt ID and current-principal-prompt binding, and idempotently creates the `AttemptRepository` record BEFORE returning `queued`. A create error or absent/mismatched persisted RunID refuses admission without queuing. A duplicate converges to the existing durable attempt. `internal/app/attempt_recovery.go` (`startAttemptRecovery`) owns one Build-lifetime, cancellation-aware worker that continuously calls the storage-neutral `AttemptRepository.DiscoverWork`; it therefore discovers queued attempts created after startup and running attempts whose claims expired through local or remote repositories. Every admitted durable attempt executes through this path: admission retains no `learning.Input`, and the legacy coordinator has no callback that can execute an attempt. The repository remains authoritative when the process-local coordinator rejects capacity: no second queue or receipt controls whether durable work runs. The worker reloads the persisted source provider/model and exact RunID event sequence through `learningEvidenceLoader`, sends only the canonical projection through `EvidenceReflector.ReflectProjection` (which applies the governance fence), and advances the same claim-fenced proposal/skill and terminal checkpoints.
+Every attempt callback has a timeout and runs only under the Build lifecycle context. `attemptWorker` acquires its claim before loading source evidence or constructing the source provider, requests only a bounded duration, and never supplies an absolute expiry or authority time. `AttemptRepository` backends mint and compare acquisition, renewal, transition, retention, and `DiscoverWork` times against their own clock; local, memory, and remote implementations share that conformance contract. The worker then renews that claim while evidence reconstruction, model reflection, and publication are active; renewal loss cancels that work before another attempt transition. Missing, deleted, unauthorized, invalid, duplicate, decreasing, gap-marked, or mismatched source evidence crosses the worker evidence boundary and terminally records only `evidence_unavailable`. Exact-run validation requires the first target event's `Seq` to be one and later target events to increase strictly; it deliberately permits numeric gaps because `RunEventRecorder` coalesces deltas under the first delta's sequence while preserving append order. Because admission can commit before the relay appends the terminal `EvResult`, an exact source run whose event sequence is merely incomplete joins the same persisted exponential-backoff path as a transient provider/setup failure. The live claim is retained as the backoff marker; claim generation bounds retries across restart, and the third failed recovery terminally records only `retry_exhausted`. No raw setup error is persisted, and the discovery interval cannot turn these failures into a one-second hot loop. `Built.Close` cancels and joins the discovery worker before borrowed resources close. Diagnostics carry only bounded
+attempt IDs and counts. `internal/adapter/attemptstore` persists authoritative queued/running/terminal workflow state and immutable content-free provenance across processes. Its fixed safe bound is 256 records per opaque caller partition. `Create` enforces that bound under the same repository lock as insertion: it first preserves idempotent duplicate semantics, then evicts only the oldest terminal record (updated time, opaque ID tie-break), or returns the closed content-free quota error when queued/running records saturate that partition. It never deletes nonterminal or claimed work to make room, and saturation in one partition does not block create/claim/finalize in another. The memory reference adapter and remote driver run the same conformance scenario, so transport does not weaken this repository authority. Skipped/non-admitted decisions emit their immediate content-free activity and never touch the attempt repository.
+
+`internal/adapter/server/attempts.go` derives the verified caller's private one-way attempt partition before every repository read or control. `GetLearningAttempt` maps foreign and missing IDs to the same content-free absence and `ListLearningAttempts` uses the repository's bounded state filter/page limit and opaque next-ID cursor. `RetryLearningAttempt` and `AbandonLearningAttempt` require a non-system verified caller plus the opaque expected version before invoking only `AttemptRepository.Retry` or `AttemptRepository.Abandon`; they take no coordinator lock, send no worker signal, and trigger no downstream write or rollback. Version, terminal-transition, and live-claim conflicts map to separate closed transport errors and leave the record unchanged. Abandon is explicitly non-compensating. `toProtoLearningAttempt` is the sole gRPC/HTTP projection: closed state/outcome/failure/checkpoint tokens, generations, timestamps, opaque ID/version, and same-partition proposal/skill links only. Source session/run/digests, immutable prompt provenance, principal values, content, errors, diagnostics, metrics, EventLog records, and watch envelopes never enter the public message. `internal/adapter/server/grpc.go` and `internal/adapter/server/http.go` are thin projections over those Service methods; attempt watch remains absent.
+
+**Distributed learning repository composition:** `internal/app/learningdriver.go`
+(`resolveLearningRepositories`) selects one `--learning-store-url` target only after
+`internal/adapter/grpcdriver/learningrepositories.go`
+(`ProbeLearningRepositoryCapabilities`) positively negotiates the complete Attempt/Proposal/Skill
+repository set. Missing or partial capability is fatal; no member falls back to local persistence.
+All three clients borrow the existing Build-scoped `driverConns` entry and once-guarded close.
+Composition hashes both components of Proposal/Skill partitions before transport and restores only
+the in-process view, so raw workspace paths and identity strings never cross these repository RPCs.
+Validated skill activation is exposed only when separately advertised. The current raw repository
+RPC servers remain trusted infrastructure: they accept caller-selected partitions and do not yet
+have ADR-0213 workload-authentication middleware, a private durable owner registry, or a separately
+authenticated maintenance surface. Therefore a configured remote learning store fails closed whenever
+application `OwnershipEnforced` is true, even if the driver self-advertises `enforced` ownership and
+RPC separation. With ownership enforcement disabled, an explicitly `trusted` driver may be composed;
+the reserved `enforced` value is treated no stronger than trusted until cryptographically bound
+ADR-0213 enforcement exists. Unspecified ownership and missing or partial repository capabilities
+remain fatal before any repository client is composed. Local in-process repositories retain their
+existing application ownership enforcement.
+
+**Bounded selected-evidence refinement (ADR 0300):** automatic admission streams the full
+eligible source and verified current span with bounded counters, coordinates, digests, and ranking
+state; it does not construct an unbounded `learning.Input`. Automatic and explicit reflection then
+use the same deterministic `reflection-evidence/v1` selector before provider or proposal work.
+One Build-owned lifecycle gate/context plus bounded active-operation accounting owns synchronous
+materialization scans; no queue or goroutine is created per materialization, and `Built.Close`
+rejects new scans and cancels and joins active scans before borrowed reflection resources close.
+The durable attempt repository remains the sole execution queue and workflow authority.
+
+The bounded selected unit carries the protocol, identity boundary, selected digest, and immutable
+aggregate manifest. Host signal, invocation mode, and existing-memory comparison context stay
+outside that identity. Attempt discovery, claim fencing, automatic-ledger reservation, repository
+quota, restart recovery, and terminal transitions remain authoritative around materialization.
+No-safe-selection produces only a closed skip/abstention and starts no provider, proposal, skill,
+or promotion work; automatic failures after durable admission retain the existing conservative
+ledger charge. Diagnostics remain content-free.
+
 
 The observer performs the structural signal gate before the process-wide legacy interval admission, so
 trivial completions spend no provider call and do not consume the debounce cadence. Standard composition
@@ -4166,7 +4462,7 @@ constructs `agent.EvidenceReflector` on the selected session provider/model (or 
 `reflection` slot), stages through the durable proposal repository under principal/project partitions,
 and applies `memorypromotion.StandardPolicy`. `review` stages without memory writes. `auto` promotes operator facts only from explicit principal-authored remember evidence. Trusted project facts require principal-authored evidence and an exact configured-workspace match; tool/assistant/repository-only evidence remains staged. Project candidates from admitted alternate roots remain staged/reviewable but cannot approve, undo, or read/write launch-root project memory until a safe exact-root lifecycle store exists; untrusted project material is not ingested. Existing project partitions stay listable/rejectable. Conflicts and ambiguous facts remain non-promoted, project material
 requires `projectIngestionAdmitted`. Procedures first become `deferred_unsupported` as the durable crash-recovery checkpoint, then enter the installed learned-skill pipeline in review/auto. `off` installs no
-automatic observer, started coordinator worker, or eager proposal repository. Explicit reflection synchronously uses the persisted session provider/model, performs a bounded EventLog read, and lazily opens persistence and starts coordinator workers in Off. Approval re-verifies owner-authorized message/event digest, sequence, and tool-call evidence before promotion. The deprecated `--user-model-review` alias maps to this same `auto` path;
+automatic observer or started coordinator worker. Without a configured remote store it also installs no eager proposal or attempt repository; explicit reflection synchronously uses the persisted session provider/model, streams the bounded EventLog source through the shared materializer, and lazily opens local persistence only after safe selection. With `LearningStoreURL` explicitly configured, Off still connects to and inspects the remote repository set, publishes learned skills, and may recover previously admitted attempts; it does not create automatic attempts from ordinary completions. Automatic no-safe selection returns closed `skipped`; explicit selection returns successful closed `abstained`, using only `no_eligible_evidence` or `mandatory_span_exceeds_bounds`, with no provider, proposal, skill, or promotion work. Cancellation and Build close remain typed errors. Proposal provenance persists one complete immutable aggregate manifest rather than candidate references alone. List is metadata-only; detail and approval each owner-authorize and re-materialize the exact manifest once without re-ranking, verifying protocol, identity boundary, every original message coordinate or session-wide event ordinal, component binding, entry digest, aggregate digest, and candidate citation. Changed or unavailable source fails precondition without promotion. Existing evidence previews remain their current at-most-1024-byte canonical redacted/digest-verified projection and are not repurposed as manifest or raw transcript output. Provider, persistence, validation, repository, and timeout faults retain typed non-Internal mappings, while closed materialization reasons map to stable harness-authored client text. Approval re-verifies owner-authorized message/event digest, sequence, and tool-call evidence before promotion. The deprecated `--user-model-review` alias maps to this same `auto` path;
 the old exported `UserModelReviewer`, `NewUserModelObserver`, and `Review` remain compatibility APIs but
 standard Build no longer uses their direct-writing child engine. Dream and explicit memory tools remain
 independent CAS writers. The shipped gRPC/HTTP surface provides synchronous explicit reflection plus caller-partitioned proposal list/detail/decision/undo, and mecatui provides windowed review with exact canonical value/scope/description and stale-CAS refresh.
@@ -4177,15 +4473,50 @@ session kind, stop, verified current `MessageSpan`, standard weighted signals, c
 usage. `engine/agent/loop.go` (`observeCompletion`) snapshots Kind/Counters and locates the accepted
 genuine prompt in final history; compaction that makes the span unverifiable therefore fails closed.
 Hard explicit intent is genuine-current-user-only and bypasses score/cooldown/legacy interval, never
-budgets or coordinator capacity. `internal/app/learning_controller.go`
-(`automaticAdmissionController`) owns the process-local sliding reservations, per-principal weighted
-cooldown, completed-digest LRU, and canonical digest excluding `ExistingFact`; coordinator admission
-runs its reservation callback after duplicate/capacity checks and before provider work, so queue-full
-cannot spend a reservation. Terminal failures still call completion and retain the reservation.
-Authenticated explicit reflection carries `SignalHostRequested`, bypasses this controller, and joins
-an identical in-flight digest. Off constructs no automatic controller/coordinator worker; explicit Off
-runs synchronously against lazy proposal persistence. `Close` cancels and joins; no startup/shutdown
-sweep exists. Every process gets an independent budget and restart resets all controller state.
+budgets or durable repository quota. `internal/app/reflection_observer.go` derives the deterministic
+attempt/provenance before admission and reserves weighted work through `AutomaticAdmissionLedger`
+before creating the attempt. Weighted and hard automatic work then execute only when
+`AttemptRepository.DiscoverWork` returns them; authenticated explicit reflection remains
+outside automatic accounting. The attempt runs through the claim-fenced evidence,
+reflection, proposal/skill convergence, and terminal lifecycle. There is no second process-local queue.
+
+Off without a configured remote learning store constructs no attempt repository, automatic ledger, coordinator worker, or recovery worker;
+explicit Off runs synchronously against lazy local proposal persistence and creates no durable attempt. With `LearningStoreURL` configured, Off intentionally dials/probes the remote repository set and may run recovery for existing attempts, while automatic observation and new automatic admission remain disabled.
+`Built.Close` cancels and joins coordinator and recovery workers.
+
+The storage-neutral accounting contract lives in `engine/learning/automatic_ledger.go`
+(`AutomaticAdmissionLedger`), with shared adapter coverage in
+`engine/adapter/automaticconformance/automaticconformance.go` (`Run`). Its reservation ID is derived
+only from the deterministic attempt ID. Policy and time are backend authority: construction binds one
+immutable policy to its derived revision and an injected clock; requests carry only identity/charge
+demand plus the expected revision, and every timestamp/expiry decision is minted by that clock. The
+durable local document persists the policy revision and refuses a differently configured replica,
+while the driver protocol exposes neither client policy nor client time. One atomic admission applies
+global and opaque-principal count/token windows, global digest deduplication, and weighted cooldown; hard admission bypasses only
+cooldown and explicit host-requested reflection does not enter this automatic seam. Expired ownership
+is reassigned with a newer opaque fence without adding a charge. Bounded `DiscoverExpired` is also
+backend-authoritative: local and remote implementations atomically select only held records whose
+fences have expired by backend time and return them under fresh fences. `internal/app/automatic_reservation_reconciliation.go`
+(`automaticReservationReconciler`, `automaticReservationReconciliationLoop`) closes the non-transactional boundary: it reserves, then atomically retains under the current backend fence before durable attempt create. If an expired-reservation reconciler reclaims first, the stale creator's retain fails and it never reaches `AttemptRepository.Create`; if retain wins, create failure or response loss stays conservatively charged until backend window/retention expiry and a same-identity retry can converge it. One Build-owned cancellation-aware joined loop continuously discovers crash
+orphans, reads the linked `AttemptRepository`, and retains after the attempt is observable or reclaims
+only when no create authority has already been consumed. `Built.Close` cancels and joins that loop before borrowed repository
+resources close. Retained charges are not refunded by later failure, timeout, or abandonment. The
+local durable document prunes resolved records after dedupe retention and admits at most 512 records
+globally and 128 per opaque principal partition; unresolved saturation fails closed rather than
+allowing held orphans to grow the 16 MiB document indefinitely.
+
+`internal/adapter/automaticstore/store.go` is the local cooperating-process backend: every operation
+reloads one bounded, content-free document under a stable flock and crash-safe atomic replace, so
+separate backend instances share one count/token window, opaque-principal limit, cooldown, and digest
+dedupe authority. `internal/adapter/grpcdriver/automaticledger.go` and
+`internal/adapter/grpcdriver/automaticledger_server.go` expose the same contract to independent driver
+clients with only bounded opaque metadata and closed safe error details. Both run the shared conformance
+suite. `internal/app/learningdriver.go` requires positive automatic-ledger capability whenever automatic
+learning is enabled and never falls back to local accounting; local composition places the ledger beside
+the durable attempt store. Capability/posture reporting distinguishes the durable explicit-attempt
+lifecycle from automatic bounds: it advertises global count/token/cooldown/deduplication only after a
+durable ledger is successfully selected. An unwired or unhealthy ledger retains ADR-0114's
+process-local limitation and is never presented as globally bounded.
 
 **Evaluated and validated agent-owned skills (#510; ADR 0111, superseded in part by ADR 0224):**
 `engine/adapter/skilllifecycle.Pipeline` is a state-aware, idempotent resume over
@@ -4203,17 +4534,21 @@ and explicit limits; mecatl ships no production judge. Candidate inventory drain
 metadata plus every learned version in the exact partition.
 
 `skillfs.AtomicCatalog` composes the existing path-free `tool.SkillSource` with body-only learned versions behind
-one immutable generation pointer. External filesystem/driver assets retain the ordinary `{name, asset}` schema,
-validation, and bounds; learned asset requests fail explicitly, and no path/read-root/materialization seam exists.
-External names win. Shared, selector, and no-fs catalogs register `LiveTool` over the same pointer. A
-verified caller's global partition and exact trusted launch-root project can bind publication; the
-caller-bound LiveTool selects only that principal/project generation, while Service mutation authorization is skill-specific and independent
-of memory convergence.
+independent immutable caller/project partition snapshots. `learning.SkillRepository.Generation` is the durable
+monotonic authority for each partition; every successful repository mutation advances only that partition, and
+paginated hydration verifies one unchanged generation before atomically publishing it. Generation-aware publish and
+invalidation reject delayed older operations, while uncertainty clears only the affected partition. This is lazy
+list/run hydration and convergence, not an instant invalidation or attempt-claim fence. External filesystem/driver
+assets retain the ordinary `{name, asset}` schema, validation, and bounds; learned asset requests fail explicitly,
+and no path/read-root/materialization seam exists. External names win. Shared, selector, and no-fs catalogs register
+`LiveTool` over the same catalog. A verified caller's global partition and exact trusted launch-root project can bind
+publication; the caller-bound LiveTool selects only that principal/project snapshot, while Service mutation
+authorization is skill-specific and independent of memory convergence.
 
 Archive accepts only Active. Rollback additionally requires durable proof that the target was previously
 active through `activate`, `activate_validated`, or `rollback_to`; arbitrary ABSTAIN and draft versions remain
 ineligible. Post-commit publication uses a bounded cancel-detached context and reports `published` versus
-`pending_reconciliation` alongside committed state; failure revokes the learned entry fail-safe, while startup and
+`pending_reconciliation` alongside committed state; failure generation-invalidates the uncertain partition, while startup and
 live-list refresh reconstruct from durable active state. Lifecycle `SkillDraft` derives verified caller identity,
 exact live workspace root, and main-agent ownership at execution, refusing identity-free calls. API/TUI requests
 preserve project and correlate generation plus skill/version; list and receipt consumers drain every page, with
@@ -4388,10 +4723,20 @@ itself is not permanent product-tree tooling. Secret sentinel tests cover the ex
 Authorization boundary and assert absence from every other header/body, diagnostics,
 errors, prompts, lifecycle hooks, events, snapshots, and raw JSONL. Generic main and
 isolated-child runner oracles prove provider credentials do not enter command-runner
-environments. Residual boundary: a same-UID Bash process can read a known plaintext
+environments. Residual boundary: a same-UID Shell process can read a known plaintext
 `auth.yaml` path; mode `0600` is not privilege separation.
 
-### `openaicompat` + `toolhivellm` — ToolHive LLM gateway provider (issue #262, ADR 0064)
+### `openaicompat` + `toolhivellm` — ToolHive protocol providers (issue #262, ADR 0064, ADR 0334)
+
+One detected ToolHive gateway identity registers TWO protocol-specific entries.
+`toolhive` is unchanged: `openaicompat` discovers `/v1/models` and
+`provider/openai` infers through `/v1/responses`. `toolhive-anthropic` reuses
+`anthropic.NewLister` and `provider/anthropic`, discovering
+`/anthropic/v1/models` and inferring through `/anthropic/v1/messages`. Catalogs are
+never merged or failed over: status, counts, and process-local last-known-good data
+remain keyed by provider ID. `toolhive` stays the implicit default among the two.
+Anthropic catalog metadata may enrich a matching gateway-listed ID, but never
+creates gateway inventory by itself.
 
 Two-layer leaf split, mirroring the `providercatalog`/`openrouter` shape but for a
 config-detected (not credential-detected) provider. `internal/adapter/openaicompat`
@@ -4427,15 +4772,18 @@ Composition (`internal/app/registry.go`): `resolveToolhiveIntent` decides
 REGISTRATION from intent alone (an explicit `--toolhive-llm-base-url`, pre-validated
 loopback-only by `validateToolhiveBaseURL` — literal `127.0.0.0/8`/`[::1]`/
 `localhost` via `net.ParseIP`, NEVER a DNS lookup, TOCTOU-safe — or a config-file
-detect) — the network probe that follows NEVER gates whether the "toolhive" entry
-exists, only its diagnostics/default-model eligibility (D1's whole point: a
+detect) — the network probes that follow NEVER gate whether either ToolHive entry
+exists, only diagnostics/default-model eligibility (D1's whole point: a
 persisted `provider_id:"toolhive"` session must rehydrate even when the proxy is
 down, never the `ErrInvalidArgument` "unknown or unavailable provider" class of
-error). `newGatewayEntry` delegates to `newOpenAICompatEntry` (the renamed
+error). `newToolhiveEntries` preserves `newGatewayEntry` for the Responses surface
+and constructs the native surface through `newAnthropicEntryFor`. The former
+delegates to `newOpenAICompatEntry` (the renamed
 `newOpenAIEntry` — shared by openai/openrouter/toolhive, so all three cannot drift
 on resilience wrapping) with `toolhivellm.PlaceholderToken` (`"thv-proxy"`) as the
-credential. `providerEntry.intentDriven`/`intentGatewayURL`/`intentExplicit` are the
-three new fields: `intentDriven` tiers `preferredDefaultProvider` STRICTLY below
+credential. Both carry `providerEntry.intentDriven`/`intentGatewayURL`/
+`intentExplicit` plus the resolved ToolHive routing mode: `intentDriven` tiers
+`preferredDefaultProvider` STRICTLY below
 every key-driven provider (any resolved API key always wins the default,
 alphabetics be damned — pinned by an anthropic-keyed-beats-toolhive test, since
 "toolhive" sorts after "anthropic" and a naive sorted-pick would pass by accident)
@@ -4444,8 +4792,9 @@ gateway notices. `providerStatusProto` is broader only for the operator-actionab
 Codex entitlement boundary; ordinary openrouter/anthropic blips still never grow
 the client-facing `provider_status` wire list.
 
-`probeToolhive` is the BOUNDED (1.5s) Build-time probe, run once per Build
-immediately after registration: ok(N) → INFO + (if sole+unset) fills
+`probeToolhive` starts both protocol probes concurrently under ONE BOUNDED (1.5s)
+Build-time deadline immediately after registration. Each outcome updates only its
+own provider-keyed status/LKG. For the resolved default, ok(N) → INFO + (if unset) fills
 `reg.defaultModel` from the first-listed id, stamps `defaultModelAutoSelected`, and
 RE-RUNS the T7 caps fixup via the shared `remintEntry` helper; ok(0 models) on a
 SOLE/DEFAULT toolhive → `errToolhiveNoModels`, Build FAILS (R2.3 — there's genuinely
@@ -4571,12 +4920,12 @@ a redirect response (CWE-918).
 had become the de-facto remediation map for ALL providers via the shared classifier,
 so an ordinary openrouter outage could record the ToolHive-specific
 "start it with `thv llm proxy start`" hint (latent-wrong-vendor).
-`statusHintFor(pid, state)` (`internal/app/registry.go`) selects the ToolHive table
-for `providerToolhive`, the manual-token/account table for `providerOpenAICodex`,
-and `""` for ordinary providers; `resolveProviderModels`'s failure branch and
-`liveOutcomeStore.recordSuccess`'s empty-state hint both route through it.
-`probeToolhive` already keyed toolhive directly, so it needed no change. TRIP-WIRE:
-a new surfaced provider needs its own vendor table, never copied wording.
+`statusHintFor(entry, state)` (`internal/app/registry.go`) selects the proxy/direct
+ToolHive table for both protocol-specific provider IDs from the entry's structural
+`toolhiveMode`, the manual-token/account table for `providerOpenAICodex`, and `""`
+for ordinary providers. `resolveProviderModels`, `liveOutcomeStore.recordSuccess`,
+and `probeToolhive` all route through that one helper. TRIP-WIRE: a new surfaced
+provider needs its own vendor table, never copied wording.
 
 mecatui: `client.ProviderStatus` mirrors the proto message (now with an
 `AutoSelected bool`); `ModelsMsg.Statuses` threads it through `ListModelsCmd`;
@@ -4586,9 +4935,11 @@ remediation line from a PRIOR success must never render beneath an unrelated
 error); `renderModelsPanel`'s status-line loop is additionally gated on
 `st.err == nil` as render-time defense in depth. `renderProviderStatusLines`
 renders ONE muted line per non-`ok` status under the list/empty state
-(`"<provider_id>: <copy> — <hint>"`, e.g. `"toolhive: proxy not reachable — start
+(`"<provider_id>: <copy> — <hint>"`, e.g. `"toolhive: gateway not reachable — start
 it with `thv llm proxy start`"`), extracted into the shared `providerStatusLine`
-helper. `modelsEmptyCopy` (review finding 6) now calls `promotedStatus` FIRST —
+helper. The ToolHive clause is deliberately routing-neutral; the TUI never parses
+the mode-specific free-text hint to infer proxy versus direct routing.
+`modelsEmptyCopy` (review finding 6) now calls `promotedStatus` FIRST —
 the first entry whose state is neither `""` nor `"ok"` — and promotes ANY such
 status (not just `"empty"`) to the top-level empty-state cause line via
 `providerStatusLine`, ahead of the disabled note and the generic "No selectable
@@ -4672,8 +5023,8 @@ discipline). It feeds the UNCHANGED `preferredDefaultProvider` ladder as an
 explicit operator override — it does NOT lower the precedence of key-driven
 providers. See ADR 0064 D9.
 
-**DIRECT mode — in-process OIDC token injection (issue #265, ADR 0102).** The gateway
-entry can also talk DIRECTLY to the real `gateway_url` with no local proxy hop. The
+**DIRECT mode — in-process OIDC token injection (issue #265, ADR 0102).** Both gateway
+entries can talk DIRECTLY to the real `gateway_url` with no local proxy hop. The
 ToolHive Go import that ADR 0064 D8 said would never exist now lives in ONE file —
 `internal/adapter/toolhivellm/tokensource.go` (the package's sole toolhive-importing
 file alongside the stdlib-only `detect*.go`; the detector's
@@ -4689,25 +5040,32 @@ ToolHive proxy use (`llm.NewTokenSource`): system secrets provider →
 (`func(ctx) (token, error)`) is the ONE seam the registry holds; tests inject a fake.
 `DirectTokenSource` is the non-interactive variant (a genuine cache miss returns
 `llm.ErrTokenRequired` — surfaced with `toolhivellm.ErrTokenRequiredHint`; it NEVER
-silently launches a browser from a headless daemon); `RunInteractiveLogin` is the
-interactive variant (`mecatui llm login`). Errors are sanitised via
+silently launches a browser from a headless daemon). Operators establish the external
+ToolHive credential with `thv llm setup`. Errors are sanitised via
 `llm.SanitizeTokenError` (strips any bearer material an IdP echoes back) before they
 cross any boundary.
 
-The token rides a custom `http.RoundTripper` inside the `*http.Client` passed to
-`openai.WithHTTPClient` — NOT a `port.LLMProvider` decorator. `bearerRoundTripper`
-(`internal/app/registry.go`) strips the openai-go SDK's placeholder `Authorization`
-header (the SDK's `SetAPIKey` stamps `Bearer <key>` before `*http.Client.Transport`
-fires) and sets `Bearer <real-token>`, mirroring the ToolHive proxy's `Rewrite`
+The ONE token source is shared by the two entries through a custom
+`http.RoundTripper` inside the `*http.Client` passed to both SDKs — NOT a
+`port.LLMProvider` decorator. `bearerRoundTripper` (`internal/app/registry.go`)
+strips conflicting `Authorization` AND `X-Api-Key` headers before setting
+`Bearer <real-token>` on every outbound attempt, mirroring the ToolHive proxy's `Rewrite`
 (`pkg/llm/proxy/proxy.go` <!-- lint:not-a-citation: path inside the toolhive dependency, not a repo file -->: `Del` then `Set`). The HTTP client composes TWO policies:
 `bearerRoundTripper` over the SDK default transport, AND
-`openaicompat.RefuseRedirects` (CWE-918). `newDirectGatewayEntry` passes both via
-`openai.WithHTTPClient`, and `newOpenAICompatEntry` closes `extra` into `construct()`
-so the option rides the default build AND every per-session/heal `remintEntry` re-mint
-(zero drift, the same property the proxy entry relies on for redirect refusal). The
+`openaicompat.RefuseRedirects` (CWE-918). `newDirectGatewayClient` constructs that
+shared policy once; the OpenAI and Anthropic entry constructors pass it through their
+SDK options, including every per-session/heal re-mint (zero drift, the same property
+the proxy entry relies on for redirect refusal). The
 token NEVER enters a log, an error string, or an env var (OS keyring; only its
 reference is persisted); the `RoundTripper` must never log the Authorization header —
 and by construction it does not.
+
+Proxy-mode native Anthropic uses the same normalizing transport with a static,
+non-secret `thv-proxy` token: it removes any Anthropic SDK `X-Api-Key` and conflicting
+authorization, then sends only `Authorization: Bearer thv-proxy` to the validated
+loopback hop. ToolHive replaces that header upstream. Both listing and inference
+clients refuse redirects; the lister's shallow client clone retains the underlying
+authenticated transport while adding its response-size cap.
 
 A new `--toolhive-llm-mode auto|proxy|direct` flag (default `auto`, registered by
 `cliconfig.RegisterToolhiveLLMFlags` on all four mains) drives the routing in
@@ -4717,8 +5075,10 @@ A new `--toolhive-llm-mode auto|proxy|direct` flag (default `auto`, registered b
 gateway would send the bearer over cleartext, CWE-319), else falls back to proxy with
 a WARN (byte-identical to pre-#265 when OIDC is absent); `proxy` forces the loopback
 path (the escape hatch for a misconfigured OIDC block or a self-signed cert); `direct`
-forces the gateway path. The direct base URL is DERIVED via `directBaseURL`
-(`gateway_url + "/v1"`, mirroring what the ToolHive proxy forwards), never hand-set —
+forces the gateway path. The direct bases are DERIVED via `directBaseURL` and
+`toolhiveAnthropicBaseURL` (`gateway_url + "/v1"` and `gateway_url + "/anthropic"`),
+never hand-set; the same helper preserves a legitimate path prefix and strips
+userinfo/query/fragment material —
 there is no `--toolhive-llm-direct-base-url` (it would duplicate the security-sensitive
 `--toolhive-llm-base-url` surface for zero gain). An explicit `--toolhive-llm-base-url`
 ALWAYS forces proxy (it is a loopback address; direct derives from the config's
@@ -4727,18 +5087,14 @@ ALWAYS forces proxy (it is a loopback address; direct derives from the config's
 `--toolhive-llm-base-url` as contradictory. `direct` + `!IsConfigured()` is a loud
 Build-fail (never a silent proxy fallback): `validateToolhiveLLMMode` runs AFTER
 `validateToolhiveBaseURL` and BEFORE `buildProviderRegistry`, naming the missing
-fields and the remediation (`thv llm config set` + `thv llm setup` /
-`mecatui llm login`, or `--toolhive-llm-mode auto/proxy`).
+fields and the remediation (`thv llm config set` + `thv llm setup`, or
+`--toolhive-llm-mode auto/proxy`).
 
-`mecatui llm login` (`cmd/mecatui/login.go`) is the CLI-only ToolHive subcommand
-running the interactive OIDC browser flow in-process — NOT a session, NOT a remote-server
-transport. It writes
-the refresh-token reference to ToolHive's own config so a subsequent non-interactive
-direct-mode provider finds the credential without re-login. A `--skip-browser` flag
-prints the authorization URL for headless/SSH/CI. It runs in the normal buffer (no alt
-screen) over the default config path. A headless `mecated` cache-miss surfaces
-`toolhivellm.ErrTokenRequiredHint` (naming both `thv llm setup` and `mecatui llm login`
-plus the `--toolhive-llm-mode proxy` escape hatch), mirroring the existing
+ToolHive owns the interactive OIDC browser flow through `thv llm setup`. It writes the
+refresh-token reference to ToolHive's own config so a subsequent non-interactive
+direct-mode provider finds the credential without re-login. A headless `mecated` cache
+miss surfaces `toolhivellm.ErrTokenRequiredHint` (naming `thv llm setup` plus the
+`--toolhive-llm-mode proxy` escape hatch), mirroring the existing
 `errToolhiveNoModels` actionable-error pattern — never a silent browser popup from a
 daemon.
 
@@ -4746,7 +5102,7 @@ daemon.
 `pkg/auth/oauth/oidc.go` <!-- lint:not-a-citation: path inside the toolhive dependency, not a repo file --> builds its own OIDC-discovery `http.Client` with no
 `InsecureSkipVerify` plumbing). A self-signed gateway must use
 `--toolhive-llm-mode proxy` (which DOES honor it). The limitation is documented in the
-ADR + `docs/usage.md` + `user-docs/` with the one-line remediation; a future ToolHive
+ADR + `user-docs/building/deployment/mecated.md` with the one-line remediation; a future ToolHive
 bump that closes the gap removes it with a one-line code change. The toolhive dep is
 bumped v0.31.0 → v0.40.0 — the EARLIEST release with `pkg/llm.NewTokenSource`,
 avoiding an `mcpsdk` v1.7.0 goroutine leak present at v0.42.0+ that would regress
@@ -4759,7 +5115,7 @@ depguard allowlist scopes `github.com/stacklok/toolhive/*` to `tokensource.go` O
 `openai.buildTools` sends function tools **non-strict** (`FunctionToolParam.Strict` left unset
 → the SDK omits it → upstream default applies). Strict mode would require every tool schema's
 `required` to list ALL of its `properties`, but many built-in tools carry genuinely optional
-params (Bash `timeout_ms`, Edit `replace_all`, Read `offset`/`limit`, Grep `path`, memory
+params (Shell `timeout_ms`, Edit `replace_all`, Read `offset`/`limit`, Grep `path`, memory
 Remember/query, ToolSearch, Parallel, Team, Subagent, …); a strict-enforcing OpenAI-compatible
 upstream (Azure reached via OpenRouter) `400`s those. We don't need the guarantee: **argument
 validation lives at the execution edge** — every tool re-parses/validates via
@@ -4986,7 +5342,7 @@ Exa-anonymous is the default while it lasts — and why graceful degradation is 
   WebFetch's arbitrary-URL fetch). Child catalogs (`noFSChildCatalog`) carry it for
   read-only-discovery parity with WebFetch. Bare `WebSearch` in a Claude allow imports
   VERBATIM (no demotion). ACP `toolKindFor` maps it to `"search"`.
-- **The `query` probe (DOMAIN):** `governance.nonBashPattern` adds `"query"` to its
+- **The `query` probe (DOMAIN):** `governance.nonShellPattern` adds `"query"` to its
   probe-key list (after path/file_path/pattern/url), so an arg-pattern permission rule
   can target a `WebSearch` call by its query string (`WebSearch(query:…)`) — the prior
   round missed this. Mutation-verified: removing the key fails the probe test.
@@ -5149,7 +5505,7 @@ A tool can hand back arbitrary bytes, and an invalid-UTF-8 Go string in a
 `session.ToolResult` (or any producer-influenced string) kills the live gRPC
 Converse stream: the mapper copies the Go string into a protobuf string field
 verbatim, and protobuf REJECTS invalid UTF-8 at marshal time (`codes.Internal`),
-after which the relay cancels the run. The confirmed producer was a Bash call
+after which the relay cancels the run. The confirmed producer was a Shell call
 (`sed … | cat -t`): BSD `cat -t` renders a valid em dash's continuation bytes as
 ASCII while retaining the `\xe2` lead byte, leaving an orphaned lead byte. The
 byte path is `internal/adapter/osfs/osfs.go` (`cappedBuffer`) →
@@ -5387,6 +5743,24 @@ name in `boundaries` must resolve to a valid table entry (else
 "stale table entry" half) — a renamed/removed method leaves a dangling row
 the guard also catches, not just a new unclassified one.
 
+`Service.GetSession` preserves ADR 0212's absence concealment for three distinct
+outcomes: missing snapshots, foreign ownership, and non-not-found load failures all
+return target-free `ErrNotFound` under enforcement. Built-in snapshot-backed stores
+wrap retrieval/transport failures as `port.SessionLoadFailureStore` and snapshot
+format/decode/identity/validation failures as `SessionLoadFailureSnapshot`; custom or
+untyped failures fold to `SessionLoadFailureUnknown`. The Service classifies only via
+the port-owned typed error (`errors.Is`/`errors.As`), never by parsing adapter text.
+One public invocation emits at most one WARN from a detached clean context with only
+`class` and the constant `ownership=enforced` direct fields, then invokes the optional
+composition metric callback once. It adds no request target, principal, path, cause,
+blob content, or blob size data. Attributes deliberately pre-bound by the trusted
+operator-supplied `port.Diagnostics` sink are outside this producer's control.
+Telemetry renders that as
+`mecatl_session_load_failures_total{class="store|snapshot|unknown"}`. The Service
+supplies neither diagnostic fields nor metric labels with a session id, principal,
+storage locator, raw cause, blob content, or blob size; genuine
+`port.ErrSessionNotFound` remains silent.
+
 See [ADR 0212](../adr/0212-caller-ownership-enforcement.md) and
 [`docs/architecture.md`](../architecture.md)'s "Caller ownership enforcement"
 section for the narrative and the per-kind decision the table classifies.
@@ -5428,7 +5802,8 @@ construction. BOTH the per-session factory AND `baseEngineDeps` pass `reg.window
 provider, model)` (`internal/app/livemeta.go` (`windowResolver`)) — the ONE override→live→catalog→128k-floor
 precedence chain — so the compaction trigger AGREES byte-for-byte with the `ListModels`-advertised
 `context_limit` AND with the `resolved_model` echo (the service's `ResolveContextWindow` wraps the
-SAME `windowResolver`). Issue #63: the DEFAULT model gets its REAL window (e.g. 1,050,000 for
+sibling `reg.echoWindowResolver`; both share `resolveWindowCore`, differing only for a provisional
+unknown value while initial discovery is unsettled). Issue #63: the DEFAULT model gets its REAL window (e.g. 1,050,000 for
 `gpt-5.5`), flooring to 128k only when the model is genuinely uncatalogued. Issue #66: because the
 closure re-reads the live store, the SHARED engine — built once, before the live refresh — self-corrects
 to a live-only model's true window on the next compaction check with no rehydration, and the
@@ -5437,6 +5812,27 @@ both the engine and the echo). `baseEngineDeps`
 delegates for the default provider+model, so a per-session engine bound to a non-default provider
 re-derives EVERY provider-closing field rather than shallow-cloning + swapping only `LLM` (which
 would compact/count through the wrong model — cross-provider contamination).
+
+**Cold-window run admission (issue #1541 / ADR 0342).** Resolve-at-use remains the engine's
+backstop, but the service must not let its 128K unknown-model floor trigger persistent compaction
+while a live-listable effective model is still awaiting initial metadata. `liveMetaStore` therefore
+closes one settlement channel from `markRefreshCompleted`; shutdown cancellation leaves it open.
+After `engineAndEnvironmentFor` has selected the real shared/per-session and mode-routed identity,
+`Service` invokes its optional `AwaitContextWindow` callback before `Engine.Run`, before
+failed-step retry preparation, and before restart-restored `ResumeApproval`. Composition bypasses
+waiting for any positive override/exact-config/live/catalog value and for providers with no lister.
+It uses one caller-derived `liveModelRefreshTimeout` context for the initial wait and every
+provider in a recovery refresh. Genuine non-empty-listing evidence is stored in the same atomic
+`liveMetaStore` snapshot as the resolver metadata it admits, so `recordSuccess` cannot expose
+admission readiness ahead of `publishSnapshot`. Listing failure/empty yields retryable
+`context_window_unavailable` with no prompt/inference/compaction; a successful published listing
+that omitted a passthrough model or its window retains the settled 128K compatibility fallback.
+The first rejection does not duplicate startup discovery; a later run reuses `refreshStaleModels`
+and its shared mutex/cooldown/publish path, including operator-defined live-listable providers.
+Admission cleanup releases the provisional registry. The existing session-lifetime lease remains
+held until teardown or shutdown, including after a later launch step rejects. Terminal recovery
+already completed before this gate is intentionally not rolled back; it may close dangling tool
+calls but does not remove genuine user or assistant history.
 
 **Role-tagged child metrics (issue #47, `Config.MetricsRoleScoper` + `roleFamily`).** Child
 engines used to force `Deps.Sink`/`Deps.ToolCallRecorder` nil (the double-count guard); they are
@@ -5531,6 +5927,65 @@ bounded by `MaxSessionEngines`. The registry NEVER leaves composition — the ch
 bare `port.LLMProvider`. **DEFERRED:** the standalone gRPC `CreateTeam` RPC stays on the default
 provider (no per-CreateTeam selector); `ListAgents`/`AgentInfo` provider surfacing (no proto
 change).
+
+**Session-scoped MCP broker composition (P10, ADR 0308):** `internal/app/build.go` owns one
+process-wide `internal/adapter/mcpbroker.Process`, returns its complete fixed ToolHive
+`HandlerBundle` for mounting by `mecated` and `mecak8s` on their primary HTTP muxes, and
+closes it only after `server.Service` has bounded local attachment shutdown. The root-internal
+`internal/mcpbroker` contract carries only neutral tool wrappers, an opaque binding, and
+attachment lifecycle operations; the generic engine knows nothing about broker or upstream
+OAuth state. Broker authority stays exclusive of global `MCPServers`.
+
+Multiple configured protected profiles become one ordered ToolHive upstream configuration in
+`internal/adapter/mcpbroker/toolhive_construction.go` (`compileToolHiveConstruction`): ToolHive
+owns the sequential upstream callback/state, authorization-code exchange, refresh, and
+provider-to-backend injection. A protected process generates its own confidential ToolHive
+broker client; `internal/adapter/mcpbroker/toolhive_process.go` registers only ToolHive's hash,
+and `internal/adapter/mcpbroker/auth.go` retains the raw secret only for private HTTP-Basic code
+exchange and refresh ([ADR 0312](../adr/0312-confidential-toolhive-broker-client.md)). Mecatl
+starts, observes, or cancels only one opaque workspace enrollment. Its public control projection
+contains no backend/provider selector, callback
+state, endpoint, authorization code, access token, or refresh token. The fixed upstream callback
+is `/v1/mcp/broker/oauth/callback`; the separately configured callback URL is ToolHive's final
+redirect to mecatl, so ingress needs the complete fixed broker prefix plus the final callback
+path.
+
+Protected static declarations are model-visible pre-authentication placeholders. Their first call
+can start the opaque ToolHive bundle authorization. After that exact grant succeeds,
+`internal/adapter/mcpbroker/workspace_catalogue.go` (`RefreshGrantedAuthorizationCatalogue`)
+queries every configured protected backend and atomically replaces or removes declared placeholders
+with admitted live description, schema, and `ReadOnly` metadata; undeclared definitions remain
+hidden. `internal/adapter/server/mcp_authorization.go` rebuilds the parked session engine from the
+returned exact snapshot before resuming the call. On successful pre-prompt enrollment,
+`internal/adapter/mcpbroker/workspace_catalogue.go` (`FreezeAuthenticatedCatalogue`) performs
+strict authenticated discovery for every configured protected backend, admits each live definition
+through the shared qualified-name, UTF-8, size, JSON-object-schema, private-material, and collision
+boundary, and atomically replaces every static placeholder with the complete authenticated
+catalogue. Live discovery controls post-authorization membership, description, schema, and
+`ReadOnly`; a declared tool omitted by a lazy-grant discovery disappears, and an absent live
+read-only hint defaults to false. The pre-prompt-enrollment frozen catalogue is immutable for that
+session: later runs and token refreshes do not rediscover it, while a fresh session performs a fresh
+query. A lazy-grant snapshot can be replaced atomically by a later grant in the same session, but it
+never exposes undeclared tools. Each path either publishes its complete target snapshot and rebuilds
+the session engine or retains the prior catalogue; no per-backend mecatl authorization continuation
+exists. `server.Service` attaches only after
+`SessionStore.Create` returns the canonical ID, persists `session.Session.ExternalBinding`, and
+passes `Attachment.Tools()` explicitly through `SessionEngineRequest.BrokerTools` into
+`assembleCatalog`. Reload reattaches through the same contract and accepts only an exact
+persisted binding. `CloseSession` drops a local attachment without deleting logical
+authorization state; owner deletion calls `DeleteSession`.
+
+The mecatl attachment/session boundary remains process-local. After restart, the
+pre-prompt server seam may replace a stale binding with the new incarnation,
+discard the old pending correlation, and begin a fresh enrollment. It does not
+recover or continue the prior outer enrollment. ToolHive's configured Redis storage can
+retain its inner upstream authorization/token records, but mecatl's outer
+callback correlation and broker ownership are not durable and cannot rediscover
+those records. Likewise, replicas do not share or route that outer correlation;
+broker OAuth remains unsafe behind the chart's default multi-replica Service
+without affinity or a durable-broker decision. Guards include `internal/adapter/server/mcp_broker_multi_upstream_e2e_test.go`,
+`internal/adapter/mcpbroker/workspace_catalogue_test.go`, and
+`internal/adapter/mcpbroker/toolhive_process_test.go`.
 
 **Server-global MCP on every session (bug #3 fix, `sessionEngineFactory`):** the
 per-session catalog mounts the SERVER-GLOBAL MCP tools (`cfg.MCPServers` + ToolHive — the
@@ -5825,36 +6280,33 @@ the scoped WRITE path is deferred** (see below).
 
 ### Session profiles — `"no-fs"` (issue #55)
 
-The filesystem is **optional per session**. `CreateSessionRequest.profile`(6) is an
-enum-as-string (`""` default / `"no-fs"`; unknown ⇒ loud InvalidArgument, never a silent
-default), parsed by `server.ParseSessionProfile` and FIXED for the session lifetime. The
-workspace requirement is PROFILE-AWARE in `Service.createSession` (the old unconditional
-empty-workspace guards in grpc.go/http.go are gone): default REQUIRES a workspace, no-fs
-REQUIRES an EMPTY one — the contradictory combination is rejected loudly. A no-fs session
-ALWAYS takes the per-session engine path (`needPerSession` includes the profile — the shared
-engine has the FS tools baked in) and `server.SessionEngineFactory` grew a
-`profile SessionProfile` parameter, mirroring how the `ProviderSelector` flows.
+The filesystem is **optional per session**, but placement is always server-owned.
+`CreateSessionRequest.profile`(6) is an enum-as-string (`""` = bind the trusted
+deployment default; `"no-fs"` = explicit attenuation). Unknown values fail loudly.
+The public request has no workspace, cwd, placement ID, or selector. Composition's
+`PlacementProvider.Bind` returns a complete Environment plus an exact valid ref before
+the session is persisted. A no-fs session always takes the per-session engine path
+because the shared engine has FS tools baked in.
 
 - **Catalog profile:** `catalogSession.noFS` threads through `assembleCatalog`.
   `registerCoreTools(…, noFS)` registers `tools.NoFS()` = {WebFetch} PLUS WebSearch (both
-  outbound reads, no filesystem) — never Bash (the configured runner is not consulted);
+  outbound reads, no filesystem) — never Shell (the configured runner is not consulted);
   `registerParallelTool` is SKIPPED (a branch is a
   filesystem fork; the deliverable is a fork PATH); `registerSkillDraft` is SKIPPED (drafting
   writes a SKILL.md — a filesystem-authoring act). Everything else (global/client MCP +
   resource meta-tools, Subagent trio, Team/InspectMember, the memory six, Skill) registers
-  identically. The EXACT delta — default set MINUS {Read, Edit, Write, Grep, Glob, Bash,
+  identically. The EXACT delta — default set MINUS {Read, ListDir, Edit, Write, Copy, Move,
+  Remove, Grep, Glob, Shell,
   Parallel, SkillDraft} — is pinned by `TestNoFSCatalogProfile` (the issue-#42 idiom over the
   REAL `buildCatalog` assets, mutation-verified).
 - **Skill stays ON, body-only:** a skill body is TEXT INJECTION, not a filesystem act; an
   out-of-workspace ASSET read fails honestly through the no-FS workspace (skills with
   payload files are effectively body-only in a no-fs session).
-- **Workspace:** `engine/adapter/nofs` — the HONEST empty `tool.Workspace` (reads/stats fail
-  `fs.ErrNotExist`, Glob/Grep empty, Write refuses with `ErrNoFilesystem`, `Root()` "");
-  deliberately NOT memfs, which would silently absorb writes nobody can ever read back —
-  with nofs nothing exists that can be lost. It is registered as the per-session workspace
-  OVERRIDE at CREATE time (the ACP-buffer-workspace seam, same lock as the engine
-  registration), so `StartRun` never hands the empty root to the osfs factory (which would
-  MkdirAll/OpenRoot the server process cwd). Persisted `Session.Workspace` is `""`.
+- **Workspace:** `engine/adapter/nofs` is the honest empty `tool.Workspace` (reads/stats
+  fail `fs.ErrNotExist`, Glob/Grep empty, Write refuses with `ErrNoFilesystem`, `Root()`
+  is empty). It is deliberately not memfs, which would silently absorb writes. The
+  placement provider binds it with a valid exact no-FS `EnvironmentRef` before persistence;
+  run entry exactly reattaches that ref and never treats an empty path as authority.
 - **Child surface (Subagent + Team):** `noFSChildCatalog(assets)` = memory six + WebFetch +
   WebSearch + global MCP — no FS tools, no shell, NO forkers (neither worktree nor force-copy; a
   Mutating team-member spawn fails loudly at `selectMemberWorkspace`). Per-def specialist
@@ -5869,29 +6321,13 @@ engine has the FS tools baked in) and `server.SessionEngineFactory` grew a
   `noFSMemberNote` (children) to the Role; `agent.WithSubagentNoFSNote()` replaces the WHOLE
   Subagent tool-surface description (no Read/Grep/Glob, no worktree, no Parallel claims) —
   byte-identical without the option (`TestSubagentSpecNoFSNoteOption`, mutation-verified).
-- **Restart rehydration (widened in cloud-native Phase 1):** the profile is now a persisted
-  snapshot label (`Session.Profile`; see the snapshot-fidelity note below) AND still
-  recoverable by inference — an empty persisted `Session.Workspace` can ONLY be a no-fs
-  session (default requires one, ACP persists a real cwd, CreateTeam rejects empty). At the
-  run-entry seam (`Service.StartRunContent`) a loaded session with no registered
-  per-session engine that `needsRehydration` (no-fs profile OR a persisted selector OR an
-  empty workspace) is REHYDRATED (`Service.rehydrateSession`, generalized from the former
-  no-fs-only `rehydrateNoFSSession`): the engine is rebuilt through the SAME
-  `SessionEngineFactory` path create used, reading the PERSISTED selector + profile back off
-  the loaded session (a no-fs session rebuilds the file-less catalog and re-registers the
-  nofs workspace override; a selector session rebuilds on the SAME provider+model), under
-  the create-time cap/lock discipline. Without this a no-fs session would silently ESCALATE
-  onto the shared engine over `osfs` opened at the server cwd, and a selector session would
-  DEGRADE onto the default provider. Two defenses can't regress independently:
-  `StartRunContent` never hands an empty root to the shared factory (serves `nofs.New()`),
-  and `osfsWorkspaceFactory` itself intercepts `root == ""` (ERROR log + nofs — the
-  chokepoint a future caller cannot bypass). `LoadSessionWithMCP` likewise re-derives the
-  selector + profile from the persisted labels. A DEFAULT FS session (empty selector,
-  default profile, non-empty workspace) does NOT trigger rehydration — it keeps riding the
-  shared engine. Guarded by `TestNoFSSessionRehydratesAfterRestart` +
-  `TestSelectorSessionRehydratesWithPersistedSelector` + `TestDefaultFSSessionDoesNotRehydrate`
-  (server seams) and `TestNoFSSessionSurvivesRestartE2E` + `TestSelectorSessionSurvivesRestartE2E`
-  (full Build over a shared jsonl store), mutation-verified per leg.
+- **Restart reattachment:** `Session.EnvironmentRef{Kind, ID, Revision}` is the sole
+  durable placement identity and every session persists a valid exact ref. On run entry
+  `PlacementReattacher.Reattach` must return a complete Environment with exactly that ref;
+  missing providers, authorization or revision drift, nil Workspace, and identity mismatch
+  fail closed. Zero refs, legacy duplicate `Workspace` state, empty-workspace inference,
+  lazy stamping, and fallback to the current default are unsupported. Provider/model/profile
+  labels still drive engine reconstruction independently of environment reattachment.
 - **Non-goals / known edges:** a REMOTE filesystem for no-fs sessions returns later as a
   driver (see `DRIVERS.md`). The awaiting-approval mid-turn resume is still Phase 2 (Phase 1
   widened only the engine-rebuild trigger, not the run-entry cursor). Skills with payload
@@ -5901,42 +6337,30 @@ engine has the FS tools baked in) and `server.SessionEngineFactory` grew a
 ### Version-aware Workspace mutation and the execution-environment seam (ADR 0208 + ADR 0211 + ADR 0214)
 
 A coding agent ultimately needs one execution environment whose filesystem and command namespace are
-affined: the bytes Read/Edit see and the tree Bash builds must be the same place. ADR 0208 fixes the
-layering and the version protocol; ADR 0211 IMPLEMENTS the runtime seam (issue #462). Durable identity
-lives cycle-safely in `session.EnvironmentRef{Kind, ID}` (stdlib-only, so it CAN ride the
-snapshot/event log without pulling tool types in — but in phase 2 it is an IN-PROCESS identity only,
-NOT yet a snapshot field; persistence/remote transport are deferred to phase 3); the minimal immutable
-`tool.Environment` carries that ref plus a NON-NULL `Workspace`
-and an OPTIONAL bound `CommandRunner`. `Tool.Execute`, the observed/parent seams, `Engine.Run`/
-`ResumeApproval`, the loop/dispatch, and delegation now take `tool.Environment` (not `tool.Workspace`);
-narrow policy/prompt/hook APIs still receive `env.Workspace`/`WorkspaceReader`. `CommandRunner.Run`/
-`CommandStreamer.RunStreaming` LOST the per-call workdir — a runner is BOUND to one namespace at
-construction, so the command's cwd always matches the workspace the tool executes against; a nil
-runner surfaces `ErrNoShell`. `tool.EnvironmentForker` REPLACES `tool.WorkspaceForker` (Fork returns a
-complete child Environment whose Workspace and runner share the child namespace) and
-`tool.EnvironmentMerger` REPLACES `tool.ForkMerger` (Merge receives child/parent Environments, no
-forkRoot string). A direct-write Subagent uses the PARENT Environment; read-only/copy/worktree branches
-and Team use the CHILD Environment. Composition wires the forker's bound-runner builder
-(`forker.WithRunner`, the same envscrub/gitenv hardening as the parent runner); the Service binds the
-main `CommandRunner` + a `CommandRunnerFactory` for worktree-bound sessions.
+affined: the bytes Read/Edit see and the tree Shell builds must be the same place. ADR 0208 fixes the
+version protocol; ADR 0211 implements the runtime seam; ADR 0291 makes
+`session.EnvironmentRef{Kind, ID, Revision}` the sole durable identity. The minimal immutable
+`tool.Environment` carries that ref plus a non-null `Workspace` and an optional bound
+`CommandRunner`. `Tool.Execute`, the loop, and delegation take `tool.Environment`; narrow
+policy/prompt/hook APIs receive its Workspace view. A runner is bound at construction, so its
+cwd and the Workspace namespace cannot drift. `tool.EnvironmentForker` returns a complete child
+Environment and `tool.EnvironmentMerger` receives complete child/parent Environments. A
+direct-write Subagent uses the parent Environment; isolated Subagent, Parallel, and Team paths
+receive server-created children.
 
-**Persistence/reattachment (ADR 0214, issue #462 phase 3).** `EnvironmentRef` is now a DURABLE
-snapshot field: `session.Session.EnvironmentRef` is an inert exported label (the same posture as
-`Profile`/`ProviderID`), persisted via `sessnap.Snapshot.EnvironmentRef` (Go 1.26 `omitzero`, so a
-default/local session stays byte-identical to a pre-phase-3 snapshot; a legacy snapshot restores the
-zero ref). At `createSession` the resolved default ref is stamped (`local` ID=workspace root, `nofs`
-empty ID); a legacy zero ref is stamped from the first resolved live Environment at run entry (no
-migration sweep). `server.Config.EnvironmentResolver func(ctx, session.EnvironmentRef) (tool.Environment, error)`
-reattaches a live Environment for a non-in-tree Kind — the in-tree Kinds never reach it (they
-re-derive through the factories); a nil resolver, a ref mismatch, or a nil-Workspace result fails
-loudly (`ErrFailedPrecondition`), never a silent local fallback; the returned `Ref()` MUST equal the
-request. The resolver does NOT trigger/rebuild a per-session `SessionEngine` for a default
-provider/model — environment reattachment and engine rehydration are INDEPENDENT. `internal/adapter/remoteenv`
-is a deterministic, in-process reference fake (`Backend` ID→namespace registry; `NewEnvironment`/`Resolve`
-return Workspace+CommandRunner bound to the same namespace; `EnvironmentForker`/`EnvironmentMerger` over
-refs; a tiny `cat`/`write` test protocol; `FileVersion` CAS across handles; `const Kind = "remote-fake"`
-inside the adapter, NOT in `engine/session`). It is a contract proof only and is NOT wired by default
-`app.Build`. No production remote transport, flags, proto changes, or external dependencies.
+**Persistence/reattachment (ADR 0291, preserving ADR 0214 exactness).**
+`session.Session.EnvironmentRef` and `sessnap.Snapshot.EnvironmentRef` contain the exact private
+`Kind`, `ID`, and `Revision`; there is no `Session.Workspace` or snapshot Workspace. Trusted driver
+storage transports the same exact ref. Public Harness/HTTP/client mappers expose only bounded
+`PlacementMetadata` and never the ref or physical root. `PlacementProvider.Bind` is the atomic
+creation/successor operation; `PlacementReattacher.Reattach` accepts only the persisted ref and
+trusted principal/scope. Returned Environment identity and Workspace/runner namespace must agree.
+Any missing provider, stale authorization/revision, unavailable backend, nil Workspace, or ref
+mismatch is a failed precondition with no fallback. Every new session has a valid ref before Save;
+zero refs, lazy stamping, workspace inference, legacy adoption, and migration sweeps are removed.
+The local provider is composition-owned; remote providers may implement the same Bind/Reattach
+contract. ACP's cwd remains a local consistency assertion against the trusted configured binding,
+never a selector.
 
 The first migration stage is the version protocol in `engine/tool/tool.go` (`FileVersion`,
 `Workspace`). Plain Read remains for non-agent consumers, but public Workspace exposes no
@@ -5954,6 +6378,20 @@ capability handed to tools. The built-in bodies use only the safe path:
    there is no empty/`AnyVersion` overwrite sentinel.
 4. A successful create/replace records the returned new version so another mutation through the same
    live Workspace remains valid.
+
+The additive namespace extension is `engine/tool/tool.go` (`WorkspaceNamespace`), not a widening of
+`Workspace`: external content-only workspaces remain source-compatible and the built-in tools return an
+honest unsupported result when the extension is absent. `ListDir` is read-only; `Copy`, `Move`, and
+`Remove` are mutate-serial and do not consult or update the content read ledger. Their contract is
+intentionally safer than general POSIX commands: Remove is non-recursive, Copy accepts one regular file,
+and Copy/Rename refuse an existing destination. `engine/adapter/fsconformance/fsconformance.go`
+(`RunNamespace`) pins sorting, derived-directory behavior, no-clobber, subtree rename, and copied-version
+consistency across memfs, osfs, and Redis. Redis performs each namespace mutation atomically in Lua;
+prefix-backed memfs/Redis workspaces derive directories and cannot retain empty ones. Permission-pattern
+resolution evaluates Copy/Move source and destination independently and folds the worst effect, so a scoped
+rule covering one operand never authorizes the other. Authority-bound Copy and Move calls authorize source
+and destination as separate physical resources before execution.
+See ADR 0315.
 
 The final ReplaceFile is load-bearing: `engine/adapter/fstools/fstools_test.go`
 (`TestEditConditionalReplaceRejectsConcurrentChange`,
@@ -5980,23 +6418,16 @@ instances over an arbitrary backend are not claimed to be globally serialized. A
 POSIX process bypassing Workspace does not participate; local osfs is not claimed as kernel-level CAS.
 A future remote backend owes true backend CAS.
 
-The ledger belongs to the live Environment instance. The default Service path constructs a
-fresh Environment per run (Workspace + bound CommandRunner + EnvironmentRef);
-`internal/adapter/server/service.go` (`sessionEnvironments`)
-is the per-session override map: a surface adapter (the ACP editor-buffer adapter, the
-no-fs profile) registers a COMPLETE Environment override via `SetSessionEnvironment`
-that carries an accurate ref (Kind/ID) and the correct CommandRunner (nil for a
-file-less/buffer namespace). An override is preferred over a fresh factory build and is
-evicted on `CloseSession` / editor disconnect. Rebuilding a default Environment —
-including the next user run — resets its ledger, so Edit/overwrite is refused until Read
-records a version through that instance. The overrides are in-memory (restart loses them);
-a restarted session re-derives its Environment through the same rehydration path (no-fs
-profile, ACP adapter reconnect). **EnvironmentRef is now a DURABLE snapshot field (ADR 0214, issue #462 phase 3):** `EnvironmentRef` persists via `sessnap.Snapshot.EnvironmentRef` (Go 1.26 `omitzero` — a default/local session stays byte-identical to a pre-phase-3 snapshot); a non-in-tree Kind reattaches a live `Environment` at run entry through `server.Config.EnvironmentResolver` (nil/mismatch/nil-Workspace fails loudly with `ErrFailedPrecondition`, never a silent local fallback; the in-tree Kinds never reach the resolver — they re-derive through the factories; the resolver does NOT trigger per-session engine rehydration — environment reattachment and engine rehydration are INDEPENDENT). A default `local`/`nofs` ref is stamped at `createSession`; a legacy zero ref is stamped from the first resolved live Environment on the next save (no migration sweep). See the Persistence/reattachment subsection above for the full detail.
+The read ledger belongs to the live Environment instance and resets when that Environment is
+rebuilt. `Service.sessionEnvironments` caches complete bound Environments for a session; entries
+carry the exact persisted ref and are evicted on session close. On restart the placement provider
+reattaches from that exact private ref; no public path, empty-root inference, or current-default
+fallback participates.
 
 ### Path-escape posture (`docs/acceptance/path-escape-posture.md` + ADR 0080)
 
 The osfs out-of-root rejection used to be a silent dead-end: `ErrPathEscape` pushed the
-model to an opaque Bash `cat /path`, losing the FS tools' invariants and audit shape. The
+model to an opaque Shell `cat /path`, losing the FS tools' invariants and audit shape. The
 path-escape-posture plan turns that rejection into a **posture-appropriate decision** —
 without ever stripping the osfs containment vetting (ADR-0047's `*os.Root` +
 canonicalize-then-reject is byte-for-byte intact; the relax consults policy BEFORE the
@@ -6010,9 +6441,9 @@ tool body, never re-opens it after).
   built from `internal/adapter/osfs/osfs.go` (`Canonicalize`) and its sibling exported
   helpers `LocalizeInRoot` and `ResolveRoot` — the SAME canonicalize-then-reject primitives
   the tool body runs over the same canonicalized root, so a symlinked absolute path
-  classifies identically to the tool body by construction. Only the three path-carrying
-  FS tools classify: Bash is gated by its own classifiers, Glob/Grep route patterns and
-  stay workspace-confined at every posture (ADR-0047 point 5), and a malformed path arg
+  classifies identically to the tool body by construction. The escape relax applies only
+  to Read/Write/Edit: ListDir/Copy/Move/Remove stay workspace-confined, Shell is gated by
+  its own classifiers, and Glob/Grep route patterns and stay workspace-confined at every posture (ADR-0047 point 5), and a malformed path arg
   classifies in-root (the
   tool body's own validation rejects it — the escape decision never invents a path).
 - `internal/app/escapepolicy.go` (`escapePolicy`) — a root-aware wrapping
@@ -6040,7 +6471,7 @@ tool body, never re-opens it after).
 | pseudo-fs (`/proc`,`/sys`,`/dev`) | hard deny, every posture | hard deny, every posture |
 | any child engine | hard deny, every posture | hard deny, every posture |
 
-At `auto`/`yolo` a read escape allows by Bash parity (the Bash channel already reads the
+At `auto`/`yolo` a read escape allows by Shell parity (the Shell channel already reads the
 same bytes, so the FS read boundary was cosmetic); a write escape allows only at `yolo`
 and ASKS everywhere below it (never a silent un-asked mutation). At `strict`/`trusted`
 BOTH read and write escapes now ASK on the FS tool itself (Scenario 4) instead of
@@ -6069,7 +6500,7 @@ never validate its read-before-edit invariant through this wrapper.
 
 **Pseudo-fs is never relaxed** (`escapePseudoFS`, distinct from a regular escape at
 every posture): an in-process FS Read of `/proc/self/environ` would return the SERVER's
-raw, unscrubbed environment — a secret-exfiltration channel the envscrub-scrubbed Bash
+raw, unscrubbed environment — a secret-exfiltration channel the envscrub-scrubbed Shell
 parity path (`cat /proc/self/environ` in the child shell) does not provide. Relaxing it
 would break the parity premise, so it hard-denies even at `yolo` — policy first, then
 the tool-body wrapper as defense-in-depth.
@@ -6113,40 +6544,65 @@ deny-dominant (the inner fold runs first — a configured Deny or configured Ask
 reaches the checker). Default `false` is the byte-identical un-routed posture table. See
 `docs/adr/0080-guardrail-routed-escape-checking.md`.
 
-### Worktree binding (issue #102, `docs/adr/0032-worktree-binding.md`)
+### Server-owned session placement and worktree successors (ADR 0291)
 
-A session may bind to an EXISTING git worktree (not just the launch root) so all
-local tools root there. Three clear, separated interfaces:
+Placement is server-owned across embedded, loopback, remote, and cloud-native composition.
+`internal/app/placement.go` installs the local immutable provider over the operator's private
+configured root plus no-FS attenuation. `server.PlacementBinder` is mandatory and is the single Bind
+choke point; provider authorization and resolution happen in one snapshot and return a complete
+Environment, exact `EnvironmentRef{Kind, ID, Revision}`, and bounded display metadata. Startup
+validates the deployment default without caching it, and ordinary run entry always reattaches a
+fresh Environment so the read ledger resets; after restart, a verified local binding whose workspace
+root differs from the configured default rebuilds its root-scoped per-session engine and policy before
+running rather than using the shared default-root engine. `sessionEnvironments` remains overrides-only
+(ACP and other explicitly owned overlays). Placement-provider, discovery, and storage failures cross
+public gRPC/HTTP only as stable content-free categories; bounded detailed causes remain on injected
+operator diagnostics. A remote provider may implement the same contract; no public
+placement-ID registry or server-side `Workspaces(path)` fallback exists.
 
-- **Discovery** — `server.WorktreeLister` (a composition-injected, nil-safe port
-  mirroring `CommandLister`) backs the `ListWorktrees` RPC. The osfs-backed
-  `buildWorktreeLister` (`internal/app/build.go`) shells out to
-  `git worktree list --porcelain` with the SAME scrubbed+neutralised git env as
-  `gitSnapshot` (`envscrub` then `gitenv`), TRUST-GATED (`cfg.TrustProject`), and
-  FAIL-SOFT (any git fault → `nil, nil`, never an error). nil when there is no
-  workspace / no shell / untrusted — then `ListWorktrees` returns empty and
-  `ServerCapabilities.worktrees` is false (the mecatui overlay is honestly
-  absent). Cloud-native compatible: a no-FS/cloud server wires no lister.
-- **Routing** — `server.Config.DefaultWorkspace` (the launch root; empty for a
-  child/member/cloud service). `needPerSession` and `needsRehydration` (now a
-  `*Service` method) are widened: a session whose
-  `workspace != "" && workspace != DefaultWorkspace` routes through the
-  per-session engine factory, which ALREADY re-pins the CHILD permission resolver
-  to the session root via `childPermResolverFor(cfg, workspace)` (closing the
-  child-resolver gap — a shared-engine child would otherwise read the launch
-  root's `.mecatl/settings.yaml`). The main policy ALREADY re-resolves
-  per-workspace. The session rehydrates to the SAME worktree-rooted engine after
-  a restart. When `DefaultWorkspace == ""` the new arm never fires, so the
-  cloud/no-root posture is byte-identical.
-- **Switching** — mecatui's `/worktrees` overlay (`cmd/mecatui/ui/worktrees.go`)
-  lists worktrees and, on select, closes the old session and creates a NEW one
-  rooted at the chosen worktree via the NEW `SessionCreator.CreateSessionInWorkspace`
-  method (the `/models` restart-now precedent; `restartFailedMsg` reused).
-  Operator-driven only; the model has no workspace-switch tool; a live session
-  is never mutated. osfs path confinement is unchanged.
+Public Create accepts only omitted/default placement or `profile:"no-fs"`; workspace and source
+fields are reserved. Discovery takes an owned `session_id`: `ListCommandsForSession` and
+`ListWorktreesForSession` authorize and exactly reattach before touching command/git providers,
+and no-FS returns empty first. Worktrees expose display-only label/branch/revision plus an opaque
+selector. The local placement provider owns `WorktreeSelectorIssuer`, which HMACs provider-private
+current identity with caller/source scope using one random Build-owned key. Discovery and selected
+successor Bind therefore use the same provider inventory seam; use re-lists current choices and
+constant-time matches before environment construction. No token is decoded or stored, no registry/map
+exists, and restart invalidates selectors so clients relist.
 
-Trust stays OPERATOR-tier at launch (worktrees share `.git`); per-worktree trust
-re-resolution is a documented follow-up, not blocked by the design.
+Only ClearSession and ForkSession consume a worktree selector. Omitted selector exactly inherits
+the source placement. Clear creates a fresh empty-history successor; Fork copies valid history and
+may apply authorized provider/model/reasoning overrides in the same atomic publication. Both lock
+and lease the owned source, derive a cancellation context from the held mutation lease, build any
+per-session engine, re-check the held lease immediately before persistence, and tear down provisional
+bindings/engines if ownership is lost. For a running or awaiting Clear, selector preflight
+runs while the source is untouched, then cancellation is the irreversible abandon-and-replace
+boundary. Any later lease, placement, engine, or persistence failure publishes no successor
+and causes no client rebind, but the source may already be terminal-cancelled; retry remains
+valid and prior workspace mutations are never rolled back. In broker mode, every successor mints a fresh
+broker attachment keyed by its own session ID, persists that attachment's opaque binding before
+commit, and builds the per-session catalogue from its exact broker tools even with a zero selector.
+The source binding and broker authorization are never copied; reattachment of a missing or stale
+binding remains fail-closed. No distributed transaction across
+those systems is claimed. The current `SessionStore` seam has no lease-token
+conditional create, so there is an accepted residual window after the final held-lease check and
+before or during publication: a concurrent renewal loss cancels the context but cannot make every
+supported store's already-started commit atomic. This is not claimed as cancellation atomicity;
+closing it requires a follow-up acceptance plan for a token-fenced create/CAS store seam.
+Mecatui `/clear`, `/worktrees`, `/effort`, and inventory fork use
+these successor RPCs and keep the active source selected if relist/switch fails.
+
+Schedules resolve placement at creation and persist exact private ref, owner principal, and trusted
+scope—never the ephemeral selector or current-default intent. Each fire reauthorizes and exactly
+reattaches before creating its fire session. Team derives the owning session placement; Subagent
+and Parallel receive the parent Environment or a server-created fork. Preserved-fork, delegation,
+inspection, and artifact handles are typed separately and cannot be replayed as selectors; their
+public projections reveal no root or exact ref. Driver session storage is trusted and therefore
+round-trips the exact private EnvironmentRef. ACP binds/reattaches first and treats editor cwd only
+as an assertion against trusted configured local placement.
+
+The Build-owned selector key is inventoried in ADR 0027 List 1; List 2 records reset-by-design,
+unpersisted selectors, and relist-after-restart.
 
 ### Snapshot fidelity — persisted per-session facts (cloud-native Phase 1)
 
@@ -6162,21 +6618,21 @@ mid-conversation (`docs/adr/0027-cloud-native.md` ledger rows 1/2/3):
   default session writes the zero values, so its snapshot stays byte-identical to a
   pre-Phase-1 one.
 - **`Usage` is mutated through `RecordUsage`** (running-only guard, mirroring
-  `RecordToolResults`); the loop calls it alongside its own per-run total, and the
-  `MaxRunTokens` budget brake (`budgetExhausted`) is evaluated against the CUMULATIVE
-  `sess.Usage`, not the per-run delta — so the budget survives reopen/restart while the
-  per-run `EvResult.Usage` figure (which the team supervisor sums per round) is unchanged.
+  `RecordToolResults`); it remains the deprecated lifetime compatibility mirror of
+  `TokenUsage[main].Total`. The loop calls it alongside its own per-run total, and the
+  `MaxRunTokens` budget brake (`budgetExhausted`) measures each engine's own canonical
+  main usage since an immutable per-run baseline. Ordinary runs use zero, preserving
+  cumulative budget enforcement across reopen/restart independently for every child;
+  only the team-lead synthesis and the single `StopBudget` free-text Subagent cleanup
+  re-drive capture their starting main total. `EvResult.Usage` remains the per-run delta.
 - **`resetToIdle` DELIBERATELY preserves `Usage`** (the divergence from `Counters`, which it
   still zeroes) so the budget survives the Reopen/Interrupt/Recover seams — pinned by
   `TestResetToIdlePreservesUsage` (mutation-verified: adding `s.Usage = Usage{}` fails it).
-  A documented consequence: a reused child/member session's per-engine `MaxRunTokens` brake
-  is now CUMULATIVE across `Reopen` (team rounds, structured-output validation retries), which
-  is the intended "cap the whole call" reading — `driveChild` SUMS usage across the in-call
-  Reopens and the cross-attempt brake is now real (pinned by `TestStructuredOutputBudgetTripsAcrossDrives`).
-  The team lead's SYNTHESIS turn is the one deliberate exception: `Supervisor.synthesise` calls
-  the explicit `Session.ResetUsage` seam (the aggregate-mutation counterpart to the non-reset,
-  legal from any non-running state) before the synthesis drive so a budget-stopped working run
-  still produces the deliverable (the synthesis spend is still folded into the team outcome).
+  A reused child/member session's per-engine `MaxRunTokens` brake is CUMULATIVE across
+  `Reopen` (team rounds, structured-output validation retries), which is the intended
+  "cap the whole call" reading. The team lead's synthesis run and exactly one
+  budget-stopped free-text Subagent cleanup re-drive are the only exceptions: each private
+  run baseline preserves lifetime accounting while allowing its bounded deliverable.
   The team-AGGREGATE budget is unchanged (it sums per-round `EvResult.Usage`, the per-run delta).
 - **The snapshot (`sessnap.Snapshot`) gained `profile,omitempty` + `provider_id,omitempty`
   + `model_id,omitempty` (strings) + `usage` (a `*session.Usage` POINTER for true
@@ -6198,6 +6654,22 @@ mid-conversation (`docs/adr/0027-cloud-native.md` ledger rows 1/2/3):
   `session.CompactionSummaryMarker` / `session.Tier4SummaryMarker`, promoted from the
   unexported `engine/agent` consts) — `engine/session` cannot import `engine/agent`/`engine/prompt`,
   so the genuine-vs-synthesised distinction the read path needs lives in the domain leaf.
+- **Title restart reconciliation is deliberately bounded best-effort.**
+  `internal/adapter/server/title_coordinator.go` (`reconcilePendingTitles`) asks an
+  optional metadata pager for exactly one initial page capped at `titleReconcileLimit`
+  and never follows `NextCursor`. It admits only completed pending sessions with title
+  sources and no attempt record; later-page eligible sessions wait for a subsequent
+  normal eligible exchange and its submission. This avoids turning startup into an unbounded inventory
+  sweep while preserving the no-rebill exclusion for incomplete durable claims.
+- **Title metadata is ordered independently of the label.** `TitleRevision` is an additive,
+  durable title-specific revision: every effective title metadata mutation advances it, and
+  snapshots, title RPC responses, and live `session.title` events all project it. The active
+  mecatui session accepts revision `0` only as a legacy value until it has observed a positive
+  revision; after that it rejects legacy, equal, and lower updates and adopts only a strictly
+  higher revision. Thus a reconnect snapshot can safely arrive before an older buffered live
+  event without regressing the visible title. This is client reconciliation, not a global event
+  ordering guarantee; the active-session guard still prevents events from another session from
+  entering the reducer.
 
 ### Awaiting-approval evict/rehydrate (cloud-native Phase 2)
 
@@ -6320,7 +6792,7 @@ yet (a replay consumer is Phase 3b). See `CLOUD-NATIVE.md` (Phase 3, ledger row 
   after the verdict resolves) and `engine/agent/dispatch.go` (`resolvePendingCall`) (the
   resume-from-awaiting path, at entry). **`AllowAlways`, not `Learned`:** it mirrors
   `verdict == allow_always` — but it is named for the VERDICT, not the policy outcome,
-  because `Policy.Learn` no-ops on an unlearnable call (compound/substituted Bash with no
+  because `Policy.Learn` no-ops on an unlearnable call (compound/substituted Shell with no
   targetable pattern), so an allow-always verdict sets the flag true even when NO rule was
   recorded. A 3b permstore-replay consumer filters on it as a HINT and re-derives the real
   rule from the conversation (the metadata-only event never carries a pattern). In 3a
@@ -6667,6 +7139,13 @@ allocates are `0027-cloud-native.md` List 1 rows 65–66.
   resuming from it would skip exactly the buffered envelopes the client never
   received. The client's own last-received envelope is the only correct resume
   point.
+- **Backend admission is distinct from transport lag.** A `CursorEventLog` may
+  return `port.ErrEventFollowCapacity` before storage work starts. The server
+  classifies it as `watch_capacity` and gRPC `RESOURCE_EXHAUSTED`; HTTP has
+  already committed status 200 and writes the same code in its terminal SSE
+  error frame. Redisstore uses this path when its process-local follower
+  registry is full. `watch_lagging` continues to mean that the server's
+  bounded delivery buffer could not keep pace with the transport consumer.
 - **Cursor assignment is at the ONE persistence chokepoint** (AC7.8):
   `internal/adapter/server/service.go` (`appendEvent`) type-asserts the cursor seam
   and calls `AppendEvent`. The returned cursor is DISCARDED — readers get positions
@@ -6964,6 +7443,13 @@ on the byte-identical no-scheduling path). The pieces:
   as the run-entry session lease, different id — no contention). On each tick:
   `Due` → misfire policy → `Claim` (at-most-once) → `FireFunc` → `RecordFire`. The
   `FireFunc` seam (`scheduler.FireFunc`) is how composition injects the run-entry funnel.
+  Standby logging is a rate-limited heartbeat (issue #778): a lease held by a
+  peer logs at INFO and a failed acquire at WARN on entry; repeated attempts log
+  at DEBUG, then re-announce at the original level after `standbyLogInterval`
+  (5m by default). This keeps a persistently wedged lease backend visible
+  without flooding a healthy multi-replica deployment. A cause change within
+  the interval does not reset the heartbeat and is reported on its next beat;
+  successful leadership acquisition after standby always logs once at INFO.
 - **Composition** (`internal/app/build.go` `buildScheduler`/`startScheduler`) wires the
   scheduler whenever the configured store exposes the `ScheduleStore()` accessor and
   the operator has not passed `--no-scheduler`, reusing the configured store + the
@@ -7499,7 +7985,7 @@ The settled decisions, condensed:
   ADVISORY ONLY — NEVER a permission grant: the permission evaluator (governance/
   `port.PermissionPolicy`/`engine/agent` dispatch) NEVER reads it, and every call still
   resolves through the normal deny-dominant policy at EVERY posture (including yolo), so a
-  skill declaring `allowed-tools: "Bash"` does NOT pre-approve or loosen a Bash call. The
+  skill declaring `allowed-tools: "Shell"` does NOT pre-approve or loosen a Shell call. The
   parser splits the YAML value (the spec's space-separated STRING form, or a YAML list form)
   on whitespace, trimming/dropping empties, and defensively caps the count at ≤64 names and
   each name at ≤64 chars (truncating the PREFIX on count overflow with a non-fatal warning
@@ -7519,7 +8005,7 @@ The settled decisions, condensed:
   fit whole. Successful assets are never truncated. Invalid UTF-8 or NUL bytes are rejected before
   returning text. FS and driver skills therefore render identically. There is NO
   `AssetMaterializer`, temp cache, `FSSource.AssetDir(s)`, base-directory header, workspace
-  read-root threading, executable-bit application, or implicit execution. Bash requiring real
+  read-root threading, executable-bit application, or implicit execution. Shell requiring real
   files does not justify materializing textual references; a workflow that genuinely needs a
   file must create or obtain one explicitly in the workspace under ordinary permissions.
 - **K — Skill tool seam.** `skills.NewTool(metas []tool.SkillMeta, source tool.SkillSource)`
@@ -7575,7 +8061,7 @@ The settled decisions, condensed:
 observability; admission is gated where sources are CONSTRUCTED — an untrusted workspace's
 project tier is never built); the logical-name grammar (verbatim from `ValidSkillAssetName`);
 and the no-watch/snapshot decision and its trust-gate rationale. ADR 0108 supersedes the former
-materialize-for-Bash conclusion: textual assets are fetched through `Skill({name,asset})`, while
+materialize-for-Shell conclusion: textual assets are fetched through `Skill({name,asset})`, while
 execution requires an explicit workspace-file workflow.
 
 ## Source drivers — agent defs + commands (Phase C2: `engine/tool/agentsource.go` + `engine/prompt/commandsource.go` + `agents.FSSource` + grpcdriver clients)
@@ -7608,9 +8094,9 @@ execution requires an explicit workspace-file workflow.
 - **HOOKS = HARNESS-SIDE SHELL (trust framing).** A def's `hooks:` map executes through
   `hookexec` as UNGATED shell on the HARNESS HOST (every scoped lifecycle phase, no
   permission ask) — strictly stronger than the skill driver, whose payloads still ride the
-  permission-gated Bash path. **A compromised agent-source driver executes arbitrary shell
+  permission-gated Shell path. **A compromised agent-source driver executes arbitrary shell
   on the harness host via def hooks; treat it as harness-equivalent infrastructure** (echoed
-  in docs/usage.md and the proto `AgentDef.hooks` comment). `resolveAgentSeam`'s driver
+  in user-docs/ and the proto `AgentDef.hooks` comment). `resolveAgentSeam`'s driver
   branch narrates every driver def carrying hooks once at build ("agent def carries
   lifecycle hooks (harness-side shell)", names only — never hook values).
 - **Driver client discipline** (`grpcdriver.NewAgentSource(conn, AgentOptions{Diagnostics})`):
@@ -7804,7 +8290,7 @@ m.deps.Models != nil` (same mechanism as `/soul`/`/usermodel`); palette-only ope
 it collides with enter); fixed builtin order now `clear, help, mcp, agents, team, skills, soul,
 usermodel, models`.
 
-**Unified `ctrl+a` agents overlay + fleet footer** (Subagent delegation-tool watchability, Package C) is
+**Unified `f6` agents overlay + fleet footer** (Subagent delegation-tool watchability, Package C) is
 CLIENT-ONLY — built purely from the relayed `subagent.*`/`team.*` projection, NO new server
 event/field (the F2 finding: the three `subagent.*` events already carry ChildID/goal/tool
 name/error/count/usage/stop/duration). Two pieces:
@@ -7814,10 +8300,10 @@ name/error/count/usage/stop/duration). Two pieces:
   Part of the conversation, so `/clear` drops it. `subagentFleetCounts`/`hasSubagents` drive the
   footer + the Subagents tab.
 - **Fleet footer segment** (`footer.go` `subagentFooter{Full,Medium,Compact}`, mirroring the team
-  segment): `⛭ subagents N◐ M✓ · ctrl+a`, shown once ≥1 subagent started; `view.go` `fitFooter`
+  segment): `⛭ subagents N◐ M✓ · f6`, shown once ≥1 subagent started; `view.go` `fitFooter`
   composes it into an "agents prefix" (team segment + fleet segment via `joinSeg`) that sheds
   before the ctx meter. No-subagent footer is byte-identical to before.
-- **Unified overlay** (`agents_overlay.go`): ONE `ctrl+a` surface with two tabs (`agentsTab`
+- **Unified overlay** (`agents_overlay.go`): ONE `f6` surface with two tabs (`agentsTab`
   Subagents|Teams). The container open flag + Teams-tab state STILL live on `m.team` (teamState) —
   the existing team overlay became the Teams tab verbatim (`renderTeamsTab` dispatches to the
   unchanged `renderTeamRoster`/`Focus`/`Tasks`/`Findings`; the standalone `renderTeamOverlay` is
@@ -7829,7 +8315,7 @@ name/error/count/usage/stop/duration). Two pieces:
   Teams when a team is LIVE, else Subagents when subagents ran, else the available tab. The newer
   Subagent/Team terminal stop reasons (`budget`/`structured_output`/`no_progress`/`max_*`) ride the
   string `stop` field and map to compact labels in `subagentStopLabel` (+ a ✓/✗ glyph split in
-  `subagentLaneGlyph`: cap-family ✓, error/cancel-family ✗). Help/zero-state `ctrl+a` row is no
+  `subagentLaneGlyph`: cap-family ✓, error/cancel-family ✗). Help/zero-state `f6` row is no
   longer teams-gated (subagents are always available via Subagent). Gauntlet #7 holds: the focus pane
   shows redacted chips only, never child content.
 
@@ -7878,7 +8364,7 @@ to extract a shared `ChildActivity` value object — not before** (recorded in t
   (a fork-failed branch still emits a coherent `branch_end` with `Failed=true`).
 - **Client/UI** (`cmd/mecatui`): `client.ParallelMsg`/`ParallelKind` + `applyParallel` build GROUPED
   `parallelGroup`/`parallelBranch` state (deterministic, insertion-ordered, no map-iteration flake);
-  a third `Parallel` tab in the unified `ctrl+a` overlay (`Subagents | Parallel | Teams`) renders the
+  a third `Parallel` tab in the unified `f6` overlay (`Subagents | Parallel | Teams`) renders the
   grouped roster (join + branch counts + winner) → ONE-level group focus (branches inline with chip
   traces carrying bounded previews, the winner highlighted, the preserved fork path, a "bounded
   previews" honesty note). It folds into the fleet
@@ -7925,9 +8411,32 @@ Basic and form `client_secret` is rejected before dialing. The MCP resource clie
 separate exact-resource marker for its audience-bound bearer, remains no-proxy/DNS-pinned,
 and rejects cleartext except for an exact private-origin opt-in; an allowlist entry alone
 never grants credential egress. Static `Authorization` and OAuth are mutually exclusive.
-Preregistered confidential and CIMD clients are the only supported registrations; DCR and a
-broad production claim remain blocked on ADR 0219's official-SDK hooks. The root module
-pins `github.com/modelcontextprotocol/go-sdk` at
+Direct/global DCR clients use one private server-scoped durable lifecycle record in the same
+credential-store namespace; it carries and validates profile, principal, canonical resource,
+and exact issuer. `internal/adapter/mcp/oauth_dcr.go` (`PrepareOAuthDCRLogin`) discovers and validates
+protected-resource and authorization-server metadata through the hardened client, then
+creates or reuses a CAS-protected pending/ready registration. Preparation never registers
+or launches a browser; a one-use private ticket permits the subsequent login controller to
+POST exactly one public-client registration after the callback listener has supplied its
+actual variable-port URI. Reset replaces only a valid ready registration; retry replaces
+only a valid pending attempt. Corrupt, mismatched, or uncertain state fails with the
+redacted recovery-required category instead of being deleted or bypassed; reset/retry do not
+repair corrupt selected state.
+
+The DCR grant is a distinct generation-bound v2 envelope implemented by
+`internal/adapter/mcp/oauth_dcr_grant.go`. It stores only the access token required for the
+active generation; direct DCR rejects refresh tokens, `offline_access`, scopes other than
+exactly `openid`, and refresh-token grants. Expiry, grant reset, a registration-generation
+change, or an orphan grant returns login-required without refresh or browser side effects.
+Grant reset writes a generation-bound reset tombstone so a stale authorization writer cannot
+revive the old result. Explicit re-login reuses a valid registration. For this public-client
+path only, `internal/adapter/mcp/oauth_http.go` rejects the official SDK's
+`AuthStyleAutoDetect` Basic probe before dial and admits only its exact parameter retry with
+the expected client ID and no secret/assertion; preregistered confidential clients retain
+the Basic-only policy.
+
+The separately configured ToolHive MCP broker retains its own durable DCR resolver under
+ADR 0314. The root module pins `github.com/modelcontextprotocol/go-sdk` at
 `v1.7.1-0.20260825151509-2732839dbadd`; the controller enables the SDK's
 `AcceptUnadvertisedIss` compatibility path, leaving authorization-server discovery and
 metadata-conditioned RFC 9207 validation in the SDK. A missing callback `iss` is accepted
@@ -7971,12 +8480,16 @@ and controller close on every path while the injected store stays caller-owned. 
 project to context/runtime categories or fixed `ErrMCPLoginConfig`/`ErrMCPLoginFailed`
 without endpoint or credential-bearing causes.
 
-The shipped `mecated mcp login SERVER [--no-browser] [--permission-config PATH ...]`
-command is the sole runtime constructor. The repeatable permission-config option selects trusted
-operator settings only, never OAuth values. It uses the canonical operator profile loader, requires a mutable local Store,
-and emits an authorization URL to stdout only in explicit no-browser mode. Normal serving,
-ACP, mecatequi, and mecak8s keep the presenter nil. ADR 0219's metadata-profile blockers
-remain open.
+The shipped `mecated mcp login SERVER [--no-browser] [--permission-config PATH ...]
+[--reset-dcr-registration | --retry-dcr-registration]` command is the sole runtime
+constructor. The repeatable permission-config option selects trusted operator settings only,
+never OAuth values. The mutually exclusive DCR-only modifiers perform the explicit
+ready-registration reset or pending-attempt retry before continuing into login; they reject
+other client kinds and invalid/corrupt state without mutation. Grant-only reset remains an
+internal controller operation and has no CLI flag. The command uses the canonical operator
+profile loader, requires a mutable local Store, and emits an authorization URL to stdout only
+in explicit no-browser mode. Normal serving, ACP, mecatequi, and mecak8s keep the presenter
+nil. Complete public-client refresh remains deferred to issue #1355.
 
 ## Operator MCP profiles (ADR 0113)
 
@@ -8014,6 +8527,485 @@ failures name only the class, never the value. The elapsed-time expiry leg is bo
 the only clock-dependent part because the official `oauth2.Token.Valid` has no injected
 clock.
 
+## TypeScript SDK — `sdk/typescript/` (M1–M4 public surface and post-v0.1.0 Deno integration, ADRs 0279, 0288, 0292, 0304, 0328, 0337, 0338, and 0339)
+
+The ESM-only `@stacklok-oss/mecatl-sdk` has four exports. `.` owns the transport-neutral
+`Client`/`Session`/`Run` API, typed events/errors, prompt-media helpers, and the hand-written
+HTTP/JSON/SSE transport. `./node` re-exports that surface and adds connect-node real gRPC over
+HTTP/2: TCP uses an ordinary base URL; UDS keeps an ordinary HTTP authority and supplies a
+socket-opening `createConnection` through the HTTP/2 node options (`sdk/typescript/src/node-transport.ts`),
+never a `unix://` URL. `./deno` re-exports the transport-neutral surface, selects the same
+ConnectRPC gRPC transport for `connect()`, and adds Deno-native `spawn()` / `query()`.
+It uses Deno's Node compatibility for HTTP/2 while keeping process ownership in `Deno.Command`.
+`./gen` is the committed protobuf-es output generated only for
+`contracts/proto/mecatl/v1/`; it has a codegen freshness gate rather than an API Extractor
+report. The package declares Node 22 or newer and Deno `>=2.9.3 <3` engine ranges, builds
+unbundled ESM plus declarations/source maps, and owns its pinned pnpm lock independently of the
+npm-based website. The
+canonical published name is `@stacklok-oss/mecatl-sdk` on public npmjs
+(`sdk/typescript/v*` tags, `npm-publish` environment, staged trusted publishing,
+maintainer approval with 2FA, npm-native provenance). A manually dispatched
+release-App workflow generates a package-scoped `sdk/typescript/CHANGELOG.md`
+entry and advances `sdk/typescript/VERSION` and `package.json` in an exact
+three-file PR. Its verified merge causes the App to push the matching tag and
+thereby trigger npm staging
+([ADR 0328](../adr/0328-typescript-sdk-npmjs-stacklok-oss.md)).
+The post-build `scripts/add-deno-self-types.mjs` prepends every JavaScript module's stable
+`@ts-self-types` sibling declaration and one unmapped source-map line, because Deno does not infer
+TypeScript's adjacent declaration rule for relative `.js` imports.
+The published dependencies include `@types/node`, and the server transport declaration preserves
+its Node type reference, because the shared gRPC options expose Node's HTTP/2 and TLS types.
+The native Deno fixture rejects an invalid `nodeOptions` field during stable
+checking; this catches a missing declaration dependency that would otherwise degrade those options
+to `any` in Deno's dependency declarations.
+
+`sdk/typescript/src/raw.ts` enforces API-major compatibility before all non-compatibility RPCs;
+the ergonomic client also probes status and maps transport/auth/incompatibility states without
+making the probe a second protocol contract. `Session` handles are lightweight views over one
+client. A handle admits one live run at a time, while separately fetched handles let callers
+model real server-side races. `Run` is single-consumption: callers choose async event iteration
+or `result()`, never both. Server terminal stops — including `cancelled` — resolve as typed
+values; transport/protocol/server failures reject. Every approval, cancel, and steer frame
+carries `expected_run_id`, so a stale HTTP control becomes typed `stale_run_control` and cannot
+affect the session's next run. HTTP steer and cancel-steer use their unary routes only when the
+server advertises `http_steer`; older servers still produce the typed unsupported-feature error.
+
+`sdk/typescript/src/events.ts` normalizes gRPC protobuf events and HTTP JSON/SSE records into
+one discriminated union, retaining an explicit unknown-event member for forward compatibility.
+The Go↔TypeScript kind-parity gate prevents the known vocabulary from drifting. Permission
+asks remain ordinary raw `permission.ask` events even when `onPermissionAsk` automatically
+returns `allow_once`, `allow_always`, or `deny`; responder lifetime is tied to the ask and late
+answers cannot resolve a retracted ask. A denial is a tool error, not a terminal run failure,
+so the provider receives that result and may continue on a later turn.
+
+Prompt media in `sdk/typescript/src/media.ts` accepts text plus image/audio parts and validates
+source XOR, MIME allowlists, per-part/count/aggregate bounds, and server capabilities before
+opening a run. The Node export adds path loaders; neither transport changes the normalized
+prompt model or event model.
+
+The offline real-wire lanes are `sdk/typescript/e2e/`, separate from injected-transport unit
+tests and from the paid Go live suite below. `task sdk:e2e` first runs the repository Taskfile
+build, then Vitest spawns `bin/mecated` only on `127.0.0.1` or an owner-local UDS, with live
+provider credentials removed. Bare `--mock` remains its original single canned text turn.
+`cmd/mecated/mockscript.go` exposes `--mock-script`: strict bounded JSON is compiled into the
+existing `engine/adapter/mockllm` provider via `app.Config.MockProvider`, including ask-worthy
+tool-call turns and a bounded per-turn delay for deterministic mid-flight cancellation. The
+SDK CI job runs frozen install, Biome, typecheck, unit Vitest, build, the package-export-only
+examples compiler, pack, API reports, Go+TS codegen freshness, and this e2e; each command remains a
+hard failure. `sdk/typescript/examples/slack-bot/` remains a separate pnpm project and CI job: its
+own `slack-bot:typecheck` task builds the same SDK `dist/` and supplies the second proof needed to
+cover every committed example without importing the Slack application's dependencies into the SDK
+package. `task sdk:deno` packs the package, applies stable `deno check` to `.`, `./deno`, and
+`./gen`, builds the same-checkout daemon, and runs the `Deno.Command` lifecycle at the declared
+runtime floor and current Deno 2.x CI lanes. The release workflow repeats the floor lane.
+
+M3's Node/Bun local-daemon root is `sdk/typescript/src/spawn.ts`. Its `spawn()` is reachable only from
+`./node`; the transport-neutral entry point imports neither `node:child_process` nor the
+launcher module. Binary resolution is total and ordered: explicit `binaryPath`, then
+`MECATED_BIN`, then an SDK-owned `PATH` walk for `mecated`, with `stat` plus execute-access
+validation before launch and no shell. Caller arguments cannot name the SDK-owned listener,
+ready-file, or lifetime flags. The default argv is `serve --grpc-unix-socket <socket>
+--http-addr "" --ready-file <ready> --lifetime-pipe-fd 3`; it deliberately carries no posture,
+trust, or permission flag. `http: true` changes only the SDK-owned HTTP value to
+`127.0.0.1:0`; because the daemon then omits `mcp_servers_on_create`, later tool support
+is derived from the ready document's `features`, never from that option.
+`lifetimePipe: false` omits both the lifetime flag and the fourth stdio entry. Caller
+`env` values are merged over the inherited process environment before binary resolution
+and launch, and that environment is never used to build an outward-facing fact or message.
+
+Deno local ownership is isolated in `sdk/typescript/src/deno-spawn.ts` and exported only by
+`./deno`. The source uses structural runtime types so the NodeNext build does not absorb Deno
+ambient declarations; `denoRuntime()` resolves `globalThis.Deno` only when `spawn()` is called.
+The launcher creates `new Deno.Command(binaryPath ?? "mecated", options)` directly with no shell,
+inherits the parent environment, overlays caller `env`, pipes stderr, and opens piped stdin. Its
+fixed argv is `serve --grpc-addr 127.0.0.1:0 --http-addr "" --ready-file <ready>
+--lifetime-stdin`; all five hosting flag families are collision-rejected from caller `args`.
+The Deno client connects to the ready document's gRPC address through the shared ConnectRPC
+transport. That TCP topology intentionally omits the UDS-only `mcp_servers_on_create` feature,
+and the Deno client type has no callback registry.
+
+`--lifetime-stdin` is an advanced daemon-hosting flag for process APIs that cannot assign an
+arbitrary inherited child descriptor. It is mutually exclusive with `--lifetime-pipe-fd`.
+Composition selects fd 0 only when the boolean is explicit, validates that it is a pipe through
+the same `checkLifetimePipeFD` path, adopts it after listener bind, and feeds EOF into the ordinary
+graceful shutdown select. Deno retains the writable stream without sending bytes. Explicit close
+closes that writer first, waits a bounded grace, then applies `SIGTERM` and `SIGKILL` bounds through
+the captured child handle. Parent death lets the kernel close the same writer and preserves the
+EOF cleanup contract through the native process adapter.
+
+The Deno ready parser requires schema `mecated-ready/1`, positive pid/API major, a string feature
+list, `transport: "tcp"`, and an actual `127.0.0.1:<port>` gRPC address with a valid TCP port.
+It also requires the document pid to match the captured `Deno.ChildProcess.pid` before creating
+the shared gRPC transport and making the first
+compatibility call. `tempDirectory`, when present, is resolved through `Deno.realPath`; otherwise
+`Deno.makeTempDir` chooses the base. Failure disposal, stderr tail bounds/redaction, frozen daemon
+metadata, diagnostic records, unexpected-exit terminal state, and idempotent stop/removal follow
+the Node contract through the same `ClientImpl` daemon-lifecycle hooks.
+
+Each spawn creates a `0700` directory with `mkdtemp`, never adopts a caller-predictable path,
+and holds `ready.json` plus `mecated.sock` there. Socket paths are checked against Darwin's
+104-byte `sun_path` ceiling before launch; an over-long OS temp base is discarded and replaced
+through a second short-base `mkdtemp`. Cleanup uses `lstat` so replacing the runtime path with
+a symlink removes the link rather than its target. The launch, filesystem, scheduler, clock,
+and transport factories live in one module-internal options bag used by unit tests and never
+enter the public API.
+
+Readiness is the atomically published document, not stdout or a speculative dial loop. A
+partial JSON read remains behind the polling barrier; only schema `mecated-ready/1` with a
+valid pid, Unix transport, non-empty `socket_path`, positive API major and string feature
+list succeeds, and the document path — not the requested path — builds the UDS transport.
+The SDK performs the first `GetCompatibilityInfo` dial before returning the client. A child
+whose handle closes first produces `spawn_failed` with its code and signal; a live child that
+misses the configured deadline produces `readiness_timeout`. Both paths, plus schema and
+first-dial failures after launch, dispose any created transport, close the lifetime endpoint,
+send `SIGTERM`, bound the grace period and escalate to `SIGKILL`, then remove the runtime
+directory. The process handle is the signalling authority; the ready document's pid is only
+display metadata.
+
+The real launcher retains at most the last 64 KiB of stderr and reports at most the last 4 KiB.
+If the reporting cut lands inside a line, that leading fragment is discarded before decoding.
+Redaction then runs over exactly the reported text and replaces a whole line for environment-
+assignment shapes or the `sk-`, `ghp_`, `xox[abps]-`, and `eyJ` credential prefixes. The safe
+tail is the only stderr material added to the typed error or diagnostics. `ClientDiagnosticsOptions`
+installs one synchronous structured sink on Node/Bun client construction; records contain
+`code`, `level`, `message`, and primitive typed `fields`, remain separate from `session.Event`,
+and sink exceptions cannot replace the failure being observed. With no sink the SDK has no
+`console` fallback.
+
+The `./node`-only `SpawnedClient` subtype adds a `daemon` getter whose frozen `DaemonInfo`
+is an explicit five-field projection: pid, transport, socket path, API major and features.
+It excludes the ready document's HTTP address, gRPC-address duplicate, deployment label and
+every unknown future field. Node's fourth `stdio` pipe is a connected Unix socketpair; the
+server-side validator accepts that exact connected-stream shape as well as a FIFO, and the
+child watches its endpoint only for reads, so closing the never-written parent endpoint
+provides the parent-death EOF contract without `mkfifo(1)`.
+
+Disposal ownership is split explicitly between `sdk/typescript/src/client.ts` and
+`sdk/typescript/src/spawn.ts`. `ClientImpl` registers accepted and not-yet-accepted owned runs
+separately from `SessionActivity` / `AttachedRun` watches. Its one cached close promise walks the
+fixed order: send cancellation or abort the run stream, close every durable watch, stop the status
+monitor, abort and stop the module-internal tool-host lifecycle, dispose an SDK-owned transport,
+then invoke the spawned-daemon stop and runtime-removal hooks. The internal options bag owns the
+launcher, scheduler, tool-host and teardown-observation seams; none enters either public barrel.
+Each step is isolated by the same disposal wrapper, which emits a
+`client_disposal_failed` diagnostic with only the step and error class, then continues and never
+throws out of `close()`. Watch close unregisters itself; run completion unregisters its cancel
+closure. `Symbol.asyncDispose` delegates to the same promise.
+
+The spawned-daemon hook signals only its captured child handle. `SIGTERM` precedes lifetime-end
+release; a bounded grace precedes `SIGKILL`, and a second bound prevents an unresponsive kill from
+wedging disposal. Both bounds — and the readiness poll — race a timer against the child's exit, so
+each one aborts its scheduler sleep once the race settles: `Promise.race` does not cancel its loser,
+and a non-unref'd timer that outlives it keeps the host's event loop alive after the SDK's own work
+is done. Both stop and directory removal are individually idempotent, so a stop fault
+cannot skip removal. The ready document's pid stays display-only. The child's exit promise is also
+the post-start death detector: an exit outside close records one frozen `daemon_exited` diagnostic,
+aborts active client-side work, and makes `ClientImpl` retain a local `InvalidStateError` that every
+later client, session, and run entry check returns before touching transport. A later close still
+releases client resources and removes the runtime directory, but `isRunning()` prevents signalling
+the already-observed child. Ordinary `connect()` construction supplies no daemon hooks and therefore
+has no process or runtime-directory authority.
+
+The one-shot state machine is `sdk/typescript/src/query.ts`. Its public options keep the three ownership
+domains separate: `session` is passed to `Client.sessions.create`, `spawn` is consulted only when
+there is no supplied client, `onPermissionAsk` configures the ordinary `Run` responder, and
+`onPlanApproval` configures only `PresentPlan`. The module-internal `queryInternal` options bag
+replaces only the spawn function for tests and the two runtime wrappers. `node-query.ts` injects
+the Node spawn function, while `deno-query.ts` injects the Deno function, so the common module has
+no launcher import. No launcher or resource seam enters a public barrel. Plan mode requires
+`onPlanApproval` before that seam is invoked. The live plan ask is
+resolved through its existing Converse approval frame; after the same-ID run yields
+`plan_approved`, `QueryImpl` opens a fresh Converse stream with the constant in
+`sdk/typescript/src/plan.ts` (`PLAN_APPROVED_PROCEED_TEXT`) and flattens both runs. It never calls
+`ApprovePlan` while the first run is live and never sends a second start frame on that stream.
+
+`QueryImpl` claims the existing run's event iterator once and exposes the same decoded `Event`
+values plus the created session id. The final terminal result cleans up before it is delivered; a
+plan run's `plan_approved` terminal instead stages the fresh continuation for the consumer's next
+read. Iterator `return` and the optional abort signal share one cached cleanup promise: they send
+the current run's ordinary cancel control when it is still live, drain through its terminal so
+`SessionImpl` releases its active-run registration, then walk the resource ledger. The session is
+deleted unless `retainSession` was requested; the client is closed only when query created it.
+Setup has the same ledger in reverse: a create failure closes only a newly spawned client, while a
+run-start failure first deletes its already-created session and then closes that client without
+replacing the original typed error. Retention deliberately does not imply durability. With a
+supplied client the id can be loaded for that daemon's remaining lifetime; an SDK-created daemon
+still stops at query cleanup, and its default store is in-memory.
+
+Responder-less ordinary-ask handling is an injected `PermissionAskResponder`. It returns `deny`, emits one frozen
+`query_permission_ask_denied` diagnostic carrying only `askId` and `tool`, and leaves the raw ask
+in the event union. A caller-supplied ordinary responder takes the existing M1 path unchanged,
+including its abstention semantics. `sdk/typescript/src/run.ts` classifies `PresentPlan` by its
+canonical tool name before selecting a callback, so a plan ask can invoke only `onPlanApproval`
+and cannot be passed to public `resolveAsk()`.
+
+The parked-session sibling lives in `sdk/typescript/src/plan.ts`. It is explicitly a two-run
+`PlanResolution`: `Session.resolvePlan()` is
+available only while the local session handle owns no live run and opens the existing
+server-streaming `ApprovePlan` RPC. `PlanResolutionImpl` owns that one merged iterator and applies
+the same single-consumption rule as `Run`: iteration or `result()`, never both. It fixes the first
+non-empty run ID as the resumed run, requires its terminal before accepting one different
+continuation ID, and requires EOF after that continuation's terminal. A resumed terminal other
+than `plan_approved` admits no continuation. The server's special empty-ID `StopError` after an
+approved terminal becomes `PlanContinuationStartError`, preserving the server error text instead
+of inventing a run result. `result()` exposes the two typed `RunResult` values only after their
+terminals, so no independently consumable live child streams exist.
+
+The executable documentation surface lives in `sdk/typescript/examples/`. Its top-level
+`tsconfig.json` includes only the concise programs, defines no `baseUrl`, `paths`, or `rootDirs`, and
+resolves the package's self-name through `package.json#exports` after `dist/` is built. The named
+Vitest oracle in `sdk/typescript/test/examples.test.ts` inventories those programs, rejects an SDK
+source-tree import from every TypeScript file below `examples/`, and checks that SDK imports use
+only `.`, `./node`, `./deno`, or `./gen`. The same oracle makes the separate Slack bot proof visible by
+pinning its CI job and `task slack-bot:typecheck` invocation. The second named oracle keeps the
+Node/Bun `connect()`/`spawn()`/`query()`/callback-tool coverage and Deno remote/local coverage from
+being reduced to prose.
+
+Callback-tool registration lives in `sdk/typescript/src/tool.ts` and is decorated onto the
+Node/Bun client type without widening the transport-neutral `Client`. The one registry owns a
+validated server name (`sdk` by default, maximum 64 ASCII characters from `[A-Za-z0-9._-]`, no
+`__`) and rejects empty or namespace-forging tool names plus local duplicates. Registration copies
+the plain JSON Schema value and compiles it with Ajv's 2020-12 dialect under explicit
+`coerceTypes: false`, `useDefaults: false`, and `removeAdditional: false`; Ajv is a direct MIT
+dependency recorded in `sdk/typescript/package.json` and reachable only from `./node`.
+
+`sdk/typescript/src/client.ts` treats a client tool host as an injected lifecycle plus registry
+view. Every session-create attempt leases the registry against concurrent registration. A
+tool-bearing create waits for the host binding, calls `ListMcpSources`, and rejects a resolved
+server whose name equals the registry namespace before issuing `CreateSession`. It then appends
+exactly one `McpServerSpec` for the whole set, preserving any explicit raw `mcpServers`; a
+successful create commits immutability, while a failed create releases the lease. The advertised
+tool annotation always contains `readOnlyHint`: false by default, true only for the caller's
+unverified `readOnly` assertion. The harness consequently serializes the safe default, while a
+mis-annotation can enter read-parallel dispatch and is not covered by plan mode's fixed built-in
+mutation names.
+
+The `withToolRegistration` decorator in `sdk/typescript/src/tool.ts` also owns the typed
+availability refusal. `sdk/typescript/src/node-client.ts` supplies no registry for `connect()`, so
+`tool()` raises local `unsupported_feature` synchronously and cannot issue an RPC or start a host.
+After the first compatibility dial, `sdk/typescript/src/spawn.ts` derives availability only from the
+ready document's `mcp_servers_on_create` feature: an absent feature omits the registry lifecycle from
+`ClientImpl`, leaves the loopback host unstarted, and makes the refusal name that feature. The SDK
+does not infer support from `http: true`. When a capable client's `CreateSession` instead returns
+`client_mcp_unsupported` or `client_mcp_unreachable`, `ClientImpl` releases the create lease as
+unsuccessful and the existing server-error normalizer preserves the code and server origin; no
+`Session` handle is constructed and later registration remains possible. The four M3-only members
+of `SDKErrorCode` are visibly tagged in `sdk/typescript/src/errors.ts`; the Scenario 8 test checks
+that exact set against the server manifest already parity-gated from the Go error registry.
+
+The registry validates model-authored arguments before invoking the handler and turns a schema
+miss into a text `isError` result. Validation never rewrites the input. A valid JSON object is
+recursively copied with data properties onto null-prototype records before user code runs, so
+`__proto__`, `constructor`, and `prototype` cannot activate inherited setters or leak inherited
+members into the handler. `sdk/typescript/test/media.test.ts` walks the `.` entrypoint's source
+graph and rejects both Node built-ins and any Ajv import, keeping the subpath boundary executable.
+
+The concrete binding is `sdk/typescript/src/tool-host.ts` (`LoopbackToolHost`), constructed by
+`sdk/typescript/src/spawn.ts` and never exported from either public barrel. It mints 32 random bytes
+per spawned client and retains the bearer in memory; `mcpServer()` is its only outbound projection,
+placing `Authorization: Bearer …` beside the literal `http://127.0.0.1:<ephemeral>/mcp` URL. The
+listener compares SHA-256 digests of presented and expected authorization values through
+`timingSafeEqual`, so missing, truncated and full-length-wrong inputs take the same fixed-length
+comparison path. POST requests with an `Origin` or a non-exact bound `Host` are rejected before
+authentication, unauthenticated requests are rejected before a body listener is installed, and
+every non-POST request (including `OPTIONS`) is `405` with `Allow: POST` and no CORS surface.
+
+The stateless JSON-RPC switch implements exactly `server/discover`, `initialize`,
+`notifications/initialized`, `tools/list`, `tools/call` and `ping`. Discovery returns method-not-found
+so the pinned Go SDK falls back to initialize; the initialize result selects from the same descending
+supported set and advertises that set, with `2025-11-25` as the latest legacy fallback. Calls enter
+one client-wide eight-slot scheduler. The queue is capped at 64, per-tool `concurrency` is
+tighten-only, request bodies are capped at 1 MiB, and a 30-second timer starts at admission so queued
+and running calls are both bounded. Caller disconnect, deadline and client disposal abort the
+handler signal and retire the logical slot without waiting for handler code that ignores abort.
+
+Result normalization is one choke point: strings become one text block; every other serializable
+JSON value becomes `structuredContent` plus its compact JSON text mirror; and an explicit
+`CallToolResult` passes unchanged. The serialized result is checked against the mirrored
+`internal/adapter/toolkit/toolkit.go` 25,000-byte limit before the HTTP response. A thrown handler or
+non-serializable value receives a random correlation id and a generic `isError` result. The
+`tool_handler_failed` diagnostic carries that id, the local tool name and the original `cause`; sink
+exceptions are ignored. Deliberate `isError` results bypass this failure translation and remain
+verbatim. `ClientImpl`'s pre-existing tool-host-before-transport disposal order calls `abort` and
+`stop`, which cancel the scheduler, destroy listener connections and join `Server.close` so the port
+is reusable before daemon teardown.
+
+Scenario 10's wire proof lives in `sdk/typescript/e2e/spawn.e2e.test.ts` and
+`sdk/typescript/e2e/tool.e2e.test.ts` and deliberately imports the product `spawn()` surface. Its
+strict mock scripts cover successful, throwing,
+read-only, mutating and schema-invalid callback turns. The event assertions read the real
+`tool.result`, rather than treating handler invocation as proof that the payload crossed back into
+the agent loop. The lifecycle half reads the published ready allowlist, makes real refused connects
+to the suppressed `127.0.0.1:8080` and `:8081` defaults, checks close-before-directory-removal, and
+kills Node and Bun helper parents. `sdk/typescript/e2e/fixtures/runtime-helper.mjs` imports the built
+package, so Bun exercises the published ESM shape rather than Vitest's TypeScript transform. The SDK
+CI job pins Bun 1.4.1 and the local `task sdk:e2e` gate requires a Bun executable (or an explicit
+`BUN_BIN`), keeping the runtime leg out of skip-only test metadata.
+
+The real-wire fixtures currently select the explicit `noop` authority evaluator. Client MCP tools
+are added to a per-session catalog after `internal/app/root_authority.go` (`mintRootAuthority`) has
+projected the process-wide root catalog, so the default local evaluator otherwise rejects the newly
+mounted exact tool name before the permission layer can ask. This keeps the M3 MCP/permission wire
+proof isolated, but the default-authority integration is a separate ship decision rather than a
+property these tests claim to cover. One fixture deliberately restores the default evaluator and
+asserts the denial verbatim, so the limitation is regression-covered and the eventual
+`RootAuthority` widening has a failing test to flip rather than a silent behaviour change.
+
+The M2 durable-watch base lives in `sdk/typescript/src/watch.ts`. Its client-authored `kind`
+turns the generated `{event, cursor, phase}` response into `event | boundary | gap | unknown`;
+known phases narrow, future phases retain their raw string and optional event, and the gap arm
+deliberately drops the server token from the ergonomic shape. Event payloads still flow through
+`sdk/typescript/src/events.ts` (`decodeEvent`) rather than a watch-specific decoder. The HTTP
+transport maps the generated server-streaming method to `GET /v1/sessions/{id}/watch`, including
+terminal SSE error frames, while `sdk/typescript/src/raw.ts` exposes the compatibility feature set
+to client-level code for transport-neutral watch gating. Root-module parity tests derive phases,
+the feature id, and default-filtered kinds from the Go server sources; the sole filter divergence
+is explicit: the SDK filters every `user_prompt` instead of copying the server's fenced scheduled-
+delivery-note classifier.
+
+`sdk/typescript/src/watch.ts` also owns the fixed `SessionActivity` and `AttachedRun`
+interfaces and the initial attachment iterator. `Session.attach(runId)` issues
+`WatchSessionEvents` with `run_id`; `Session.attach()` instead consumes replay from one
+unfiltered request through its live-boundary marker, remembers the last non-empty
+`Event.runId`, and reuses the already-open iterator with a client-side run filter. It
+does not consult `GetSession.state` and does not retry the empty replay: no run-bearing
+record is `NoRunsError`, even during the known running-but-empty-log window. The scan
+closes immediately at the boundary when no run exists, so it never turns a run-less
+session into an unbounded follow.
+
+`Session.activity()` uses the same iterator with no run binding and an empty server `run_id`
+filter. It therefore yields every run's records in durable append order, continues past each
+run's `result`, and also follows sessions whose log contains only run-less `schedule.*` events;
+the same log still makes implicit `Session.attach()` raise `NoRunsError`. Activity cursors keep
+both `{filter, run}` empty so they can later narrow to any run-bound view.
+
+The watch capability check goes through `sdk/typescript/src/raw.ts` (`RawClient.features`)
+for both transport kinds before `sdk/typescript/src/client.ts` opens the stream. A
+missing advertised `watch_session_events` feature is the existing local
+`UnsupportedFeatureError`; once advertised, `session_not_found`, `watch_unsupported`,
+`no_event_log`, and delegation-child `invalid_argument` errors pass through the shared
+server-error normalization unchanged. Scheduled-fire session ids (`sched--*`) are not
+client-rejected. `AttachedRun.live` is backed by iterator state, not captured at
+construction: delivery of that run's decoded `result` flips the getter to false and
+ends the attached iterator.
+
+The lifecycle remains one `WatchSessionEvents` request and one iterator in
+`sdk/typescript/src/watch.ts`: replay envelopes, the replay-to-live boundary, live appends,
+and the terminal `result` are consumed in wire order. Encountering that terminal in replay
+ends an already-finished attachment immediately; no follow read is requested. `AttachOptions`
+adds `from: "start" | "now" | SdkCursor` plus `includeLogOnly`, and
+`Session.activity(options)` accepts the same checkpoint input. The opt-in bypasses only the
+derived event-kind filter, so it adds records without changing existing order or cursor values.
+The `now` arm is deliberately a yield-time client filter, not a
+request capability: `sdk/typescript/src/client.ts` still sends `cursor: ""`, the iterator reads
+and discards every replay envelope, and the boundary is its first yielded value. It requires a
+non-empty explicit run id and rejects locally before compatibility probing or watch creation
+otherwise, avoiding an unfiltered discovery scan whose result would be thrown away.
+
+Attachment checkpoints in `sdk/typescript/src/watch.ts` are versioned, base64url-encoded
+`sdkcur/1` JSON strings carrying `{token, filter, run}`. `token` remains the opaque server
+position, `filter` records the effective server-side `run_id`, and `run` records the client-side
+binding that an implicit `attach()` selected. Cursor parsing is structural and stateless:
+wrong versions, undecodable values, missing string fields, and raw server tokens raise the
+local `CursorMalformedError`, while any well-formed value is accepted regardless of who built
+it. `CursorScopeError` enforces delivered-set containment before feature probing or stream
+creation: a non-empty source run must equal the target run, and a non-empty source filter may
+not be widened; an activity cursor with both fields empty may narrow to any attachment.
+
+The iterator separates delivery from consumption. A yielded envelope's branded cursor becomes
+the attachment checkpoint only when the next `next()` resumes the generator, so a crash after
+processing but before the next pull re-delivers that envelope. Records omitted for run,
+replay-discard, or default-kind filtering have no consumer-visible delivery to acknowledge and
+therefore advance the checkpoint immediately. Observation happens before those yield filters:
+in particular, `approval` removes its matching `permission.ask` from attachment bookkeeping
+even though the default view never yields the approval record. `includeLogOnly` restores every
+derived filtered kind without bypassing run selection, replay discard, or boundary handling.
+The cursor stays application-
+owned and serializable across a fresh `Client`; no SDK storage backend or filesystem path is
+introduced.
+
+Gap and cursor-fault handling stays split at the raw/ergonomic boundary. The shared
+`sdk/typescript/src/errors.ts` normalizer maps `cursor_expired`, `cursor_malformed`, and
+server-originated `activity_gap` into their dedicated classes from either a gRPC status or an
+HTTP terminal SSE error frame; the latter necessarily retains HTTP status 200 because cursor
+decoding occurs after the watch response is committed. `sdk/typescript/src/watch.ts` leaves
+`decodeWatchEnvelope` lossless for raw consumers. A run-bound ergonomic iterator raises a local
+`ActivityGapError` before yielding the gap; the unbound session activity iterator yields the gap
+so event-kind filtering cannot hide a delivery fact, then raises the same error if the consumer
+pulls again. Neither moves its checkpoint past the last preceding envelope. Cursor expiry is
+terminal here: restart-from-beginning remains caller-authored rather than an SDK fallback.
+
+Reconnect authority stays inside the named watch operation in `sdk/typescript/src/watch.ts`.
+`WatchConnection` resumes transport-shaped failures, `watch_lagging`,
+`watch_capacity`, authentication failures, and clean EOF from the iterator's raw
+checkpoint token and unchanged server filter. It applies
+bounded exponential delay with jitter through the internal `delayFor`/`sleep` scheduler bag; a
+successful envelope resets the attempt count. The code-driven terminal arm is the single
+`terminalWatchCodes` set: `cursor_expired`, `cursor_malformed`, `activity_gap`,
+`session_not_found`, `invalid_argument`, `management_unauthorized`, `incompatible_server`,
+`watch_unsupported`, and `no_event_log`. No retry policy is installed in
+`sdk/typescript/src/raw.ts` or `sdk/typescript/src/client.ts`, so every non-watch operation stays
+one-shot by construction.
+
+Before the first reconnect sleep, `WatchConnection` invokes the client operation that clears
+`sdk/typescript/src/raw.ts`'s compatibility promise; the following attempt runs the ordinary
+feature gate before opening the stream. This both re-invokes credential providers and prevents a
+new daemon from inheriting the old process's capability result. `SessionActivityImpl` tracks the
+consumer checkpoint separately from the current transport iterator, swallows every boundary after
+the attachment's first, and lets only a run-bound view's own `result` terminate iteration. Its
+combined attachment/client/caller abort signal owns both the current watch and the scheduler sleep.
+`AttachOptions.signal`, `close`/`Symbol.asyncDispose`, async-iterator `return`, and `Client.close()`
+therefore converge on one release path that clears the timer and returns the watch without sending
+a run control.
+
+Connection status is an arbitration result, not a last-writer register. `sdk/typescript/src/client.ts`
+keeps the M1 request outcome plus a map entry for every `WatchConnection` and selects the first
+present value from `incompatible > unauthorized > reconnecting > connecting > offline > online`.
+`sdk/typescript/src/watch.ts` updates its entry before reconnect work begins, preserves
+`unauthorized` across the credential-refresh attempt, and returns it to `online` only after the next
+watch envelope. The watch uses a status-neutral raw stream path, so the ordinary stream observer
+cannot publish `offline` between a resumable failure and `WatchConnection` taking authority; feature
+re-probes still update the request input, and precedence prevents their success from masking a
+retrying peer. A terminal compatibility floor also updates the request input so the deployment fact
+survives automatic iterator cleanup until a later successful exchange clears it. Removing the
+attachment entry on close cannot cancel a run.
+
+Attachment entries do not participate in `ConnectionStatusStore.subscribe` accounting. Only the
+first real status subscriber installs the browser visibility listener and schedules the 30-second
+heartbeat; removing the last stops both even while attachments remain open. Conversely, a hidden
+page stops only that heartbeat. No visibility event reaches `WatchConnection`, so its watch and
+reconnect scheduler keep consuming until their own caller/client abort or disposal path fires.
+
+Attached cancellation does not reuse `RunOperations.send`: that method is the synchronous push
+onto an owned Converse stream, while an attachment has no such stream and must await an HTTP
+response. `sdk/typescript/src/watch.ts` (`AttachmentOperations.cancelRun`) is the asynchronous
+`cancelRun(sessionId, runId): Promise<void>` seam. `sdk/typescript/src/client.ts` binds it to the
+transport capabilities registered in `sdk/typescript/src/raw.ts`; `sdk/typescript/src/http.ts`
+registers the prompt-free implementation, posts `{expected_run_id: runId}` to the session cancel
+route, and resolves only after the bodyless acknowledgement. The HTTP transport's owned-Converse
+cancel arm calls that same implementation, preserving the ADR-0249 stale guard and shared problem
+mapping without pretending the delivery mechanisms are interchangeable. The gRPC binding rejects
+locally with `UnsupportedFeatureError("prompt_free_controls")`, before any Converse stream exists.
+
+The other `AttachedRun` controls remain deliberate typed dead ends in M2. `approve()` and
+`resolveAsk()` return `Promise<never>` and name `approve_ack_only` on HTTP versus
+`prompt_free_controls` on gRPC; neither posts to the approve route whose restart path relays an
+unbounded SSE body. `steer()` also returns `Promise<never>`, naming `http_steer` on HTTP and
+`prompt_free_controls` on gRPC, and cannot promote into a new run. These methods have no latent
+feature-enabled branch: each deferred server capability needs a later SDK release.
+
+Scenario 10's real-wire proofs live in `sdk/typescript/e2e/attach.e2e.test.ts` and
+`sdk/typescript/e2e/activity.e2e.test.ts`. The restart helper in
+`sdk/typescript/e2e/harness.ts` stops the first daemon, waits out the deliberately short local-store
+lease, then starts a new process on the same TCP listeners, workspace, and JSONL store; a replacement
+mock script supplies only the turns the new process owns. The activity proof compares the envelopes
+consumed across restart with a fresh full replay, so consumption-time checkpoint advancement,
+consume-but-do-not-yield filtering, the `sdkcur/1` cursor envelope, the derived filter set, and the
+three-arm reconnect classification are exercised together rather than as isolated fakes. The
+awaiting proof resolves the persisted ask with a direct harness `fetch` and bounded SSE drain, then
+asserts the attachment observes the resumed tool result and terminal under the unchanged run id.
+That drain remains test-only: it does not weaken the M2 decision that attached approval is unsupported.
+
 ## Live e2e — `e2e/` (see `e2e/README.md`)
 
 A LIVE, ginkgo-driven BDD suite proving the harness's features against a REAL model: it
@@ -8046,10 +9038,12 @@ required** and it is portable across Anthropic Messages / OpenAI Responses / Cha
 Completions.
 
 **Engine (`engine/agent/steer.go`).** A `Run`-scoped, single-slot, append-default
-**mutex** inbox atomically owns `{text, parts}`. At most one pending steer bundle
-per run: a second `EnqueueSteer` appends text with a blank line only when
-both fragments are non-empty and appends validated `session.Content` parts in
-fragment order (issue #861, ADR 0251). Replacing a pending bundle is the explicit
+**mutex** inbox atomically owns `{text, parts, message_id}`. At most one pending
+steer bundle per run: a second `EnqueueSteerWithMessageID` appends text with a
+blank line only when both fragments are non-empty and appends validated
+`session.Content` parts in fragment order (issue #861, ADR 0251). Its id replaces
+the prior id as the bundle watermark. `EnqueueSteer` remains the id-less
+compatibility entry point. Replacing a pending bundle is the explicit
 cancel-then-resend (`CancelSteer`, then a fresh steer with a fresh `message_id`).
 `CancelSteer` retracts; the boundary drain commits the merged bundle as ONE user
 message. The outcome is a closed enum (`accepted`/`appended`/`retracted`/
@@ -8081,42 +9075,33 @@ costs no prompt-cache rebuild beyond normal history growth). The drain emits
 `EvSteer` carrying the committed text and media parts — the authoritative echo;
 the client renders the echoed truth (recorded == streamed == model-view).
 
-**Wire.** A `steer`/`steer_cancel` oneof arm on the bidi `Converse` stream
-(gRPC, v1), a `ServerCapabilities.steer` bit (additive grow, computed once in
-composition, mirrored onto the HTTP capabilities echo's `steer` field), the
-`EvSteer` echo, and — the ADR-0232 named follow-up, landed — the unary HTTP pair
-`POST /v1/sessions/{id}/steer` / `POST /v1/sessions/{id}/cancel-steer`
-(ADR 0252; `steer-cancel` kept as a deprecated alias;
-`internal/adapter/server/http.go` (`steer`)/(`steerCancel`), mirroring
-`approve`/`cancel`/`cancel-child`). The HTTP body carries the SAME contract as
-the gRPC frame — text and/or multimodal `parts` (decoded through the one
-`toContentParts` choke point) plus an optional strict `expected_run_id` — and
-routes into the SAME `Service.Steer` the gRPC handler invokes.
-`Service.SteerEnqueue` remains the exported live-run fast path;
-`Service.CancelSteer` owns the retract
-(`internal/adapter/server/service.go`); both wire handlers are dumb
-frame/body→Service mappers. **Promotion over HTTP follows ADR 0252:** an
-UNQUALIFIED too_late steer is promoted and the follow-up run is relayed as SSE
-on the same response (or background-drained into the durable event log behind
-a `{"outcome":"too_late","promoted":true}` ack when the writer cannot stream);
-a STRICT steer (`expected_run_id` set) never promotes — a mismatch or a named
-run already terminal answers `409` `stale_run_control` and the caller keeps
-the text. The pair self-describes as `http_steer` in the feature registry. **Correlation (watermark).** Every
-frame carries a client-minted `message_id`; the ack lane echoes its own frame's
-id on each outcome (HTTP: the response body's `message_id`). The engine inbox
-parks text and media parts together, and the Service keeps a per-session FIFO of the ordered frame
-ids (`trackSteerMessageID`/`LookupSteerMessageID`/`dropSteerMessageID`); on
-drain the relay pops the whole list and stamps the `EvSteer` echo with the
-LATEST (tail) id — the **watermark** the client splits its ordered queue on
-(positional, never text-match — pinned by
-`TestLookupSteerMessageIDExactUnderDuplicateTexts`). The stamp + the
-correlated-INFO/uncorrelated-WARN diagnostics have ONE owner —
-`Service.stampSteerEcho` — called by BOTH relays (gRPC `sendEvent`, HTTP
-`relayRunSSE`), so the two wires cannot drift. Ids are clamped to a 64-rune
-Mecatui uses native multimodal steer when the bit is true; otherwise every
-mid-run input stays in the local merge queue.
-prefix at track before touching the FIFO or any log (CWE-770). **Lost terminal
-race → auto-promote + sequential handoff:** a steer arriving for a session whose
+**Wire.** gRPC uses `steer`/`steer_cancel` oneof arms on the bidi `Converse`
+stream. HTTP uses unary `POST /v1/sessions/{id}/steer` and
+`POST /v1/sessions/{id}/cancel-steer`, advertised by the `http_steer` compatibility
+feature. Both carry multimodal content where applicable, use the
+`ServerCapabilities.steer` runtime gate, and receive the same `EvSteer` echo.
+HTTP control JSON is bounded and strict: unknown fields and trailing values are
+rejected; cancel-steer alone permits an empty body as `{}`. Mecatui uses native
+multimodal steer when the runtime bit is true; otherwise every mid-run input stays
+in the local merge queue. The routing has ONE owner — `Service.Steer` and
+`Service.CancelSteer` (`internal/adapter/server/service.go`) — so HTTP and gRPC do
+not rederive admission, run identity, cancellation, or correlation state.
+`expected_run_id` is enforced atomically with the live-run lookup and inbox
+transition. A refused stale/invalid gRPC control does not terminate `Converse`:
+steer acknowledges `too_late`, cancel-steer acknowledges `none_pending`, and a
+bounded diagnostic records the refusal.
+
+**Correlation (watermark).** Every control may carry a client-minted `message_id`;
+the ack lane echoes its own frame's id on each outcome. The engine inbox parks the
+id with text and media in one mutex-guarded bundle. Each append replaces the bundled
+id, so the latest contributing id is the **watermark** the client uses to split its
+ordered queue. The drain takes the content and watermark atomically, and `EvSteer`
+carries both. A sender can enqueue the next bundle before the prior event reaches the
+relay without changing the prior event's watermark. A successful retract removes the
+whole pending bundle in the same engine critical section. IDs longer than 64 Unicode
+code points are rejected before admission, never truncated (CWE-770).
+
+**Lost terminal race → auto-promote + transport-specific handoff:** a steer arriving for a session whose
 run is already terminal is promoted to a fresh follow-up run through the hardened
 run-entry funnel (`StartRunContent`/`loadAndReopen` + lease + recover-if-terminal)
 — never silently dropped; the promote path awaits the original run's
@@ -8129,9 +9114,12 @@ is not goroutine-safe), the control target (`ResumeApproval`/`Cancel`/
 `CancelChild`) swaps to the promoted run atomically before its relay starts, and
 the promoted run is `FinishRun`-deregistered before the RPC returns (its terminal
 outcome is reported inline as the `steer.outcome` ack, `promoted=true`).
-**HTTP/SSE steer is LANDED** (the unary pair above, no auto-promote). **ACP
-steer stays deferred** (no client→server mid-run channel), as is
-**steer-to-child** (needs a richer parent→child channel than `CancelChild`).
+The HTTP endpoint always returns a unary
+`{"outcome":"too_late","promoted":true,"run_id":"..."}` acknowledgement and
+drains the promoted run through a request-detached background recorder before
+deregistering it. It never switches the response to SSE. **ACP steer is deferred**
+(no client-to-server mid-run channel), as is **steer-to-child** (needs a richer
+parent-to-child channel than `CancelChild`).
 
 **mecatui.** Reads the `steer` capability off the CreateSession echo: present →
 `enter` mid-run sends a `steer` frame (each `enter` mints a fresh `message_id`,
@@ -8352,7 +9340,7 @@ with no signal at all. `DisallowUnknownFields` plus the decoder's own error deta
 offending field) makes it a self-diagnosing 400. This is a deliberate BEHAVIOUR CHANGE — a request
 with a stray field used to succeed — accepted because the alternative is a silent drop, and it
 matches `decodeLearningJSON`'s existing strictness on the same handler set. Noted for clients in
-`docs/usage/http-sse-api.md`.
+`user-docs/reference/http-sse-api.md`.
 
 **`MaxClientServers` bounds fan-out, not wall-clock.** The original rationale said the factory
 connects SERIALLY so an uncapped count would stall a create for count x timeout. `mcp.NewManager`

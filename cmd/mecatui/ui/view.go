@@ -2,7 +2,6 @@ package ui
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -40,6 +39,7 @@ func mouseCaptureEnabled(m Model) bool {
 // (not a string); we set Content and request the alt screen.
 func (m Model) View() tea.View {
 	var v tea.View
+	v.KeyboardEnhancements.ReportEventTypes = true
 	v.AltScreen = !m.deps.NoAltScreen
 	v.WindowTitle = m.windowTitle()
 	// Capture the mouse — but ONLY on the alt screen, and ONLY when mouse capture
@@ -90,13 +90,16 @@ func (m Model) View() tea.View {
 func (m Model) renderBody() string {
 	m.hits.clear()
 	m.metrics.clear()
+	if m.phase == phaseAuthorizing {
+		return m.renderMCPAuthorization()
+	}
 	switch {
 	case m.sessionDetailsOpen:
 		return renderSessionDetails(m.deps.Theme, m.sessionDetails(), m.helpKeyMarkings(), m.width, m.vp.Height())
 	case m.showHelp:
-		return renderHelpOverlay(m.deps.Theme, m.caps, m.width, m.vp.Height(), m.helpKeyMarkings())
+		return renderHelpOverlay(m.deps.Theme, m.caps, m.width, m.vp.Height(), m.helpScroll, m.helpKeyMarkings())
 	case m.team.view != teamNone:
-		return renderAgentsOverlay(m.deps.Theme, m.agentsTab, m.subagents, m.parallel, m.team, m.conv.latestTeamBlock(), m.conv.subagentFleet, m.conv.parallelGroups, m.helpKeyMarkings(), m.width, m.vp.Height())
+		return renderAgentsOverlay(m.deps.Theme, m.agentsTab, m.subagents, m.parallel, m.team, m.conv.latestTeamBlock(), m.conv.subagentFleet, m.conv.parallelGroups, m.helpKeyMarkings(), m.width, m.vp.Height(), m.height)
 	case m.agentsInv.view != agentsInvNone:
 		return renderAgentsInvOverlay(m.deps.Theme, m.agentsInv, m.caps, m.helpKeyMarkings(), m.width, m.vp.Height())
 	case m.modal != nil:
@@ -128,7 +131,7 @@ func (m Model) renderHeader() string {
 	if sid == "" {
 		sid = "connecting…"
 	} else {
-		sid = "#" + sessionDigest(sid)[:8]
+		sid = client.SessionHandle(sid)
 	}
 	// next: badge — the pendingNext (apply-on-next-create) selection, shown ONLY when
 	// it is set AND differs from the effective model this session runs on (same model
@@ -169,6 +172,7 @@ func (m Model) renderHeader() string {
 		if lineSurface := m.generatedStatusLine.Header; m.deps.DebugTarget == "" && lineSurface.Present && statusSurfaceFits(lineSurface, m.statusLineGeometry().headerAvailable) {
 			line = renderStatusSurface(m.deps.Theme, lineSurface, m.statusLineGeometry().headerAvailable, false)
 			line = m.fitHeader(line, badge, badgeW, tail, m.widthOr())
+			line = m.appendDebugPrivacyNotice(line)
 			return m.deps.Theme.Style("header").Width(m.widthOr()).Render(line)
 		}
 		if m.deps.DebugTarget == "" && m.deps.StatusSource != nil {
@@ -181,16 +185,31 @@ func (m Model) renderHeader() string {
 	} else if m.deps.DebugTarget == "" && m.deps.StatusSource != nil {
 		line = ""
 	}
-	header := m.deps.Theme.Style("header").Width(m.widthOr()).Render(line)
+	header := m.deps.Theme.Style("header").Width(m.widthOr()).Render(m.appendDebugPrivacyNotice(line))
 	return header
 }
 
+// appendDebugPrivacyNotice keeps the debugger's consent disclosure inside the
+// Bubble Tea view. The pre-launch stderr warning is lost when the default
+// alternate screen starts, so the in-TUI notice is the durable user-visible
+// disclosure while invocation remains the consent gesture.
+func (m Model) appendDebugPrivacyNotice(line string) string {
+	if m.deps.DebugTarget == "" {
+		return line
+	}
+	notice := "PRIVACY: target evidence sent to the configured model may include prompts, assistant output, tool arguments/results, file paths, and secrets"
+	if len(m.deps.DebugMCP) > 0 {
+		notice += " Selected reporting servers available: " + strings.Join(m.deps.DebugMCP, ", ") + "; availability does not authorize publication or sending."
+	}
+	return line + "\n" + m.deps.Theme.Style("warning").Render(notice)
+}
+
 func (m Model) debugHeaderTarget() string {
-	return m.deps.Theme.Style("warning").Bold(true).Render("DEBUG target #" + sessionDigest(m.deps.DebugTarget)[:8])
+	return m.deps.Theme.Style("warning").Bold(true).Render("DEBUG target " + client.SessionHandle(m.deps.DebugTarget))
 }
 
 func (m Model) debugEssentialHeaderParts(sid string) []string {
-	return []string{"mecatui", m.debugHeaderTarget(), "session " + client.DisplaySessionID(sid)}
+	return []string{"mecatui", m.debugHeaderTarget(), "session " + sid}
 }
 
 // Operator-posture tier names (the m.caps.Posture vocabulary, server-wide). Named
@@ -302,13 +321,13 @@ const headerIdentityPad = 4
 // headerIdentityParts builds the header identity segments. withNext is the next:
 // badge ("" to omit it). Order: mecatui · [DEBUG target] · session · model ·
 // [next: …] · mode · ws: <worktree> · socket. The debug target is immutable,
-// always uses its complete digest, and precedes the debugger session identity.
+// always uses its complete fixed handle, and precedes the debugger session identity.
 func (m Model) headerIdentityParts(sid, withNext string) []string {
 	parts := []string{"mecatui"}
 	if m.deps.DebugTarget != "" {
 		parts = append(parts, m.debugHeaderTarget())
 	}
-	parts = append(parts, "session "+client.DisplaySessionID(sid))
+	parts = append(parts, "session "+sid)
 	// Model segment: the EFFECTIVE model the server resolved THIS session to (set once
 	// on SessionReadyMsg). The header only CHOOSES which known string to display; it
 	// never resolves a default itself. While connecting there is NO model segment.
@@ -337,7 +356,7 @@ func (m Model) headerIdentityParts(sid, withNext string) []string {
 	// toolhive — disclosure-only (no acknowledgment required), riding the same
 	// segment slice so the EXISTING width-shedding/fitHeader math applies
 	// unchanged (it sheds like any other low-priority segment under pressure).
-	if m.resolvedSessionModel.ProviderID == "toolhive" {
+	if isToolhiveProviderID(m.resolvedSessionModel.ProviderID) {
 		parts = append(parts, m.deps.Theme.Style("muted").Render("via ToolHive gateway"))
 	} else if row, ok := availableNotDefaultStatus(m.modelCatalog.statuses); ok {
 		// Sibling (N1): when an intent-driven provider is detected-and-reachable
@@ -364,12 +383,9 @@ func (m Model) headerIdentityParts(sid, withNext string) []string {
 	if mode != "" {
 		parts = append(parts, m.renderHeaderMode(mode))
 	}
-	// Workspace segment (issue #102): shown only when the session is rooted at a
-	// DIFFERENT workspace than the launch directory (no noise in the common case).
-	// Display just the last path component to keep the header compact.
-	if ws := m.activeWorkspace; ws != "" && ws != m.deps.Workspace {
-		wsPart := m.deps.Theme.Style("muted").Render("ws:" + filepath.Base(ws))
-		parts = append(parts, wsPart)
+	// Placement metadata is display-only; never derive or expose a server path.
+	if label := m.activePlacement.Label; label != "" {
+		parts = append(parts, m.deps.Theme.Style("muted").Render("place:"+sanitizeTerminal(label)))
 	}
 	if m.deps.Server != "" {
 		parts = append(parts, m.deps.Server)
@@ -433,13 +449,10 @@ func (m Model) headerNextBadge() string {
 	return "next: " + truncate(sanitizeTerminal(label), maxModelLen)
 }
 
-// scrollIndicator returns the muted "↑ NN%" header cue shown ONLY when the user
-// has scrolled up off the bottom (!m.stuck) — the discoverable signal that the
-// view is no longer tailing live output and how far up it sits. It is "" while
-// stuck (auto-following the bottom), so the at-bottom steady-state header — and
-// thus the View goldens captured there — is unchanged.
+// scrollIndicator returns the muted "↑ NN%" header cue shown only when the view
+// is anchored rather than following the tail.
 func (m Model) scrollIndicator() string {
-	if m.stuck {
+	if m.conversationView.mode == followTail {
 		return ""
 	}
 	return fmt.Sprintf("↑ %d%%", int(m.vp.ScrollPercent()*100))
@@ -454,7 +467,7 @@ func (m Model) scrollIndicator() string {
 const changedFilesIndicatorLimit = 999
 
 func (m Model) changedFilesIndicator() string {
-	n := len(m.filesChanged)
+	n := len(m.conv.filesChanged)
 	if n == 0 {
 		return ""
 	}
@@ -555,7 +568,7 @@ func (m Model) footerActivity() string {
 	default:
 		left = m.idleFooterLeft()
 	}
-	if m.deps.DebugMouse && m.mouseDebug != "" {
+	if (m.deps.Debug || m.deps.DebugMouse) && m.mouseDebug != "" {
 		left = m.deps.Theme.Style("muted").Render(m.mouseDebug)
 	}
 	return left
@@ -647,6 +660,8 @@ func (m Model) idleFooterLeft() string {
 		return m.selectionStatus()
 	case m.gatewayNotice != "":
 		return m.deps.Theme.Style("muted").Render(m.gatewayNotice)
+	case m.workspaceEnrollmentNotice != "":
+		return m.deps.Theme.Style("muted").Render(m.workspaceEnrollmentNotice)
 	default:
 		if m.statusMsg == "" {
 			return "ready"
@@ -705,12 +720,12 @@ func (m Model) contextWindow() int64 {
 // segment is PREPENDED to the right side; it is LOWER priority than the context
 // meter (it's an advertisement, context % is the headline safety signal), so it is
 // the FIRST thing dropped as width tightens. The <agents> chord below is the LIVE
-// Agents binding (issue #457) — "ctrl+a" by default, rebound via keymap. Tiers,
+// Agents binding (issue #457) — "f6" by default, rebound via keymap. Tiers,
 // richest to poorest (defaults shown):
 //
-//	"⟳ team-x · 2/3 working · ctrl+a agents  ctx ▒▒▒▒▒·· 70% · 140K/200K · ↑7.9K ↓345 cache 88%"
-//	"⟳ team-x · 2/3 working · ctrl+a agents  ctx ▒▒▒▒▒·· 70% · 140K/200K"
-//	"⟳ 2/3 working · ctrl+a  ctx ▒▒▒▒▒·· 70%"   (team→medium, ctx→compact)
+//	"⟳ team-x · 2/3 working · f6 agents  ctx ▒▒▒▒▒·· 70% · 140K/200K · ↑7.9K ↓345 cache 88%"
+//	"⟳ team-x · 2/3 working · f6 agents  ctx ▒▒▒▒▒·· 70% · 140K/200K"
+//	"⟳ 2/3 working · f6  ctx ▒▒▒▒▒·· 70%"   (team→medium, ctx→compact)
 //	"⟳ 2/3  ctx 70%"                            (team→compact, ctx→minimal)
 //	"ctx 70%"                                    (team DROPPED, ctx wins)
 //	then the existing ctx-only fallbacks, then left status alone.
@@ -732,7 +747,7 @@ func (m Model) fitFooter(left string, width int) string {
 	// to the right side at three tiers (full/medium/compact). Each is built from up to
 	// two sub-segments joined by sep:
 	//   - the team segment, non-empty ONLY for a LIVE team (liveTeamBlock — not teamDone).
-	//     This DELIBERATELY differs from the ctrl+a overlay's gate: the footer is a
+	//     This DELIBERATELY differs from the f6 overlay's gate: the footer is a
 	//     live-activity advertisement and hides once the team is done, whereas the
 	//     overlay opens on the last-seen team done-or-not (so the user can still review a
 	//     finished roster). The two are meant to disagree in the done state — don't unify.

@@ -53,6 +53,18 @@ func clampScroll(want, total, window int) int {
 	return want
 }
 
+type renderedLineWindowBounds struct {
+	start, end, total, window int
+}
+
+func renderedLineWindow(scroll, total, window int) renderedLineWindowBounds {
+	if window < 0 {
+		window = 0
+	}
+	start := clampScroll(scroll, total, window)
+	return renderedLineWindowBounds{start: start, end: min(start+window, total), total: total, window: window}
+}
+
 // windowRenderedLines windows ALREADY-RENDERED (ANSI-carrying) lines to a fixed
 // window starting at scroll, appending a muted "lines X–Y of N" indicator when
 // the content overflows the window. Each input line must be a COMPLETE styled
@@ -63,22 +75,23 @@ func clampScroll(want, total, window int) int {
 // time. Every emitted line carries a trailing newline so the callers' footer
 // concatenation stays uniform across the scrolled and unscrolled cases.
 func windowRenderedLines(th theme.Theme, lines []string, scroll, window int) string {
-	total := len(lines)
-	start := scroll
-	if start > total {
-		start = total
-	}
-	end := start + window
-	if end > total {
-		end = total
-	}
+	return windowRenderedLinesWithIndicator(th, lines, scroll, window, func(start, end, total int) string {
+		return fmt.Sprintf("lines %d–%d of %d", start+1, end, total)
+	})
+}
+
+// windowRenderedLinesWithIndicator is windowRenderedLines with a caller-owned
+// overflow indicator. It lets a clipped surface retain its live navigation
+// affordances without consuming another row.
+func windowRenderedLinesWithIndicator(th theme.Theme, lines []string, scroll, window int, indicator func(start, end, total int) string) string {
+	w := renderedLineWindow(scroll, len(lines), window)
 
 	var b strings.Builder
-	for _, ln := range lines[start:end] {
+	for _, ln := range lines[w.start:w.end] {
 		b.WriteString(ln + "\n")
 	}
-	if total > window {
-		b.WriteString(th.Style("muted").Render(fmt.Sprintf("lines %d–%d of %d", start+1, end, total)) + "\n")
+	if w.total > w.window {
+		b.WriteString(th.Style("muted").Render(indicator(w.start, w.end, w.total)) + "\n")
 	}
 	return b.String()
 }

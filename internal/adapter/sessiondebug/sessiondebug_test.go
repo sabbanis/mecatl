@@ -34,7 +34,7 @@ func execute(t *testing.T, inspect tool.Tool, args string) session.ToolResult {
 func seededTarget(t *testing.T, messages []session.Message) (*memstore.Store, *session.Session) {
 	t.Helper()
 	store := memstore.New()
-	s := session.New("target", session.ModeDefault, "/target", session.Limits{MaxTurns: 9}, time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
+	s := session.New("target", session.ModeDefault, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/target", Revision: "in-tree-v1"}, session.Limits{MaxTurns: 9}, time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC))
 	s.Profile, s.ProviderID, s.ModelID = "default", "mock", "model"
 	if err := s.SeedHistory(messages); err != nil {
 		t.Fatalf("SeedHistory: %v", err)
@@ -58,7 +58,7 @@ func TestStatusOmitsPendingArgsAndDoesNotMutateTarget(t *testing.T) {
 	if err := target.BeginTurn(); err != nil {
 		t.Fatal(err)
 	}
-	if err := target.PauseForApproval(session.PendingAsk{AskID: "ask", Tool: "Bash", Call: "tc", Args: []byte(`{"secret":"DO-NOT-LEAK"}`), Reason: "private"}); err != nil {
+	if err := target.PauseForApproval(session.PendingAsk{AskID: "ask", Tool: "Shell", Call: "tc", Args: []byte(`{"secret":"DO-NOT-LEAK"}`), Reason: "private"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Save(context.Background(), target); err != nil {
@@ -66,7 +66,7 @@ func TestStatusOmitsPendingArgsAndDoesNotMutateTarget(t *testing.T) {
 	}
 	before, _ := store.Load(context.Background(), target.ID)
 	got := execute(t, New(target.ID, store, nil), `{"view":"status"}`)
-	if got.IsError || strings.Contains(got.Content, "DO-NOT-LEAK") || !strings.Contains(got.Content, `"tool":"Bash"`) {
+	if got.IsError || strings.Contains(got.Content, "DO-NOT-LEAK") || !strings.Contains(got.Content, `"tool":"Shell"`) {
 		t.Fatalf("status = %s", got.Content)
 	}
 	after, _ := store.Load(context.Background(), target.ID)
@@ -374,7 +374,7 @@ func TestNetworkEvidencePersistsAcrossJSONLStoreRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	target := session.New("persisted-target", session.ModeDefault, "/target", session.Limits{}, time.Now())
+	target := session.New("persisted-target", session.ModeDefault, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/target", Revision: "in-tree-v1"}, session.Limits{}, time.Now())
 	if err := store1.Save(context.Background(), target); err != nil {
 		t.Fatal(err)
 	}

@@ -34,7 +34,7 @@ func writeOperatorPostureFile(t *testing.T, tier string) string {
 func postureEchoFromBuild(t *testing.T, built *Built) string {
 	t.Helper()
 	resp, err := server.NewHarnessServer(built.Service).CreateSession(context.Background(),
-		&mecatlv1.CreateSessionRequest{Workspace: t.TempDir()})
+		&mecatlv1.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -54,7 +54,7 @@ func postureEchoFromBuild(t *testing.T, built *Built) string {
 func TestBuildOperatorYAMLPostureSeam(t *testing.T) {
 	t.Run("operator auto flows to composed posture", func(t *testing.T) {
 		diag := slogdiagBuffer(t)
-		built, err := Build(context.Background(), Config{
+		built, err := buildIsolated(t, context.Background(), Config{
 			Workspace:         t.TempDir(),
 			Model:             "mock",
 			UseMock:           true,
@@ -83,7 +83,7 @@ func TestBuildOperatorYAMLPostureSeam(t *testing.T) {
 	t.Run("injected user-global posture is discovered", func(t *testing.T) {
 		env := trustSettingsEnv(t.TempDir(), []byte("posture: auto\n"))
 		withTrustEnv(t, env)
-		built, err := Build(context.Background(), Config{
+		built, err := buildIsolated(t, context.Background(), Config{
 			Workspace:               t.TempDir(),
 			Model:                   "mock",
 			UseMock:                 true,
@@ -105,7 +105,7 @@ func TestBuildOperatorYAMLPostureSeam(t *testing.T) {
 	// narration and the shell consumer must both report the fail-safe result.
 	t.Run("operator auto headless withholds ingestion (fail-safe)", func(t *testing.T) {
 		diag := slogdiagBuffer(t)
-		built, err := Build(context.Background(), Config{
+		built, err := buildIsolated(t, context.Background(), Config{
 			Workspace:         t.TempDir(),
 			Model:             "mock",
 			UseMock:           true,
@@ -130,7 +130,7 @@ func TestBuildOperatorYAMLPostureSeam(t *testing.T) {
 		if !strings.Contains(fact, "trust_project=false") {
 			t.Fatalf("headless auto without --trust-project must leave trust_project=false (the ladder is interactive-only; the shell gate reads it); fact: %q", fact)
 		}
-		// titlani's deterministic guard (issue #359 final correction): a HEADLESS
+		// The scheduler's deterministic guard (issue #359 final correction): a HEADLESS
 		// mecated at --posture auto with NO explicit --trust-project must NOT have the
 		// read-only child shell (the deliberate fail-safe capability loss — the repo's
 		// .git is not vouched, so the worktree-fork git checkout cannot run). The
@@ -148,7 +148,7 @@ func TestBuildOperatorYAMLPostureSeam(t *testing.T) {
 	// both project steering and the read-only child shell.
 	t.Run("operator auto interactive grants ingestion (dev default)", func(t *testing.T) {
 		diag := slogdiagBuffer(t)
-		built, err := Build(context.Background(), Config{
+		built, err := buildIsolated(t, context.Background(), Config{
 			Workspace:         t.TempDir(),
 			Model:             "mock",
 			UseMock:           true,
@@ -173,7 +173,7 @@ func TestBuildOperatorYAMLPostureSeam(t *testing.T) {
 		if !strings.Contains(fact, "trust_project=true") {
 			t.Fatalf("interactive auto must derive trust_project=true (the ladder raises it on interactive roots; the shell gate reads it); fact: %q", fact)
 		}
-		// titlani's deterministic guard (issue #359 final correction): an INTERACTIVE
+		// The scheduler's deterministic guard (issue #359 final correction): an INTERACTIVE
 		// mecated at --posture auto with NO explicit --trust-project must keep the
 		// read-only child shell. The shell gate (buildSandboxedCommandRunner) reads
 		// cfg.TrustProject, which the ladder raised above; the build-once composition
@@ -194,7 +194,7 @@ func TestBuildOperatorYAMLPostureSeam(t *testing.T) {
 		withTrustEnv(t, *permEnv)
 		ws := t.TempDir()
 		mkdirProjectSettings(t, ws, "posture: yolo\n")
-		built, err := Build(context.Background(), Config{
+		built, err := buildIsolated(t, context.Background(), Config{
 			Workspace:               ws,
 			Model:                   "mock",
 			UseMock:                 true,
@@ -213,7 +213,7 @@ func TestBuildOperatorYAMLPostureSeam(t *testing.T) {
 	})
 
 	t.Run("operator yolo on a privileged Config is refused", func(t *testing.T) {
-		built, err := Build(context.Background(), Config{
+		built, err := buildIsolated(t, context.Background(), Config{
 			Workspace:         t.TempDir(),
 			Model:             "mock",
 			UseMock:           true,

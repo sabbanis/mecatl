@@ -1,133 +1,193 @@
 ---
 sidebar_position: 4
-title: Sessions
+title: Manage sessions
+sidebar_label: Sessions
+description:
+  Resume, browse, inspect, fork, and maintain Mecatl sessions from mecatui.
 ---
 
 # Manage sessions
 
-Sessions preserve a conversation, its tool history, workspace, mode, model, and capabilities. Embedded mecatui stores them locally by default; a connected server uses that server's storage.
+Sessions preserve the conversation, tool history, placement, mode, model, and
+capabilities. Embedded `mecatui` stores sessions locally by default. A connected
+client uses the remote server's storage.
 
 ## Resume a chat
 
-Pass an exact session ID, or let mecatui choose the newest eligible main chat:
+Pass an exact session ID, or resume the newest eligible main chat:
 
 ```sh
-bin/mecatui --resume 01JOPAQUESESSIONID
-bin/mecatui connect 127.0.0.1:8080 --resume-latest
+mecatui --resume 01JOPAQUESESSIONID
+mecatui connect 127.0.0.1:8080 --resume-latest
 ```
 
-`--resume-latest` continues the newest eligible chat and, when none exists, starts a fresh chat instead of failing — the "continue where I left off, otherwise begin" launch. (A genuine storage/list failure still surfaces rather than being masked as a new chat.)
+On servers that provide session activity inventory, `--resume-latest` considers
+only active main chats and verifies each candidate's authoritative transcript.
+It does not select drafts or unknown legacy rows automatically. Older servers
+use their mixed inventory but still reject an empty authoritative transcript. If
+no chat qualifies, `mecatui` starts a new one. Storage and listing failures
+still return an error. You can combine either resume option with `--prompt` to
+send a task after the transcript loads.
 
-A resumed chat is the stored chat, not a copy. It keeps its stored workspace and model. You can combine a resume selector with `--prompt` to send one next task after the transcript loads.
+A resumed chat is the stored chat, not a copy. It keeps its model and exact
+server-owned placement. See [Session continuity](/features/session-continuity.md)
+for the storage and recovery behavior behind resume.
 
-While a chat is open, `/session` shows its full ID and `c` copies it. On a normal exit, mecatui also writes a machine-readable handoff to stderr:
+To get the active session ID, run `/session` and press `c` to copy it. On a
+normal exit, `mecatui` also writes a machine-readable handoff to standard error:
 
 ```text
 mecatui: final-session-id="01JOPAQUESESSIONID"
 ```
 
-Save that value and use it with `--resume`.
+## Browse and maintain stored sessions
+
+Open the session inventory without creating a session:
+
+```sh
+mecatui sessions
+mecatui connect 127.0.0.1:8080 sessions
+```
+
+You can also run `/sessions` from an open chat. On servers that provide session
+activity inventory, known empty main sessions appear in **Drafts** as
+`New — no messages`. **Chats** contains active and unknown main sessions. You
+can continue a draft by selecting it or using its exact ID. Older servers hide
+**Drafts** and keep all main sessions in **Chats**.
+
+Scheduled runs, child runs, and other sessions have separate tabs. Search and
+pagination help with large stores. **Delete** permanently removes a session when
+the server permits it; **Close** only closes the local inventory.
+
+Available actions depend on the session and server:
+
+- **Continue** attaches to an eligible main chat.
+- **Inspect** opens a scheduled, child, or other run without attaching to it.
+- **Fork** creates a chat from an eligible main chat.
+- **Copy**, **Rename**, and **Delete** manage the stored record when the server
+  permits the action.
+
+The server checks active-session and lease protections before every action.
+Caller identity records ownership when enabled, but does not isolate sessions
+between authenticated callers.
+
+When the server provides storage management, the inventory can also offer
+**Optimize storage** and **Clean up sessions**. Optimization is non-destructive.
+Cleanup is destructive and requires confirmation. The server operator controls
+availability and retention.
+
+## Name the active chat
+
+Run `/title <TEXT>` to set a title. `mecatui` updates the label immediately,
+then restores the stored title if the server rejects the change. A manually set
+title uses `operator` provenance and disables automatic title generation for
+that session. Run `/title` without an argument to display the title and its
+provenance.
+
+Automatic titles require the server operator to configure a compatible
+`models.slots.title` binding. Without it, the server makes no title-generation
+model call. Generated titles use up to three early prompts after a successful
+exchange and have separately recorded `session_title` token usage.
+
+## Start with empty model history
+
+Run `/clear` to create a distinct, empty-history session with the same exact
+placement, owner, mode, model, reasoning effort, and limits. You can clear while
+idle, during a response, or while an approval is open.
+
+Clearing a session does not undo completed workspace or tool changes. The source
+session remains stored and available through `/sessions`.
+
+During a clear, `mecatui` cancels the active run or approval and waits for it to
+settle before creating the replacement. If replacement fails after cancellation,
+the source remains selected but may be cancelled. Wait for the local stream to
+settle, then retry `/clear`.
+
+If the server rejects `/clear` before cancellation begins, the active run or
+approval remains unchanged.
+
+## Reduce model history
+
+Run `/compact` without arguments while the session is idle and close to its
+context limit. The server reduces the persisted history sent to the model while
+keeping the session and visible scrollback. The command creates no chat turn,
+but a cascade summary can use model tokens.
+
+The command appears only when the server supports manual compaction.
+See [Context windows](/features/context-windows.md) for automatic compaction,
+window resolution, and operator configuration.
+
+## Move a chat to a worktree
+
+Run `/worktrees` to create a history-carrying successor in an eligible
+server-owned worktree. The client receives safe display metadata and a
+short-lived selector; it never receives the path or private environment
+reference.
+
+Selectors expire when the server restarts. `mecatui` relists expired selectors,
+and a relist or fork failure leaves the source chat active. Sessions without a
+filesystem cannot move to a worktree through this command.
 
 ## Diagnose a stored session
 
-A debugger is intentionally different from continuing a chat:
+The debug command creates a separate analysis session and leaves the target
+unchanged:
 
 ```sh
 mecatui debug 01JOPAQUESESSIONID
 mecatui connect 127.0.0.1:8080 debug 01JOPAQUESESSIONID
 
-# Add one or more already-configured global reporting servers by name.
-mecatui debug 01JOPAQUESESSIONID --debug-mcp github
-mecatui connect 127.0.0.1:8080 debug 01JOPAQUESESSIONID --debug-mcp github
-
-# Replace the automatic diagnosis question with a focused one.
+# Ask a focused initial question.
 mecatui debug 01JOPAQUESESSIONID \
   --prompt "Why did the final tool call fail?"
+
+# Add an already configured reporting server.
+mecatui debug 01JOPAQUESESSIONID --debug-mcp github
 ```
 
-### What happens
+`TARGET` can be the full ID or the displayed 12-column handle. If a handle is
+ambiguous, copy the full ID from `/session` and try again. Use the embedded
+command for an embedded store and `connect ADDRESS` for the server that owns the
+target. The optional `--prompt` value replaces the default diagnosis objective.
 
-1. Use the full target ID from `/session`, `/sessions`, or the
-   `mecatui: final-session-id=...` line printed when its TUI exits. You can instead
-   type the exact 12-byte ID displayed in the TUI header. If multiple visible
-   sessions share that prefix, mecatui creates nothing and asks for the full ID.
-2. Run `mecatui debug` against the same embedded store, or use
-   `mecatui connect ADDRESS debug` against the server that owns the target.
-3. mecatui prints a privacy disclosure before entering the alternate screen.
-   Running the command is consent to send bounded target evidence—which may
-   include prompts, model output, tool arguments/results, paths, and secrets—to
-   the selected model.
-4. The server authorizes the target and creates a **different**, durable,
-   no-filesystem analysis session. The normal padded header shows amber/bold
-   `DEBUG target #<digest>` after `mecatui`, and the terminal title carries the digest.
-   `/session` shows the safely quoted exact target ID and copies it with `t`.
-5. The debugger submits one first user turn ordered as your diagnosis objective, the required
-   status/transcript/pagination workflow, the expected report sections, and finally a delimited
-   sanitized current-debugger client/server runtime block. `--prompt` replaces only the
-   objective. Runtime context is compatibility/transport context, not target evidence; a
-   safely classified remote lookup failure does not block launch or reveal its raw error.
-6. Ask follow-up questions normally. The debugger can inspect bounded status,
-   transcript, activity, performance, network, related, delegation, history, and manifest
-   views for the target and retained related handles. Related rows distinguish retained
-   children from pruned tombstones without accepting arbitrary session IDs. History includes
-   compaction archives; status separates latest-run, cumulative snapshot, and lifetime counters.
-   Event-derived views report availability/completeness. Network includes sanitized failed/interesting
-   attempt decisions and classes, never raw errors, URLs, headers, bodies, prompts, tool
-   arguments, or credentials; successful-attempt and per-phase DNS/TCP/TLS timing are not measured.
-7. Quit normally when finished. The target remains unchanged and unleased; the
-   debug conversation is stored separately.
+When the debugger opens, `mecatui` keeps a visible privacy disclosure in the TUI stating that the selected model will receive bounded target evidence. That evidence can contain prompts, model output, tool arguments and results, paths, and secrets. Invoking the command is the consent gesture; the default diagnostic prompt is then submitted automatically.
 
-The debugger cannot switch targets, browse the filesystem, run a shell, or act
-on the target. By default it has only `InspectSession`. Repeatable `--debug-mcp NAME`
-selects direct tools from already-configured server-global streaming-HTTP MCP servers;
-unknown/disconnected/tool-empty names fail, and no URL, headers, inline/client MCP,
-stdio, or resource/query meta-tools are accepted. Mutating MCP tools always ask for a
-one-call interactive approval (including under yolo); Deny still wins, headless mutation
-is refused, and Allow Always applies only to the current call and is not learned. Ask the debugger to draft an
-issue/message first, then explicitly request publication in a later prompt and approve the
-resulting call once. A second mutation asks again.
+The analysis session has no filesystem or shell access. By default, it can only
+use `InspectSession` to read bounded retained evidence. It cannot resume,
+approve, cancel, steer, or otherwise change the target. `/clear`, `/sessions`,
+`/models`, `/effort`, and `/worktrees` are unavailable in debug mode because
+they would replace the target binding. Open `/session` and press `t` to copy the
+exact target session ID.
 
-It never resumes, approves, cancels, steers, or mutates the
-original session. `/clear`, `/sessions`, `/models`, `/effort`, and `/worktrees`
-are hidden in debug mode because they could replace the analysis binding.
+Repeat `--debug-mcp NAME` to expose direct tools from an already configured,
+server-global streaming HTTP MCP server. URLs, headers, client or inline MCP
+servers, stdio servers, and resource or query meta-tools are not accepted.
+Unknown, disconnected, and tool-empty server names fail. Mutating MCP tools
+always require one-call approval, including in yolo mode.
 
-For local process-level investigation, adding `--perf` starts an owner-private,
-per-instance `admin.sock`. That raw metrics/pprof surface is for the human
-operator and is **not** placed in model context; the debugger's performance view
-is the bounded event-derived projection.
+Debug views report when retained evidence is incomplete. Network views expose
+sanitized failure categories instead of raw errors, URLs, headers, bodies,
+prompts, tool arguments, or credentials. The debug conversation is stored as a
+separate durable session.
 
-## Start fresh with `/clear`
-
-Use `/clear` when you want a fresh session and empty context while staying in the
-current workspace and model. The old conversation remains stored and discoverable
-through `/sessions`; mecatui releases its old runtime resources only on a best-effort
-basis after the replacement session is ready.
-
-## Reduce model history with `/compact`
-
-If a long chat is close to its context limit, use bare `/compact` while the session
-is idle. The command keeps the same session and visible scrollback but asks the server
-to reduce the persisted history sent to the model. It creates no chat turn and reports
-whether anything changed. The command appears only when the connected server advertises
-manual compaction; older servers hide it. A cascade summary can still use model tokens.
-
-## Browse, continue, inspect, or fork
-
-Open the inventory without creating a session:
-
-```sh
-bin/mecatui sessions
-bin/mecatui connect 127.0.0.1:8080 sessions
-```
-
-Choose a main chat to **Continue**, or open scheduled, child, and other runs to **Inspect** their authoritative transcript without attaching to them. Eligible main chats can also be **Forked** into a new chat. The inventory can copy an ID, rename a session, and—when the server permits it—delete it. Actions are checked again by the server, so an old inventory row cannot bypass active-session or lease protections. Caller identity, where enabled, records ownership but does not isolate sessions between authenticated callers.
-
-Use `/sessions` from an open chat for the same inventory. It has separate tabs for chats, scheduled runs, child runs, and other rows; search and pagination keep large inventories usable.
+For local process diagnostics, `--perf` starts a private `admin.sock`. Its raw
+metrics and pprof data are available to the operator and are not added to model
+context.
 
 ## Privacy and maintenance
 
-The embedded store is owner-only, but its conversation, model output, tool arguments, and results are plaintext. Keep its state directory and backups private. Use `--no-store` only when you deliberately want an in-memory, non-persistent session.
+The embedded store is owner-only, but stores prompts, model output, tool
+arguments, and results as plaintext. Protect its state directory and backups.
+Use `--no-store` only when you want a non-persistent, in-memory session.
 
-When the connected server advertises storage management, the inventory may offer **Optimize storage** (non-destructive) and **Clean up sessions** (destructive, confirmation required). Availability and retention rules belong to the server operator. For daemon retention, backups, or restore procedures, see [Operate local session storage](/building/deployment/session-storage-operations.md).
+## Next steps
 
-For resume eligibility and the full overlay behavior, see [`docs/tui.md`](https://github.com/stacklok/mecatl/blob/main/docs/tui.md#continue-a-chat-at-startup). If continuation fails, start with [Troubleshooting](./troubleshooting.md#a-session-will-not-resume).
+- [Work in the TUI](./using-the-tui.md) to steer runs and review approvals.
+- [Troubleshoot session resume](./troubleshooting.md#a-session-will-not-resume).
+
+## Related information
+
+- [Operate local session storage](/building/deployment/session-storage-operations.md)
+  for daemon retention, backup, and restore procedures.
+- [Continue a chat at startup](https://github.com/stacklok/mecatl/blob/main/docs/tui.md#continue-a-chat-at-startup)
+  for the exhaustive eligibility and overlay behavior.

@@ -111,6 +111,15 @@ func NewLister(key, baseURL string, httpClient *http.Client) *Lister {
 	return &Lister{models: client.Models}
 }
 
+type listerStatusError struct {
+	statusCode int
+}
+
+func (e *listerStatusError) Error() string {
+	return fmt.Sprintf("anthropic: list models: HTTP %d", e.statusCode)
+}
+func (e *listerStatusError) StatusCode() int { return e.statusCode }
+
 // ListModels GETs the live Anthropic catalog (auto-paging) and maps each ModelInfo
 // into a neutral Model. It is read-only and fail-safe to the caller: a transport or
 // pagination error returns a non-nil error (the composition layer then falls back to
@@ -131,6 +140,13 @@ func (l *Lister) ListModels(ctx context.Context) ([]Model, error) {
 		out = append(out, mapModelInfo(info))
 	}
 	if err := pager.Err(); err != nil {
+		var apiErr *sdk.Error
+		if errors.As(err, &apiErr) {
+			// SDK API errors include the response body. Preserve only the status
+			// needed for classification so a gateway that reflects request
+			// credentials cannot place them in caller diagnostics.
+			return nil, &listerStatusError{statusCode: apiErr.StatusCode}
+		}
 		return nil, fmt.Errorf("anthropic: list models: %w", err)
 	}
 	return out, nil

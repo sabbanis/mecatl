@@ -24,6 +24,12 @@ const APIMajor int32 = 1
 // Identifiers are STABLE ONCE PUBLISHED. Renaming one is a break dressed up as
 // a refactor: a deployed client gates on the exact string.
 const (
+	// FeatureHTTPSteer is the unary HTTP steer and cancel-steer control pair
+	// (issue #873, ADR 0252). The engine-level steer capability remains a
+	// separate runtime fact; this identifier reports that the HTTP transport
+	// implements the routes the TypeScript SDK can drive.
+	FeatureHTTPSteer = "http_steer"
+
 	// FeatureServerInfo is this RPC itself. It is degenerate over the wire — a
 	// client that received a response already knows the server implements it —
 	// but it is load-bearing as the registry's self-test: the feature set is
@@ -56,21 +62,11 @@ const (
 	// FeatureMCPServersOnCreate is client-provided MCP servers on session
 	// creation — CreateSessionRequest.mcp_servers and its HTTP peer (issue #821,
 	// ADR 0237).
-	//
-	// It is the FIRST listener-scoped feature, and the reason serverFeatures grew
-	// a scope argument. Unlike its siblings it answers a DEPLOYMENT question, not
-	// a build one: every build implements the field, and whether a given
-	// deployment accepts it depends on whether any of its API listeners is a
-	// network boundary. A client that reads this identifier learns "I may send
-	// mcp_servers HERE" — which is the only useful form of the answer, since a
-	// build-only claim would be true on a daemon that refuses every such request.
 	FeatureMCPServersOnCreate = "mcp_servers_on_create"
 
-	// FeatureHTTPSteer is the unary HTTP steer pair (ADR 0252):
-	// POST /v1/sessions/{id}/steer (text + multimodal parts +
-	// expected_run_id strict mode, promoted follow-ups relayed as SSE) and
-	// POST /v1/sessions/{id}/cancel-steer.
-	FeatureHTTPSteer = "http_steer"
+	// FeatureSessionActivityInventory reports that ListSessions pages carry the
+	// atomically persisted activity projection.
+	FeatureSessionActivityInventory = "session_activity_inventory"
 )
 
 // FeatureScope is what the DEPLOYMENT permits, as distinct from what the build
@@ -80,13 +76,15 @@ const (
 //
 // One *Service backs both the gRPC and the HTTP listener, so this is decided
 // ONCE at startup from the deployment's listener topology (mecated's
-// clientMCPOnCreateForListeners) and handed in — the same shape as
-// Config.WorkspaceAuthority, and for the same reason: a per-connection answer
-// would be a different design needing its own ADR.
+// clientMCPOnCreateForListeners) and handed in. A per-connection answer would
+// be a different design needing its own ADR.
 type FeatureScope struct {
 	// ClientMCPOnCreate reports whether this deployment accepts
 	// CreateSessionRequest.mcp_servers.
 	ClientMCPOnCreate bool
+	// SessionActivityInventory reports whether ListSessions reads an atomic,
+	// activity-projecting metadata pager.
+	SessionActivityInventory bool
 }
 
 // allFeatures is the registry: the single source of truth both transports read.
@@ -104,6 +102,7 @@ var allFeatures = []string{
 	FeatureHTTPSteer,
 	FeatureMCPServersOnCreate,
 	FeatureServerInfo,
+	FeatureSessionActivityInventory,
 	FeatureWatchSessionEvents,
 }
 
@@ -118,6 +117,8 @@ func permittedBy(scope FeatureScope, feature string) bool {
 	switch feature {
 	case FeatureMCPServersOnCreate:
 		return scope.ClientMCPOnCreate
+	case FeatureSessionActivityInventory:
+		return scope.SessionActivityInventory
 	default:
 		return true
 	}

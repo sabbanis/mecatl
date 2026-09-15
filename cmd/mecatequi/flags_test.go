@@ -36,7 +36,7 @@ func TestOpenAICodexCommandRootReusesResolvedSnapshot(t *testing.T) {
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	flags, err := parseFlags([]string{"--prompt", "test", "--auth-file", path})
+	flags, err := parseFlags([]string{"--prompt", "test", "--api-key-file", path})
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
 	}
@@ -70,7 +70,7 @@ func TestOpenAICodexCommandRootSurfaces(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := realMain([]string{
 		"--prompt", "test",
-		"--auth-file", path,
+		"--api-key-file", path,
 		"--mock",
 		"--workspace", t.TempDir(), // deliberately not a git repository
 	}, &stdout, &stderr)
@@ -408,7 +408,7 @@ func TestAppConfigMapping(t *testing.T) {
 		if cfg.MaxRunTokens != 1234 || cfg.MaxTeamTokens != 5678 {
 			t.Errorf("budgets not mapped: run=%d team=%d", cfg.MaxRunTokens, cfg.MaxTeamTokens)
 		}
-		if !cfg.NoBash {
+		if !cfg.NoShell {
 			t.Error("--no-bash not mapped")
 		}
 		if cfg.Posture != app.PostureAuto {
@@ -451,4 +451,16 @@ func TestAppConfigMapping(t *testing.T) {
 			t.Error("a present OPENAI_API_KEY should flip UseOpenAI on (mecated parity)")
 		}
 	})
+}
+
+func TestCanonicalShellTool_Scenario2_LegacyNoBashFlag(t *testing.T) {
+	for _, name := range []string{"--no-shell", "--no-bash"} {
+		f, err := parseFlags([]string{"--prompt", "x", name})
+		if err != nil {
+			t.Fatalf("parseFlags(%s): %v", name, err)
+		}
+		if !f.noShell {
+			t.Fatalf("%s did not disable Shell", name)
+		}
+	}
 }

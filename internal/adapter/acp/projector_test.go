@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stacklok/mecatl/engine/session"
 )
@@ -201,10 +202,10 @@ func TestProjectUpdateEditMalformedArgsFallsBack(t *testing.T) {
 
 // TestProjectUpdateNonEditNoDiff asserts a read/execute tool call carries no diff.
 func TestProjectUpdateNonEditNoDiff(t *testing.T) {
-	call := session.NewToolCall("c", "Bash", json.RawMessage(`{"cmd":"ls"}`))
+	call := session.NewToolCall("c", "Shell", json.RawMessage(`{"cmd":"ls"}`))
 	got, _ := projectUpdate(session.Event{Type: session.EvToolCall, ToolCall: &call})
 	if u := got.(toolCallUpdate); u.Content != nil {
-		t.Errorf("Bash call should have no diff content, got %+v", u.Content)
+		t.Errorf("Shell call should have no diff content, got %+v", u.Content)
 	}
 }
 
@@ -215,7 +216,7 @@ func TestProjectHook(t *testing.T) {
 	ev := session.Event{
 		Type: session.EvHook,
 		Text: "blocked by PreToolUse hook",
-		Hook: &session.HookPayload{Phase: "PreToolUse", Tool: "Bash", Decision: session.HookBlocked},
+		Hook: &session.HookPayload{Phase: "PreToolUse", Tool: "Shell", Decision: session.HookBlocked},
 	}
 	got, ok := projectUpdate(ev)
 	if !ok {
@@ -238,10 +239,10 @@ func TestProjectHook(t *testing.T) {
 func TestProjectHookNoText(t *testing.T) {
 	got, _ := projectUpdate(session.Event{
 		Type: session.EvHook,
-		Hook: &session.HookPayload{Phase: "PreToolUse", Tool: "Bash", Decision: session.HookBlocked},
+		Hook: &session.HookPayload{Phase: "PreToolUse", Tool: "Shell", Decision: session.HookBlocked},
 	})
 	cu := got.(chunkUpdate)
-	if cu.Content.Text != "PreToolUse Bash: blocked" {
+	if cu.Content.Text != "PreToolUse Shell: blocked" {
 		t.Errorf("summary = %q", cu.Content.Text)
 	}
 }
@@ -253,7 +254,7 @@ func TestProjectHookBlockedWithCallID(t *testing.T) {
 	ev := session.Event{
 		Type: session.EvHook,
 		Text: "blocked by PreToolUse hook",
-		Hook: &session.HookPayload{Phase: "PreToolUse", Tool: "Bash", Decision: session.HookBlocked, CallID: "call-7"},
+		Hook: &session.HookPayload{Phase: "PreToolUse", Tool: "Shell", Decision: session.HookBlocked, CallID: "call-7"},
 	}
 	got, ok := projectUpdate(ev)
 	if !ok {
@@ -283,8 +284,8 @@ func TestProjectHookBlockedWithCallID(t *testing.T) {
 func TestProjectHookModifiedWithCallID(t *testing.T) {
 	ev := session.Event{
 		Type: session.EvHook,
-		Text: "PreToolUse hook rewrote tool arguments for Bash",
-		Hook: &session.HookPayload{Phase: "PreToolUse", Tool: "Bash", Decision: session.HookModified, CallID: "call-7"},
+		Text: "PreToolUse hook rewrote tool arguments for Shell",
+		Hook: &session.HookPayload{Phase: "PreToolUse", Tool: "Shell", Decision: session.HookModified, CallID: "call-7"},
 	}
 	got, ok := projectUpdate(ev)
 	if !ok {
@@ -329,7 +330,7 @@ func TestProjectHookPostToolUseBlockedWithCallID(t *testing.T) {
 	ev := session.Event{
 		Type: session.EvHook,
 		Text: "PostToolUse flagged the output",
-		Hook: &session.HookPayload{Phase: "PostToolUse", Tool: "Bash", Decision: session.HookBlocked, CallID: "call-7"},
+		Hook: &session.HookPayload{Phase: "PostToolUse", Tool: "Shell", Decision: session.HookBlocked, CallID: "call-7"},
 	}
 	got, ok := projectUpdate(ev)
 	if !ok {
@@ -560,12 +561,12 @@ func TestApprovalFor(t *testing.T) {
 }
 
 func TestPermissionRequestFor(t *testing.T) {
-	ask := session.PendingAsk{AskID: "ask-1", Tool: "Bash", Args: json.RawMessage(`{"cmd":"ls"}`), Reason: "mutating"}
+	ask := session.PendingAsk{AskID: "ask-1", Tool: "Shell", Args: json.RawMessage(`{"cmd":"ls"}`), Reason: "mutating"}
 	req := permissionRequestFor("sess-1", ask)
 	if req.SessionID != "sess-1" {
 		t.Errorf("sessionId = %q", req.SessionID)
 	}
-	if req.ToolCall.ToolCallID != "ask-1" || req.ToolCall.Title != "Bash" || req.ToolCall.Kind != "execute" {
+	if req.ToolCall.ToolCallID != "ask-1" || req.ToolCall.Title != "Shell" || req.ToolCall.Kind != "execute" {
 		t.Errorf("toolCall = %+v", req.ToolCall)
 	}
 	if len(req.Options) != 4 {
@@ -592,5 +593,50 @@ func TestChunkUpdateMarshalShape(t *testing.T) {
 	content, ok := m["content"].(map[string]any)
 	if !ok || content["type"] != "text" || content["text"] != "hi" {
 		t.Errorf("content = %v", m["content"])
+	}
+}
+
+func TestProjectUpdateAuthorizationIsSafeStatusOnly(t *testing.T) {
+	pending := session.AuthorizationPayload{
+		AuthorizationID: "auth-1",
+		DisplayName:     "GitHub Enterprise",
+		Call:            "call-1",
+		ExpiresAt:       time.Unix(1, 0),
+		Status:          session.AuthorizationPending,
+	}
+	got, ok := projectUpdate(session.Event{Type: session.EvAuthorizationRequired, Authorization: &pending})
+	if !ok {
+		t.Fatal("required authorization was not projected")
+	}
+	card := got.(toolCallUpdate)
+	if card.ToolCallID != "call-1" || card.Status != toolStatusFailed || len(card.Content) != 1 {
+		t.Fatalf("required projection = %+v", card)
+	}
+	if card.Content[0].Content.Text != "MCP authorization for GitHub Enterprise is unavailable for ACP sessions" {
+		t.Fatalf("required projection text = %q", card.Content[0].Content.Text)
+	}
+	if strings.Contains(card.Content[0].Content.Text, "auth-1") {
+		t.Fatalf("required projection exposed authorization correlation: %+v", card)
+	}
+
+	resolved := pending
+	resolved.Status = session.AuthorizationGranted
+	got, ok = projectUpdate(session.Event{Type: session.EvAuthorizationResolved, Authorization: &resolved})
+	if !ok {
+		t.Fatal("resolved authorization was not projected")
+	}
+	note := got.(chunkUpdate)
+	if note.Content.Text != "MCP authorization for GitHub Enterprise status: granted" {
+		t.Fatalf("resolved projection = %+v", note)
+	}
+
+	unsafe := pending
+	unsafe.DisplayName = "GitHub\nforged"
+	got, ok = projectUpdate(session.Event{Type: session.EvAuthorizationRequired, Authorization: &unsafe})
+	if !ok {
+		t.Fatal("authorization with unsafe display text was not projected")
+	}
+	if text := got.(toolCallUpdate).Content[0].Content.Text; strings.Contains(text, "GitHub") {
+		t.Fatalf("unsafe display text was projected: %q", text)
 	}
 }

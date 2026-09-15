@@ -112,6 +112,15 @@ func TestMapError(t *testing.T) {
 		{name: "invalid request", err: &authn.Error{Code: authn.CodeInvalidRequest}, want: ErrInvalidToken, category: "invalid_token"},
 		{name: "wrong audience", err: &authn.Error{Code: authn.CodeInvalidToken, Reason: authn.ReasonAudience}, want: ErrInvalidToken, category: "wrong_audience"},
 		{name: "wrong issuer", err: &authn.Error{Code: authn.CodeInvalidToken, Reason: authn.ReasonIssuer}, want: ErrInvalidToken, category: "wrong_issuer"},
+		{name: "malformed", err: &authn.Error{Code: authn.CodeInvalidRequest, Reason: authn.ReasonMalformed}, want: ErrInvalidToken, category: "malformed"},
+		{name: "signature", err: &authn.Error{Code: authn.CodeInvalidToken, Reason: authn.ReasonSignature}, want: ErrInvalidToken, category: "signature"},
+		{name: "unknown kid", err: &authn.Error{Code: authn.CodeInvalidToken, Reason: authn.ReasonUnknownKID}, want: ErrInvalidToken, category: "unknown_kid"},
+		{name: "expired", err: &authn.Error{Code: authn.CodeInvalidToken, Reason: authn.ReasonExpired}, want: ErrInvalidToken, category: "expired"},
+		{name: "not yet valid", err: &authn.Error{Code: authn.CodeInvalidToken, Reason: authn.ReasonNotYetValid}, want: ErrInvalidToken, category: "not_yet_valid"},
+		{name: "keys unavailable", err: &authn.Error{Code: authn.CodeUnavailable, Reason: authn.ReasonKeysUnavailable}, want: ErrIdentityUnavailable, category: "jwks_unavailable"},
+		{name: "keys stale", err: &authn.Error{Code: authn.CodeUnavailable, Reason: authn.ReasonKeysStale}, want: ErrIdentityUnavailable, category: "jwks_stale"},
+		{name: "keys unavailable contradictory code", err: &authn.Error{Code: authn.CodeInvalidToken, Reason: authn.ReasonKeysUnavailable}, want: ErrIdentityUnavailable, category: "jwks_unavailable"},
+		{name: "keys stale contradictory code", err: &authn.Error{Code: authn.CodeInvalidRequest, Reason: authn.ReasonKeysStale}, want: ErrIdentityUnavailable, category: "jwks_stale"},
 		{name: "unavailable", err: &authn.Error{Code: authn.CodeUnavailable}, want: ErrIdentityUnavailable, category: "invalid_token"},
 		{name: "unknown authn code", err: &authn.Error{Code: authn.Code("future_code")}, want: ErrInvalidToken, category: "invalid_token"},
 		{name: "unknown error", err: errors.New("unknown"), want: ErrInvalidToken, category: "invalid_token"},
@@ -257,6 +266,27 @@ func (f *jwksFixture) tokenWithIssuer(t *testing.T, issuer, audience string) str
 		t.Fatalf("sign JWT: %v", err)
 	}
 	return input + "." + base64.RawURLEncoding.EncodeToString(signature)
+}
+
+func TestValidatorOptionalAudiencePreservesConfiguredAudienceBinding(t *testing.T) {
+	fixture := newJWKSFixture(t)
+
+	optional, err := NewValidator(context.Background(), Config{
+		Issuer: fixture.srv.URL, JWKSURI: fixture.srv.URL + "/keys",
+		AllowAnyAudience: true, HTTPClient: fixture.srv.Client(),
+	})
+	if err != nil {
+		t.Fatalf("NewValidator without audience: %v", err)
+	}
+	t.Cleanup(func() { _ = optional.Close() })
+	if principal, err := optional.Validate(context.Background(), fixture.token(t, "another-service")); err != nil || principal == nil {
+		t.Fatalf("optional-audience Validate = (%#v, %v), want valid principal", principal, err)
+	}
+
+	strict := fixture.validator(t)
+	if principal, err := strict.Validate(context.Background(), fixture.token(t, "another-service")); principal != nil || !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("configured-audience Validate = (%#v, %v), want nil ErrInvalidToken", principal, err)
+	}
 }
 
 // TestCallerIdentityE2E_Scenario2_WrongAudienceRejected pins that a valid

@@ -68,8 +68,12 @@ func (m *memoryKeyring) value(account string) (string, bool) {
 
 func TestExistingOnlyRegistryDoesNotCreateState(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "missing")
-	if _, err := OpenExistingRegistry(root); err != nil {
+	missing, err := OpenExistingRegistry(root)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := missing.FindTarget("unix:///run/user/1000/mecated.sock"); !errors.Is(err, credentialstore.ErrNotFound) {
+		t.Fatalf("FindTarget on a clean missing registry = %v, want ErrNotFound", err)
 	}
 	if _, err := os.Stat(root); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing registry root was created: %v", err)
@@ -1434,6 +1438,19 @@ func TestRegistryPrecommitFailureCleansUniqueTemporary(t *testing.T) {
 	for _, entry := range entries {
 		if strings.HasPrefix(entry.Name(), ".clientauth-connections-") && strings.HasSuffix(entry.Name(), ".tmp") {
 			t.Fatalf("temporary registry file survived failure: %s", entry.Name())
+		}
+	}
+}
+
+func TestConnectionIssuerAddressPolicyJSON(t *testing.T) {
+	legacy := `{"identity":{}}`
+	var conn Connection
+	if err := json.Unmarshal([]byte(legacy), &conn); err != nil || conn.IssuerAddressPolicy != IssuerAddressPolicyPrivate {
+		t.Fatalf("legacy policy = %q, %v; want private, nil", conn.IssuerAddressPolicy, err)
+	}
+	for _, raw := range []string{`{"issuer_address_policy":""}`, `{"issuer_address_policy":null}`, `{"issuer_address_policy":"unknown"}`} {
+		if err := json.Unmarshal([]byte(raw), &conn); err == nil {
+			t.Fatalf("policy %s unexpectedly accepted", raw)
 		}
 	}
 }

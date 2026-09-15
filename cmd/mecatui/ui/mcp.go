@@ -18,13 +18,31 @@ func (m Model) runMCPPrompts() (tea.Model, tea.Cmd)   { return m.openMCP(mcpProm
 
 // openMCP opens the selected MCP surface and starts its initial RPC.
 func (m Model) openMCP(v mcpView) (tea.Model, tea.Cmd) {
-	if m.phase != phaseIdle || m.deps.MCP == nil {
+	if m.phase != phaseIdle || m.deps.MCP == nil || (v != mcpPanel && !m.caps.MCP) {
 		return m, nil
 	}
 	m.prompt.Blur() // modal owns the keyboard while open
-	m.modal = &mcpState{view: v, loading: true, deps: (&m).surfaceDeps(), mcp: m.deps.MCP}
+	m.mcpRequestToken++
+	state := &mcpState{view: v, loading: true, deps: (&m).surfaceDeps(), mcp: m.deps.MCP, sessionID: m.sessionID, requestToken: m.mcpRequestToken}
+	if v == mcpPanel {
+		state.setup = m.brokerMCPSetupState()
+	}
+	if reader, ok := m.deps.MCP.(client.MCPConnectorReader); ok {
+		state.broker = reader
+		state.brokerMode = m.caps.MCPConnectorStatus
+	}
+	m.modal = state
 	switch v {
 	case mcpPanel:
+		if m.caps.MCPConnectorStatus {
+			if state.broker == nil {
+				m.closeModal()
+				_ = m.prompt.Focus()
+				return m, nil
+			}
+			state.brokerGeneration++
+			return m, client.ListMCPConnectorsCmd(m.deps.Ctx, state.broker, state.sessionID, state.requestToken, state.brokerGeneration)
+		}
 		// Fetch the inventory and the ToolHive groups in parallel; groups are
 		// best-effort (rendered alongside the sources, degraded on failure).
 		return m, tea.Batch(
@@ -68,6 +86,16 @@ type mcpState struct {
 	groupsErr  bool     // the groups fetch failed — degrade quietly, panel still works
 	groupsDone bool     // a groups result (success or error) has arrived
 
+	// Broker-only panel state. It is intentionally separate from direct MCP sources:
+	// broker capability must never trigger direct source/resource/prompt/group RPCs.
+	broker           client.MCPConnectorReader
+	sessionID        string
+	requestToken     uint64
+	brokerGeneration uint64
+	inventory        client.MCPConnectorInventory
+	brokerMode       bool
+	setup            brokerMCPSetupState
+
 	// Panel live-refresh indicator. refreshing is set while a manual re-probe is
 	// in flight (distinct from the initial loading so already-shown sources stay
 	// on screen); refreshed becomes true once a re-probe result has landed, so the
@@ -91,6 +119,46 @@ type mcpState struct {
 
 	deps surfaceDeps // the shared ambient base (incl. ctx), set once at Open
 	mcp  client.MCP  // the surface-specific RPC client, set once at Open
+
+}
+
+// mcpActive returns the open MCP modal state, if any.
+func mcpActive(m Model) *mcpState {
+	state, _ := m.modal.(*mcpState)
+	return state
+}
+
+// brokerMCPSetupState projects the existing controller after Model validation.
+// A stable owner-authorized idle session may explicitly refresh regardless of
+// inventory/catalogue state; those facts never prove live connectivity.
+type brokerMCPSetupState struct {
+	eligible bool
+	pending  bool
+	busy     bool
+	gen      uint64
+	status   client.WorkspaceEnrollmentStatus
+}
+
+func (m Model) brokerMCPSetupState() brokerMCPSetupState {
+	return brokerMCPSetupState{
+		eligible: m.workspaceEnrollmentActive() && m.deps.WorkspaceEnrollment != nil && m.sessionID != "" &&
+			m.phase == phaseIdle && m.sessionState == sessionStateIdle,
+		pending: m.enrollment.ID != "" && m.enrollment.Status == client.WorkspaceEnrollmentPending,
+		busy:    m.enrollment.busy,
+		gen:     m.enrollment.controlGen,
+		status:  m.enrollment.Status,
+	}
+}
+
+func (s *mcpState) canConnect() bool {
+	return s.brokerMode && !s.loading && !s.refreshing && s.setup.eligible &&
+		!s.setup.pending && !s.setup.busy
+}
+
+func (m Model) syncMCPSetup() {
+	if st := mcpActive(m); st != nil {
+		st.setup = m.brokerMCPSetupState()
+	}
 }
 
 // argField is one required-argument input in the prompt-args sub-state.
@@ -100,19 +168,19 @@ type argField struct {
 }
 
 // Render returns the MCP surface body; the parent centers it.
-func (s *mcpState) Render(_, _ int) (string, []ClickableRegion) {
+func (s *mcpState) Render(width, _ int) (string, []ClickableRegion) {
 	th := s.deps.theme
 	caps := s.deps.caps
 	hk := s.deps.marks
 	switch s.view {
 	case mcpPanel:
-		return renderMCPPanel(th, *s, caps, hk), nil
+		return renderMCPPanel(th, *s, caps, hk, width), nil
 	case mcpResources:
-		return renderResourceList(th, *s, caps, hk), nil
+		return renderResourceList(th, *s, caps, hk, width), nil
 	case mcpResourcePrev:
-		return renderResourcePreview(th, *s, hk), nil
+		return renderResourcePreview(th, *s, hk, width), nil
 	case mcpPrompts:
-		return renderPromptList(th, *s, caps, hk), nil
+		return renderPromptList(th, *s, caps, hk, width), nil
 	case mcpPromptArgs:
 		return renderPromptArgs(th, *s, hk), nil
 	default:
@@ -141,7 +209,7 @@ func (s *mcpState) HandleKey(msg tea.KeyPressMsg) (cmd tea.Cmd, handled bool, cl
 
 // handlePanelKey drives the read-only inventory panel: esc closes it, r
 // re-probes LIVE source status. r is a bare key safe here because the open
-// surface intercepts keys before the global ctrl+o/ctrl+r/ctrl+p open bindings
+// surface intercepts keys before the global ctrl+o/ctrl+r/f8 open bindings
 // (see keyMap.Refresh).
 func (s *mcpState) handlePanelKey(msg tea.KeyPressMsg) (cmd tea.Cmd, handled bool, closed bool) {
 	switch {
@@ -149,6 +217,12 @@ func (s *mcpState) handlePanelKey(msg tea.KeyPressMsg) (cmd tea.Cmd, handled boo
 		return nil, true, true
 	case key.Matches(msg, s.deps.keys.Refresh):
 		return s.refreshPanel(), true, false
+	case msg.String() == "c" && s.canConnect():
+		msg := mcpWorkspaceEnrollmentActionMsg{action: connectAction, source: s, sessionID: s.sessionID, gen: s.setup.gen}
+		return func() tea.Msg { return msg }, true, false
+	case msg.String() == "x" && s.brokerMode && s.setup.pending && !s.setup.busy:
+		msg := mcpWorkspaceEnrollmentActionMsg{action: "cancel", source: s, sessionID: s.sessionID, gen: s.setup.gen}
+		return func() tea.Msg { return msg }, true, false
 	}
 	return nil, true, false
 }
@@ -164,6 +238,10 @@ func (s *mcpState) refreshPanel() tea.Cmd {
 	}
 	s.refreshing = true
 	s.errMsg = ""
+	if s.brokerMode && s.broker != nil {
+		s.brokerGeneration++
+		return client.ListMCPConnectorsCmd(s.deps.ctx, s.broker, s.sessionID, s.requestToken, s.brokerGeneration)
+	}
 	s.groupsDone = false
 	s.groupsErr = false
 	return tea.Batch(
@@ -222,6 +300,14 @@ func (s *mcpState) handleResourceKey(msg tea.KeyPressMsg) (cmd tea.Cmd, handled 
 // prompt input after the surface closes (the preview lives on the surface, so it
 // is snapshotted into the marker at key time).
 type mcpInsertResourceMsg struct{ preview string }
+
+// mcpWorkspaceEnrollmentActionMsg asks the Model to use its existing
+// whole-bundle enrollment controls from the broker inventory.
+type mcpWorkspaceEnrollmentActionMsg struct {
+	action, sessionID string
+	source            *mcpState
+	gen               uint64
+}
 
 // handlePromptListKey handles the prompt list: navigate, then enter selects. If
 // the selected prompt has required args, it transitions to arg entry; otherwise
@@ -361,6 +447,24 @@ func (*mcpState) HandleWheel(tea.MouseWheelMsg) (cmd tea.Cmd, handled bool) {
 //nolint:gocyclo // multiple MCP message types share one reducer
 func (s *mcpState) HandleMsg(msg tea.Msg) (cmd tea.Cmd, handled bool, closed bool) {
 	switch msg := msg.(type) {
+	case client.MCPConnectorStatusMsg:
+		if !s.brokerMode || msg.RequestToken != s.requestToken || msg.SessionID != s.sessionID || msg.Generation != s.brokerGeneration {
+			return nil, true, false
+		}
+		s.loading = false
+		s.refreshing = false
+		s.refreshed = true
+		s.inventory = msg.Inventory
+		return nil, true, false
+	case client.MCPConnectorErrMsg:
+		if !s.brokerMode || msg.RequestToken != s.requestToken || msg.SessionID != s.sessionID || msg.Generation != s.brokerGeneration {
+			return nil, true, false
+		}
+		s.loading = false
+		s.refreshing = false
+		s.errCls = msg.Class
+		s.errMsg = "list broker catalogue: " + msg.Err.Error()
+		return nil, true, false
 	case client.MCPSourcesMsg:
 		s.loading = false
 		if s.refreshing {
@@ -404,6 +508,10 @@ func (s *mcpState) HandleMsg(msg tea.Msg) (cmd tea.Cmd, handled bool, closed boo
 		// handled=false falls through to the Model's updateMCPMsg insertion arm;
 		// closed=true records the surface is done with it.
 		return nil, false, true
+	case workspaceEnrollmentMsg:
+		return nil, false, false
+	case mcpWorkspaceEnrollmentActionMsg:
+		return nil, false, false
 	case client.MCPErrMsg:
 		// A failed ToolHive-groups fetch is best-effort: degrade quietly so the
 		// inventory panel still renders. The shared error seam is reserved for the
@@ -427,6 +535,9 @@ func (*mcpState) Close() {}
 
 // updateMCPMsg handles insertion messages that require Model-owned textarea mutation.
 func (m Model) updateMCPMsg(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
+	if model, cmd, handled := m.updateMCPAuthorizationMsg(msg); handled {
+		return model, cmd, true
+	}
 	switch msg := msg.(type) {
 	case client.MCPPromptGotMsg:
 		mm, cmd := m.insertIntoInput(joinPromptMessages(msg.Messages), "loaded prompt "+msg.Name)
@@ -434,6 +545,31 @@ func (m Model) updateMCPMsg(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 	case mcpInsertResourceMsg:
 		mm, cmd := m.insertIntoInput(msg.preview, "loaded resource")
 		return mm, cmd, true
+	case mcpWorkspaceEnrollmentActionMsg:
+		state := mcpActive(m)
+		if state == nil || state != msg.source || msg.sessionID != m.sessionID || msg.gen != m.enrollment.controlGen {
+			return m, nil, true
+		}
+		m.syncMCPSetup()
+		if m.enrollment.busy || (msg.action == connectAction && !state.canConnect()) ||
+			(msg.action == "cancel" && !state.setup.pending) {
+			return m, nil, true
+		}
+		var mm tea.Model
+		var cmd tea.Cmd
+		switch msg.action {
+		case connectAction:
+			mm, cmd = m.runToolsConnect()
+		case "cancel":
+			mm, cmd = m.runToolsCancel()
+		default:
+			return m, nil, true
+		}
+		model := mm.(Model)
+		if state, ok := model.modal.(*mcpState); ok {
+			state.setup = model.brokerMCPSetupState()
+		}
+		return model, cmd, true
 	default:
 		return m, nil, false
 	}
@@ -515,10 +651,24 @@ func renderMCPListHeader(th theme.Theme, st mcpState, caps client.Capabilities, 
 	return b.String()
 }
 
+// renderMCPInventoryRow wraps raw inventory text before styling it. An omitted
+// width preserves the existing direct-render callers while the modal surface
+// passes its parent-derived content width.
+func renderMCPInventoryRow(style theme.Theme, styleName, text string, width int) string {
+	return renderToolCardText(style.Style(styleName), text, width)
+}
+
 // renderMCPPanel renders the read-only inventory: sources → servers → diagnostics.
 // It also carries the startup-snapshot caveat in its footer copy.
-func renderMCPPanel(th theme.Theme, st mcpState, caps client.Capabilities, hk helpKeys) string {
+func renderMCPPanel(th theme.Theme, st mcpState, caps client.Capabilities, hk helpKeys, widths ...int) string {
+	width := 0
+	if len(widths) > 0 {
+		width = widths[0]
+	}
 	var b strings.Builder
+	if st.brokerMode {
+		return renderBrokerMCPPanel(th, st, hk, width)
+	}
 	empty := !st.loading && len(st.sources) == 0 && st.errMsg == ""
 	b.WriteString(renderMCPListHeader(th, st, caps, "MCP inventory", empty, "No MCP sources configured on this server."))
 	for _, s := range st.sources {
@@ -531,19 +681,106 @@ func renderMCPPanel(th theme.Theme, st mcpState, caps client.Capabilities, hk he
 		if s.Group != "" {
 			head += "  group=" + sanitizeTerminal(s.Group)
 		}
-		b.WriteString(th.Style("toolName").Render(head) + "\n")
+		b.WriteString(renderMCPInventoryRow(th, "toolName", head, width) + "\n")
 		for _, srv := range s.Servers {
 			line := fmt.Sprintf("  • %s  %s  %s",
 				sanitizeTerminal(srv.Name), sanitizeTerminal(srv.Transport), sanitizeTerminal(srv.URL))
-			b.WriteString(th.Style("toolArgs").Render(line) + "\n")
+			b.WriteString(renderMCPInventoryRow(th, "toolArgs", line, width) + "\n")
 		}
 		for _, d := range s.Diagnostics {
-			b.WriteString(th.Style("errorText").Render("  ! "+sanitizeTerminal(d)) + "\n")
+			b.WriteString(renderMCPInventoryRow(th, "errorText", "  ! "+sanitizeTerminal(d), width) + "\n")
 		}
 	}
-	b.WriteString(renderGroupsLine(th, st))
+	b.WriteString(renderGroupsLine(th, st, width))
 	b.WriteString("\n" + th.Style("muted").Render(mcpPanelFooter(st, hk)))
 	return b.String()
+}
+
+// renderBrokerMCPPanel renders the broker inventory without projecting machine
+// status tokens or making connection, authorization, or readiness claims.
+func renderBrokerMCPPanel(th theme.Theme, st mcpState, hk helpKeys, width int) string {
+	var b strings.Builder
+	b.WriteString(th.Style("askTitle").Render("MCP inventory") + "\n")
+	if line := mcpStatusLine(th, st); line != "" {
+		b.WriteString(line + "\n")
+	}
+	if !st.loading && st.inventory.Availability != "available" {
+		state := "Status unavailable"
+		if st.inventory.Availability == unavailableText {
+			state = "Broker state unavailable"
+		}
+		b.WriteString(th.Style("muted").Render(state) + "\n")
+	} else if !st.loading {
+		label := brokerEnrollmentLabel(st.inventory.EnrollmentState)
+		switch {
+		case st.setup.pending:
+			label = "Setup in progress"
+		case st.setup.status == client.WorkspaceEnrollmentConnected:
+			label = "Catalogue ready"
+		case st.setup.status == client.WorkspaceEnrollmentCancelled:
+			label = "No active setup"
+		}
+		b.WriteString(renderMCPInventoryRow(th, "toolArgs", "Enrollment: "+label, width) + "\n")
+		for _, row := range st.inventory.Connectors {
+			catalogue := brokerCatalogueLabel(row.CatalogueState)
+			count := fmt.Sprintf("%d", row.ToolCount)
+			if row.CatalogueState != "declared" && row.CatalogueState != "discovered" {
+				count = "—"
+			}
+			b.WriteString(renderMCPInventoryRow(th, "toolName", fmt.Sprintf("%s  %s", sanitizeTerminal(row.Name), catalogue), width) + "\n")
+			b.WriteString(renderMCPInventoryRow(th, "toolArgs", "  "+count+" tools", width) + "\n")
+		}
+		if st.inventory.Truncated {
+			b.WriteString(th.Style("muted").Render("Connector list truncated.") + "\n")
+		}
+	}
+	b.WriteString("\n" + th.Style("muted").Render("Catalogue status · not a live connection check") + "\n")
+	if setup := brokerMCPSetupLine(st); setup != "" {
+		b.WriteString(th.Style("muted").Render(setup) + "\n")
+	}
+	b.WriteString("\n" + th.Style("muted").Render(hk.refresh+" refresh local state · "+hk.closeOnly+" close"))
+	return b.String()
+}
+
+func brokerMCPSetupLine(st mcpState) string {
+	switch {
+	case st.setup.busy:
+		return ""
+	case st.setup.pending:
+		return "x cancel setup"
+	case st.canConnect():
+		return "c connect tools"
+	default:
+		return ""
+	}
+}
+
+func brokerEnrollmentLabel(state string) string {
+	switch state {
+	case "not_required":
+		return "No setup required"
+	case "not_started":
+		return "No active setup"
+	case "pending":
+		return "Setup in progress"
+	case "completed":
+		return "Catalogue ready"
+	default:
+		return "Status unavailable"
+	}
+}
+
+func brokerCatalogueLabel(state string) string {
+	switch state {
+	case "hidden":
+		return "Awaiting discovery"
+	case "declared":
+		return "Tools declared"
+	case "discovered":
+		return "Tools discovered"
+	default:
+		return "Status unavailable"
+	}
 }
 
 // mcpPanelFooter is the panel's footer hint. Before any manual refresh it carries
@@ -566,7 +803,11 @@ func mcpPanelFooter(st mcpState, hk helpKeys) string {
 
 // renderGroupsLine renders the best-effort ToolHive-groups line for the panel. It
 // degrades quietly on a fetch error (a muted note) and handles the empty case.
-func renderGroupsLine(th theme.Theme, st mcpState) string {
+func renderGroupsLine(th theme.Theme, st mcpState, widths ...int) string {
+	width := 0
+	if len(widths) > 0 {
+		width = widths[0]
+	}
 	if !st.groupsDone {
 		return ""
 	}
@@ -580,11 +821,15 @@ func renderGroupsLine(th theme.Theme, st mcpState) string {
 	for i, g := range st.groups {
 		clean[i] = sanitizeTerminal(g)
 	}
-	return "\n" + th.Style("toolName").Render("ToolHive groups: "+strings.Join(clean, ", ")) + "\n"
+	return "\n" + renderMCPInventoryRow(th, "toolName", "ToolHive groups: "+strings.Join(clean, ", "), width) + "\n"
 }
 
 // renderResourceList renders the scrollable resource picker.
-func renderResourceList(th theme.Theme, st mcpState, caps client.Capabilities, hk helpKeys) string {
+func renderResourceList(th theme.Theme, st mcpState, caps client.Capabilities, hk helpKeys, widths ...int) string {
+	width := 0
+	if len(widths) > 0 {
+		width = widths[0]
+	}
 	var b strings.Builder
 	empty := !st.loading && len(st.resources) == 0 && st.errMsg == ""
 	b.WriteString(renderMCPListHeader(th, st, caps, "MCP resources", empty, "No resources advertised by the connected MCP servers."))
@@ -594,26 +839,37 @@ func renderResourceList(th theme.Theme, st mcpState, caps client.Capabilities, h
 			label = r.URI
 		}
 		line := fmt.Sprintf("%s  %s", sanitizeTerminal(label), sanitizeTerminal(r.Server))
-		b.WriteString(renderRow(th, line, i == st.resCursor) + "\n")
+		b.WriteString(renderRow(th, line, i == st.resCursor, width) + "\n")
 	}
 	b.WriteString("\n" + th.Style("muted").Render(hk.navUp+"/"+hk.navDown+" move · "+hk.choose+" read · "+hk.closeOnly+" close"))
 	return b.String()
 }
 
-// renderResourcePreview renders a read resource's text in a preview pane.
+// renderResourcePreview renders a read resource's text in a preview pane. width
+// is the parent card body's effective width; the truncated source is wrapped
+// before the style can pad it.
 // hk carries the LIVE keyMap markings (issue #457): the ExpandTools chord for the
 // collapse marker when the preview exceeds the line cap, and the Choose/Close
 // chords for the insert/back footer.
-func renderResourcePreview(th theme.Theme, st mcpState, hk helpKeys) string {
+func renderResourcePreview(th theme.Theme, st mcpState, hk helpKeys, widths ...int) string {
+	width := 0
+	if len(widths) > 0 {
+		width = widths[0]
+	}
 	var b strings.Builder
 	b.WriteString(th.Style("askTitle").Render("resource preview") + "\n\n")
-	b.WriteString(th.Style("toolArgs").Render(truncateLinesTailMark(st.preview, maxToolResultLines, "", hk.expandTools)) + "\n")
+	preview := truncateLinesTailMark(st.preview, maxToolResultLines, "", hk.expandTools)
+	b.WriteString(renderToolCardText(th.Style("toolArgs"), preview, width) + "\n")
 	b.WriteString("\n" + th.Style("muted").Render(hk.choose+" insert into prompt · "+focusBackHint(hk)))
 	return b.String()
 }
 
 // renderPromptList renders the scrollable prompt picker.
-func renderPromptList(th theme.Theme, st mcpState, caps client.Capabilities, hk helpKeys) string {
+func renderPromptList(th theme.Theme, st mcpState, caps client.Capabilities, hk helpKeys, widths ...int) string {
+	width := 0
+	if len(widths) > 0 {
+		width = widths[0]
+	}
 	var b strings.Builder
 	empty := !st.loading && len(st.prompts) == 0 && st.errMsg == ""
 	b.WriteString(renderMCPListHeader(th, st, caps, "MCP prompts", empty, "No prompts advertised by the connected MCP servers."))
@@ -623,7 +879,7 @@ func renderPromptList(th theme.Theme, st mcpState, caps client.Capabilities, hk 
 			marker = "  (args)"
 		}
 		line := fmt.Sprintf("%s  %s%s", sanitizeTerminal(p.Name), sanitizeTerminal(p.Server), marker)
-		b.WriteString(renderRow(th, line, i == st.prCursor) + "\n")
+		b.WriteString(renderRow(th, line, i == st.prCursor, width) + "\n")
 	}
 	b.WriteString("\n" + th.Style("muted").Render(hk.navUp+"/"+hk.navDown+" move · "+hk.choose+" select · "+hk.closeOnly+" close"))
 	return b.String()
@@ -654,11 +910,19 @@ func renderPromptArgs(th theme.Theme, st mcpState, hk helpKeys) string {
 }
 
 // renderRow renders one selectable list row, highlighting the cursor row.
-func renderRow(th theme.Theme, text string, selected bool) string {
-	if selected {
-		return th.Style("askButtonActive").Render("› " + text)
+func renderRow(th theme.Theme, text string, selected bool, widths ...int) string {
+	width := 0
+	if len(widths) > 0 {
+		width = widths[0]
 	}
-	return th.Style("toolArgs").Render("  " + text)
+	prefix, style := "  ", th.Style("toolArgs")
+	if selected {
+		prefix, style = "› ", th.Style("askButtonActive")
+	}
+	if width > 0 {
+		width -= style.GetHorizontalFrameSize()
+	}
+	return renderToolCardText(style, prefix+text, width)
 }
 
 // mcpStatusLine renders the overlay's loading/error status: a classified error

@@ -1,4 +1,4 @@
- mecatui  ·  session #b9ba2286  ·  mock-model  ·  mode default  ·  127.0.0.1:8080
+ mecatui  ·  session sess-test-00  ·  mock-model  ·  mode default  ·  127.0.0.1:8080
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 
 
@@ -56,7 +56,7 @@
               ┃                                                                     ┃
               ┃    ?                     keys & features                            ┃
               ┃    /                     slash commands                             ┃
-              ┃    ctrl+a                agents (when running)                      ┃
+              ┃    f6                    agents (when running)                      ┃
               ┃    ctrl+t                details                                    ┃
               ┃                                                                     ┃
               ┃    Cross-session memory is on — I'll remember context across runs.  ┃
@@ -77,4 +77,4 @@
 │
 ────────────────────────────────────────────────────────────────────────────────────────────────────
  connected                                                                   ctx 0 · ↑0 ↓0 cache 0%
-? help · / commands · ctrl+g select all · ctrl+shift+c copy · ctrl+u clear · ctrl+c quit
+? help · / commands · ctrl+g select all · ctrl+y copy · ctrl+u clear · ctrl+c quit

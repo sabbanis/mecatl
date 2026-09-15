@@ -10,7 +10,7 @@ import "context"
 //
 // It replaces the former WorkspaceForker (issue #462). The forker now returns a
 // COMPLETE child Environment — Workspace AND a command runner bound to the
-// child namespace — so a forked child's Bash observes the SAME child namespace
+// child namespace — so a forked child's Shell observes the SAME child namespace
 // its Read/Write do, never the parent's. The runner is bound by the forker
 // (the forker owns the git-worktree / force-copy isolation), so the per-call
 // workdir the old seam threaded is gone.
@@ -25,7 +25,9 @@ import "context"
 // or an overlay; the agent never knows (or cares) which. The contract is only:
 //
 //   - the returned child is a fully usable Environment rooted at an isolated
-//     namespace (Workspace + bound runner);
+//     namespace (Workspace + bound runner) with a fresh child-session read
+//     ledger; it never inherits or writes the base Environment's selected
+//     ledger, including when the base selected durable storage;
 //   - writes through the child do NOT affect the base tree;
 //   - cleanup tears the child down (removes the worktree/copy) and is safe to
 //     call exactly once after the child is no longer in use.

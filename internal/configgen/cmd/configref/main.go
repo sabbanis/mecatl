@@ -2,12 +2,12 @@
 // committed configuration artifacts from the permconfig YAML schema:
 //
 //   - the commented settings.yaml skeleton (--skeleton), embedded by `config init`, and
-//   - the Markdown configuration reference (--reference), linked from usage.md.
+//   - the rendered Markdown configuration reference (--reference).
 //
 // It is the ONLY place go/ast is used to harvest the schema's field doc-comments;
 // the shipped mecated binary never imports go/ast (it embeds the skeleton this
 // program writes). Invoked by `task docs:configref`; a CI step regenerates to a temp
-// dir and diffs against the committed files, failing on drift (the llms.txt pattern).
+// dir and diffs against the committed files, failing on drift.
 //
 // The model is built by configgen.BuildModel (reflection only); this program only
 // adds the go/ast doc-comment harvest. So the skeleton, the reference, AND the

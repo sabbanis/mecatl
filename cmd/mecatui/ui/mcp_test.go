@@ -35,23 +35,9 @@ func newMCPModel(t *testing.T, th theme.Theme, mcp client.MCP) Model {
 	})
 	m = applyAll(m,
 		tea.WindowSizeMsg{Width: 100, Height: 30},
-		client.SessionReadyMsg{SessionID: "sess-test-0001"},
+		client.SessionReadyMsg{SessionID: "sess-test-0001", Capabilities: client.Capabilities{MCP: true}},
 	)
 	return m
-}
-
-// mcpActive returns the open MCP modal's state (or nil) off the Model, so a test
-// can read the migrated surface state without holding an mcpState field. It
-// asserts the modal IS a *mcpState, which pins the open path too.
-func mcpActive(m Model) *mcpState {
-	if m.modal == nil {
-		return nil
-	}
-	s, ok := m.modal.(*mcpState)
-	if !ok {
-		return nil
-	}
-	return s
 }
 
 // runCmd executes a tea.Cmd to completion and returns its msg (nil-safe). MCP
@@ -243,7 +229,7 @@ func TestMCPEscClosesSurface(t *testing.T) {
 // Model-side updateMCPMsg remnant loads the rendered prompt into the input.
 func TestMCPPromptGotClosesAndInserts(t *testing.T) {
 	m := newMCPModel(t, aztec(), samplePromptMCP())
-	m = openOverlay(t, m, ctrlKey('p'))
+	m = openOverlay(t, m, tea.KeyPressMsg{Code: tea.KeyF8})
 	st := mcpActive(m)
 	if st == nil {
 		t.Fatal("prompt surface should be open")
@@ -281,7 +267,7 @@ func TestMCPListsRenderEnabledEmptyStates(t *testing.T) {
 	}{
 		{"inventory", ctrlKey('o'), "No MCP sources configured on this server."},
 		{"resources", ctrlKey('r'), "No resources advertised by the connected MCP servers."},
-		{"prompts", ctrlKey('p'), "No prompts advertised by the connected MCP servers."},
+		{"prompts", tea.KeyPressMsg{Code: tea.KeyF8}, "No prompts advertised by the connected MCP servers."},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -569,7 +555,7 @@ func TestMCPResourcePreviewCollapse(t *testing.T) {
 
 func TestMCPPromptListGolden(t *testing.T) {
 	m := newMCPModel(t, aztec(), samplePromptMCP())
-	m = openOverlay(t, m, ctrlKey('p'))
+	m = openOverlay(t, m, tea.KeyPressMsg{Code: tea.KeyF8})
 	st := mcpActive(m)
 	if st == nil || st.view != mcpPrompts || len(st.prompts) != 2 {
 		t.Fatalf("prompts not loaded: %#v", st)
@@ -580,7 +566,7 @@ func TestMCPPromptListGolden(t *testing.T) {
 
 func TestMCPPromptArgsGolden(t *testing.T) {
 	m := newMCPModel(t, aztec(), samplePromptMCP())
-	m = openOverlay(t, m, ctrlKey('p'))
+	m = openOverlay(t, m, tea.KeyPressMsg{Code: tea.KeyF8})
 	// First prompt has a required arg → enter enters the arg-entry sub-state.
 	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = mm.(Model)
@@ -592,12 +578,46 @@ func TestMCPPromptArgsGolden(t *testing.T) {
 	compareGolden(t, "mcp_prompt_args.golden", got)
 }
 
+// TestMCPPromptArgsOwnsShiftTab ensures the mode-switch default does not escape
+// an active MCP argument form, where Shift+Tab remains form navigation.
+func TestMCPPromptArgsOwnsShiftTab(t *testing.T) {
+	mcp := &fakeMCP{prompts: []client.MCPPrompt{{
+		Server: "review", Name: "code-review", Description: "review a file",
+		Arguments: []client.MCPPromptArgument{
+			{Name: "path", Required: true},
+			{Name: "focus", Required: true},
+		},
+	}}}
+	m := newMCPModel(t, aztec(), mcp)
+	m = openOverlay(t, m, tea.KeyPressMsg{Code: tea.KeyF8})
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = mm.(Model)
+	st := mcpActive(m)
+	if st == nil || st.view != mcpPromptArgs || len(st.argFields) != 2 {
+		t.Fatalf("two-field arg entry not entered: %#v", st)
+	}
+	st.focusArg(1)
+
+	mm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+	m = mm.(Model)
+	if cmd != nil {
+		t.Fatal("shift+tab in MCP prompt arguments should not issue SetMode")
+	}
+	if m.activeMode != "default" || m.pendingMode != "" {
+		t.Fatalf("active/pending mode = %q/%q, want default/empty", m.activeMode, m.pendingMode)
+	}
+	st = mcpActive(m)
+	if st == nil || st.view != mcpPromptArgs || st.argCursor != 0 {
+		t.Fatalf("shift+tab should move focus to the first MCP argument, got %#v", st)
+	}
+}
+
 // TestMCPPromptSendIntoInput asserts that getting a prompt drops the rendered
 // text into the prompt input and closes the surface, so the existing Converse
 // flow sends it on enter.
 func TestMCPPromptSendIntoInput(t *testing.T) {
 	m := newMCPModel(t, aztec(), samplePromptMCP())
-	m = openOverlay(t, m, ctrlKey('p'))
+	m = openOverlay(t, m, tea.KeyPressMsg{Code: tea.KeyF8})
 	// Move to the no-arg prompt and select it → GetMcpPrompt → input buffer.
 	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	m = mm.(Model)
@@ -629,7 +649,7 @@ func TestFeedMCPInsertionRunsBusinessMessageWithoutBlink(t *testing.T) {
 // submitting fires GetMcpPrompt with the entered value, landing in the input.
 func TestMCPArgsSubmitCollectsValues(t *testing.T) {
 	m := newMCPModel(t, aztec(), samplePromptMCP())
-	m = openOverlay(t, m, ctrlKey('p'))
+	m = openOverlay(t, m, tea.KeyPressMsg{Code: tea.KeyF8})
 	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // enter arg entry
 	m = mm.(Model)
 	// Type a value into the focused field.
@@ -656,7 +676,7 @@ func TestMCPArgsSubmitCollectsValues(t *testing.T) {
 func TestMCPArgsBlankRequiredKeepsFormOpen(t *testing.T) {
 	fm := samplePromptMCP()
 	m := newMCPModel(t, aztec(), fm)
-	m = openOverlay(t, m, ctrlKey('p'))
+	m = openOverlay(t, m, tea.KeyPressMsg{Code: tea.KeyF8})
 	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) // enter arg entry
 	m = mm.(Model)
 	st := mcpActive(m)
@@ -701,7 +721,7 @@ func TestMCPErrInputGolden(t *testing.T) {
 func TestMCPErrServerGolden(t *testing.T) {
 	mcp := &fakeMCP{err: status.Error(codes.Internal, "downstream blew up")}
 	m := newMCPModel(t, aztec(), mcp)
-	m = openOverlay(t, m, ctrlKey('p'))
+	m = openOverlay(t, m, tea.KeyPressMsg{Code: tea.KeyF8})
 	st := mcpActive(m)
 	if st == nil || st.errCls != client.MCPErrServer {
 		t.Fatalf("errCls = %v, want server", st)

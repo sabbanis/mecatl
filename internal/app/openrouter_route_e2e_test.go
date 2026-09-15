@@ -78,9 +78,10 @@ func TestOpenRouterRouteE2E(t *testing.T) {
 		t.Fatalf("write openrouter config: %v", err)
 	}
 
-	built, err := Build(ctx, Config{
-		Workspace: workspace,
-		NoSoul:    true,
+	built, err := buildIsolated(t, ctx, Config{
+		Workspace:             workspace,
+		NoSoul:                true,
+		ContextWindowOverride: defaultContextWindowTokens,
 		ProviderOverrides: permconfig.ProviderOverrides{
 			providerOpenRouter: {BaseURL: srv.URL + "/v1"},
 			providerOpenAI:     {BaseURL: srv.URL + "/v1"},
@@ -100,7 +101,7 @@ func TestOpenRouterRouteE2E(t *testing.T) {
 	svc := built.Service
 
 	// --- Leg 1: openrouter session on the configured model ---
-	sess, err := svc.CreateSessionWithProvider(ctx, workspace, session.ModeDefault, defaultLimits(),
+	sess, err := svc.CreateSessionWithProvider(ctx, session.ModeDefault, defaultLimits(),
 		server.ProviderSelector{ProviderID: providerOpenRouter, ModelID: model})
 	if err != nil {
 		t.Fatalf("CreateSessionWithProvider(openrouter): %v", err)
@@ -143,7 +144,7 @@ func TestOpenRouterRouteE2E(t *testing.T) {
 
 	// --- Leg 2: openai parity — same server, no openrouter knobs ---
 	caps = caps[:0]
-	sess2, err := svc.CreateSessionWithProvider(ctx, workspace, session.ModeDefault, defaultLimits(),
+	sess2, err := svc.CreateSessionWithProvider(ctx, session.ModeDefault, defaultLimits(),
 		server.ProviderSelector{ProviderID: providerOpenAI, ModelID: "gpt-5"})
 	if err != nil {
 		t.Fatalf("CreateSessionWithProvider(openai): %v", err)
@@ -191,9 +192,10 @@ func TestOpenRouterRouteE2ECacheHit(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	built, err := Build(ctx, Config{
-		Workspace: workspace,
-		NoSoul:    true,
+	built, err := buildIsolated(t, ctx, Config{
+		Workspace:             workspace,
+		NoSoul:                true,
+		ContextWindowOverride: defaultContextWindowTokens,
 		ProviderOverrides: permconfig.ProviderOverrides{
 			providerOpenRouter: {BaseURL: srv.URL + "/v1"},
 		},
@@ -206,7 +208,7 @@ func TestOpenRouterRouteE2ECacheHit(t *testing.T) {
 	defer built.Close()
 	svc := built.Service
 
-	sess, err := svc.CreateSessionWithProvider(ctx, workspace, session.ModeDefault, defaultLimits(),
+	sess, err := svc.CreateSessionWithProvider(ctx, session.ModeDefault, defaultLimits(),
 		server.ProviderSelector{ProviderID: providerOpenRouter, ModelID: "anthropic/claude-sonnet-4-6"})
 	if err != nil {
 		t.Fatalf("CreateSessionWithProvider: %v", err)

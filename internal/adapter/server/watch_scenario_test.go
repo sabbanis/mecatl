@@ -19,7 +19,6 @@ import (
 	"google.golang.org/grpc/status"
 
 	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
-	"github.com/stacklok/mecatl/engine/adapter/memfs"
 	"github.com/stacklok/mecatl/engine/adapter/memstore"
 	"github.com/stacklok/mecatl/engine/adapter/mockllm"
 	"github.com/stacklok/mecatl/engine/adapter/permpolicy"
@@ -42,13 +41,13 @@ func watchService(t *testing.T, log port.EventLog, ownership bool) *server.Servi
 		mockllm.ChunksTurn(mockllm.TextChunk("again"), mockllm.DoneChunk(session.StopEndTurn)),
 		mockllm.ChunksTurn(mockllm.TextChunk("third"), mockllm.DoneChunk(session.StopEndTurn)),
 	)
-	svc, err := server.NewService(server.Config{
+	svc, err := newPlacementTestService(server.Config{
 		Engine: agent.NewEngine(agent.Deps{
 			LLM: llm, Catalog: tool.NewCatalog(), Policy: permpolicy.NewPolicy(nil, nil), Model: "test-model",
 		}),
-		Store:               memstore.New(),
-		EventLog:            log,
-		Workspaces:          func(root string) tool.Workspace { return memfs.NewWorkspace(root) },
+		Store:    memstore.New(),
+		EventLog: log,
+
 		Now:                 func() time.Time { return time.Unix(0, 0) },
 		DefaultCapabilities: llm.Capabilities(),
 		OwnershipEnforced:   ownership,
@@ -132,7 +131,7 @@ func watchedRun(t *testing.T, log port.EventLog) (*server.Service, mecatlv1.Harn
 	svc := watchService(t, log, false)
 	client, cleanup := dialGRPC(t, svc)
 	t.Cleanup(cleanup)
-	sess, err := svc.CreateSession(context.Background(), "/ws", session.ModeDefault, session.Limits{})
+	sess, err := svc.CreateSession(context.Background(), session.ModeDefault, session.Limits{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -467,6 +466,66 @@ func TestSDKServerEnablers_Scenario7_WatchTransportParity(t *testing.T) {
 	}
 }
 
+// TestRedisFollowCapacity_Scenario2_TransportClassification is AC2.4: backend
+// follower saturation remains a distinct stable error on both watch transports.
+// gRPC terminates with RESOURCE_EXHAUSTED plus ErrorInfo reason
+// "watch_capacity"; HTTP has already committed 200 and therefore carries the
+// same code in a terminal SSE error frame. The older watch_lagging code remains
+// distinct.
+func TestRedisFollowCapacity_Scenario2_TransportClassification(t *testing.T) {
+	log := followCapacityLog{CursorEventLog: memstore.NewEventLog()}
+	svc, client, id := watchedRun(t, log)
+
+	t.Run("gRPC RESOURCE_EXHAUSTED", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		stream, err := client.WatchSessionEvents(ctx, &mecatlv1.WatchSessionEventsRequest{SessionId: string(id)})
+		if err != nil {
+			t.Fatalf("WatchSessionEvents: %v", err)
+		}
+		seenBoundary := false
+		for {
+			resp, recvErr := stream.Recv()
+			if recvErr != nil {
+				if got := status.Code(recvErr); got != codes.ResourceExhausted {
+					t.Fatalf("gRPC status = %v, want ResourceExhausted (err=%v)", got, recvErr)
+				}
+				if got := errorCodeOf(t, status.Convert(recvErr)); got != "watch_capacity" {
+					t.Fatalf("gRPC error code = %q, want watch_capacity", got)
+				}
+				break
+			}
+			if resp.GetEvent() == nil && resp.GetPhase() == server.WatchPhaseLive {
+				seenBoundary = true
+			}
+		}
+		if !seenBoundary {
+			t.Fatal("gRPC watch terminated before its replay-to-live boundary")
+		}
+	})
+
+	t.Run("HTTP 200 with terminal SSE error", func(t *testing.T) {
+		srv := httptest.NewServer(server.NewHTTPHandler(svc))
+		defer srv.Close()
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		resp := openSSE(ctx, t, srv.URL+"/v1/sessions/"+string(id)+"/watch")
+		defer func() { _ = resp.Body.Close() }()
+		frames := make(chan sseFrame, 64)
+		go scanSSE(resp.Body, frames)
+		frame := awaitErrorFrame(t, frames)
+		if frame.Code != "watch_capacity" {
+			t.Fatalf("SSE terminal code = %q, want watch_capacity", frame.Code)
+		}
+	})
+
+	if got := server.ClassifyErrorCodeForTest(server.ErrWatchLagging); got != "watch_lagging" {
+		t.Fatalf("lagging code = %q, want watch_lagging", got)
+	}
+}
+
 // TestSDKServerEnablers_Scenario7_WatchUnsupportedIsHonest pins the refusal a
 // non-cursor backend earns. Degrading to "replay everything from the beginning"
 // would be a correctness problem dressed as a performance one: the client would
@@ -474,7 +533,7 @@ func TestSDKServerEnablers_Scenario7_WatchTransportParity(t *testing.T) {
 // nothing.
 func TestSDKServerEnablers_Scenario7_WatchUnsupportedIsHonest(t *testing.T) {
 	svc := watchService(t, plainEventLog{inner: memstore.NewEventLog()}, false)
-	sess, err := svc.CreateSession(context.Background(), "/ws", session.ModeDefault, session.Limits{})
+	sess, err := svc.CreateSession(context.Background(), session.ModeDefault, session.Limits{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -493,7 +552,7 @@ func TestSDKServerEnablers_Scenario7_WatchUnsupportedIsHonest(t *testing.T) {
 	}
 
 	noLog := watchService(t, nil, false)
-	sess2, err := noLog.CreateSession(context.Background(), "/ws", session.ModeDefault, session.Limits{})
+	sess2, err := noLog.CreateSession(context.Background(), session.ModeDefault, session.Limits{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -518,7 +577,7 @@ func TestSDKServerEnablers_Scenario7_WatchOwnershipEnforced(t *testing.T) {
 	bob := session.WithPrincipal(context.Background(), &session.Principal{
 		Issuer: "https://issuer.example", Subject: "bob", GrantType: session.GrantTypeUser,
 	})
-	sess, err := svc.CreateSession(alice, "/ws", session.ModeDefault, session.Limits{})
+	sess, err := svc.CreateSession(alice, session.ModeDefault, session.Limits{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -1273,7 +1332,7 @@ func TestSDKServerEnablers_Scenario7_TerminalErrorIsValidSSE(t *testing.T) {
 
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		defer cancel()
-		sess, err := svc.CreateSession(ctx, "/ws", session.ModeDefault, session.Limits{})
+		sess, err := svc.CreateSession(ctx, session.ModeDefault, session.Limits{})
 		if err != nil {
 			t.Fatalf("CreateSession: %v", err)
 		}

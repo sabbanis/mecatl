@@ -1,4 +1,4 @@
- mecatui  ·  session #b9ba2286  ·  GPT-5  ·  mode default  ·  127.0.0.1:8080
+ mecatui  ·  session sess-test-00  ·  GPT-5  ·  mode default  ·  127.0.0.1:8080
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
 ┃                                                                                                     ┃
@@ -14,7 +14,8 @@
 ┃       openai · GPT-5 mini  reason 128K                                                              ┃
 ┃       openai · text-embed                                                                           ┃
 ┃       openrouter · Claude  img reason 1M                                                            ┃
-┃  toolhive: proxy not reachable — start it with `thv llm proxy start`                                ┃
+┃                                                                                                     ┃
+┃  toolhive: gateway not reachable — start it with `thv llm proxy start`                              ┃
 ┃                                                                                                     ┃
 ┃  type to filter · ↑/↓/pgup move · enter use · ctrl+g set global default · esc clear filter / close  ┃
 ┃  ● current  ★ global default                                                                        ┃

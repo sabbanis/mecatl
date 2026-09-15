@@ -10,6 +10,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/stacklok/mecatl/engine/adapter/memledger"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/tool"
 )
@@ -18,7 +19,7 @@ import (
 // child Environment with a FRESH opaque child id, seeded from a DEEP COPY of the
 // parent namespace's file map, so the child starts from the parent's contents
 // and the two then diverge independently. The child's Workspace and runner share
-// the child's namespace, so the child's Bash observes the SAME namespace its
+// the child's namespace, so the child's Shell observes the SAME namespace its
 // Read/Write do — never the parent's. cleanup is a no-op (the namespace is
 // in-memory; a real transport would tear down the remote workspace here).
 type Forker struct {
@@ -66,7 +67,7 @@ func (f *Forker) Fork(_ context.Context, base tool.Environment, label string) (t
 	f.backend.mu.Unlock()
 	ws := &workspace{ns: childNS}
 	runner := &runner{ns: childNS}
-	child, werr := tool.NewEnvironment(session.EnvironmentRef{Kind: Kind, ID: childID}, ws, runner)
+	child, werr := tool.NewEnvironment(session.EnvironmentRef{Kind: Kind, ID: childID, Revision: base.Ref().Revision}, ws, memledger.New(), runner)
 	if werr != nil {
 		return tool.Environment{}, nil, "", werr
 	}

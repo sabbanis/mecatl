@@ -11,8 +11,8 @@ import (
 	"testing"
 
 	"github.com/stacklok/mecatl/engine/adapter/mockllm"
+	"github.com/stacklok/mecatl/internal/adapter/mcpauthority"
 	"github.com/stacklok/mecatl/internal/adapter/permconfig"
-	"github.com/stacklok/mecatl/internal/app"
 	"github.com/stacklok/mecatl/internal/cliconfig"
 )
 
@@ -34,7 +34,7 @@ func TestMecatequiBuildDiscoversOperatorMCPSettings(t *testing.T) {
 	}
 	cfg := appConfig(f, newDiagnostics(), observability{})
 	cfg.MockProvider = mockllm.New()
-	if _, err := app.Build(context.Background(), cfg); !errors.Is(err, cliconfig.ErrMCPProfileSecret) {
+	if _, err := buildIsolated(t, context.Background(), cfg); !errors.Is(err, cliconfig.ErrMCPProfileSecret) {
 		t.Fatalf("conventional operator profile Build error = %v, want missing-secret category", err)
 	}
 
@@ -48,11 +48,25 @@ func TestMecatequiBuildDiscoversOperatorMCPSettings(t *testing.T) {
 	}
 	cfg = appConfig(f, newDiagnostics(), observability{})
 	cfg.MockProvider = mockllm.New()
-	built, err := app.Build(context.Background(), cfg)
+	built, err := buildIsolated(t, context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("explicit operator profile did not override conventional source: %v", err)
 	}
 	built.Close()
+
+	broker := filepath.Join(t.TempDir(), "broker-settings.yaml")
+	if err := os.WriteFile(broker, []byte("mcp:\n  mode: broker\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	f, err = parseFlags([]string{"--prompt", "x", "--mock", "--permission-config", broker})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg = appConfig(f, newDiagnostics(), observability{})
+	cfg.MockProvider = mockllm.New()
+	if _, err := buildIsolated(t, context.Background(), cfg); !errors.Is(err, cliconfig.ErrMCPProfileInvalid) || !strings.Contains(err.Error(), "broker MCP mode is unsupported by this command root") {
+		t.Fatalf("broker-mode Build error = %v, want unsupported command-root error", err)
+	}
 }
 
 // TestParseFlagsMCPServer covers the factory MCP wiring (issue #341): the shared
@@ -117,11 +131,34 @@ func TestParseFlagsMCPServer(t *testing.T) {
 	})
 }
 
+func TestAppConfigWiresMCPAuthority(t *testing.T) {
+	f, err := parseFlags([]string{"--prompt", "x"})
+	if err != nil {
+		t.Fatalf("parseFlags: %v", err)
+	}
+	cfg := appConfig(f, newDiagnostics(), observability{})
+	if cfg.MCPProfileLoader == nil {
+		t.Fatal("app.Config.MCPProfileLoader is nil; legacy profile loading would be lost")
+	}
+	if cfg.MCPAuthorityLoader == nil {
+		t.Fatal("app.Config.MCPAuthorityLoader is nil; broker mode would bypass canonical authority resolution")
+	}
+	if _, ok := cfg.MCPAuthorityLoader.(*cliconfig.MCPProfileResolver); !ok {
+		t.Fatalf("MCPAuthorityLoader = %T, want *cliconfig.MCPProfileResolver", cfg.MCPAuthorityLoader)
+	}
+	if cfg.MCPAuthorityDefault != mcpauthority.Global {
+		t.Errorf("MCPAuthorityDefault = %q, want %q", cfg.MCPAuthorityDefault, mcpauthority.Global)
+	}
+	if cfg.MCPBrokerSupported {
+		t.Error("MCPBrokerSupported = true, want false")
+	}
+}
+
 // TestParseFlagsMCPServerInsecureHTTP covers the issue-#358 per-server opt-in
 // end-to-end through mecatequi's parseFlags (which runs the post-parse
 // Finalize): --mcp-server-insecure-http relaxes the token-bearing http scheme
 // gate for the NAMED server only, ORDER-INDEPENDENTLY — the relaxation works
-// whether it precedes or follows its --mcp-server on argv (the titlani#40
+// whether it precedes or follows its --mcp-server on argv (the scheduler-side
 // contract addition: argv ordering is not part of the scheduler's contract).
 func TestParseFlagsMCPServerInsecureHTTP(t *testing.T) {
 	t.Run("relaxation before the server", func(t *testing.T) {

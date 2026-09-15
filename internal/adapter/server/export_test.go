@@ -93,11 +93,12 @@ func (s *Service) NeedsRehydrationForTest(sess *session.Session) bool {
 	return s.needsRehydration(sess)
 }
 
-// TrackSteerMessageIDForTest appends one client-minted id to the session's
-// watermark FIFO — the test seam for the steer correlation invariant pin
-// (ADR-0233; assert positional, not textual, correlation).
-func (s *Service) TrackSteerMessageIDForTest(id session.SessionID, messageID string) {
-	s.trackSteerMessageID(id, messageID)
+// SetSteerPromotionRegisteredForTest installs an inert callback invoked after a
+// promoted steer has registered its replacement run. Configure it before serving.
+func (s *Service) SetSteerPromotionRegisteredForTest(fn func()) {
+	s.mu.Lock()
+	s.steerPromotionRegistered = fn
+	s.mu.Unlock()
 }
 
 // SteerOutcomeToProtoForTest exposes the unexported steerOutcomeToProto mapper

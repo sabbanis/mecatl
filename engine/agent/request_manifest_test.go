@@ -61,7 +61,7 @@ func TestRequestManifestDisabledByDefault(t *testing.T) {
 		}
 	})}, mockllm.TextTurn("done"))
 	eng := newEngine(agent.Deps{LLM: provider, Catalog: tool.NewCatalog(), Sink: sink})
-	run := eng.Run(context.Background(), session.New("manifest-off", session.ModeDefault, "/ws", session.Limits{}, time.Time{}), agent.MemEnv("/ws"), agent.RunRequest{Text: "hello"})
+	run := eng.Run(context.Background(), session.New("manifest-off", session.ModeDefault, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/ws", Revision: "in-tree-v1"}, session.Limits{}, time.Time{}), agent.MemEnv("/ws"), agent.RunRequest{Text: "hello"})
 	for _, ev := range drain(run) {
 		if ev.Type == session.EvRequestManifest {
 			t.Fatal("zero/default Deps emitted request.manifest")
@@ -77,7 +77,7 @@ func TestRequestManifestDescribesFinalRequestWithoutContent(t *testing.T) {
 	cat := tool.NewCatalog()
 	for _, candidate := range []tool.Tool{
 		manifestTool{name: "Allowed", readOnly: true, secret: secret},
-		manifestTool{name: tool.BashToolName, readOnly: true, secret: secret},
+		manifestTool{name: tool.ShellToolName, readOnly: true, secret: secret},
 		manifestTool{name: "Denied", readOnly: true, secret: secret},
 		manifestTool{name: "Mutating", readOnly: false, secret: secret},
 		manifestTool{name: "Shadow", readOnly: true, secret: secret},
@@ -100,7 +100,7 @@ func TestRequestManifestDescribesFinalRequestWithoutContent(t *testing.T) {
 		Model:                 "safe-model", ContextWindow: func() int { return 8192 },
 		Instructions: customManifestInstructions{secret: secret},
 	})
-	sess := authoritySession(t, "Allowed", tool.BashToolName, "Mutating", "Shadow", "mcp__github__issues")
+	sess := authoritySession(t, "Allowed", tool.ShellToolName, "Mutating", "Shadow", "mcp__github__issues")
 	if err := sess.SetMode(session.ModePlan); err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestRequestManifestDescribesFinalRequestWithoutContent(t *testing.T) {
 	}
 	wantDecisions := map[string]string{
 		"Allowed":             session.RequestToolDisclosureHidden,
-		tool.BashToolName:     session.RequestToolMountUnavailable,
+		tool.ShellToolName:    session.RequestToolMountUnavailable,
 		"Denied":              session.RequestToolAuthorityFiltered,
 		"Mutating":            session.RequestToolModeFiltered,
 		"Shadow":              session.RequestToolShadowed,

@@ -1,149 +1,144 @@
 ---
 sidebar_position: 3
 title: Connect to a server
+description:
+  Run mecated separately and connect mecatui to local or remote Mecatl servers.
 ---
 
 # Connect to a server
 
-`mecatui` is always a client, but it can supply its own local server or dial one that an operator already runs.
+`mecatui` can connect to a separately running `mecated` or `mecak8s` server.
+This separates the terminal client from the process that owns the workspace,
+model access, session storage, and permissions.
 
-## Choose the connection shape
+Start with both processes on one machine. The same connection model applies when
+an operator gives you a remote address and credentials.
 
-**Embedded mode** is bare `mecatui`. It starts a private `mecated` in the same process and connects over a private UNIX socket. The TUI process owns the local workspace, provider credentials, session storage, and policy configuration used by that embedded server.
+## Prerequisites
 
-```sh
-OPENAI_API_KEY=sk-... bin/mecatui --workspace "$PWD"
+You need:
+
+- `mecatui` and `mecated` installed;
+- an API key for Anthropic, OpenAI, or OpenRouter; and
+- a local project directory that you trust.
+
+## Start the server
+
+Open a terminal for the server. Change to the project that it will use as its
+workspace. Set `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `OPENROUTER_API_KEY`
+for your provider, then start `mecated`:
+
+```sh title="Terminal 1: server"
+cd <PROJECT_DIRECTORY>
+export <PROVIDER_API_KEY>="<API_KEY>"
+mecated serve --workspace "$PWD"
 ```
 
-**Remote mode** is `mecatui connect ADDRESS`. It dials the named, already-running `mecated`; it never starts an embedded server or searches for one. The remote server owns its workspace, provider credentials and model availability, storage, retention, and policy. Local client settings do not configure that server.
+Replace `<PROVIDER_API_KEY>` with the variable for your provider.
 
-```sh
-bin/mecated serve &
-bin/mecatui connect 127.0.0.1:8080 --workspace "$PWD"
+Keep this terminal open. It displays server logs and continues running until you
+stop it with `ctrl+c`.
+
+The server listens for gRPC connections on `127.0.0.1:8080`. Its loopback-only,
+single-user defaults do not require TLS or authentication.
+
+## Connect the client
+
+Open a second terminal and connect `mecatui`:
+
+```sh title="Terminal 2: client"
+mecatui connect 127.0.0.1:8080
 ```
 
-For loopback connections, the client-selected workspace is evaluated on the server host
-and must be an absolute path available there. For a non-loopback target, mecatui sends
-an empty workspace and rejects `--workspace`; the remote server's listener authority
-chooses its configured root (or its no-FS profile). A client path is never a way to
-select a checkout inside a remote container or pod.
+The TUI header should show `127.0.0.1:8080`. Enter the project-inspection
+request from the [local tutorial](./getting-started.md#inspect-the-project) to
+confirm that the server can use its workspace.
 
-## Connect securely
+In connect mode, the server owns the workspace. `mecatui connect` does not use
+your client's current directory or local provider keys, and it rejects
+`--workspace`.
 
-A loopback server can use its local single-user trust model. If the server requires a bearer token, pass the token supplied by its operator:
+## Connect to a remote deployment
+
+Ask the server operator for:
+
+- the server address;
+- the required authentication method; and
+- a CA bundle if the server uses a private certificate authority.
+
+Verified TLS is automatic for non-loopback addresses. To use a static bearer
+token and private CA:
 
 ```sh
-export MECATL_AUTH_TOKEN="$(cat ~/.mecatl/token)"
-bin/mecatui connect 127.0.0.1:8080 \
-  --auth-token "$MECATL_AUTH_TOKEN" --workspace "$PWD"
-```
-
-For a non-loopback endpoint, use TLS when sending a bearer. Add a CA bundle only when the server uses a private CA:
-
-```sh
-bin/mecatui connect mecated.example.internal:443 \
-  --tls --tls-ca /path/to/company-ca.pem \
+export MECATL_AUTH_TOKEN="<MECATL_AUTH_TOKEN>"
+mecatui connect mecated.example.com:443 \
+  --tls-ca <PATH_TO_SERVER_CA> \
   --auth-token "$MECATL_AUTH_TOKEN"
 ```
 
-Authentication proves the caller's credential; TLS protects the connection and verifies the server. They are separate settings. Do not use `--insecure` except for controlled testing.
+Authentication identifies the caller. TLS protects the connection and verifies
+the server. A shared authenticated server is not a tenant-isolation boundary;
+callers can still access sessions that its authorization policy permits.
 
-Caller identity is attribution, not tenant isolation: authenticated callers can still list and act on other callers' sessions. Do not treat a token-authenticated shared server as a tenancy boundary.
+## Sign in with OIDC
 
-## Remote OIDC login
-
-Remote enrollment and connecting are separate actions:
-
-```sh
-bin/mecatui login mecated.example.internal:443 \
-  --issuer https://id.example.internal \
-  --client-id mecatui --audience mecatl \
-  --tls-ca /path/to/issuer-ca.pem
-bin/mecatui connect mecated.example.internal:443 \
-  --tls --tls-ca /path/to/server-ca.pem
-```
-
-`mecatui login ADDRESS` runs the public OIDC Authorization Code + PKCE flow and
-requires all four options shown. The login `--tls-ca` verifies the issuer's discovery,
-token, JWKS, refresh, and revocation endpoints; it does not configure server transport
-trust. The issuer CA bundle path/reference, not the CA contents, is saved as public target
-metadata; the later
-`connect --tls-ca` independently verifies the gRPC server. Login saves
-public target metadata in the connection registry and stores the credential in a
-canonical-root-scoped, keyring-wrapped encrypted store. The credential is bound to the
-canonical target and OIDC identity. An old unsuffixed keyring key is copied without
-deletion only when that root already contains an actual encrypted credential record; an
-empty opened namespace does not trigger migration. A credential enrolled under a legacy zero-padded port spelling
-needs one login after upgrade. `mecatui connect
-ADDRESS` never opens a browser; an unenrolled target tells you to run `login`.
-Add `--no-browser` to print the authorization URL for you to open yourself, which is
-what you want over SSH or on a headless host. Remote login listens at the registered
-`http://127.0.0.1:18473/oauth/callback`. Open the printed URL in a browser on your
-workstation and forward that fixed callback port to the host running the login:
+When the server publishes its sign-in configuration, enroll once and then
+connect:
 
 ```sh
-ssh -N -L 18473:127.0.0.1:18473 user@login-host
+mecatui login mecated.example.com:443
+mecatui connect mecated.example.com:443
 ```
 
-This remote flow is Authorization Code + PKCE, not device flow. Wrong-route, wrong-state, and malformed pre-state
-probes are unlimited and do not consume the secret state; the deadline and connection
-limits still bound the listener. This differs from MCP OAuth's random callback path,
-which retains a bounded matching-route attempt count. Only a callback proving the secret
-state can terminate on a provider error or semantic rejection. Closed
-validator reasons never echo callback values. A provider's OAuth `error` and
-`error_description` are the narrow exception and are printable-filtered and bounded.
-After enrollment, every RPC demands a currently validated access token. Successful
-token demand, not RPC success, gates proactive refresh; refresh, enrollment, and logout
-share one per-target interprocess transaction, and rotated credentials are saved with
-CAS. Only an exact structured `invalid_grant` code removes a rejected credential;
-provider prose does not. The default login request includes `offline_access`, but the
-issuer must offer and grant that scope before it can return a refresh token. Without a
-refresh token, the initial login can still succeed, but a later access-token expiry
-requires `mecatui login ADDRESS` again. Omit `offline_access` explicitly with
-`--scopes` only when that re-login behavior is intended. This managed OIDC mode is
-refreshed by mecatui; a static `--auth-token` remains caller-managed and is never
-refreshed. The bearer is not placed in UI state, logs, or command arguments.
+Login opens an Authorization Code with PKCE flow in your browser and stores the
+credentials for that server. `connect` never opens a browser. Use `--no-browser`
+with `login` on a headless host, then open the printed URL from a workstation
+that can reach port `18473` on the login host, usually through SSH port
+forwarding.
 
-Remove an enrollment with:
+Login uses the system keyring on macOS. On Linux, it uses an available Secret
+Service or owner-only plaintext files on a headless host. Use
+`--credential-store` when you need to choose the storage explicitly.
+
+If the server does not publish discovery metadata, its operator must also give
+you the issuer, client ID, and audience:
 
 ```sh
-bin/mecatui logout mecated.example.internal:443
+mecatui login mecated.example.com:443 \
+  --issuer https://id.example.com \
+  --client-id mecatui \
+  --audience mecatl
 ```
 
-Logout conditionally removes the target-bound credential before its public registry
-entry under the target transaction lock. It is safe to repeat. A concurrent rotation
-is reloaded and retried once; a persistent conflict or re-enrollment retains the
-metadata and reports an incomplete logout so the unresolved credential does not become
-unreachable. After releasing the lock, it spends one operation-wide fifteen-second budget
-on scoped client creation, discovery, and all best-effort RFC 7009 revocation requests.
-An unavailable provider never blocks local deletion;
-provider-side termination is therefore not guaranteed. The command does not prune a
-credential-only orphan because the encrypted store has no enumeration operation.
+Run `mecatui logout mecated.example.com:443` to remove the saved enrollment. Use
+`/connect` inside the TUI to choose another saved server.
 
-If a saved credential needs attention, mecatui opens the recoverable `/connect`
-chooser and preselects the target. It distinguishes an expired session, an unusable
-local credential, credential cleanup that should be retried without a browser, and a
-server-rejected bearer (check issuer, audience, or CA rather than repeatedly logging
-in). The chooser never opens a browser: re-authentication is confirmed and runs only
-after the TUI exits. A same-target re-auth resumes a prior chat only when the server's
-ownership-checked session and transcript reads authorize the new caller and the prior
-session is at a terminal turn boundary. The recovery action preserves that candidate and
-the current server CA path only for the same target. Otherwise it starts a fresh chat;
-an interrupted prompt is never replayed automatically.
+## Manage local provider credentials
 
-The `/connect` overlay is a confirmed chooser for saved targets. Choosing a saved
-target restarts mecatui into a new remote session; choosing a new target defers to
-`mecatui login ADDRESS` first. No session history crosses a target change.
-`mecatui llm login` is unrelated: it is the ToolHive LLM gateway login.
+Remote enrollment and embedded provider credentials are separate actions.
+`mecatui login ADDRESS` authenticates this client to a remote `mecated` server;
+it does not configure or enroll that server's providers. For an embedded local
+server, use `mecatui providers` to inspect providers and
+`mecatui providers login PROVIDER` or `logout PROVIDER` for locally managed
+credentials. `mecatui providers add PROVIDER` defines a custom provider, while
+`mecatui providers setup` provides a guided first-time path.
 
-For private HTTPS OIDC issuers, the login uses an explicit CA bundle path and the scoped
-ToolHive Core-derived private-HTTPS transport. It retains hostname verification,
-DNS-pinned address checks, HTTPS-only admission, and redirect refusal. The Kind
-remote flow is available after fixture setup using the documented host aliases and
-public CA, but it is a live qualification flow rather than ordinary offline-test
-coverage. Setup remains confirmation-gated; see [the fixture guide](https://github.com/stacklok/mecatl/blob/main/deploy/mecak8s-kind/README.md).
-## Where to go next
+A custom OIDC provider supports `mecatui providers login PROVIDER --no-browser`
+when a browser cannot be opened. A connected client cannot use this command to
+enroll the remote server. Provider definitions and OIDC credential custody are
+operator `providers` and `credential_store` settings; API-key credentials can
+also come from the environment or a file selected with `--api-key-file`.
 
-Use [Getting started](./getting-started.md) for the local first-run path and [Sessions](./sessions.md) to browse remote or embedded history. Operators configuring a server should use [Run mecated standalone](/building/deployment/mecated.md), [gRPC and HTTP deployment](/building/deployment/grpc-http.md), or [mecak8s](/building/deployment/mecak8s.md), as appropriate.
+ToolHive has a separate external lifecycle: it owns its LLM credentials and
+setup. Use `thv llm` tooling for ToolHive rather than local provider credential
+commands. ToolHive MCP discovery and manual OpenAI Codex authentication are
+separate workflows.
 
-For the exhaustive transport flag reference, see [`docs/tui.md`](https://github.com/stacklok/mecatl/blob/main/docs/tui.md#transport-commands).
+## Next steps
+
+- [Try Mecatl on Kubernetes](/building/getting-started/kubernetes.md) to connect
+  the same client to a local `mecak8s` deployment.
+- [Run mecated standalone](/building/deployment/mecated.md) to configure
+  persistence, providers, TLS, authentication, and observability.
+- [Troubleshoot mecatui](./troubleshooting.md) if startup, login, or connection
+  fails.

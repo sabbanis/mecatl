@@ -780,7 +780,9 @@ func runSubagentOnce(t *testing.T, task tool.Tool, parentWS tool.Workspace, prom
 		mockllm.TextTurn("parent done"),
 	)
 	e := newEngine(agent.Deps{LLM: parentLLM, Catalog: catalogWith(t, task)})
-	r := e.Run(context.Background(), newSession(t, session.Limits{}), agent.EnvForWS(parentWS, nil), agent.RunRequest{Text: "go"})
+	env := agent.EnvForWS(parentWS, nil)
+	sess := session.New("s1", session.ModeDefault, env.Ref(), session.Limits{}, time.Unix(0, 0))
+	r := e.Run(context.Background(), sess, env, agent.RunRequest{Text: "go"})
 	evs := drain(r)
 	var got *session.ToolResult
 	for _, ev := range evs {
@@ -938,7 +940,7 @@ func TestSubagentNilForkerRunsAgainstParent(t *testing.T) {
 
 // TestSubagentForkErrorIsToolError asserts the no-silent-fallback contract: when a
 // child forker is wired but Fork fails, Subagent returns a tool ERROR and the child NEVER
-// runs (so its Bash cannot land in the shared parent base).
+// runs (so its Shell cannot land in the shared parent base).
 func TestSubagentForkErrorIsToolError(t *testing.T) {
 	probe := &rootRecordingTool{}
 	// Script a child that WOULD run a probe if it ever started — it must not.
@@ -1100,7 +1102,7 @@ func (f *blockingForker) callCount() int {
 // the shell gate is FULL and the call's ctx is cancelled, acquireShellSlot returns nil,
 // Execute surfaces the "cancelled before workspace isolation" tool error, and crucially
 // Fork is NEVER called for that call and its child NEVER runs (so no worktree is created
-// and no Bash lands in the shared base). A blocking forker holds the single gate slot so
+// and no Shell lands in the shared base). A blocking forker holds the single gate slot so
 // the second (cancelled) call can ONLY take the ctx.Done() branch of the select —
 // deterministic, not a racy "both cases ready" pick.
 func TestSubagentCtxCancelledBeforeIsolation(t *testing.T) {

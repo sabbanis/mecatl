@@ -13,7 +13,6 @@ import (
 	"time"
 
 	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
-	"github.com/stacklok/mecatl/engine/adapter/memfs"
 	"github.com/stacklok/mecatl/engine/adapter/memstore"
 	"github.com/stacklok/mecatl/engine/adapter/mockllm"
 	"github.com/stacklok/mecatl/engine/adapter/permpolicy"
@@ -25,19 +24,19 @@ import (
 )
 
 // newInteractiveSubagentService builds a Service whose engine is INTERACTIVE and
-// carries a Subagent tool with a Bash-bearing child, so a child substitution ask
+// carries a Subagent tool with a Shell-bearing child, so a child substitution ask
 // surfaces on the Converse stream (the parked state the CancelChild e2e cancels
-// out of). It returns the service and the recording Bash so the test can assert
+// out of). It returns the service and the recording Shell so the test can assert
 // the command never executed.
 func newInteractiveSubagentService(t *testing.T) (*server.Service, *scriptTool) {
 	t.Helper()
-	bash := &scriptTool{name: "Bash", readOnly: false, content: "ran"}
+	bash := &scriptTool{name: "Shell", readOnly: false, content: "ran"}
 	childCat := tool.NewCatalog()
 	childCat.MustRegister(bash)
 	childLLM := mockllm.New(
 		// A substitution with a non-read-only inner stand-in: NOT auto-approvable,
 		// so it parks the child on a surfaced ask.
-		mockllm.ToolCallTurn(call("k1", "Bash", `{"command":"cat $(zap)"}`)),
+		mockllm.ToolCallTurn(call("k1", "Shell", `{"command":"cat $(zap)"}`)),
 		mockllm.TextTurn("child: never reached"),
 	)
 	childEngine := agent.NewEngine(agent.Deps{
@@ -46,7 +45,7 @@ func newInteractiveSubagentService(t *testing.T) (*server.Service, *scriptTool) 
 		Policy:  permpolicy.NewPolicy(allowRules(), nil),
 		Model:   "child-model",
 	})
-	task := agent.NewSubagentTool(childEngine)
+	task := newServerTestSubagent(childEngine)
 
 	parentCat := tool.NewCatalog()
 	parentCat.MustRegister(task)
@@ -61,10 +60,10 @@ func newInteractiveSubagentService(t *testing.T) (*server.Service, *scriptTool) 
 		Model:       "test-model",
 		Interactive: true, // the child ask SURFACES instead of auto-denying
 	})
-	svc, err := server.NewService(server.Config{
-		Engine:              engine,
-		Store:               memstore.New(),
-		Workspaces:          func(root string) tool.Workspace { return memfs.NewWorkspace(root) },
+	svc, err := newPlacementTestService(server.Config{
+		Engine: engine,
+		Store:  memstore.New(),
+
 		Now:                 func() time.Time { return time.Unix(0, 0) },
 		DefaultCapabilities: parentLLM.Capabilities(),
 	})
@@ -87,7 +86,7 @@ func TestGRPCConverseCancelChild(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: "/ws"})
+	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -179,7 +178,7 @@ func TestGRPCConverseApproveSurfacedChildAsk(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: "/ws"})
+	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -287,7 +286,7 @@ func newTeamConverseService(t *testing.T) (*server.Service, *parkTool) {
 			Model:   "member-model",
 		})}
 	}
-	teamTool := agent.NewTeamTool(factory)
+	teamTool := newServerTestTeamTool(factory)
 
 	parentCat := tool.NewCatalog()
 	parentCat.MustRegister(teamTool)
@@ -302,10 +301,10 @@ func newTeamConverseService(t *testing.T) (*server.Service, *parkTool) {
 		Policy:  permpolicy.NewPolicy(allowRules(), nil),
 		Model:   "test-model",
 	})
-	svc, err := server.NewService(server.Config{
-		Engine:              engine,
-		Store:               memstore.New(),
-		Workspaces:          func(root string) tool.Workspace { return memfs.NewWorkspace(root) },
+	svc, err := newPlacementTestService(server.Config{
+		Engine: engine,
+		Store:  memstore.New(),
+
 		Now:                 func() time.Time { return time.Unix(0, 0) },
 		DefaultCapabilities: parentLLM.Capabilities(),
 	})
@@ -328,7 +327,7 @@ func TestGRPCConverseCancelTeamMember(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: "/ws"})
+	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -442,7 +441,7 @@ func TestServiceCancelChildFallbacks(t *testing.T) {
 	if err := svc.CancelChild(context.Background(), "nope", "subagent-x"); !errors.Is(err, server.ErrNotFound) {
 		t.Fatalf("unknown session: got %v, want ErrNotFound", err)
 	}
-	sess, err := svc.CreateSession(context.Background(), "/ws", session.ModeDefault, session.Limits{})
+	sess, err := svc.CreateSession(context.Background(), session.ModeDefault, session.Limits{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}

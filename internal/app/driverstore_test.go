@@ -207,7 +207,7 @@ func TestBuildStoreRedisURL(t *testing.T) {
 	}
 	// A Save/Load round-trip through the composition-wired adapter proves it is
 	// the real store, not a nil stub.
-	s := session.New("redis-build-test", session.ModeAccept, "/work", session.Limits{}, time.Now())
+	s := session.New("redis-build-test", session.ModeAccept, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/work", Revision: "in-tree-v1"}, session.Limits{}, time.Now())
 	if err := st.Save(context.Background(), s); err != nil {
 		t.Fatalf("Save through composition-wired redisstore: %v", err)
 	}
@@ -264,6 +264,33 @@ func TestValidateDriverConfigRejectsMemoryDirectoryCollisions(t *testing.T) {
 	}
 	if err := validateDriverConfig(Config{MemoryDir: dir, UserModelDir: alias}); err == nil {
 		t.Fatal("symlink-aliased memory/user-model directory collision accepted")
+	}
+}
+
+// TestCanonicalConfiguredDirWalksMultipleMissingAncestors pins issue #830: on
+// a completely fresh install, neither the leaf nor its immediate parent
+// exists yet (e.g. "~/Library/Application Support/mecatui/memory/<project>"
+// with no piece of "mecatui/memory/<project>" created). canonicalConfiguredDir
+// must walk up past ALL missing ancestors, not just one, to find the nearest
+// existing directory to resolve symlinks against.
+func TestCanonicalConfiguredDirWalksMultipleMissingAncestors(t *testing.T) {
+	base := t.TempDir()
+	missing := filepath.Join(base, "mecatui", "memory", "some-project")
+	got, err := canonicalConfiguredDir(missing)
+	if err != nil {
+		t.Fatalf("canonicalConfiguredDir(%q) with no ancestor created: %v", missing, err)
+	}
+	want, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = filepath.Join(want, "mecatui", "memory", "some-project")
+	if got != want {
+		t.Fatalf("canonicalConfiguredDir(%q) = %q, want %q", missing, got, want)
+	}
+
+	if err := validateDriverConfig(Config{MemoryDir: missing, UserModelDir: filepath.Join(base, "other")}); err != nil {
+		t.Fatalf("validateDriverConfig with a multi-level-missing MemoryDir: %v", err)
 	}
 }
 
@@ -341,7 +368,7 @@ func TestBuildCatalogMemoryDriverRegistersTools(t *testing.T) {
 	t.Cleanup(func() { server.Stop(); _ = listener.Close() })
 
 	cfg := Config{MemoryStoreURL: listener.Addr().String()}
-	cat, assets, _, _, closeFn, err := buildCatalog(ctx, cfg, regForTest(provider, providerMock, cfg.Model), provider, hooks, agents.NewRegistry(nil), memstore.New(), nil)
+	cat, assets, _, _, closeFn, err := buildCatalog(ctx, isolateConfig(t, cfg), regForTest(provider, providerMock, cfg.Model), provider, hooks, agents.NewRegistry(nil), memstore.New(), nil)
 	if err != nil {
 		t.Fatalf("buildCatalog(memory driver): %v", err)
 	}
@@ -382,7 +409,7 @@ func TestBuildCatalogMemoryCapabilityTimeoutLeavesNoCatalogOrConnection(t *testi
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	cfg := Config{MemoryStoreURL: listener.Addr().String(), driverConns: newDriverConns()}
-	cat, assets, _, _, closeFn, err := buildCatalog(ctx, cfg, regForTest(provider, providerMock, cfg.Model), provider, hookexec.New(nil), agents.NewRegistry(nil), memstore.New(), nil)
+	cat, assets, _, _, closeFn, err := buildCatalog(ctx, isolateConfig(t, cfg), regForTest(provider, providerMock, cfg.Model), provider, hookexec.New(nil), agents.NewRegistry(nil), memstore.New(), nil)
 	if err == nil || cat != nil || assets.memStore != nil || closeFn != nil {
 		t.Fatalf("timed-out catalog probe returned partial result: cat=%v store=%T close=%v err=%v", cat, assets.memStore, closeFn != nil, err)
 	}
@@ -409,7 +436,7 @@ func TestBuildCatalogBaseOnlyMemoryDriverOmitsLifecycleTools(t *testing.T) {
 
 	provider := mockllm.New(mockllm.TextTurn("x"))
 	cfg := Config{MemoryStoreURL: listener.Addr().String()}
-	cat, assets, _, _, closeFn, err := buildCatalog(context.Background(), cfg, regForTest(provider, providerMock, cfg.Model), provider, hookexec.New(nil), agents.NewRegistry(nil), memstore.New(), nil)
+	cat, assets, _, _, closeFn, err := buildCatalog(context.Background(), isolateConfig(t, cfg), regForTest(provider, providerMock, cfg.Model), provider, hookexec.New(nil), agents.NewRegistry(nil), memstore.New(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}

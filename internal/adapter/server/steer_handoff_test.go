@@ -50,7 +50,7 @@ func TestSteer_MessageIdRoundTrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: "/ws"})
+	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestSteer_WatermarkEchoLatestId(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: "/ws"})
+	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -276,10 +276,21 @@ func TestSteer_PromotedRelaySequential(t *testing.T) {
 	client, stallRelease, cleanup := dialGRPCStall(t, svc, 2*time.Second)
 	defer cleanup()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// This ctx is the SOLE timeout budget for the whole test: session setup,
+	// the pre-stall Recv loop, the promoted-run poll below, AND the final
+	// drain-to-EOF read all share it. Twice already de-flaked (#672, #816) by
+	// replacing a fixed sleep with a signal-driven poll — that poll is still
+	// correct (0/20 failures locally, -race, back-to-back), but a poll bounded
+	// by a tight shared deadline still fails outright under real scheduling
+	// contention (e.g. a full -race `task test` run with many packages
+	// building/testing concurrently) if enough of the 10s budget is spent
+	// before the poll even starts. Widen the budget instead of adding a
+	// sleep — matches the 15s the sibling TestSteer_ControlTargetsPromotedRun
+	// already uses for a comparably multi-step flow.
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: "/ws"})
+	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -439,11 +450,13 @@ func TestSteer_ControlTargetsPromotedRun(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: "/ws"})
+	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
-	stream, err := client.Converse(ctx)
+	streamCtx, cancelStream := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelStream()
+	stream, err := client.Converse(streamCtx)
 	if err != nil {
 		t.Fatalf("Converse: %v", err)
 	}
@@ -465,33 +478,25 @@ func TestSteer_ControlTargetsPromotedRun(t *testing.T) {
 			break
 		}
 	}
-	// Capture the terminal original before sending the steer. The promoted run
-	// remains registered because its blocking tool holds it, so observing a
-	// different pointer proves Service.Steer has entered the handoff route.
-	original, ok := svc.LookupRun(session.SessionID(cs.GetSessionId()))
-	if !ok {
+	// Confirm the original is still terminal-but-registered before sending the
+	// steer; the stall keeps this promotion path reachable.
+	if _, ok := svc.LookupRun(session.SessionID(cs.GetSessionId())); !ok {
 		t.Fatal("original run is not registered in its terminal drain window")
 	}
+	registered := make(chan struct{})
+	svc.SetSteerPromotionRegisteredForTest(func() { close(registered) })
 	if err := stream.Send(&mecatlv1.ConverseRequest{
 		Kind: &mecatlv1.ConverseRequest_Steer{Steer: &mecatlv1.Steer{Text: "late steer"}},
 	}); err != nil {
 		t.Fatalf("Send steer: %v", err)
 	}
-	// The test context is the sole timeout budget. Keep the original stalled until
-	// the replacement pointer is observable, proving the handoff registered the
-	// promoted run before it can be allowed to drive.
-	poll := time.NewTicker(10 * time.Millisecond)
-	defer poll.Stop()
-	for {
-		if promoted, ok := svc.LookupRun(session.SessionID(cs.GetSessionId())); ok && promoted != original {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			current, registered := svc.LookupRun(session.SessionID(cs.GetSessionId()))
-			t.Fatalf("promoted run was not registered before test context expired: original=%p current=%p registered=%t: %v", original, current, registered, ctx.Err())
-		case <-poll.C:
-		}
+	// Wait for the specific registration event before unblocking the original
+	// relay. The timeout is only a deadlock guard; registration, not elapsed
+	// time, establishes the handoff ordering.
+	select {
+	case <-registered:
+	case <-time.After(15 * time.Second):
+		t.Fatal("promoted run was not registered after steer")
 	}
 	close(stallRelease) // the stalled original run drains; the promoted run drives.
 
@@ -564,7 +569,7 @@ func TestSteer_RelaySendErrSingleOwner(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: "/ws"})
+	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}

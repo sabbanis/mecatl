@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stacklok/mecatl/engine/adapter/memledger"
 	"github.com/stacklok/mecatl/engine/adapter/mockllm"
 	"github.com/stacklok/mecatl/engine/adapter/permpolicy"
 	"github.com/stacklok/mecatl/engine/adapter/permstore"
@@ -87,13 +88,13 @@ func scenario3Call(id, name string, argMap map[string]string) session.ToolCall {
 // TestPathEscapePosture_Scenario3_YoloWriteEscapeAllowed pins AC3.1: at
 // posture yolo, Write to an out-of-root absolute path creates the file (and a
 // second Write replaces it) — the relax flows through the ordinary FS tool,
-// never a Bash workaround, and never surfaces an ask at yolo.
+// never a Shell workaround, and never surfaces an ask at yolo.
 func TestPathEscapePosture_Scenario3_YoloWriteEscapeAllowed(t *testing.T) {
 	t.Parallel()
 	f := setupWriteFS(t)
 	create := scenario3Call("w1", "Write", map[string]string{"path": f.target, "content": "yolo-escape-content-9b2c"})
 	replace := scenario3Call("w2", "Write", map[string]string{"path": f.target, "content": "yolo-escape-content-REPLACED"})
-	built, err := Build(context.Background(), writeEscapeCfg(t, f, PostureYolo,
+	built, err := buildIsolated(t, context.Background(), writeEscapeCfg(t, f, PostureYolo,
 		mockllm.ToolCallTurn(create),
 		mockllm.ToolCallTurn(replace),
 		mockllm.TextTurn("done"),
@@ -102,7 +103,7 @@ func TestPathEscapePosture_Scenario3_YoloWriteEscapeAllowed(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 	defer built.Close()
-	sess, err := built.Service.CreateSession(context.Background(), f.workspace, session.ModeDefault, session.Limits{})
+	sess, err := built.Service.CreateSession(context.Background(), session.ModeDefault, session.Limits{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -152,7 +153,7 @@ func TestPathEscapePosture_Scenario3_AutoWriteEscapeAsks(t *testing.T) {
 		t.Parallel()
 		f := setupWriteFS(t)
 		call := scenario3Call("w1", "Write", map[string]string{"path": f.target, "content": "must-never-land"})
-		built, err := Build(context.Background(), writeEscapeCfg(t, f, PostureAuto,
+		built, err := buildIsolated(t, context.Background(), writeEscapeCfg(t, f, PostureAuto,
 			mockllm.ToolCallTurn(call),
 			mockllm.TextTurn("done"),
 		))
@@ -160,7 +161,7 @@ func TestPathEscapePosture_Scenario3_AutoWriteEscapeAsks(t *testing.T) {
 			t.Fatalf("Build: %v", err)
 		}
 		defer built.Close()
-		sess, err := built.Service.CreateSession(context.Background(), f.workspace, session.ModeDefault, session.Limits{})
+		sess, err := built.Service.CreateSession(context.Background(), session.ModeDefault, session.Limits{})
 		if err != nil {
 			t.Fatalf("CreateSession: %v", err)
 		}
@@ -194,7 +195,7 @@ func TestPathEscapePosture_Scenario3_AutoWriteEscapeAsks(t *testing.T) {
 		t.Parallel()
 		f := setupWriteFS(t)
 		call := scenario3Call("w1", "Write", map[string]string{"path": f.target, "content": "auto-escape-content-allowed"})
-		built, err := Build(context.Background(), writeEscapeCfg(t, f, PostureAuto,
+		built, err := buildIsolated(t, context.Background(), writeEscapeCfg(t, f, PostureAuto,
 			mockllm.ToolCallTurn(call),
 			mockllm.TextTurn("done"),
 		))
@@ -202,7 +203,7 @@ func TestPathEscapePosture_Scenario3_AutoWriteEscapeAsks(t *testing.T) {
 			t.Fatalf("Build: %v", err)
 		}
 		defer built.Close()
-		sess, err := built.Service.CreateSession(context.Background(), f.workspace, session.ModeDefault, session.Limits{})
+		sess, err := built.Service.CreateSession(context.Background(), session.ModeDefault, session.Limits{})
 		if err != nil {
 			t.Fatalf("CreateSession: %v", err)
 		}
@@ -329,7 +330,7 @@ func TestPathEscapePosture_Scenario3_EditLedgerOutOfRoot(t *testing.T) {
 		"path": canonical, "old_string": "edited-via-alias", "new_string": "edited-after-change",
 	})
 
-	built, err := Build(context.Background(), writeEscapeCfg(t, f, PostureYolo,
+	built, err := buildIsolated(t, context.Background(), writeEscapeCfg(t, f, PostureYolo,
 		// 1: Read canonical → Edit via the `..` alias — the cross-form ledger
 		//    key must match, so this edit SUCCEEDS.
 		mockllm.ToolCallTurn(read, editViaAlias),
@@ -347,7 +348,7 @@ func TestPathEscapePosture_Scenario3_EditLedgerOutOfRoot(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 	defer built.Close()
-	sess, err := built.Service.CreateSession(context.Background(), f.workspace, session.ModeDefault, session.Limits{})
+	sess, err := built.Service.CreateSession(context.Background(), session.ModeDefault, session.Limits{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -370,7 +371,7 @@ func TestPathEscapePosture_Scenario3_EditLedgerOutOfRoot(t *testing.T) {
 		entered:   make(chan struct{}),
 		release:   make(chan struct{}),
 	}
-	env, err := tool.NewEnvironment(session.EnvironmentRef{Kind: session.EnvKindLocal, ID: f.workspace}, gate, nil)
+	env, err := tool.NewEnvironment(sess.EnvironmentRef, gate, memledger.New(), nil)
 	if err != nil {
 		t.Fatalf("NewEnvironment: %v", err)
 	}
@@ -522,7 +523,7 @@ func TestPathEscapePosture_Scenario3_WriteEscapeMutateSerial(t *testing.T) {
 	f := setupWriteFS(t)
 	w1 := scenario3Call("w1", "Write", map[string]string{"path": filepath.Join(f.outside, "a.txt"), "content": "A"})
 	w2 := scenario3Call("w2", "Write", map[string]string{"path": filepath.Join(f.outside, "b.txt"), "content": "B"})
-	built, err := Build(context.Background(), writeEscapeCfg(t, f, PostureYolo,
+	built, err := buildIsolated(t, context.Background(), writeEscapeCfg(t, f, PostureYolo,
 		mockllm.ToolCallTurn(w1, w2),
 		mockllm.TextTurn("done"),
 	))
@@ -530,7 +531,7 @@ func TestPathEscapePosture_Scenario3_WriteEscapeMutateSerial(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 	defer built.Close()
-	sess, err := built.Service.CreateSession(context.Background(), f.workspace, session.ModeDefault, session.Limits{})
+	sess, err := built.Service.CreateSession(context.Background(), session.ModeDefault, session.Limits{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -538,8 +539,8 @@ func TestPathEscapePosture_Scenario3_WriteEscapeMutateSerial(t *testing.T) {
 	// reads its workspace at start). The 50ms entry pause makes a genuine
 	// overlap unmissable.
 	var inflight, maxSeen atomic.Int32
-	env, err := tool.NewEnvironment(session.EnvironmentRef{Kind: session.EnvKindLocal, ID: f.workspace},
-		newSerialProbeWorkspace(t, f.workspace, &inflight, &maxSeen, 50*time.Millisecond), nil)
+	env, err := tool.NewEnvironment(sess.EnvironmentRef,
+		newSerialProbeWorkspace(t, f.workspace, &inflight, &maxSeen, 50*time.Millisecond), memledger.New(), nil)
 	if err != nil {
 		t.Fatalf("NewEnvironment: %v", err)
 	}
@@ -601,7 +602,7 @@ func TestPathEscapePosture_Scenario3_WriteEscapeServedThroughOsRoot(t *testing.T
 	}
 
 	call := scenario3Call("w1", "Write", map[string]string{"path": linkTarget, "content": "must-never-land-through-symlink"})
-	built, err := Build(context.Background(), writeEscapeCfg(t, f, PostureYolo,
+	built, err := buildIsolated(t, context.Background(), writeEscapeCfg(t, f, PostureYolo,
 		mockllm.ToolCallTurn(call),
 		mockllm.TextTurn("done"),
 	))
@@ -609,7 +610,7 @@ func TestPathEscapePosture_Scenario3_WriteEscapeServedThroughOsRoot(t *testing.T
 		t.Fatalf("Build: %v", err)
 	}
 	defer built.Close()
-	sess, err := built.Service.CreateSession(context.Background(), f.workspace, session.ModeDefault, session.Limits{})
+	sess, err := built.Service.CreateSession(context.Background(), session.ModeDefault, session.Limits{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}

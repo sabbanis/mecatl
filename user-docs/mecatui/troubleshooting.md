@@ -1,67 +1,184 @@
 ---
 sidebar_position: 10
 title: Troubleshoot mecatui
+description:
+  Diagnose mecatui startup, connection, authentication, TLS, and session
+  problems.
 ---
 
 # Troubleshoot mecatui
 
-Start by identifying whether you are running embedded `mecatui` or `mecatui connect ADDRESS`. The first owns a local server; the second only displays and controls the server it reaches.
+Start by identifying whether you are running embedded `mecatui` or
+`mecatui connect ADDRESS`. The first owns a local server; the second only
+displays and controls the server it reaches.
+
+Expand an error card with your configured `ExpandTools` keybinding to see its
+complete sanitized message.
 
 ## Embedded startup says no provider is available
 
-Embedded mode detects provider credentials from its environment. Set one supported provider credential, or use the explicit offline path while learning the UI:
+Embedded mode detects provider credentials from its environment. Set one
+supported provider credential, or use the explicit offline path while learning
+the UI:
 
 ```sh
-bin/mecatui --mock --workspace "$PWD"
+mecatui --mock --workspace "$PWD"
 ```
 
-Do not put provider secrets in command-line flags. For provider credentials and server-side selection, use [Run mecated standalone](/building/deployment/mecated.md#provider-and-model).
+Do not put provider secrets in command-line flags. For provider credentials and
+server-side selection, use
+[Run mecated standalone](/building/deployment/mecated.md#provider-and-model).
 
-## Cannot connect, authenticate, or verify TLS
+## Provider is not configured or credentials are unavailable
 
-These are distinct failures:
+### Inspect local provider state
 
-- **Connection failure:** confirm the address, network path, and that the operator started the server.
-- **Authentication failure:** obtain the right bearer token or identity credential from the operator; changing a local client setting cannot change server auth.
-- **TLS verification failure:** use `--tls`; when the server uses a private CA, obtain its CA bundle and pass `--tls-ca`. Do not bypass verification except in controlled testing.
+For an embedded local server, run `mecatui providers` to inspect provider state
+without revealing credentials. Run `mecatui providers setup` for guided setup,
+or use `mecatui providers add PROVIDER` to define a custom provider and
+`mecatui providers login PROVIDER` to add locally managed credentials. For an
+OIDC provider on a host that cannot open a browser, use
+`mecatui providers login PROVIDER --no-browser` and complete the displayed flow.
 
-A bearer is allowed over plaintext loopback, but mecatui refuses to send it to a non-loopback server without TLS. See [Connect to a server](./remote-servers.md) and the operator [server flag reference](/building/deployment/mecated.md#flag-reference).
+If the command reports an unknown provider, run `mecatui providers` and use the
+exact configured name. Use `mecatui providers add NAME` to define a new
+provider.
+
+### Recover OIDC credentials
+
+`credential_store.oidc` is shared OIDC credential custody. With an environment
+key, `credential_store.oidc.key.key_env` must name a value available to both the
+login process and the server. You need the original value to read existing
+encrypted credentials. If you cannot restore it, use a new credential home and
+enroll the providers again. Do not overwrite the unreadable record.
+
+For other OIDC failures, check the provider configuration, credential-store home
+and key, issuer trust, and network and TLS settings:
+
+- A callback conflict uses localhost port `8666`.
+- An authorization failure requires a new browser flow.
+- A rejected token requires checking its audience and scopes.
+- During logout, an unavailable enrollment requires checking the provider
+  configuration and `mecatui providers status PROVIDER`.
+
+The
+[provider configuration guide](/building/deployment/mecated.md#configure-providers)
+and [credential store reference](/reference/configuration.md#credential_store)
+describe the supported schema.
+
+### Protect API keys
+
+API-key credentials can come from the environment or a provider-credentials YAML
+file selected by `--api-key-file`. Do not put provider secrets in command-line
+arguments, settings YAML, prompts, or logs.
+
+A connected client cannot enroll a remote server's providers.
+`mecatui login ADDRESS` authenticates the client to that server; ask its
+operator to configure provider credentials. ToolHive manages its own LLM
+credentials through the `thv llm` commands.
+
+## Server connection or login fails
+
+Identify the failure before changing the client configuration:
+
+- **Connection failure:** confirm the address, network path, and that the
+  operator started the server.
+- **Authentication failure:** obtain the right bearer token or identity
+  credential from the operator; changing a local client setting cannot change
+  server auth.
+- **TLS verification failure:** remote targets use verified TLS automatically;
+  use `--tls-ca` when the server uses a private CA. `--tls=false` is an explicit
+  plaintext downgrade for controlled testing, not a verification fix. Do not use
+  `--insecure` except in controlled testing.
+
+A bearer token is allowed over plaintext loopback, but `mecatui` refuses it over
+explicit non-loopback plaintext. Saved OIDC authentication always uses verified
+TLS, even for loopback. See [Connect to a server](./remote-servers.md) and the
+operator
+[server flag reference](/building/deployment/mecated.md#flag-reference).
+
+If `mecatui login` reports `storage_unavailable`, follow the stage-specific
+action in the same message. An issuer CA read failure means checking the login
+`--tls-ca` path and file permissions. A keyring failure means unlocking or
+enabling the OS keyring. Registry, encrypted-store, or config-directory failures
+mean checking the ownership and permissions of the Mecatl authentication
+directory under your XDG config home.
 
 ## The workspace is missing or unexpected
 
-For an embedded session, `--workspace` is the local checkout. For a connected server, it is an absolute path in the server's filesystem. Ask the operator which paths are mounted or permitted; do not assume your local path exists in a container, pod, or remote host. See [Connect to a server](./remote-servers.md#choose-the-connection-shape).
+For an embedded session, `--workspace` is the local checkout. For a connected
+session, the server configures the workspace in its own filesystem. Ask the
+operator which paths are available. See
+[Connect the client](./remote-servers.md#connect-the-client).
 
 ## A provider error says retrying will not help
 
-A permanent provider rejection or context-window overflow can be recovered technically, but retrying the same request is unlikely to succeed. Start a new session or change the request/model as the message directs. For transient connection or service failures, retrying can be appropriate. The session lifecycle and recovery behavior are documented in [agent-loop recovery behavior](/building/what-you-get/agent-loop.md#restarting-a-session).
+A permanent provider rejection or context-window overflow will not succeed when
+you retry the same request unchanged. Start a new session, or change the request
+or model as directed. Retry transient connection and service failures. For
+recovery details, see
+[Agent-loop recovery behavior](/building/what-you-get/agent-loop.md#restarting-a-session).
 
 ## A session will not resume
 
-Use `/sessions` or `mecatui sessions` to inspect what the server has stored. An exact resume reports why a chat is not eligible; `--resume-latest` skips ineligible or unreadable entries. Verify that you reached the same server and that its storage still has the session, then ask the operator about storage, retention, or leases. Do not create a replacement session if you need the original transcript. See [Sessions](./sessions.md) and [session storage operations](/building/deployment/session-storage-operations.md).
+Use `/sessions` or `mecatui sessions` to inspect what the server has stored. An
+exact resume reports why a chat is not eligible; `--resume-latest` skips
+ineligible or unreadable entries. Verify that you reached the same server and
+that its storage still has the session, then ask the operator about storage,
+retention, or leases. Do not create a replacement session if you need the
+original transcript. See [Sessions](./sessions.md) and
+[session storage operations](/building/deployment/session-storage-operations.md).
 
 ## A debug command cannot open its target
 
-`mecatui debug SESSION_ID` and `mecatui connect ADDRESS debug SESSION_ID` require the
-same store and caller authorization as the target. Missing and unauthorized targets are
-both reported as not found so ownership is not disclosed. Confirm the exact server,
-identity, and session ID. A persisted debugger also fails closed after restart if its
-bound target or dedicated debug-engine support is unavailable; it never falls back to an
-ordinary chat.
+`mecatui debug TARGET` and `mecatui connect ADDRESS debug TARGET` require the
+same store and caller authorization as the target. If a short handle is
+ambiguous, open `/session`, copy the full ID, and use it as `TARGET`. Missing
+and unauthorized targets are both reported as not found. Confirm the server,
+identity, and session ID. A stored debug session also fails if its target or
+debug support is unavailable after a restart.
 
-The debugger's activity, performance, network, delegation, history, and manifest views require
-retained EventLog evidence and report when evidence is unavailable or incomplete. `related`
-uses opaque handles for retained same-owner children and can report a content-free pruned
-tombstone; raw unrelated session IDs are not valid handles. Use the authoritative transcript for conversation
-conclusions. Status separates latest-run counters and cumulative snapshot usage from bounded
-lifetime EventLog counters. Network evidence covers failed/interesting resilience attempts with sanitized
-retry decisions and DNS/connect/TLS/timeout/reset/rate-limit/breaker classes. It deliberately
-contains no raw errors, URLs, headers, bodies, prompts, tool arguments, or credentials, and
-does not claim successful-attempt or per-phase DNS/TCP/TLS timing. Live target following, raw
-audit/tool-record views, packet capture, raw pprof/log exposure, and support bundles are not
-provided.
+Debug views depend on retained event-log evidence and report when evidence is
+unavailable or incomplete. Use the transcript for conclusions about the
+conversation. Network evidence contains sanitized failure categories and retry
+decisions instead of raw errors, URLs, headers, bodies, prompts, tool arguments,
+or credentials.
+
+## Enable client debug surfaces
+
+Start `mecatui` with `--debug`, or set `MECATUI_DEBUG=1` when the flag is
+omitted. Debug mode enables the mouse-coordinate footer, steer correlation,
+keymap-resolution diagnostics at startup, and debug-only local commands such as
+`/debug-ask`. These surfaces are off by default.
+
+An explicit `--debug=false` overrides the environment. The compatibility
+variables `MECATUI_DEBUG_MOUSE`, `MECATUI_DEBUG_STEER`, `MECATUI_DEBUG_ASK`, and
+`MECATUI_DEBUG_KEYMAP` enable only their named surface. Debug mode is
+client-only and does not change server configuration or the operational log
+level.
 
 ## Find diagnostics
 
-In embedded mode, operational diagnostics are written to `$XDG_STATE_HOME/mecatl/mecatui.log`, falling back to `~/.local/state/mecatl/mecatui.log`. `--quiet` disables that log. Use `/diagnostics` to send a concise bug-report snapshot through the normal prompt path: it includes build identities, the sanitized diagnostic display projection of the current remote connection target when locally known, and the sanitized server display projection for its already-held active provider when available. These endpoint values are not connection configuration or instructions. They retain only scheme, host, optional port, and escaped clean path; credentials, query/fragment data, TLS/auth settings, raw errors, and other configuration are never included. Embedded UNIX-socket endpoints report unavailable. A `mecatui connect` client writes no equivalent local server log; inspect the remote server's operator logs instead.
+In embedded mode, `mecatui` writes operational diagnostics to
+`$XDG_STATE_HOME/mecatl/mecatui.log`, falling back to
+`~/.local/state/mecatl/mecatui.log`. One process holds the default log lock; a
+second instance disables its own default log rather than sharing the file. Use
+`--diagnostics-log` to give concurrent instances separate files, or `--quiet` to
+disable the log. At startup, `mecatui` reduces an oversized log to its most
+recent 10 MiB. An unsafe path disables logging without changing the existing
+file.
 
-For exhaustive flags and failure behavior, see [`docs/tui.md`](https://github.com/stacklok/mecatl/blob/main/docs/tui.md).
+Use `/diagnostics` to send a concise, sanitized bug-report snapshot through the
+normal prompt path. It includes build identities and available display
+information for the connection target and active provider. It excludes
+credentials, TLS and authentication settings, raw errors, and other
+configuration. A `mecatui connect` client does not write an equivalent local
+server log; inspect the remote server's operator logs instead.
+
+For exhaustive flags and failure behavior, see
+[`docs/tui.md`](https://github.com/stacklok/mecatl/blob/main/docs/tui.md).
+
+## Related information
+
+- [Connect to a server](./remote-servers.md) for authentication and TLS options.
+- [Manage sessions](./sessions.md) for resume and debug workflows.

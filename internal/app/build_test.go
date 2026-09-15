@@ -251,7 +251,7 @@ func TestRequestManifestGatePropagatesToEveryEngineShape(t *testing.T) {
 // error (the caller closes a successful build).
 func buildWithDefaults(t *testing.T, defaultProvider, defaultModel string, diag port.Diagnostics) (*Built, error) {
 	t.Helper()
-	return Build(context.Background(), Config{
+	return buildIsolated(t, context.Background(), Config{
 		Workspace:       t.TempDir(),
 		NoSoul:          true,
 		DefaultProvider: defaultProvider,
@@ -319,10 +319,10 @@ func TestBuildAcceptsCataloguedDefaultPair(t *testing.T) {
 		t.Fatalf("configured-default INFO emitted %d times, want exactly 1 (build-once fact)", n)
 	}
 
-	if _, err := built.Service.CreateSession(ctx, t.TempDir(), session.ModeDefault, defaultLimits()); err != nil {
+	if _, err := built.Service.CreateSession(ctx, session.ModeDefault, defaultLimits()); err != nil {
 		t.Fatalf("CreateSession(zero-selector): %v", err)
 	}
-	if _, err := built.Service.CreateSessionWithProvider(ctx, t.TempDir(), session.ModeDefault, defaultLimits(),
+	if _, err := built.Service.CreateSessionWithProvider(ctx, session.ModeDefault, defaultLimits(),
 		server.ProviderSelector{ProviderID: providerOpenRouter}); err != nil {
 		t.Fatalf("CreateSessionWithProvider(selector): %v", err)
 	}
@@ -366,7 +366,7 @@ func TestBuildAcceptsProviderOnlyDefault(t *testing.T) {
 		t.Fatalf("configured-default INFO emitted %d times, want exactly 1", n)
 	}
 
-	sess, err := built.Service.CreateSession(ctx, t.TempDir(), session.ModeDefault, defaultLimits())
+	sess, err := built.Service.CreateSession(ctx, session.ModeDefault, defaultLimits())
 	if err != nil {
 		t.Fatalf("CreateSession(zero-selector): %v", err)
 	}
@@ -469,7 +469,7 @@ func TestValidateDefaultModelFactArms(t *testing.T) {
 // junk Default* fields must NOT error (the mock provider isn't catalogued and
 // the mock path never consults the resolved default).
 func TestBuildIgnoresDefaultsUnderUseMock(t *testing.T) {
-	built, err := Build(context.Background(), Config{
+	built, err := buildIsolated(t, context.Background(), Config{
 		Workspace:       t.TempDir(),
 		Model:           "mock",
 		UseMock:         true,

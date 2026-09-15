@@ -100,11 +100,11 @@ authoritative snapshot transcript, not EventLog. The TUI remains a proto-free cl
 **Acceptance:**
 - AC4.1: `/sessions` groups rows by server-authored kind into Chats, Scheduled runs, and Child runs; team-member rows are not presented as resumable teams.
   - verify: `TestSessionContinuityUX_Scenario4_FamilyTabs`
-- AC4.2: Each titled row also shows a display-only digest handle; the current chat stays visible with a `current` marker and cannot be redundantly opened.
-  - verify: `TestSessionContinuityUX_Scenario4_CurrentAndDigest`
-- AC4.3: Digest handles are terminal-safe, expand on collision within the visible page, and are never sent to server APIs as session IDs.
-  - verify: `TestADR_0108_DisplayDigestIsNotAnID`
-- AC4.4: Filtering matches title, full ID, visible digest, model, workspace, and child relationship names case-insensitively across fetched pages.
+- AC4.2: Each titled row shows ADR-0285's fixed ordinary session handle; the current chat stays visible with a `current` marker and cannot be redundantly opened.
+  - verify: `TestPredictableSessionHandles_Scenario1_SharedNormalHandle`
+- AC4.3: Ordinary handles are terminal-safe fixed projections and are never sent to server APIs as session IDs; debug uses one TARGET grammar where exact full-ID equality wins and ambiguous projections require the copied full ID.
+  - verify: `TestPredictableSessionHandles_Scenario3_PresentationParitySafetyAndLayering`
+- AC4.4: Filtering matches title, full ID, visible handle, model, workspace, and child relationship names case-insensitively across fetched pages.
   - verify: `TestSessionContinuityUX_Scenario4_SearchFields`
 - AC4.5: Inspecting a scheduled or child run leaves the active prompt target, live subscription, capabilities, title, model, and conversation unchanged; Escape restores the prior view.
   - verify: `TestSessionContinuityUX_Scenario4_InspectionPreservesActiveChat`
@@ -112,7 +112,7 @@ authoritative snapshot transcript, not EventLog. The TUI remains a proto-free cl
   - verify: `TestInvariant_transcript_failure_never_enables_hidden_context`
 - AC4.7: Closed capability reason codes, not parsed prose, determine enabled actions; caller-visible text reveals no owner/lease identity or backend path.
   - verify: `TestSessionContinuityUX_Scenario4_ReasonCodes`
-- AC4.8: Palette text, `?` help, overlay hints, `docs/tui.md`, `docs/usage.md`, and `user-docs/` consistently say Continue for chats and Inspect for scheduled/child runs.
+- AC4.8: Palette text, `?` help, overlay hints, `docs/tui.md`, and relevant `user-docs/` pages consistently say Continue for chats and Inspect for scheduled/child runs.
   - verify: inspection — `task docs` and `task site:build` pass with the reviewed wording
 
 ---
@@ -131,7 +131,7 @@ affordance is discoverable under existing TUI help conventions.
   - verify: `TestSessionContinuityUX_Scenario5_CopyExactID`
 - AC5.3: Stored-session continuation, model carryover, effort fork, and worktree switch each update the details/copy target to the final adopted ID.
   - verify: `TestSessionContinuityUX_Scenario5_RebindMatrix`
-- AC5.4: The compact header uses the display digest, remains width-safe, and `/session` is discoverable from slash completion and `?` help.
+- AC5.4: The compact header uses ADR-0285's fixed ordinary handle, remains width-safe, and `/session` is discoverable from slash completion and `?` help.
   - verify: `TestSessionContinuityUX_Scenario5_HeaderAndHelp`
 - AC5.5: Newline/control-bearing, empty, and very long valid-UTF-8 IDs render safely while clipboard copy remains exact; a persisted invalid-UTF-8 ID is rejected as corrupt before protobuf mapping rather than repaired into a different handle.
   - verify: `TestInvariant_session_details_render_safe_copy_exact`
@@ -200,7 +200,7 @@ run API.
 - Promote ADR-0217 to Accepted with Scenario 1; after acceptance it is frozen.
 - Regenerate protobufs/contracts and the engine API baseline/CHANGELOG when applicable.
 - Extend store/source/driver conformance for taxonomy and paging.
-- Update `docs/architecture.md`, `docs/design/IMPLEMENTATION-NOTES.md`, `docs/tui.md`, `docs/usage.md`, CLI help, and `user-docs/` in the same PR.
+- Update `docs/architecture.md`, `docs/design/IMPLEMENTATION-NOTES.md`, `docs/tui.md`, CLI help, and relevant `user-docs/` pages in the same PR.
 - Keep session retention, ownership, lease, environment reattachment, UTF-8, and child-isolation tests green.
 
 ## Sequencing recommendation
@@ -227,7 +227,7 @@ Scenarios 1–4, resolving overlap against ADR-0217 rather than keeping its olde
 ## Definition of done
 
 1. `task lint` and `task test` pass (both modules, `-race`).
-2. `task docs` regenerates `llms.txt` and the matlatl strict link gate is green.
+2. `task docs` regenerates the configuration reference and the matlatl strict link gate is green.
 3. `task api:check` passes, or `task api:update` and a classified `engine/CHANGELOG.md` note land.
 4. `task ac-trace-strict` resolves every proof after this plan is `landed`.
 5. Every named test above is grep-locatable and green.

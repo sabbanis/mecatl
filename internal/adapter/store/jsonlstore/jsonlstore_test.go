@@ -77,7 +77,7 @@ func TestCreateCollisionLeavesCurrentFamilyUntouched(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New(second): %v", err)
 	}
-	winner := session.New("create-collision", session.ModeDefault, "/winner", session.Limits{}, time.Unix(1, 0).UTC())
+	winner := session.New("create-collision", session.ModeDefault, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/winner", Revision: "in-tree-v1"}, session.Limits{}, time.Unix(1, 0).UTC())
 	if err := first.Save(ctx, winner); err != nil {
 		t.Fatalf("Save(winner): %v", err)
 	}
@@ -104,7 +104,7 @@ func TestCreateCollisionLeavesCurrentFamilyUntouched(t *testing.T) {
 		}
 	}
 
-	loser := session.New(winner.ID, session.ModeAccept, "/loser", session.Limits{MaxTurns: 9}, time.Unix(2, 0).UTC())
+	loser := session.New(winner.ID, session.ModeAccept, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/loser", Revision: "in-tree-v1"}, session.Limits{MaxTurns: 9}, time.Unix(2, 0).UTC())
 	if err := second.Create(ctx, loser); !errors.Is(err, port.ErrSessionAlreadyExists) {
 		t.Fatalf("Create(collision) = %v, want ErrSessionAlreadyExists", err)
 	}
@@ -149,7 +149,7 @@ func TestNewCreatesDirAt0700(t *testing.T) {
 
 func driven(t *testing.T) *session.Session {
 	t.Helper()
-	s := session.New("sess-1", session.ModePlan, "/ws", session.Limits{
+	s := session.New("sess-1", session.ModePlan, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/ws", Revision: "in-tree-v1"}, session.Limits{
 		MaxTurns: 7, MaxToolCalls: 11, MaxConsecutiveFailures: 4,
 	}, time.Unix(1700000000, 0).UTC())
 	_ = s.BeginTurn()
@@ -188,7 +188,7 @@ func TestCurrentSnapshotLatestWins(t *testing.T) {
 		t.Fatalf("Save#1: %v", err)
 	}
 	// Advance the session and save again.
-	_ = s.PauseForApproval(session.PendingAsk{AskID: "a1", Tool: "Bash", Reason: "approve"})
+	_ = s.PauseForApproval(session.PendingAsk{AskID: "a1", Tool: "Shell", Reason: "approve"})
 	if err := st.Save(ctx, s); err != nil {
 		t.Fatalf("Save#2: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestLoadNotFound(t *testing.T) {
 
 func TestToolCallLogParseable(t *testing.T) {
 	st, dir := newStore(t)
-	call := session.NewToolCall("call-7", "Bash", json.RawMessage(`{"cmd":"ls"}`))
+	call := session.NewToolCall("call-7", "Shell", json.RawMessage(`{"cmd":"ls"}`))
 	res := session.NewToolResult("call-7", "file.txt")
 	st.ToolCall("sess-1", call, res, 800*time.Microsecond, 1500*time.Microsecond)
 	st.ToolCall("sess-1", session.NewToolCall("call-8", "Read", nil),
@@ -268,8 +268,8 @@ func TestToolCallLogParseable(t *testing.T) {
 	if rec["type"] != "tool_call" {
 		t.Errorf("type = %v, want tool_call", rec["type"])
 	}
-	if rec["tool"] != "Bash" {
-		t.Errorf("tool = %v, want Bash", rec["tool"])
+	if rec["tool"] != "Shell" {
+		t.Errorf("tool = %v, want Shell", rec["tool"])
 	}
 	if rec["call_id"] != "call-7" {
 		t.Errorf("call_id = %v, want call-7", rec["call_id"])
@@ -296,7 +296,7 @@ func TestToolCallLogParseable(t *testing.T) {
 func TestSessionIDSanitizedToSafeFilename(t *testing.T) {
 	ctx := context.Background()
 	st, dir := newStore(t)
-	s := session.New("../escape/../x", session.ModeDefault, "/w", session.Limits{}, time.Unix(0, 0).UTC())
+	s := session.New("../escape/../x", session.ModeDefault, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/w", Revision: "in-tree-v1"}, session.Limits{}, time.Unix(0, 0).UTC())
 	if err := st.Save(ctx, s); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -349,7 +349,7 @@ func TestListDecodesRealIDAndMtime(t *testing.T) {
 	ctx := context.Background()
 	st, dir := newStore(t)
 	const id = session.SessionID("team-abc/lead") // sanitized on disk, real in the snapshot
-	s := session.New(id, session.ModeDefault, "/ws", session.Limits{}, time.Unix(1700000000, 0).UTC())
+	s := session.New(id, session.ModeDefault, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/ws", Revision: "in-tree-v1"}, session.Limits{}, time.Unix(1700000000, 0).UTC())
 	if err := st.Save(ctx, s); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -497,8 +497,8 @@ func TestEventLogAppendReadCumulative(t *testing.T) {
 	st, dir := newStore(t)
 	want := []session.Event{
 		{Type: session.EvToolCall, Seq: 1, ToolCall: &session.ToolCall{ID: "c1", Name: "Read"}},
-		{Type: session.EvPermissionAsk, Seq: 2, Ask: &session.PendingAsk{AskID: "a1", Tool: "Bash"}},
-		{Type: session.EvApproval, Seq: 3, Approval: &session.ApprovalPayload{AskID: "a1", Verdict: session.VerdictStringAllowAlways, Tool: "Bash", AllowAlways: true}},
+		{Type: session.EvPermissionAsk, Seq: 2, Ask: &session.PendingAsk{AskID: "a1", Tool: "Shell"}},
+		{Type: session.EvApproval, Seq: 3, Approval: &session.ApprovalPayload{AskID: "a1", Verdict: session.VerdictStringAllowAlways, Tool: "Shell", AllowAlways: true}},
 		{Type: session.EvResult, Seq: 4, Result: &session.ResultPayload{Stop: session.StopEndTurn}},
 	}
 	for _, ev := range want {

@@ -61,11 +61,11 @@ func TestApproveAfterRestartE2E(t *testing.T) {
 			session.NewToolCall("w1", "Write", json.RawMessage(`{"path":"note.txt","content":"survived the restart"}`)),
 		))
 	}
-	built1, err := Build(ctx, cfg1)
+	built1, err := buildIsolated(t, ctx, cfg1)
 	if err != nil {
 		t.Fatalf("Build #1: %v", err)
 	}
-	sess, err := built1.Service.CreateSession(ctx, workspace, session.ModeDefault, session.Limits{})
+	sess, err := built1.Service.CreateSession(ctx, session.ModeDefault, session.Limits{})
 	if err != nil {
 		built1.Close()
 		t.Fatalf("CreateSession: %v", err)
@@ -101,7 +101,7 @@ func TestApproveAfterRestartE2E(t *testing.T) {
 	cfg2.providerConstructor = func(_ Config, _, _, _ string) port.LLMProvider {
 		return mockllm.New(mockllm.TextTurn("done after approval"))
 	}
-	built2, err := Build(ctx, cfg2)
+	built2, err := buildIsolated(t, ctx, cfg2)
 	if err != nil {
 		t.Fatalf("Build #2: %v", err)
 	}

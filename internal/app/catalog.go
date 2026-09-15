@@ -25,6 +25,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/stacklok/mecatl/engine/adapter/memledger"
 	coreskillfs "github.com/stacklok/mecatl/engine/adapter/skillfs"
 	"github.com/stacklok/mecatl/engine/agent"
 	"github.com/stacklok/mecatl/engine/learning"
@@ -131,10 +132,15 @@ type catalogAssets struct {
 	deliveryQueue port.DeliveryQueue
 	// learningAdmission is the ONE process-wide completion counter shared by the
 	// default and every per-session/provider reviewer.
-	learningAdmission     *learningAdmission
-	reflectionCoordinator *reflectionCoordinator
-	reflectionRepository  learning.ProposalRepository
-	rootCatalog           *tool.Catalog
+	learningAdmission        *learningAdmission
+	reflectionLifecycle      *materializationLifecycle
+	reflectionCoordinator    *reflectionCoordinator
+	reflectionRepository     learning.ProposalRepository
+	attemptRepository        learning.AttemptRepository
+	automaticAdmissionLedger learning.AutomaticAdmissionLedger
+	rootCatalog              *tool.Catalog
+	modelInventory           *resolvedModelInventory
+	sessionFactoryWithTools  server.SessionEngineWithToolsFactory
 }
 
 // catalogSession is the PER-CATALOG variation: the resolved provider/model the
@@ -153,7 +159,7 @@ type catalogSession struct {
 	narrate    bool
 	// noFS selects the NO-FILESYSTEM catalog profile (the "no-fs" session
 	// profile, issue #55): the core tier registers tools.NoFS() (WebFetch only)
-	// instead of tools.All()+Bash, Parallel and SkillDraft are skipped (both are
+	// instead of tools.All()+Shell, Parallel and SkillDraft are skipped (both are
 	// filesystem acts — branch forks and draft files), and the Subagent/Team
 	// children get the file-less child surface (noFSChildCatalog) with NO forkers
 	// and NO shell. Everything else (global/client MCP, resource meta-tools,
@@ -174,6 +180,9 @@ type catalogSession struct {
 	// per-session engine is assembled. The Skill tool's Spec and Execute therefore
 	// share one principal-scoped catalog selection.
 	skillPartitions []learning.SkillPartition
+	// sessionTools are explicit wrappers owned by one host attachment. They are
+	// never recovered from context values or a global MCP manager.
+	sessionTools []tool.Tool
 }
 
 // assembleCatalog registers every tool family into a fresh catalog, in the
@@ -203,6 +212,16 @@ func assembleCatalog(ctx context.Context, cfg Config, reg *providerRegistry, sto
 	classified.captureEach(coreToolClassification, func() {
 		registerCoreTools(cfg, cat, s.narrate, s.noFS, a.searchProvider)
 	})
+	for _, sessionTool := range s.sessionTools {
+		// A direct global manager retains ownership of its existing query wrapper.
+		// The attachment-bound variant is for broker-only session catalogues.
+		if sessionTool.Spec().Name == "CallMcpWithQuery" && a.globalMgr != nil {
+			continue
+		}
+		classified.mustRegister(sessionTool, classification(server.KindDerived,
+			"session-bound wrapper supplied explicitly by the host attachment"))
+	}
+
 	for _, extra := range cfg.extraCoreTools {
 		entry, ok := cfg.extraCoreToolClassifications[extra.Spec().Name]
 		if !ok {
@@ -212,10 +231,15 @@ func assembleCatalog(ctx context.Context, cfg Config, reg *providerRegistry, sto
 		classified.mustRegister(extra, &entry)
 	}
 
+	if modelDiscoveryAvailable(reg, a.modelInventory) {
+		classified.mustRegister(newAgentModelDiscoveryTool(a.modelInventory), classification(server.KindSharedInfrastructure,
+			"bounded projection of the composition-owned resolved model inventory"))
+	}
+
 	// PresentPlan (issue #206, Wave 3) — the plan-approval gate's signalling tool.
 	// Registered in EVERY catalog (shared AND per-session, both no-FS and default
 	// profiles) so TestPerSessionCatalogMatchesSharedCatalog's name-set equality
-	// holds; it is NOT in the no-FS excluded set {Read,Edit,Write,Grep,Glob,Bash,
+	// holds; it is NOT in the no-FS excluded set {Read,Edit,Write,Grep,Glob,Shell,
 	// Parallel,SkillDraft} (it is a signalling affordance, not a filesystem act).
 	// The tool implements tool.PlanOnly, so the catalog's mode projection excludes
 	// it from every non-plan mode (Available/Specs/AdvertisedSpecs); the dispatcher's
@@ -379,7 +403,7 @@ func registerParallelTool(ctx context.Context, cfg Config, cat *tool.Catalog, re
 		return
 	}
 	// WithRunner (issue #462): the forker mints a BOUND runner for each branch
-	// namespace so a forked branch's Bash observes its OWN force-copy, never the
+	// namespace so a forked branch's Shell observes its OWN force-copy, never the
 	// parent base. The builder applies the SAME trust-UNGATED hardening
 	// buildForceCopyRunner does (force-copy forks do no fork-time git, so the
 	// trust gate does not apply — see the comment above).
@@ -390,7 +414,7 @@ func registerParallelTool(ctx context.Context, cfg Config, cat *tool.Catalog, re
 			}
 			return newHardenedRunnerForRoot(cfg, childRoot)
 		}))
-	// Parallel branches run Bash through the HARDENED, trust-UNGATED runner (issue
+	// Parallel branches run Shell through the HARDENED, trust-UNGATED runner (issue
 	// #40) — the same construction as Mutating team members (buildForceCopyRunner).
 	// Ungated because a force-copy fork is created by a pure FS copy, with NO git
 	// invocation at fork time (no checkout, so no smudge filter or hook can fire) —
@@ -466,12 +490,13 @@ func registerTeamTools(ctx context.Context, cfg Config, cat *tool.Catalog, reg *
 		}
 		return
 	}
-	factory, fk, roFk, sharedBaseWS, teamHooks := buildTeamWiring(ctx, cfg, reg, s.provider, s.providerID, s.model, refMgr, a.agentReg, a.skillIndex, a, s.noFS)
+	factory, fk, roFk, sharedBaseWorkspace, teamHooks := buildTeamWiring(ctx, cfg, reg, s.provider, s.providerID, s.model, refMgr, a.agentReg, a.skillIndex, a, s.noFS)
 	cat.MustRegister(agent.NewTeamTool(
 		agent.TeamMemberEngineFactory(factory),
 		agent.WithTeamToolForker(fk),
 		agent.WithTeamToolReadOnlyForker(roFk),
-		agent.WithTeamToolSharedBaseWorkspace(sharedBaseWS),
+		agent.WithTeamToolSharedBaseWorkspace(sharedBaseWorkspace),
+		agent.WithTeamToolReadLedgerFactory(func() tool.ReadLedger { return memledger.New() }),
 		agent.WithTeamToolHooks(teamHooks),
 		agent.WithTeamToolStore(store),
 		agent.WithTeamToolTokenBudget(cfg.MaxTeamTokens),
@@ -587,10 +612,12 @@ func registerScheduleTool(ctx context.Context, cfg Config, cat *tool.Catalog, a 
 func registerSkillFamily(ctx context.Context, cfg Config, cat *tool.Catalog, a catalogAssets, s catalogSession) {
 	if a.liveSkills != nil {
 		live := coreskillfs.NewLiveTool(a.liveSkills)
+		var skillTool tool.Tool = live
 		if len(s.skillPartitions) > 0 {
 			live = coreskillfs.NewLiveToolForPartitions(a.liveSkills, s.skillPartitions...)
+			skillTool = newHydratingSkillTool(ctx, cfg, a, live, s.skillPartitions)
 		}
-		if err := cat.Register(live); err != nil {
+		if err := cat.Register(skillTool); err != nil {
 			cfg.diag().Log(ctx, port.LevelWarn, "registering live skills failed; Skill tool disabled", "err", err)
 		}
 	} else if len(a.skills) > 0 {
@@ -619,7 +646,7 @@ func registerSkillFamily(ctx context.Context, cfg Config, cat *tool.Catalog, a c
 // team member) runs with: the six memory/user-model tools over the SHARED
 // flocked stores, WebFetch + WebSearch (search-then-fetch discovery), and the
 // server-global MCP tools — and nothing that touches a filesystem (no
-// Read/Grep/Glob, no Bash, no Edit/Write). A fresh
+// Read/Grep/Glob, no Shell, no Edit/Write). A fresh
 // catalog per call (the readOnlyExplorerCatalog idiom: one catalog per engine).
 // The global MCP tools are REUSED from the shared manager, never reconnected.
 func newNoFSClassifiedChildCatalog(ctx context.Context, cfg Config, a catalogAssets) *classifiedCatalog {

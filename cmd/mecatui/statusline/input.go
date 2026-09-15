@@ -10,7 +10,7 @@ import "time"
 // Commands receive this exact data as JSON. Template rendering receives a
 // private, StatusML-escaped projection so template interpolation cannot create
 // markup or terminal controls. The raw input remains available to commands for
-// ordinary data use such as querying Git from Workspace.Path.
+// ordinary display-safe status data.
 //
 // Renderer policy—clipping, safety/activity lanes, and context-bar glyph/style
 // selection—does not belong here. Header and footer available widths are facts
@@ -46,13 +46,13 @@ type ServerTarget struct {
 }
 
 // Session carries optional user-facing session facts. Title is empty when no
-// custom or generated title exists. Digest is the stable, display-safe shortened
-// session identifier used in the shipped header. Mode is the active permission
-// mode. ReasoningEffort is either empty (unset or unsupported) or one of "low",
-// "medium", "high", "xhigh", or "max".
+// custom or generated title exists. Handle is the fixed, terminal-safe escaped
+// session prefix used by ordinary mecatui presentation. Mode is the active
+// permission mode. ReasoningEffort is either empty (unset or unsupported) or one
+// of "low", "medium", "high", "xhigh", or "max".
 type Session struct {
 	Title           string
-	Digest          string
+	Handle          string
 	Mode            string
 	ReasoningEffort string
 }
@@ -107,13 +107,16 @@ type Context struct {
 	Percent int
 }
 
-// Workspace is the active session workspace only. Location is "local", "remote",
-// or "unknown". Path and Basename are populated only for a local workspace; remote
-// and unknown workspaces must not be presented as usable local command paths.
+// Workspace is the active session workspace's display-safe provenance. Location
+// is "local", "remote", or "unknown". Name is provider-supplied display metadata,
+// not a filesystem basename. Path is supplied to status templates through their
+// StatusML-escaped projection and to a direct local status command after the
+// privileged local-context RPC has returned an eligible local root. It is otherwise
+// empty and is not part of universal client projections.
 type Workspace struct {
 	Location string
+	Name     string
 	Path     string
-	Basename string
 }
 
 // Terminal provides measured dimensions and independently reserved columns for

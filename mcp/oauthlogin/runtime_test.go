@@ -3,6 +3,7 @@ package oauthlogin
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -61,6 +62,53 @@ func runWithLauncher(t *testing.T, launcher BrowserLauncher, authorize Authorize
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	return runtime.Authorize(ctx, testIssuer, authorize)
+}
+
+func TestADR_0325_RegistrationBoundCallbackPath(t *testing.T) {
+	path := callbackPrefix + base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{7}, callbackBytes))
+	runtime, err := New(Options{Launcher: launcherFunc(func(context.Context, string) error { return nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.AuthorizeWithCallbackPath(context.Background(), testIssuer, "/wrong", func(context.Context, string, func(context.Context, string) (Result, error)) error { return nil }); err == nil {
+		t.Fatal("invalid registration-bound path was accepted")
+	}
+
+	var redirects []string
+	for i := 0; i < 2; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		err = runtime.AuthorizeWithCallbackPath(ctx, testIssuer, path, func(ctx context.Context, redirect string, present func(context.Context, string) (Result, error)) error {
+			redirects = append(redirects, redirect)
+			parsed, parseErr := url.Parse(redirect)
+			if parseErr != nil || parsed.Path != path || parsed.Hostname() != "127.0.0.1" {
+				return fmt.Errorf("bound redirect = %q: %v", redirect, parseErr)
+			}
+			go func() {
+				req, _ := http.NewRequest(http.MethodGet, callbackURL(redirect, "code", fmt.Sprintf("state-%d", i), testIssuer), nil)
+				_ = request(t, req)
+			}()
+			result, presentErr := present(ctx, "https://as.example.test/authorize?state="+fmt.Sprintf("state-%d", i))
+			if presentErr == nil && result.State != fmt.Sprintf("state-%d", i) {
+				t.Fatalf("callback result = %#v", result)
+			}
+			return presentErr
+		})
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if redirects[0] == redirects[1] {
+		t.Fatalf("ephemeral callback port was reused: %q", redirects[0])
+	}
+
+	fixed, err := New(Options{RedirectURL: ExactRedirectURL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := fixed.AuthorizeWithCallbackPath(context.Background(), testIssuer, path, func(context.Context, string, func(context.Context, string) (Result, error)) error { return nil }); err == nil {
+		t.Fatal("registration-bound path conflicted with fixed redirect but was accepted")
+	}
 }
 
 func TestAuthorizeRealLoopbackHappyPath(t *testing.T) {
@@ -466,15 +514,9 @@ func TestUnauthenticatedProbeFloodDoesNotAbortValidCallback(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		// Raw TCP accepts and requests without the random callback capability are
-		// untrusted ambient loopback traffic, not authorization attempts.
+		// Requests without the random callback capability are untrusted ambient
+		// loopback traffic, not authorization attempts.
 		for range 2 * maxRequestAttempts {
-			conn, dialErr := net.Dial("tcp4", parsed.Host)
-			if dialErr != nil {
-				return dialErr
-			}
-			_ = conn.Close()
-
 			wrongPath, _ := http.NewRequest(http.MethodGet, "http://"+parsed.Host+"/probe", nil)
 			if got := request(t, wrongPath).status; got != http.StatusNotFound {
 				t.Fatalf("wrong-path status = %d", got)
@@ -661,32 +703,41 @@ func TestExactRedirectAuthenticatedRejectionIsTerminal(t *testing.T) {
 	}
 }
 
-func TestExactRedirectRejectsOccupiedPort(t *testing.T) {
-	listener, err := net.Listen("tcp4", "127.0.0.1:18473")
-	if err != nil {
-		t.Skipf("fixed callback port unavailable for test: %v", err)
-	}
-	defer listener.Close()
-	runtime, err := New(Options{RedirectURL: ExactRedirectURL})
-	if err != nil {
-		t.Fatal(err)
-	}
-	called := false
-	err = runtime.Authorize(context.Background(), testIssuer, func(context.Context, string, func(context.Context, string) (Result, error)) error {
-		called = true
-		return nil
-	})
-	// The closed bind reason distinguishes an occupied fixed port without retaining
-	// the nested network error or the random callback capability.
-	if err == nil || called {
-		t.Fatalf("occupied-port result = %v, authorize called=%v", err, called)
-	}
-	var bind *CallbackBindError
-	if !errors.As(err, &bind) || bind.Reason != CallbackBindAddressInUse || !errors.Is(err, ErrAuthorizationFailed) {
-		t.Fatalf("error = %v, want address-in-use CallbackBindError", err)
-	}
-	if strings.Contains(err.Error(), callbackPrefix) {
-		t.Fatalf("error leaked the callback path: %v", err)
+func TestFixedRedirectRejectsOccupiedPort(t *testing.T) {
+	for _, tc := range []struct {
+		name, redirect, address string
+	}{
+		{name: "remote", redirect: ExactRedirectURL, address: "127.0.0.1:18473"},
+		{name: "ToolHive-compatible", redirect: ToolHiveCompatibleRedirectURL, address: "localhost:8666"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			listener, err := net.Listen("tcp4", tc.address)
+			if err != nil {
+				t.Skipf("fixed callback port unavailable for test: %v", err)
+			}
+			defer listener.Close()
+			runtime, err := New(Options{RedirectURL: tc.redirect})
+			if err != nil {
+				t.Fatal(err)
+			}
+			called := false
+			err = runtime.Authorize(context.Background(), testIssuer, func(context.Context, string, func(context.Context, string) (Result, error)) error {
+				called = true
+				return nil
+			})
+			// The closed bind reason distinguishes an occupied fixed port without retaining
+			// the nested network error or the callback route.
+			if err == nil || called {
+				t.Fatalf("occupied-port result = %v, authorize called=%v", err, called)
+			}
+			var bind *CallbackBindError
+			if !errors.As(err, &bind) || bind.Reason != CallbackBindAddressInUse || !errors.Is(err, ErrAuthorizationFailed) {
+				t.Fatalf("error = %v, want address-in-use CallbackBindError", err)
+			}
+			if strings.Contains(err.Error(), callbackPrefix) || strings.Contains(err.Error(), "/callback") {
+				t.Fatalf("error leaked the callback path: %v", err)
+			}
+		})
 	}
 }
 
@@ -711,13 +762,18 @@ func TestExactRedirectCancellationReleasesListener(t *testing.T) {
 	_ = listener.Close()
 }
 
-func TestExactRedirectValidationIsStrict(t *testing.T) {
+func TestFixedRedirectValidationIsStrict(t *testing.T) {
 	for _, redirect := range []string{
 		"http://localhost:18473/oauth/callback",
 		"http://127.0.0.1:18473/wrong",
 		"http://127.0.0.1:18473/oauth/callback?x=1",
 		"http://user@127.0.0.1:18473/oauth/callback",
 		"https://127.0.0.1:18473/oauth/callback",
+		"http://127.0.0.1:8666/callback",
+		"http://localhost:8666/oauth/callback",
+		"http://localhost:8667/callback",
+		"http://localhost:8666/callback?x=1",
+		"https://localhost:8666/callback",
 	} {
 		if _, err := New(Options{RedirectURL: redirect}); err == nil {
 			t.Errorf("accepted redirect %q", redirect)

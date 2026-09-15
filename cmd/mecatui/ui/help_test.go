@@ -85,10 +85,22 @@ func TestHelpOverlayAllOnGolden(t *testing.T) {
 	compareGolden(t, "help_all_on.golden", got)
 }
 
+func TestHelpOmitsDebugOnlyBuiltins(t *testing.T) {
+	m := helpModel(t, allOnCaps(), func(deps *Deps) { deps.DebugAsk = true })
+	if got := stripANSIstr(m.View().Content); strings.Contains(got, "debug-ask") {
+		t.Fatalf("normal help leaked a debug-only builtin:\n%s", got)
+	}
+}
+
 // TestHelpAnnotationsTrackCaps asserts the annotations follow caps without
 // pinning exact layout: under embedded defaults the MCP/commands/skills features
 // are tagged not-enabled and memory/teams are not.
 func TestHelpAnnotationsTrackCaps(t *testing.T) {
+	for _, body := range []string{stripANSIstr(m_helpBody(embeddedCaps())), stripANSIstr(m_helpBody(allOnCaps()))} {
+		if !strings.Contains(body, "/quit") || !strings.Contains(body, "alias: /exit") {
+			t.Errorf("help must document /quit and /exit alias:\n%s", body)
+		}
+	}
 	embedded := stripANSIstr(m_helpBody(embeddedCaps()))
 	allOn := stripANSIstr(m_helpBody(allOnCaps()))
 
@@ -128,12 +140,12 @@ func TestHelpAnnotationsTrackCaps(t *testing.T) {
 		}
 	}
 	// The permission-modal group (issue #488) is always present: the verdict
-	// chords, the ctrl+t full-args row, and the raw-args toggle row.
+	// chords, the ctrl+t full-details row, and the raw-args toggle row.
 	for _, sub := range []string{
 		"While the permission modal is open",
 		"allow once",
 		"always allow (this session; main-agent asks only)",
-		"full-screen args (non-diff asks)",
+		"full-screen scrollable approval details (non-plan asks)",
 		"raw args in the full view",
 	} {
 		if !strings.Contains(embedded, sub) {
@@ -184,7 +196,7 @@ func TestSelectionShortcutsRespectDepsKeyOverridesEndToEnd(t *testing.T) {
 			t.Errorf("footer missing overridden marker %q:\n%s", marker, footer)
 		}
 	}
-	for _, marker := range []string{"ctrl+g select all", "ctrl+shift+c copy"} {
+	for _, marker := range []string{"ctrl+g select all", "ctrl+y copy"} {
 		if strings.Contains(footer, marker) {
 			t.Errorf("footer retained default marker %q:\n%s", marker, footer)
 		}
@@ -209,7 +221,7 @@ func TestSelectionShortcutsRespectDepsKeyOverridesEndToEnd(t *testing.T) {
 			t.Errorf("help missing overridden marker %q for %q:\n%s", marker, action, help)
 		}
 	}
-	for _, marker := range []string{"ctrl+g", "ctrl+shift+c"} {
+	for _, marker := range []string{"ctrl+g", "ctrl+y"} {
 		if strings.Contains(help, marker) {
 			t.Errorf("help retained default marker %q:\n%s", marker, help)
 		}
@@ -221,14 +233,14 @@ func TestSelectionShortcutsRespectDepsKeyOverridesEndToEnd(t *testing.T) {
 func TestSelectionShortcutsRenderDefaults(t *testing.T) {
 	const (
 		selectAll     = "ctrl+g select all"
-		copySelection = "ctrl+shift+c copy"
+		copySelection = "ctrl+y copy"
 	)
 
 	t.Run("help overlay", func(t *testing.T) {
 		got := stripANSIstr(m_helpBody(allOnCaps()))
 		rows := map[string]string{
 			"select all prompt text":                           "ctrl+g",
-			"copy the active prompt or conversation selection": "ctrl+shift+c",
+			"copy the active prompt or conversation selection": "ctrl+y",
 		}
 		for action, chord := range rows {
 			found := false
@@ -309,21 +321,21 @@ func TestHelpReflectsKeyOverride(t *testing.T) {
 		{name: "Newline", match: "newline", want: "ctrl+f2", absent: "shift+enter", occurs: 1},
 		{name: "Paste", match: "paste a clipboard image", want: "ctrl+f3", absent: "ctrl+v", occurs: 1},
 		{name: "SelectAll", match: "select all prompt text", want: "ctrl+f31", absent: "ctrl+g", occurs: 1},
-		{name: "CopySelection", match: "copy the active prompt or conversation selection", want: "ctrl+f32", absent: "ctrl+shift+c", occurs: 1},
+		{name: "CopySelection", match: "copy the active prompt or conversation selection", want: "ctrl+f32", absent: "ctrl+y", occurs: 1},
 		{name: "Cancel turn", match: "cancel the running turn", want: "ctrl+f4", absent: "esc", occurs: 1},
 		{name: "ClearPrompt", match: "clear the unsent prompt", want: "ctrl+f33", absent: "ctrl+u", occurs: 2},
 		{name: "Cancel running", match: "cancel run", want: "ctrl+f4", absent: "esc", occurs: 1},
 		{name: "MCPPanel", match: "MCP inventory", want: "ctrl+f6", absent: "ctrl+o", occurs: 1},
 		{name: "Resources", match: "MCP resources", want: "ctrl+f7", absent: "ctrl+r", occurs: 1},
-		{name: "Prompts", match: "MCP prompts", want: "ctrl+f8", absent: "ctrl+p", occurs: 1},
-		{name: "Agents", match: "agents overlay", want: "ctrl+f9", absent: "ctrl+a", occurs: 1},
-		{name: "Effort", match: "reasoning-effort picker", want: "ctrl+f5", absent: "ctrl+e", occurs: 1},
-		{name: "ModeSwitch", match: "cycle permission mode", want: "ctrl+f10", absent: "alt+m", occurs: 1},
+		{name: "Prompts", match: "MCP prompts", want: "ctrl+f8", absent: "", occurs: 1},
+		{name: "Agents", match: "agents overlay", want: "ctrl+f9", absent: "f6", occurs: 1},
+		{name: "Effort", match: "reasoning-effort picker", want: "ctrl+f5", absent: "f7", occurs: 1},
+		{name: "ModeSwitch", match: "cycle permission mode", want: "ctrl+f10", absent: "shift+tab", occurs: 1},
 		{name: "ExpandTools", match: "expand/collapse details", want: "ctrl+f11", absent: "ctrl+t", occurs: 1},
 		{name: "Help", match: "this help (on an empty prompt)", want: "ctrl+f12", absent: "?", occurs: 1},
 		{name: "Quit", match: "quit (press twice", want: "ctrl+f13", absent: "ctrl+c", occurs: 1},
 		{name: "Scroll", match: "scroll the conversation", want: "ctrl+f14/ctrl+f15", absent: "pgup", occurs: 1},
-		{name: "Close hint", match: "to close", want: "ctrl+f16 or ctrl+f12", absent: "esc or ?", occurs: 1},
+		{name: "Close hint", match: " close", want: "ctrl+f16 or ctrl+f12", absent: "esc or ?", occurs: 1},
 	}
 
 	for _, row := range rows {
@@ -338,7 +350,7 @@ func TestHelpReflectsKeyOverride(t *testing.T) {
 				if !strings.HasPrefix(trim, row.want) {
 					t.Errorf("%s row should lead with the overridden %q chord: %q", row.name, row.want, trim)
 				}
-				if strings.Contains(trim, row.absent) {
+				if row.absent != "" && strings.Contains(trim, row.absent) {
 					t.Errorf("%s row still shows the default %q after override: %q", row.name, row.absent, trim)
 				}
 			}
@@ -381,6 +393,7 @@ func TestHelpKeyOverrideEndToEnd(t *testing.T) {
 		t.Fatal("help overlay did not open on '?' with empty input")
 	}
 
+	m = applyAll(m, tea.WindowSizeMsg{Width: 100, Height: 100})
 	view := stripANSIstr(m.View().Content)
 	var effortRow, mcpRow string
 	for _, line := range strings.Split(view, "\n") {
@@ -397,8 +410,8 @@ func TestHelpKeyOverrideEndToEnd(t *testing.T) {
 	if !strings.Contains(effortRow, "ctrl+f5") {
 		t.Errorf("effort row should carry the overridden ctrl+f5 via Deps.KeyOverrides: %q", effortRow)
 	}
-	if strings.Contains(effortRow, "ctrl+e") {
-		t.Errorf("effort row still shows the default ctrl+e: %q", effortRow)
+	if strings.Contains(effortRow, "f7") {
+		t.Errorf("effort row still shows the default f7: %q", effortRow)
 	}
 	if !strings.Contains(mcpRow, "ctrl+f6") {
 		t.Errorf("MCP-inventory row should carry the overridden ctrl+f6 via Deps.KeyOverrides: %q", mcpRow)

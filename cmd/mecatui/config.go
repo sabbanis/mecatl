@@ -48,11 +48,20 @@ type config struct {
 	theme             string
 	themeDir          string
 	authToken         string
+	anonymous         bool
 	useTLS            bool
+	tlsExplicit       bool
 	tlsCA             string
 	insecure          bool
-	noSavedAuth       bool
 	listThemes        bool
+	// debug enables mecatui's client-side diagnostic surfaces. An explicit
+	// --debug value outranks MECATUI_DEBUG and the legacy per-surface aliases.
+	debug        bool
+	debugFlagSet bool
+	debugMouse   bool
+	debugSteer   bool
+	debugAsk     bool
+	debugKeymap  bool
 
 	// noAltScreen renders mecatui INLINE in the terminal's normal buffer instead
 	// of the alternate screen. Off by default (full-screen TUI on the alt screen);
@@ -141,12 +150,26 @@ type config struct {
 	anthropicKey         string
 	openCodeKey          string
 	mock                 bool
-	noBash               bool
+	noShell              bool
 	// noSteer disables the mid-run steer inbox (steer-while-running, issue #512) on
 	// the embedded server — the opt-OUT of a DEFAULT-ON knob. noSteerFlagSet records
 	// an explicit --no-steer so CLI out-ranks the settings.yaml steer: key.
 	noSteer        bool
 	noSteerFlagSet bool
+
+	// productMetrics reports anonymous product-adoption metrics to Stacklok
+	// for the embedded server only (ignored under `mecatui connect`, which
+	// hosts no local engine). OPT-OUT: ON by default. See the
+	// --product-metrics flag help text. productMetricsFlagSet records an
+	// explicit --product-metrics so CLI out-ranks the operator-global
+	// settings.yaml telemetry.productMetrics.enabled: key (mirrors
+	// noSteerFlagSet).
+	productMetrics        bool
+	productMetricsFlagSet bool
+	// productMetricsDryRun logs every would-be product-metrics observation
+	// via diag instead of exporting it over OTLP — an audit mode to verify
+	// the no-PII claim before trusting --product-metrics for real.
+	productMetricsDryRun bool
 
 	// resumeID and resumeLatest select an existing owned main chat for static
 	// startup adoption. They are shared by embedded and connect modes and mutually
@@ -354,7 +377,7 @@ func parseTransportFlags(mode transportMode, out io.Writer, args []string, brows
 	cfg.browseSessions = len(browseSessions) > 0 && browseSessions[0]
 	fs := flag.NewFlagSet("mecatui", flag.ContinueOnError)
 	fs.SetOutput(out)
-	fs.StringVar(&cfg.workspace, "workspace", "", "absolute workspace root for a new session (default: cwd); an adopted session keeps its stored workspace")
+	fs.StringVar(&cfg.workspace, "workspace", "", "embedded server only: absolute deployment workspace root (default: cwd); not accepted by connect")
 	fs.StringVar(&cfg.mode, "mode", "default", "permission mode: default | plan | accept-edits")
 	fs.Func("debug-mcp", "debug sessions only: select one already-configured server-global streaming-HTTP MCP server by name (repeatable)", func(value string) error {
 		cfg.debugMCP = append(cfg.debugMCP, value)
@@ -368,11 +391,12 @@ func parseTransportFlags(mode transportMode, out io.Writer, args []string, brows
 	fs.StringVar(&cfg.theme, "theme", "", "theme name (default: aztec)")
 	fs.StringVar(&cfg.themeDir, "theme-dir", "", "extra directory of *.json themes to load")
 	fs.StringVar(&cfg.authToken, "auth-token", "", "bearer token for an external server (or MECATL_AUTH_TOKEN)")
-	fs.BoolVar(&cfg.useTLS, "tls", false, "use TLS transport when dialling an external server")
+	fs.BoolVar(&cfg.anonymous, "anonymous", false, "bypass saved OIDC enrollment and send no bearer unless --auth-token or MECATL_AUTH_TOKEN supplies one")
+	fs.BoolVar(&cfg.useTLS, "tls", false, "use verified TLS for an external server (default for non-loopback targets; --tls=false explicitly permits plaintext)")
 	fs.StringVar(&cfg.tlsCA, "tls-ca", "", "path to a PEM CA bundle for external-server verification")
 	fs.BoolVar(&cfg.insecure, "insecure", false, "skip TLS verification (testing only)")
-	fs.BoolVar(&cfg.noSavedAuth, "no-saved-auth", false, "ignore saved remote login credentials")
 	fs.BoolVar(&cfg.listThemes, "list-themes", false, "list available themes and exit")
+	fs.BoolVar(&cfg.debug, "debug", false, "enable client-side diagnostic surfaces: mouse mapping, steer correlation, and debug-only built-ins")
 	fs.BoolVar(&cfg.noAltScreen, "no-alt-screen", false, "render inline in the terminal's normal buffer instead of the alternate screen, preserving native scrollback/search")
 	fs.BoolVar(&cfg.noAltScreen, "inline", false, "alias for --no-alt-screen: render inline in the normal buffer, preserving native scrollback/search")
 	fs.BoolVar(&cfg.noMouse, "no-mouse", false, "disable mouse capture on the alt screen so the terminal's NATIVE click-drag selection works (for tmux/zellij/web terminals that strip OSC52, or when you prefer native select); trades away in-app mouse-wheel scroll and the in-app drag-select/copy layer. Keyboard scroll (pgup/pgdn/home/end) is unaffected. Or set MECATUI_NO_MOUSE=1")
@@ -390,7 +414,7 @@ func parseTransportFlags(mode transportMode, out io.Writer, args []string, brows
 	// Shared model alias/slot flags (cliconfig); mecatui keeps its own help wording.
 	cfg.modelAliases, cfg.modelSlots = cliconfig.RegisterModelFlags(fs, cliconfig.ModelFlagHelp{
 		ModelAlias: "embedded server only: model alias mapping as name=model-id (repeatable), e.g. --model-alias cheap=gpt-4o-mini. Aliases are resolved in the composition layer; a --model-slot selector and an agent def's `model: <alias>` resolve through this map",
-		ModelSlot:  "embedded server only: per-slot model binding as slot=selector (repeatable), e.g. --model-slot compaction=cheap (ADR 0030). A SLOT routes an internal lightweight LLM call to its own model: under mecatui the wired slots are `compaction` (the compaction summary call) and `guardrail` (the content checker); the `ask-reviewer` slot is INERT here (mecatui runs INTERACTIVE, so the headless child-ask reviewer never engages — that slot only routes on a headless `mecated --headless`). A TIER key (`cheap`/`fast`/`reasoning`) gives a default a slot falls through to (each routed slot defaults to `cheap`). The selector is an alias (--model-alias / built-ins) or a concrete id. Empty keeps every call on the session model. FAIL-SOFT on a typo/inherit. Operator-tier only",
+		ModelSlot:  "embedded server only: per-slot model binding as slot=selector (repeatable), e.g. --model-slot compaction=cheap (ADR 0030). A SLOT routes an internal lightweight LLM call to its own model: under mecatui the wired slots are `compaction` (the compaction summary call), `guardrail` (the content checker), and `title` (automatic session-title generation). `title` is explicit opt-in and has NO default-tier or session-model fallback: without a compatible binding it makes no title-model call. The `ask-reviewer` slot is INERT here (mecatui runs INTERACTIVE, so the headless child-ask reviewer never engages — that slot only routes on a headless `mecated --headless`). A TIER key (`cheap`/`fast`/`reasoning`) gives a default a slot falls through to (each routed slot except `title` defaults to `cheap`). The selector is an alias (--model-alias / built-ins) or a concrete id. Empty keeps every call on the session model. FAIL-SOFT on a typo/inherit. Operator-tier only",
 	})
 	fs.BoolVar(&cfg.subagentModelRouter, "subagent-model-router", false, "embedded server only: Semantic model router KILL-SWITCH (ADR 0042, superseding 0031's enable model): the router is ENABLED by an operator-tier models.router: category taxonomy in the user-global settings.yaml (configure = enable, guardrails-parity), NOT by this flag. Pass --subagent-model-router=false to force it OFF despite a taxonomy (also models.router.disabled: true in YAML). When enabled, a tiny classifier on the `router` slot picks the child model per plain Subagent delegation before the child is minted (decide-once, same-provider); fail-soft to the inherited model on any miss. The router IS meaningful under mecatui — it picks a child's model before the child runs, in both interactive and headless modes")
 	// Shared provider base-URL flags (cliconfig); mecatui keeps its own help wording.
@@ -408,7 +432,7 @@ func parseTransportFlags(mode transportMode, out io.Writer, args []string, brows
 		Mode:    "embedded server only: " + cliconfig.DefaultToolhiveLLMFlagHelp.Mode,
 	})
 	fs.BoolVar(&cfg.mock, "mock", false, "embedded server only: use the canned offline mock provider instead of OpenAI (no network)")
-	fs.BoolVar(&cfg.noBash, "no-bash", false, "embedded server only: disable the Bash tool (shell-less mode)")
+	fs.BoolVar(&cfg.noShell, "no-shell", false, "embedded server only: disable the Shell tool (shell-less mode)")
 	fs.BoolVar(&cfg.noSteer, "no-steer", false, "embedded server only: disable the mid-run steer inbox (steer-while-running, issue #512): `enter` mid-run then falls back to the client-side terminal merge-queue and ServerCapabilities.steer reads false. Steer is ON by default; this is the opt-OUT. The operator-tier settings.yaml `steer: false` scalar is the YAML twin (CLI out-ranks YAML; a project-tier steer: key is ignored)")
 	fs.DurationVar(&cfg.llmPerAttemptTimeout, "llm-per-attempt-timeout", 300*time.Second, "embedded server only: per-attempt timeout for ESTABLISHING an LLM stream (connect + first chunk only; never cuts an actively-streaming turn). 0 disables; large-context reasoning models can take a long time to first token")
 	fs.DurationVar(&cfg.llmStreamIdleTimeout, "llm-stream-idle-timeout", 180*time.Second, "embedded server only: max idle gap between LLM stream chunks after the first chunk; a longer stall terminates the turn (0 disables)")
@@ -450,6 +474,10 @@ func parseTransportFlags(mode transportMode, out io.Writer, args []string, brows
 	fs.BoolVar(&cfg.noCommands, "no-commands", false, "embedded server only: disable slash-command expansion entirely")
 	fs.StringVar(&cfg.skillsDir, "skills-dir", "", "embedded server only: directory of skill units (<name>/SKILL.md); empty = the conventional dirs (e.g. .claude/skills)")
 	fs.BoolVar(&cfg.noSkills, "no-skills", false, "embedded server only: disable skill discovery (the Skill tool) entirely")
+	fs.BoolVar(&cfg.productMetrics, "product-metrics", true,
+		"report anonymous product-adoption metrics to Stacklok (version, OS/arch, enabled features, coarse session/run/tool-call counts — never a prompt, file path, tool name, or model id). ON by default; opt out with --product-metrics=false, MECATL_PRODUCT_METRICS=false, DO_NOT_TRACK=1, or telemetry.productMetrics.enabled: false in settings.yaml")
+	fs.BoolVar(&cfg.productMetricsDryRun, "product-metrics-dry-run", false,
+		"print every product-metrics observation to stderr instead of sending it — verify the no-PII claim yourself before enabling --product-metrics for real")
 
 	fs.BoolVar(&cfg.perf, "perf", false, "embedded server only: expose the private perf-observability admin surface (/metrics, /debug/pprof, /debug/vars, /debug/flightrecorder) and wire domain metrics into the engine. OFF by default. Empty --perf-addr uses a per-instance UNIX socket. SECURITY: UNAUTHENTICATED — its output can embed prompt text/file paths/goroutine stacks")
 	fs.StringVar(&cfg.perfAddr, "perf-addr", "", "embedded server only: explicit loopback host:port for the --perf admin surface (empty = private per-instance UNIX socket, or ephemeral 127.0.0.1 TCP with --perf-mcp). Use 127.0.0.1:0 for explicit ephemeral TCP. Non-loopback addresses are refused. Only consulted with --perf")
@@ -460,7 +488,7 @@ func parseTransportFlags(mode transportMode, out io.Writer, args []string, brows
 
 	fs.Usage = transportUsage(fs, mode, cfg.browseSessions)
 
-	if err := fs.Parse(args); err != nil {
+	if err := fs.Parse(cliconfig.NormalizeLegacyNoBash(args)); err != nil {
 		// Return the fully-registered FlagSet even on a parse/help error so the
 		// progressive-help completeness invariant (validateFlagApplicability) can
 		// run over the full real registration path via the --help-triggered ErrHelp
@@ -521,6 +549,48 @@ func parseTransportFlags(mode transportMode, out io.Writer, args []string, brows
 	return fs, cfg, nil
 }
 
+// resolveRemoteTLSPolicy applies the connect transport policy only after the
+// command grammar has supplied its target. tlsExplicit preserves the distinction
+// between an omitted --tls and an explicit --tls=false. It classifies targets
+// with client.IsLocalTarget, the SAME predicate client.Dial gates its plaintext
+// guards on, so the policy layer can never default a target to TLS that the
+// transport layer would then dial in plaintext (or vice versa) — notably a
+// "unix://" socket, which is local but not a loopback host:port.
+func resolveRemoteTLSPolicy(cfg *config) error {
+	if cfg.transportMode != modeConnect {
+		return nil
+	}
+	if cfg.tlsCA != "" && cfg.insecure {
+		return errors.New("--tls-ca and --insecure are mutually exclusive")
+	}
+	if cfg.tlsExplicit && !cfg.useTLS {
+		if cfg.tlsCA != "" || cfg.insecure {
+			return errors.New("--tls=false conflicts with --tls-ca or --insecure")
+		}
+		if cfg.authToken != "" && !client.IsLocalTarget(cfg.connectAddress) {
+			return errors.New("refusing static bearer over explicit plaintext to non-loopback target; remove --tls=false")
+		}
+		return nil
+	}
+	if cfg.tlsExplicit || cfg.tlsCA != "" || cfg.insecure || !client.IsLocalTarget(cfg.connectAddress) {
+		cfg.useTLS = true
+	}
+	return nil
+}
+
+// applySavedRemoteTLSPolicy gives managed OIDC credentials their stronger
+// transport guarantee. TLSCAFile deliberately remains untouched: an issuer CA
+// is not gRPC server trust.
+func applySavedRemoteTLSPolicy(cfg config, dial *client.DialConfig) error {
+	if (cfg.tlsExplicit && !cfg.useTLS) || cfg.insecure {
+		return errors.New("saved remote authentication requires verified TLS; remove --tls=false and --insecure")
+	}
+	dial.UseTLS = true
+	dial.Insecure = false
+	dial.RemotePlaintextAllowed = false
+	return nil
+}
+
 // validateResumeSelectors enforces that at most ONE startup resume intent is chosen:
 // --resume and --resume-latest are mutually exclusive. It is shared by the
 // parse-time check and the client-side validate() so both surfaces agree.
@@ -578,6 +648,10 @@ func validateSessionsLaunch(cfg config) error {
 // that function under the cyclomatic-complexity bound.
 func recordExplicitFlag(f *flag.Flag, cfg *config) {
 	switch f.Name {
+	case "tls":
+		cfg.tlsExplicit = true
+	case "debug":
+		cfg.debugFlagSet = true
 	case "posture":
 		cfg.postureFlagSet = true
 	case "subagent-model-router":
@@ -588,6 +662,11 @@ func recordExplicitFlag(f *flag.Flag, cfg *config) {
 	case "no-steer":
 		// Record an explicit --no-steer so CLI out-ranks the settings.yaml steer: key.
 		cfg.noSteerFlagSet = true
+	case "product-metrics":
+		// Record an explicit --product-metrics so CLI out-ranks the settings.yaml
+		// telemetry.productMetrics.enabled: key (ResolveProductMetricsEnabled's
+		// highest-precedence input).
+		cfg.productMetricsFlagSet = true
 	case "reasoning-effort":
 		cfg.reasoningEffortFlagSet = true
 	case "default-provider":
@@ -600,6 +679,24 @@ func recordExplicitFlag(f *flag.Flag, cfg *config) {
 	markRetentionCLIFlag(&cfg.retentionCLISet, f.Name)
 }
 
+// resolveDebugConfig applies the canonical debug switch and its legacy env aliases.
+func resolveDebugConfig(cfg *config) {
+	// Explicit --debug=false suppresses all env fallbacks; without an explicit flag,
+	// the legacy variables remain narrow aliases for their original surfaces.
+	if !cfg.debugFlagSet {
+		cfg.debug = os.Getenv("MECATUI_DEBUG") == "1"
+		cfg.debugMouse = cfg.debug || os.Getenv("MECATUI_DEBUG_MOUSE") != ""
+		cfg.debugSteer = cfg.debug || os.Getenv("MECATUI_DEBUG_STEER") != ""
+		cfg.debugAsk = cfg.debug || os.Getenv("MECATUI_DEBUG_ASK") != ""
+		cfg.debugKeymap = cfg.debug || os.Getenv("MECATUI_DEBUG_KEYMAP") == "1"
+		return
+	}
+	cfg.debugMouse = cfg.debug
+	cfg.debugSteer = cfg.debug
+	cfg.debugAsk = cfg.debug
+	cfg.debugKeymap = cfg.debug
+}
+
 func finalizeParsedConfig(fs *flag.FlagSet, cfg *config) error {
 	// Record explicit flags so composition lets CLI out-rank the operator-global
 	// settings.yaml keys (mirrors mecated). Extracted to recordExplicitFlag to keep
@@ -609,9 +706,16 @@ func finalizeParsedConfig(fs *flag.FlagSet, cfg *config) error {
 	if cfg.authToken == "" {
 		cfg.authToken = os.Getenv("MECATL_AUTH_TOKEN")
 	}
+	if cfg.authToken != "" {
+		// Static bearer credentials are the highest-priority credential source.
+		// --anonymous only overrides saved OIDC state when no static token was
+		// supplied explicitly or through MECATL_AUTH_TOKEN.
+		cfg.anonymous = false
+	}
 	if cfg.theme == "" {
 		cfg.theme = os.Getenv("MECATUI_THEME")
 	}
+	resolveDebugConfig(cfg)
 	// Env fallback: --no-mouse wins if passed; otherwise MECATUI_NO_MOUSE=1/true
 	// enables it (set-and-forget in a shell rc for a multiplexer that strips OSC52).
 	if !cfg.noMouse {
@@ -730,16 +834,9 @@ func transportUsage(fs *flag.FlagSet, mode transportMode, browseSessions ...bool
 // rejected before a dial or CreateSession call. Embedded and loopback workflows
 // retain the local cwd/worktree default.
 func configureWorkspaceForTransport(cfg *config) error {
-	if cfg.debugTarget != "" && cfg.transportMode == modeConnect {
+	if cfg.transportMode == modeConnect {
 		if cfg.workspaceExplicit {
-			return errors.New("--workspace is not allowed when connecting to a remote debug session")
-		}
-		cfg.workspace = ""
-		return nil
-	}
-	if cfg.transportMode == modeConnect && !client.IsLoopbackHost(cfg.connectAddress) {
-		if cfg.workspaceExplicit {
-			return errors.New("--workspace is not allowed when connecting to a remote server")
+			return errors.New("--workspace configures only the embedded server and is not allowed with connect")
 		}
 		cfg.workspace = ""
 		return nil
@@ -790,7 +887,7 @@ func (c config) validate() error {
 			return errors.New("debug conflicts with sessions launch")
 		}
 	}
-	if c.workspace == "" && c.debugTarget == "" && (c.transportMode != modeConnect || client.IsLoopbackHost(c.connectAddress)) {
+	if c.workspace == "" && c.debugTarget == "" && c.transportMode != modeConnect {
 		return errors.New("workspace is required")
 	}
 	if c.workspace != "" && !filepath.IsAbs(c.workspace) {
@@ -837,7 +934,15 @@ func validateEmbeddedProvider(c config) error {
 	if app.ToolhiveAvailable(probe) {
 		return nil
 	}
-	return errors.New("no LLM provider configured: set a provider credential, use --auth-file, enable a ToolHive gateway, pass --mock, or connect to mecated; see docs/usage.md")
+	return errors.New(`no LLM provider configured for the embedded server. Choose one:
+  1. Run ` + "`mecatui providers setup`" + ` to configure a direct provider.
+  2. Set a provider API key in the environment or use ` + "`--api-key-file PATH`" + `.
+  3. Enable a ToolHive LLM gateway.
+  4. Start with ` + "`--mock`" + ` for offline testing.
+  5. Connect to an existing remote server with ` + "`mecatui connect ADDRESS`" + `.
+
+These options configure only the embedded server; a remote mecated's provider configuration is managed by its operator.
+See https://mecatl.dev/docs/features/choose-models`)
 }
 
 // mayEmbed reports whether this run may host an embedded server, and so is

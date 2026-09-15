@@ -20,7 +20,7 @@ func debugUIModel(target string, width int) Model {
 
 func TestDebugIdentityUsesNormalHeaderAcrossPhases(t *testing.T) {
 	m := debugUIModel("target\x1b[31m\nopaque", 80)
-	want := "DEBUG target #" + sessionDigest(m.deps.DebugTarget)[:8]
+	want := "DEBUG target " + client.SessionHandle(m.deps.DebugTarget)
 	for _, p := range []phase{phaseConnecting, phaseIdle, phaseRunning, phaseAwaitingApproval, phaseFatal} {
 		m.phase = p
 		rendered := m.renderHeader()
@@ -37,6 +37,23 @@ func TestDebugIdentityUsesNormalHeaderAcrossPhases(t *testing.T) {
 	}
 }
 
+func TestDebugPrivacyDisclosureIsVisibleInRenderedHeader(t *testing.T) {
+	m := debugUIModel("target-session", 80)
+	m.deps.DebugMCP = []string{"github"}
+	plain := stripANSIstr(m.renderHeader())
+	for _, want := range []string{
+		"PRIVACY: target evidence sent to the configured model may include prompts",
+		"assistant output, tool arguments/results, file paths, and secrets",
+		"reporting servers available: github",
+		"availability does not authorize",
+		"publication or sending.",
+	} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("debug privacy disclosure missing %q: %q", want, plain)
+		}
+	}
+}
+
 func TestDebugHeaderKeepsWholeIdentityAndShedsOptionalSegments(t *testing.T) {
 	m := debugUIModel("target-session", 40)
 	m.sessionID = "debug-session"
@@ -44,13 +61,13 @@ func TestDebugHeaderKeepsWholeIdentityAndShedsOptionalSegments(t *testing.T) {
 	m.activeMode = "accept-edits"
 	m.deps.Server = "remote-server"
 	plain := stripANSIstr(m.renderHeader())
-	want := "DEBUG target #" + sessionDigest("target-session")[:8]
+	want := "DEBUG target " + client.SessionHandle("target-session")
 	if !strings.Contains(plain, want) || strings.Contains(plain, "large-model") || strings.Contains(plain, "accept-edits") || strings.Contains(plain, "remote-server") {
 		t.Fatalf("narrow debug header did not preserve target before optional segments: %q", plain)
 	}
 	m.width = 7
 	plain = strings.Join(strings.Fields(stripANSIstr(m.renderHeader())), "")
-	if !strings.Contains(plain, "DEBUGtarget#"+sessionDigest("target-session")[:8]) || strings.Contains(plain, "…") {
+	if !strings.Contains(plain, "DEBUGtarget"+client.SessionHandle("target-session")) || strings.Contains(plain, "…") {
 		t.Fatalf("very narrow header clipped debug identity: %q", plain)
 	}
 }
@@ -104,14 +121,60 @@ func TestDebugSessionDetailsShowAndCopyExactTargetID(t *testing.T) {
 	}
 }
 
-func TestDebugWindowTitleStartsWithStableDigestAcrossPhases(t *testing.T) {
+func TestDebugWindowTitleStartsWithStableHandleAcrossPhases(t *testing.T) {
 	m := debugUIModel("target-session", 80)
-	prefix := "DEBUG " + sessionDigest("target-session")[:8]
+	prefix := "DEBUG " + client.SessionHandle("target-session")
 	for _, p := range []phase{phaseConnecting, phaseIdle, phaseRunning, phaseAwaitingApproval, phaseFatal} {
 		m.phase = p
 		if got := m.windowTitle(); !strings.HasPrefix(got, prefix) {
 			t.Fatalf("phase %v title = %q", p, got)
 		}
+	}
+}
+
+func TestDebugSessionDisablesWorkspaceEnrollment(t *testing.T) {
+	control := &workspaceEnrollmentControlFake{}
+	m, send := builtinDispatchModel(t, client.Capabilities{WorkspaceEnrollment: true}, false)
+	m.deps.DebugTarget = "target"
+	m.deps.WorkspaceEnrollment = control
+	m.pendingInitialPrompt = "diagnose"
+	m.workspaceEnrollmentNotice = ""
+
+	if m.workspaceEnrollmentActive() || m.wiredCollaborators().Workspace {
+		t.Fatal("debug session must not activate workspace enrollment")
+	}
+	if _, ok := builtinByName(m.caps, m.wiredCollaborators(), "tools-connect"); ok {
+		t.Fatal("debug session must not register /tools-connect")
+	}
+	if m.brokerMCPSetupState().eligible {
+		t.Fatal("debug session must not be eligible to connect workspace tools")
+	}
+
+	m0, cmd := m.finishStartupResume()
+	m = m0.(Model)
+	runBatchLeaves(cmd)
+	if got := promptTexts(send); len(got) != 1 || got[0] == "" {
+		t.Fatalf("startup debug diagnosis prompts = %v, want one", got)
+	}
+	if m.workspaceEnrollmentNotice != "" {
+		t.Fatalf("debug startup showed workspace enrollment notice: %q", m.workspaceEnrollmentNotice)
+	}
+
+	m, send = builtinDispatchModel(t, client.Capabilities{WorkspaceEnrollment: true}, false)
+	m.deps.DebugTarget = "target"
+	m.deps.WorkspaceEnrollment = control
+	m.pendingInitialPrompt = "diagnose after rebind"
+	m.workspaceEnrollmentNotice = ""
+	m0, cmd, _ = m.applySessionReady(client.SessionReadyMsg{
+		SessionID: "debug-session", Capabilities: client.Capabilities{WorkspaceEnrollment: true},
+	})
+	m = m0.(Model)
+	runBatchLeaves(cmd)
+	if got := promptTexts(send); len(got) != 1 || got[0] == "" {
+		t.Fatalf("rebound debug diagnosis prompts = %v, want one", got)
+	}
+	if m.workspaceEnrollmentNotice != "" {
+		t.Fatalf("rebound debug session showed workspace enrollment notice: %q", m.workspaceEnrollmentNotice)
 	}
 }
 

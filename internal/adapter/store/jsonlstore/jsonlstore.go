@@ -164,16 +164,17 @@ type Store struct {
 	resolver sessionResolver
 	// mu is confined to the sibling schedule store. Session-family mutations
 	// coordinate by their stable cross-process flock identity instead.
-	mu                        sync.Mutex
-	inventoryMu               sync.Mutex
-	lineageMu                 sync.Mutex
-	snapshot                  snapshotOps
-	durability                SnapshotDurabilityCapability
-	tempOwner                 string
-	tempGeneration            atomic.Uint64
-	toolCallLockTimeout       time.Duration
-	inventoryWorkObserver     func(inventoryWorkKind)
-	snapshotFamilyLockBlocked func()
+	mu                            sync.Mutex
+	inventoryMu                   sync.Mutex
+	snapshot                      snapshotOps
+	durability                    SnapshotDurabilityCapability
+	tempOwner                     string
+	tempGeneration                atomic.Uint64
+	toolCallLockTimeout           time.Duration
+	inventoryWorkObserver         func(inventoryWorkKind)
+	inventoryCatalogReadyObserver func()
+	lineagePartitionWriteObserver func(string)
+	snapshotFamilyLockBlocked     func()
 }
 
 // compile-time assertions that Store satisfies both ports plus the optional
@@ -572,18 +573,15 @@ func (st *Store) Save(ctx context.Context, s *session.Session) error {
 			return fmt.Errorf("jsonlstore: resolve snapshot modification time: %w", err)
 		}
 		data, err := json.Marshal(currentSnapshot{
-			Format: currentSnapshotFormat, ModifiedAt: modifiedAt, Metadata: metaSnapshotFromSession(s), Snapshot: payload,
+			Format: currentSnapshotFormat, ModifiedAt: modifiedAt, Metadata: metaSnapshotFromSession(s), Activity: session.ActivityOf(s.Conversation.Messages), Snapshot: payload,
 		})
 		if err != nil {
 			return fmt.Errorf("jsonlstore: marshal current snapshot: %w", err)
 		}
 		generation := st.tempGeneration.Add(1)
 		pattern := snapshotTempPattern(path, st.tempOwner, generation)
-		return st.withLineageLock(context.WithoutCancel(ctx), func() error {
-			if err := replaceCurrentSnapshot(path, data, modifiedAt, pattern, st.snapshot, st.durability, nil); err != nil {
-				return err
-			}
-			return st.updateLineageLocked(retainedLineageRecord(s))
+		return st.mutateLineage(context.WithoutCancel(ctx), retainedLineageRecord(s), func() error {
+			return replaceCurrentSnapshot(path, data, modifiedAt, pattern, st.snapshot, st.durability, nil)
 		})
 	})
 }
@@ -621,7 +619,7 @@ func (st *Store) Create(ctx context.Context, s *session.Session) error {
 
 		modifiedAt := time.Now().UTC()
 		data, err := json.Marshal(currentSnapshot{
-			Format: currentSnapshotFormat, ModifiedAt: modifiedAt, Metadata: metaSnapshotFromSession(s), Snapshot: payload,
+			Format: currentSnapshotFormat, ModifiedAt: modifiedAt, Metadata: metaSnapshotFromSession(s), Activity: session.ActivityOf(s.Conversation.Messages), Snapshot: payload,
 		})
 		if err != nil {
 			return fmt.Errorf("jsonlstore: marshal current snapshot: %w", err)
@@ -631,11 +629,8 @@ func (st *Store) Create(ctx context.Context, s *session.Session) error {
 		}
 		generation := st.tempGeneration.Add(1)
 		pattern := snapshotTempPattern(path, st.tempOwner, generation)
-		return st.withLineageLock(context.WithoutCancel(ctx), func() error {
-			if err := replaceCurrentSnapshot(path, data, modifiedAt, pattern, st.snapshot, st.durability, nil); err != nil {
-				return err
-			}
-			return st.updateLineageLocked(retainedLineageRecord(s))
+		return st.mutateLineage(context.WithoutCancel(ctx), retainedLineageRecord(s), func() error {
+			return replaceCurrentSnapshot(path, data, modifiedAt, pattern, st.snapshot, st.durability, nil)
 		})
 	})
 }
@@ -728,9 +723,16 @@ func (st *Store) Load(ctx context.Context, id session.SessionID) (*session.Sessi
 		return err
 	})
 	if err != nil {
-		return nil, err
+		if errors.Is(err, port.ErrSessionNotFound) || errors.Is(err, port.ErrSessionLoadFailure) {
+			return nil, err
+		}
+		return nil, port.NewSessionLoadFailure(port.SessionLoadFailureStore, err)
 	}
-	return sessnap.Unmarshal(line)
+	sess, err := sessnap.Unmarshal(line)
+	if err != nil {
+		return nil, port.NewSessionLoadFailure(port.SessionLoadFailureSnapshot, err)
+	}
+	return sess, nil
 }
 
 // maxEventRecordSize is the largest newline-committed event-log record that
@@ -847,10 +849,7 @@ func (st *Store) Delete(ctx context.Context, id session.SessionID) error {
 		return err
 	}
 	return st.withSnapshotFamilyLock(ctx, st.resolver.currentSnapshotPath(id), func() error {
-		return st.withLineageLock(context.WithoutCancel(ctx), func() error {
-			if err := st.pruneLineageLocked(id); err != nil {
-				return err
-			}
+		return st.pruneLineage(context.WithoutCancel(ctx), id, func() error {
 			return st.deleteSessionFamilyLocked(id)
 		})
 	})
@@ -870,10 +869,7 @@ func (st *Store) DeleteSessionIfUnchanged(ctx context.Context, expected port.Ses
 		}
 		for _, row := range rows {
 			if row.ID == expected.ID && port.SessionDiscoveryMetaEqual(row, expected) {
-				if err := st.withLineageLock(context.WithoutCancel(ctx), func() error {
-					if err := st.pruneLineageLocked(expected.ID); err != nil {
-						return err
-					}
+				if err := st.pruneLineage(context.WithoutCancel(ctx), expected.ID, func() error {
 					return st.deleteSessionFamilyLocked(expected.ID)
 				}); err != nil {
 					return err

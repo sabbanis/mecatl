@@ -11,9 +11,11 @@ import (
 
 	"github.com/stacklok/mecatl/engine/agent"
 	"github.com/stacklok/mecatl/engine/port"
+	"github.com/stacklok/mecatl/internal/adapter/mcpauthority"
 	"github.com/stacklok/mecatl/internal/adapter/slogdiag"
 	"github.com/stacklok/mecatl/internal/app"
 	"github.com/stacklok/mecatl/internal/cliconfig"
+	"github.com/stacklok/mecatl/internal/flaghelp"
 )
 
 type stringList []string
@@ -88,14 +90,14 @@ type flags struct {
 	// mcpServers holds the repeatable --mcp-server name=URL entries (issue #341,
 	// the factory MCP wiring), via the SAME cliconfig.MCPServerList helper as
 	// mecated/mecak8s: a per-server bearer rides the MCP_<NAME>_TOKEN env (a
-	// scheduler like titlani injects a short-lived per-run identity there), token
+	// scheduler injects a short-lived per-run identity there), token
 	// optional. Threaded onto app.Config.MCPServers in appConfig.
 	mcpServers        *cliconfig.MCPServerList
 	permissionConfigs stringList
 	useMock           bool
 	storeDir          string
 	shell             string
-	noBash            bool
+	noShell           bool
 	maxRunTokens      int
 	maxTeamTokens     int
 	// maxTurns caps the session's model calls (the StopMaxTurns terminal). 0
@@ -160,6 +162,17 @@ type flags struct {
 	otlpMetricsEndpoint string
 	otlpMetricsProtocol string
 	otlpShutdownTimeout time.Duration
+
+	// productMetrics reports anonymous product-adoption metrics to Stacklok.
+	// OPT-OUT: ON by default. See the --product-metrics flag help text.
+	productMetrics bool
+	// productMetricsSet records whether --product-metrics was explicitly passed,
+	// so ResolveProductMetricsEnabled can let CLI out-rank DO_NOT_TRACK/settings.
+	productMetricsSet bool
+	// productMetricsDryRun logs every would-be product-metrics observation
+	// via diag instead of exporting it over OTLP — an audit mode to verify
+	// the no-PII claim before trusting --product-metrics for real.
+	productMetricsDryRun bool
 }
 
 // parseFlags turns argv into a flags value, resolving env-derived defaults and
@@ -205,8 +218,8 @@ func parseFlags(argv []string) (flags, error) {
 	fs.Var(&f.permissionConfigs, "permission-config", "explicit operator settings YAML (repeatable); uses the same precedence and strict parser as conventional settings")
 	fs.BoolVar(&f.useMock, "mock", false, "use a canned offline mock provider (no network; smoke tests only)")
 	fs.StringVar(&f.storeDir, "store-dir", "", "directory for the JSONL session store (empty -> in-memory store)")
-	fs.StringVar(&f.shell, "shell", "/bin/sh", "shell used to execute Bash-tool commands; empty disables Bash")
-	fs.BoolVar(&f.noBash, "no-bash", false, "disable the Bash tool entirely (shell-less mode); overrides --shell")
+	fs.StringVar(&f.shell, "shell", "/bin/sh", "shell used to execute Shell-tool commands; empty disables Shell")
+	fs.BoolVar(&f.noShell, "no-shell", false, "disable the Shell tool entirely (shell-less mode); overrides --shell")
 	fs.IntVar(&f.maxRunTokens, "max-run-tokens", 0, "max cumulative input+output tokens per run; a run that crosses it ends cleanly with stop=budget. 0 = unlimited")
 	fs.IntVar(&f.maxTeamTokens, "max-team-tokens", 0, "max cumulative input+output tokens per team run; 0 = unlimited")
 	fs.IntVar(&f.maxTurns, "max-turns", 0, "max model calls (turns) for the run; a run that crosses it ends cleanly with stop=max_turns. 0 (default) uses the deployment default; a positive value caps this single-shot run. Orthogonal to --max-run-tokens (turns vs tokens; both compose)")
@@ -236,9 +249,14 @@ func parseFlags(argv []string) (flags, error) {
 	fs.StringVar(&f.otlpMetricsProtocol, "otlp-metrics-protocol", "grpc", "OTLP transport for metrics: \"grpc\" (default) or \"http\"")
 	fs.DurationVar(&f.otlpShutdownTimeout, "otlp-shutdown-timeout", 5*time.Second, "bound on the telemetry flush at exit (so a dead collector cannot hang the run). 0 disables the bound (flush until it completes); the flush runs BEFORE the diff/summary emit defer unwinds")
 
+	fs.BoolVar(&f.productMetrics, "product-metrics", true,
+		"report anonymous product-adoption metrics to Stacklok (version, OS/arch, enabled features, coarse session/run/tool-call counts — never a prompt, file path, tool name, or model id). ON by default; opt out with --product-metrics=false, MECATL_PRODUCT_METRICS=false, DO_NOT_TRACK=1, or telemetry.productMetrics.enabled: false in settings.yaml")
+	fs.BoolVar(&f.productMetricsDryRun, "product-metrics-dry-run", false,
+		"print every product-metrics observation to stderr instead of sending it — verify the no-PII claim yourself before enabling --product-metrics for real")
+
 	fs.Usage = usageEpilogue(fs)
 
-	if err := fs.Parse(argv); err != nil {
+	if err := fs.Parse(cliconfig.NormalizeLegacyNoBash(argv)); err != nil {
 		return flags{}, err
 	}
 
@@ -265,6 +283,8 @@ func parseFlags(argv []string) (flags, error) {
 			// --out-summary=- selects it. The unset default also resolves to "-"
 			// but keeps the indented JSON — default behavior unchanged.
 			f.summaryCompact = f.outSummary == "-"
+		case "product-metrics":
+			f.productMetricsSet = true
 		}
 		if fl.Name == "reasoning-effort" {
 			f.reasoningEffortFlagSet = true
@@ -360,7 +380,7 @@ func usageEpilogue(fs *flag.FlagSet) func() {
 		_, _ = fmt.Fprintf(out, "mecatequi — single-shot, headless mecatl runner for CI / batch use.\n\n")
 		_, _ = fmt.Fprintf(out, "Usage: mecatequi --prompt <text> [flags]\n\n")
 		_, _ = fmt.Fprintf(out, "Flags:\n")
-		fs.PrintDefaults()
+		flaghelp.PrintDefaults(out, fs)
 		_, _ = fmt.Fprintln(out, "\nVersion: mecatequi --version prints the build version and exits.")
 		_, _ = fmt.Fprintf(out, `
 Output routing:
@@ -384,6 +404,7 @@ Exit codes (read stop_reason in the summary — the code alone is coarse):
 // appConfig constructs the complete declarative app.Config for the command root.
 // app.Build loads the injected provider credential after resolving operator definitions.
 func appConfig(f flags, diag port.Diagnostics, obs observability) app.Config {
+	nativeEndpointLoader := &cliconfig.NativeEndpointLoader{}
 	out := app.Config{
 		Workspace:       f.workspace,
 		Model:           f.model,
@@ -396,19 +417,24 @@ func appConfig(f flags, diag port.Diagnostics, obs observability) app.Config {
 		UseMock:                f.useMock,
 		StoreDir:               f.storeDir,
 		Shell:                  f.shell,
-		NoBash:                 f.noBash,
+		NoShell:                f.noShell,
 		MaxRunTokens:           f.maxRunTokens,
 		MaxTeamTokens:          f.maxTeamTokens,
 		// Remote MCP servers (issue #341): the static name=URL entries (with any
 		// MCP_<NAME>_TOKEN bearer already resolved into Headers at parse time),
 		// consumed by app.Build's static MCP source. Nil-safe when the flag was
 		// never registered (a hand-built test config).
-		MCPServers:               f.mcpServers.Servers(),
-		MCPProfileLoader:         cliconfig.NewMCPProfileResolver(f.mcpServers, os.LookupEnv),
-		ProviderCredentialLoader: cliconfig.NewProviderCredentialResolver(f.providerFlags, f.providerCredentials),
-		ProviderOverrides:        f.providerFlags.EndpointOverrides(),
-		PermissionsConventional:  true,
-		PermissionConfigs:        f.permissionConfigs,
+		MCPServers:                        f.mcpServers.Servers(),
+		MCPProfileLoader:                  cliconfig.NewMCPProfileResolver(f.mcpServers, os.LookupEnv),
+		MCPAuthorityLoader:                cliconfig.NewMCPProfileResolver(f.mcpServers, os.LookupEnv),
+		MCPAuthorityDefault:               mcpauthority.Global,
+		MCPBrokerSupported:                false,
+		ProviderCredentialLoader:          cliconfig.NewProviderCredentialResolver(f.providerFlags, f.providerCredentials),
+		NativeEndpointCredentialLoader:    nativeEndpointLoader,
+		NativeEndpointCredentialLifecycle: nativeEndpointLoader,
+		ProviderOverrides:                 f.providerFlags.EndpointOverrides(),
+		PermissionsConventional:           true,
+		PermissionConfigs:                 f.permissionConfigs,
 
 		GuardrailsModel:    f.guardrailsModel,
 		GuardrailsDisabled: f.guardrailsOff,
@@ -445,10 +471,14 @@ func appConfig(f flags, diag port.Diagnostics, obs observability) app.Config {
 		Diagnostics: diag,
 		// Observability (issue #343, ADR 0098): OPT-IN OTLP push. With no --otlp-*
 		// flags the handles are zero-valued (nil Sink/ToolCallRecorder/
-		// MetricsRoleScoper) — the byte-identical no-telemetry posture.
-		Sink:              obs.Sink,
-		ToolCallRecorder:  obs.ToolCallRecorder,
-		MetricsRoleScoper: obs.MetricsRoleScoper,
+		// MetricsRoleScoper) — the byte-identical no-telemetry posture. The
+		// opt-out product-metrics Sink/ToolCallRecorder are folded in alongside
+		// (nil-guarded fan-out): both nil reproduces the byte-identical
+		// no-telemetry posture exactly.
+		Sink:                             productMetricsSink(obs),
+		ToolCallRecorder:                 productMetricsRecorder(obs),
+		MetricsRoleScoper:                obs.MetricsRoleScoper,
+		SessionLoadFailureMetricsEmitter: obs.SessionLoadFailureMetricsEmitter,
 	}
 	keys := f.providerCredentials
 	f.providerFlags.ApplyResolved(&out, keys)

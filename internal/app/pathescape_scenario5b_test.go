@@ -15,7 +15,7 @@ import (
 
 // pathescape_scenario5b_test.go pins AC5.1b/AC5.1c
 // (docs/acceptance/path-escape-posture.md Scenario 5): the base-SHARING
-// (nil-forker) read-only Subagent child — wired whenever Bash is disabled
+// (nil-forker) read-only Subagent child — wired whenever Shell is disabled
 // (--no-bash / an empty shell / the issue-#40 untrusted-workspace gate nils the
 // sandboxed runner) — must NOT inherit the main session's relaxed workspace.
 // Before the fix the child ran against the parent's escapeWorkspace verbatim
@@ -38,7 +38,7 @@ func TestPathEscapePosture_Scenario5_SharedWorkspaceChildNotRelaxed(t *testing.T
 		t.Skip("POSIX path fixtures")
 	}
 	triggers := map[string]func(cfg *Config){
-		"no-bash":   func(cfg *Config) { cfg.NoBash = true },
+		"no-bash":   func(cfg *Config) { cfg.NoShell = true },
 		"untrusted": func(cfg *Config) { cfg.TrustProject = false },
 	}
 	for _, posture := range []Posture{PostureYolo, PostureAuto} {
@@ -50,7 +50,7 @@ func TestPathEscapePosture_Scenario5_SharedWorkspaceChildNotRelaxed(t *testing.T
 				f := setupEscapeFS(t)
 				// NO git init: the whole point is the nil-forker path — with no
 				// sandboxed runner buildSubagentTool wires no forker, so the child
-				// runs against the parent's (relaxed) base workspace verbatim.
+				// runs against the parent's content backend through a confined child view.
 				target := mustJSONStr(t, f.target)
 				parentRead := session.NewToolCall("p1", "Read", json.RawMessage(`{"path":`+target+`}`))
 				delegate := session.NewToolCall("p2", "Subagent", json.RawMessage(`{"prompt":"read the file outside the workspace"}`))
@@ -68,12 +68,12 @@ func TestPathEscapePosture_Scenario5_SharedWorkspaceChildNotRelaxed(t *testing.T
 					mockllm.TextTurn("parent done"),
 				)
 				apply(&cfg)
-				built, err := Build(context.Background(), cfg)
+				built, err := buildIsolated(t, context.Background(), cfg)
 				if err != nil {
 					t.Fatalf("Build: %v", err)
 				}
 				defer built.Close()
-				sess, err := built.Service.CreateSession(context.Background(), f.workspace, session.ModeDefault, session.Limits{})
+				sess, err := built.Service.CreateSession(context.Background(), session.ModeDefault, session.Limits{})
 				if err != nil {
 					t.Fatalf("CreateSession: %v", err)
 				}
@@ -134,12 +134,12 @@ func TestPathEscapePosture_Scenario5_SharedWorkspaceChildNotRelaxed(t *testing.T
 
 // TestPathEscapePosture_Scenario5_SharedWorkspaceChildWriteDenied pins the
 // WRITE half of AC5.1b: a writable (mode:"read-write", direct-write, ADR 0041)
-// child — the OTHER base-sharing child path, which runs against the parent
-// workspace verbatim BY DESIGN — must NOT inherit the relaxed-WRITE reach
+// child — the OTHER base-sharing child path, which shares the parent content
+// backend through a confined child Workspace view — must NOT inherit the relaxed-WRITE reach
 // either. Its out-of-root Write is denied (the file never appears), while the
 // main session's own out-of-root Write still lands at yolo (the main session's
-// relaxed behaviour is unchanged). The child is given Bash (the forker-wired
-// shape) so validateMode accepts read-write, but Bash is never scripted.
+// relaxed behaviour is unchanged). The child is given Shell (the forker-wired
+// shape) so validateMode accepts read-write, but Shell is never scripted.
 func TestPathEscapePosture_Scenario5_SharedWorkspaceChildWriteDenied(t *testing.T) {
 	t.Parallel()
 	if runtime.GOOS == "windows" {
@@ -163,14 +163,14 @@ func TestPathEscapePosture_Scenario5_SharedWorkspaceChildWriteDenied(t *testing.
 		mockllm.TextTurn("parent done"),
 	)
 	// A real shell so the writable path is wired (validateMode rejects
-	// read-write when no writable engine is wired); Bash is never scripted.
+	// read-write when no writable engine is wired); Shell is never scripted.
 	cfg.Shell = "/bin/sh"
-	built, err := Build(context.Background(), cfg)
+	built, err := buildIsolated(t, context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 	defer built.Close()
-	sess, err := built.Service.CreateSession(context.Background(), f.workspace, session.ModeDefault, session.Limits{})
+	sess, err := built.Service.CreateSession(context.Background(), session.ModeDefault, session.Limits{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}

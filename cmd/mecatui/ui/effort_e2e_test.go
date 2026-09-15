@@ -78,6 +78,10 @@ func TestEffortE2EForkPreservesTranscript(t *testing.T) {
 	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
 	prog.waitRunComplete(t, 1, 5*time.Second)
 	prog.wait(t, phaseIdle, 5*time.Second)
+	// The fake completes by closing without a ResultMsg. That outcome is
+	// intentionally ambiguous, so M-K11 restores the typed prompt; clear that
+	// recovered draft before entering the next independent local command.
+	tm.Send(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
 
 	// Drive /effort via the slash-command submit path, then enter on the current row.
 	for _, r := range "/effort" {
@@ -151,8 +155,8 @@ func TestEffortE2EForkFailureLeavesSourceOpen(t *testing.T) {
 	tm.WaitFinished(t, teatest.WithFinalTimeout(scaleWait(3*time.Second)))
 
 	fm := tm.FinalModel(t).(Model)
-	if !fm.restartFailed {
-		t.Errorf("restartFailed = false, want true (recoverable fork failure armed, not the fatal screen)")
+	if fm.restartFailed {
+		t.Errorf("restartFailed = true, want false (effort failure keeps the source bound)")
 	}
 	if fm.phase != phaseIdle {
 		t.Errorf("phase = %s, want idle (recoverable, not fatal)", phaseName(fm.phase))

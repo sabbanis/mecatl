@@ -6,7 +6,7 @@ import (
 	"io"
 	"sort"
 
-	"github.com/stacklok/mecatl/internal/cliconfig"
+	"github.com/stacklok/mecatl/internal/flaghelp"
 )
 
 // flagMeta annotates a registered flag for progressive mode-specific help.
@@ -69,11 +69,11 @@ var flagMetaByFlag = map[string]flagMeta{
 	// Advanced — an operator running mecated by hand never sets them — and
 	// server-boundary, so absent from ACP help (a stdio ACP client already has
 	// its parent's lifetime and needs no socket or readiness barrier).
-	"grpc-unix-socket":    {group: groupServer, common: false, acp: acpExclude},
-	"ready-file":          {group: groupServer, common: false, acp: acpExclude},
-	"lifetime-pipe-fd":    {group: groupServer, common: false, acp: acpExclude},
-	"workspace-authority": {group: groupServer, common: false, acp: acpExclude},
-	"metrics-addr":        {group: groupServer, common: false, acp: acpExclude},
+	"grpc-unix-socket": {group: groupServer, common: false, acp: acpExclude},
+	"ready-file":       {group: groupServer, common: false, acp: acpExclude},
+	"lifetime-pipe-fd": {group: groupServer, common: false, acp: acpExclude},
+	"lifetime-stdin":   {group: groupServer, common: false, acp: acpExclude},
+	"metrics-addr":     {group: groupServer, common: false, acp: acpExclude},
 
 	// ── Security (serve-only) ─────────────────────────────────────────────
 	"auth-token": {group: groupSecurity, common: true, acp: acpExclude},
@@ -87,6 +87,9 @@ var flagMetaByFlag = map[string]flagMeta{
 	"oidc-issuer":             {group: groupSecurity, common: false, acp: acpExclude},
 	"oidc-jwks-uri":           {group: groupSecurity, common: false, acp: acpExclude},
 	"oidc-audience":           {group: groupSecurity, common: false, acp: acpExclude},
+	"oidc-resource":           {group: groupSecurity, common: false, acp: acpExclude},
+	"oidc-client-id":          {group: groupSecurity, common: false, acp: acpExclude},
+	"oidc-scopes":             {group: groupSecurity, common: false, acp: acpExclude},
 	"oidc-max-jwks-staleness": {group: groupSecurity, common: false, acp: acpExclude},
 	// TEST-ONLY SSRF relaxation (see cliconfig.OIDCConfig): not common, and
 	// acpExclude like its siblings — an ACP client has no business setting it.
@@ -105,6 +108,8 @@ var flagMetaByFlag = map[string]flagMeta{
 	"perf-mcp":                 {group: groupObservability, common: false, acp: acpExclude},
 	"goroutine-warn-threshold": {group: groupObservability, common: false, acp: acpExclude},
 	"goroutine-warn-interval":  {group: groupObservability, common: false, acp: acpExclude},
+	"product-metrics":          {group: groupObservability, common: true, acp: acpInclude},
+	"product-metrics-dry-run":  {group: groupObservability, common: false, acp: acpExclude},
 
 	// ── Driver connectivity (serve-only) ──────────────────────────────────
 	"driver-auth-token":            {group: groupDriver, common: false, acp: acpExclude},
@@ -116,6 +121,7 @@ var flagMetaByFlag = map[string]flagMeta{
 	"memory-store-url":             {group: groupDriver, common: false, acp: acpExclude},
 	"event-log-url":                {group: groupDriver, common: false, acp: acpExclude},
 	"schedule-store-url":           {group: groupDriver, common: false, acp: acpExclude},
+	"learning-store-url":           {group: groupDriver, common: false, acp: acpExclude},
 	"skill-source-url":             {group: groupDriver, common: false, acp: acpExclude},
 	"soul-source-url":              {group: groupDriver, common: false, acp: acpExclude},
 	"agent-source-url":             {group: groupDriver, common: false, acp: acpExclude},
@@ -147,8 +153,9 @@ var flagMetaByFlag = map[string]flagMeta{
 	"openrouter-base-url":   {group: groupProvider, common: false, acp: acpInclude},
 	"anthropic-base-url":    {group: groupProvider, common: false, acp: acpInclude},
 	"opencode-base-url":     {group: groupProvider, common: false, acp: acpInclude},
-	"auth-file":             {group: groupProvider, common: false, acp: acpInclude},
+	"api-key-file":          {group: groupProvider, common: false, acp: acpInclude},
 	"mock":                  {group: groupProvider, common: false, acp: acpInclude},
+	"mock-script":           {group: groupProvider, common: false, acp: acpInclude},
 	"toolhive-llm":          {group: groupProvider, common: false, acp: acpInclude},
 	"toolhive-llm-base-url": {group: groupProvider, common: false, acp: acpInclude},
 	"toolhive-llm-mode":     {group: groupProvider, common: false, acp: acpInclude},
@@ -171,8 +178,8 @@ var flagMetaByFlag = map[string]flagMeta{
 	"context-window-override": {group: groupContext, common: false, acp: acpInclude},
 
 	// ── Tools (both) ─────────────────────────────────────────────────────
-	"shell":   {group: groupTools, common: true, acp: acpInclude},
-	"no-bash": {group: groupTools, common: true, acp: acpInclude},
+	"shell":    {group: groupTools, common: true, acp: acpInclude},
+	"no-shell": {group: groupTools, common: true, acp: acpInclude},
 
 	// ── Posture & permissions (both) ─────────────────────────────────────
 	"posture":                   {group: groupPermissions, common: true, acp: acpInclude},
@@ -413,17 +420,17 @@ func renderGroupedCommon(out io.Writer, fs *flag.FlagSet, common map[string]bool
 		sort.Slice(entries, func(i, j int) bool { return entries[i].name < entries[j].name })
 		_, _ = fmt.Fprintf(out, "%s:\n", grp)
 		for _, e := range entries {
-			cliconfig.PrintFlagDefault(out, e.f)
+			flaghelp.PrintFlagDefault(out, e.f)
 		}
 		_, _ = fmt.Fprintf(out, "\n")
 	}
 }
 
 // writeServeHelpAll renders the exhaustive flag list for `mecated serve --help-all`.
-// It uses the single cliconfig formatter (byte-identical to flag.PrintDefaults).
+// It uses the single cliconfig formatter.
 func writeServeHelpAll(out io.Writer, fs *flag.FlagSet) {
 	_, _ = fmt.Fprintf(out, "Usage: mecated serve [flags]\n\nFlags:\n")
-	cliconfig.PrintDefaultsExcluding(out, fs, nil)
+	flaghelp.PrintDefaultsExcluding(out, fs, nil)
 }
 
 // writeAcpHelpAll renders the exhaustive ACP-applicable flag list for
@@ -431,7 +438,7 @@ func writeServeHelpAll(out io.Writer, fs *flag.FlagSet) {
 // via the single cliconfig formatter.
 func writeAcpHelpAll(out io.Writer, fs *flag.FlagSet) {
 	_, _ = fmt.Fprintf(out, "Usage: mecated acp [flags]\n\nFlags:\n")
-	cliconfig.PrintDefaultsExcluding(out, fs, acpExcludedNames())
+	flaghelp.PrintDefaultsExcluding(out, fs, acpExcludedNames())
 }
 
 // writeTopLevelHelpAll renders the exhaustive reference for the top-level
@@ -453,7 +460,7 @@ func writeTopLevelHelpAll(out io.Writer, fs *flag.FlagSet) {
 	_, _ = fmt.Fprintf(out, "\nExhaustive serve-compatible flag reference (every public flag a\n")
 	_, _ = fmt.Fprintf(out, "`mecated serve` invocation accepts):\n\n")
 	_, _ = fmt.Fprintf(out, "Flags:\n")
-	cliconfig.PrintDefaultsExcluding(out, fs, nil)
+	flaghelp.PrintDefaultsExcluding(out, fs, nil)
 	_, _ = fmt.Fprintf(out, "\nNote: `mecated acp --help-all` lists the ACP-scoped subset\n")
 	_, _ = fmt.Fprintf(out, "(server-boundary flags such as --grpc-addr/--tls-*/--metrics-addr\n")
 	_, _ = fmt.Fprintf(out, "and the scheduler/driver knobs are omitted there).\n")

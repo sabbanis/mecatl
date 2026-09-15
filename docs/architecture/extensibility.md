@@ -11,6 +11,20 @@
 The `tool.Catalog` is the single registration seam, so every tool — core, remote,
 or generated — is one uniform `tool.Tool`.
 
+**Managed Shell temporary storage (Linux and macOS).** The default operator-managed Shell scope
+allocates one private command/job lease and supplies only its `tmp/` child as
+`TMPDIR`/`GOTMPDIR`. Ordinary completion removes the exact lease; a Build-owned,
+interval-gated worker later reclaims only validated, unlocked abandoned leases after
+the configured TTL. The worker's root coordination lock never delays command
+allocation or execution, and each startup/periodic sweep and shutdown join has its
+own configured deadline. The workspace manifest holds the canonical current workspace
+path for owner-only diagnostics and refreshes it when the same managed key opens from a
+new path. Operators can select `temporary_storage.mode: system` to
+restore inherited/configured system temporary storage; this disables managed
+allocation and reaping and leaves existing managed data for explicit inspection or
+removal. Managed mode is available on Linux and macOS; other platforms must use
+`system` mode. See [ADR 0281](../adr/0281-managed-temporary-command-leases.md).
+
 **Portable memory capabilities.** `tool.MemoryStore` remains the six-method base
 contract. `tool.MemoryLifecycleStore` is an optional additive capability for opaque
 versions, inspection, tombstones, and compensating undo. Consumers register the
@@ -30,11 +44,15 @@ tools are registered into the catalog **namespaced** `mcp__<server>__<tool>` so 
 remote tool can never collide with or shadow a built-in. Concrete session loss
 (server restart, plain missing-session 404, closed transport, EOF, or refused
 connection) is re-established transparently with a single bounded reconnect
-attempt per call, serialized under a mutex. A structured JSON-RPC 400/404 or HTTP
-429/502/503/504 is instead a one-call failure: the live session is retained and
-the operation is never replayed automatically. See
-[ADR 0056](../adr/0056-mcp-client-reconnect.md) and
-[ADR 0223](../adr/0223-mcp-sdk-transport-error-semantics.md). The client also holds the
+attempt per call, serialized under a mutex. A closed idle HTTP connection while
+a POST is being sent is different: delivery may be ambiguous, so the operation
+is not replayed and the model receives a normalized unavailable result that
+states its outcome is unknown. A structured JSON-RPC 400/404 or HTTP
+429/502/503/504 is likewise a one-call failure: the live session is retained
+and the operation is never replayed automatically. See
+[ADR 0056](../adr/0056-mcp-client-reconnect.md),
+[ADR 0223](../adr/0223-mcp-sdk-transport-error-semantics.md), and
+[ADR 0309](../adr/0309-mcp-ambiguous-closed-idle-post.md). The client also holds the
 **standalone SSE GET stream** open per connected server, so server-initiated
 `notifications/{tools,prompts,resources}/list_changed` invalidate the cached
 snapshots (lazily re-listed on the next read); live catalog refresh is
@@ -122,7 +140,7 @@ textual reference, the model calls the same tool again with
 `Execute({name, asset})`; the tool validates the advertised logical name, fetches
 only that payload through `tool.SkillSource`, enforces its size cap, and rejects
 invalid UTF-8 or NUL-containing content. No base directory crosses the seam, no
-asset is materialized or added to the workspace, and `Read`/`Bash` gain no implicit
+asset is materialized or added to the workspace, and `Read`/`Shell` gain no implicit
 access. A workflow that genuinely needs a file must create or obtain it explicitly
 inside the workspace under ordinary permissions. Because the tool is read-only it
 is also available in plan and no-filesystem sessions. The tool is registered **only
@@ -190,8 +208,8 @@ never enter the live catalog or perturb the byte-stable prompt prefix (it is bui
 once at startup from operator-trusted sources only). `SkillDraft` is opt-in via
 `--skills-draft-dir` (empty ⇒ tool not registered, like `--memory-dir` gating
 Remember). **Residual** (documented, not hidden): absent the deferred OS sandbox the
-`Bash` tool can write to any path, so the structural boundary covers `Write`/`Edit`
-only — `mecated` warns when `SkillDraft` and `Bash` are enabled together; the fully
+`Shell` tool can write to any path, so the structural boundary covers `Write`/`Edit`
+only — `mecated` warns when `SkillDraft` and `Shell` are enabled together; the fully
 structural deployment is shell-less or sandboxed. `SkillDraft` itself defaults to **ask** so a
 human reviews authorship, and being mutating it is filtered out of plan mode.
 

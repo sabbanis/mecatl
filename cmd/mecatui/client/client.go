@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	pathpkg "path"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -19,9 +20,11 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
 	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
+	"github.com/stacklok/mecatl/contracts/sessionaffinity"
 )
 
 // DialConfig is the connection-time configuration: address, optional bearer
@@ -29,12 +32,14 @@ import (
 // unauthenticated plaintext by default; non-loopback may need a token and/or
 // TLS/mTLS.
 type DialConfig struct {
-	Server      string      // host:port, e.g. 127.0.0.1:8080
-	AuthToken   string      // optional static bearer; sent as "authorization: Bearer <tok>"
-	TokenSource TokenSource // optional dynamic bearer source, evaluated once per RPC
-	UseTLS      bool        // enable transport TLS
-	TLSCAFile   string      // optional custom CA bundle for server verification
-	Insecure    bool        // skip TLS verification (testing only; with UseTLS)
+	Server                 string      // host:port, e.g. 127.0.0.1:8080
+	AuthToken              string      // optional static bearer; sent as "authorization: Bearer <tok>"
+	TokenSource            TokenSource // optional dynamic bearer source, evaluated once per RPC
+	ExplicitAnonymous      bool        // bypass saved OIDC state and send no bearer credential
+	UseTLS                 bool        // enable transport TLS
+	TLSCAFile              string      // optional custom CA bundle for server verification
+	Insecure               bool        // skip TLS verification (testing only; with UseTLS)
+	RemotePlaintextAllowed bool        // explicit authorization for non-loopback plaintext
 }
 
 // TokenSource supplies a current bearer token for an RPC. Dial must not invoke it.
@@ -47,11 +52,27 @@ type TokenSource interface {
 type Client struct {
 	conn         *grpc.ClientConn
 	svc          mecatlv1.HarnessServiceClient
+	localContext mecatlv1.LocalSessionContextServiceClient
 	scheduleSvc  mecatlv1.ScheduleServiceClient
 	bearerBacked bool
 	// displayServerEndpoint is a sanitized diagnostic projection of the configured
 	// connection target, never a reconnect target, server response, or TLS/auth setting.
 	displayServerEndpoint string
+}
+
+// withSessionAffinity adds the exact session identity to outgoing metadata while
+// preserving credentials and any other metadata already carried by ctx.
+func withSessionAffinity(ctx context.Context, id string) context.Context {
+	if !sessionaffinity.ValidValue(id) {
+		return ctx
+	}
+	md, _ := metadata.FromOutgoingContext(ctx)
+	md = md.Copy()
+	if md == nil {
+		md = metadata.MD{}
+	}
+	md.Set(sessionaffinity.HeaderName, id)
+	return metadata.NewOutgoingContext(ctx, md)
 }
 
 // Dial connects to mecated per cfg. It uses grpc.NewClient (not the deprecated
@@ -62,15 +83,20 @@ type Client struct {
 func Dial(cfg DialConfig) (*Client, error) {
 	var opts []grpc.DialOption
 
-	loopback := IsLoopbackHost(cfg.Server)
+	// A UNIX socket is as local as loopback and carries the same single-user
+	// trust model, so IsLocalTarget — not IsLoopbackHost — is what gates every
+	// plaintext decision below, INCLUDING bearerCreds.allowInsecure. Letting the
+	// pre-dial guards accept a target the credential then rejects would hand the
+	// operator gRPC's opaque "credentials require transport level security"
+	// instead of our actionable message, which is the whole point of the guards.
+	local := IsLocalTarget(cfg.Server)
 
-	// Refuse to leak a bearer token in cleartext to a non-loopback server. The
-	// per-RPC credential's RequireTransportSecurity() also blocks this at send
-	// time, but a hard pre-dial guard gives the operator a clear, actionable
-	// error instead of an opaque RPC failure later.
-	if (cfg.AuthToken != "" || cfg.TokenSource != nil) && !cfg.UseTLS && !loopback {
-		return nil, fmt.Errorf(
-			"refusing to send auth token in cleartext to non-loopback %q: use --tls", cfg.Server)
+	if !cfg.UseTLS && !local && !cfg.RemotePlaintextAllowed {
+		return nil, fmt.Errorf("refusing plaintext to non-loopback %q without explicit authorization", cfg.Server)
+	}
+
+	if err := bearerTransportRefusal(cfg, local); err != nil {
+		return nil, err
 	}
 
 	if cfg.UseTLS {
@@ -90,22 +116,22 @@ func Dial(cfg DialConfig) (*Client, error) {
 	}
 
 	if cfg.AuthToken != "" {
-		creds := bearerCreds{token: cfg.AuthToken, allowInsecure: loopback}
+		creds := bearerCreds{token: cfg.AuthToken, allowInsecure: local}
 		opts = append(opts, grpc.WithPerRPCCredentials(creds))
 	} else if cfg.TokenSource != nil {
 		opts = append(opts,
-			grpc.WithPerRPCCredentials(bearerCreds{source: cfg.TokenSource, allowInsecure: loopback}),
+			grpc.WithPerRPCCredentials(bearerCreds{source: cfg.TokenSource, allowInsecure: local}),
 			grpc.WithChainUnaryInterceptor(tokenSourceUnary(cfg.TokenSource)),
 			grpc.WithChainStreamInterceptor(tokenSourceStream(cfg.TokenSource)),
 		)
 	} else {
-		// Dialling with no credential at all is legitimate: a mecated with no OIDC
-		// configured needs none, so a missing saved credential cannot be an error
-		// here. It becomes actionable only when the server actually demands one,
-		// which is where these interceptors add the enrolment hint.
+		// Dialling with no credential at all is legitimate: the server is
+		// authoritative about whether caller authentication is required. Annotate
+		// only an actual server rejection; network and TLS failures stay transport
+		// errors.
 		opts = append(opts,
-			grpc.WithChainUnaryInterceptor(anonymousUnaryHint(cfg.Server)),
-			grpc.WithChainStreamInterceptor(anonymousStreamHint(cfg.Server)),
+			grpc.WithChainUnaryInterceptor(credentialFreeUnaryHint(cfg.Server, cfg.ExplicitAnonymous)),
+			grpc.WithChainStreamInterceptor(credentialFreeStreamHint(cfg.Server, cfg.ExplicitAnonymous)),
 		)
 	}
 
@@ -116,50 +142,71 @@ func Dial(cfg DialConfig) (*Client, error) {
 	return &Client{
 		conn:                  conn,
 		svc:                   mecatlv1.NewHarnessServiceClient(conn),
+		localContext:          mecatlv1.NewLocalSessionContextServiceClient(conn),
 		scheduleSvc:           mecatlv1.NewScheduleServiceClient(conn),
 		bearerBacked:          cfg.AuthToken != "" || cfg.TokenSource != nil,
 		displayServerEndpoint: displayServerEndpoint(cfg),
 	}, nil
 }
 
-// anonymousDialHint annotates a server Unauthenticated rejection received by a
-// client that carried no bearer credential. Without it the operator sees only the
-// far side's "missing or invalid bearer token" and no indication that the local
-// cause is an unenrolled target. Wrapping preserves the gRPC status, so
-// status.Code classification elsewhere is unaffected.
-func anonymousDialHint(server string, err error) error {
-	if status.Code(err) != codes.Unauthenticated {
+// credentialFreeAuthError preserves the server's gRPC status while carrying a
+// closed, server-authoritative recovery reason to the UI.
+type credentialFreeAuthError struct {
+	cause  error
+	reason AuthReason
+	msg    string
+}
+
+func (e *credentialFreeAuthError) Error() string              { return e.msg }
+func (e *credentialFreeAuthError) Unwrap() error              { return e.cause }
+func (e *credentialFreeAuthError) GRPCStatus() *status.Status { return status.Convert(e.cause) }
+func (e *credentialFreeAuthError) AuthReason() AuthReason     { return e.reason }
+
+func credentialFreeDialHint(server string, explicitAnonymous bool, err error) error {
+	switch status.Code(err) {
+	case codes.Unauthenticated:
+		reason := AuthNotEnrolled
+		prefix := "server requires caller authentication"
+		if explicitAnonymous {
+			reason = AuthAnonymousRejected
+			prefix = "server rejected the explicit --anonymous connection because it requires caller authentication"
+		}
+		return &credentialFreeAuthError{
+			cause:  err,
+			reason: reason,
+			msg:    fmt.Sprintf("%s; use --auth-token, or, if this server supports OIDC enrollment, run 'mecatui login %s': %v", prefix, server, err),
+		}
+	case codes.PermissionDenied:
+		return fmt.Errorf("%w (server authorization denied this caller)", err)
+	default:
 		return err
 	}
-	return fmt.Errorf("%w (no saved credential for %s; run 'mecatui login %s')", err, server, server)
 }
 
-func anonymousUnaryHint(server string) grpc.UnaryClientInterceptor {
+func credentialFreeUnaryHint(server string, explicitAnonymous bool) grpc.UnaryClientInterceptor {
 	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
-		return anonymousDialHint(server, invoker(ctx, method, req, reply, cc, opts...))
+		return credentialFreeDialHint(server, explicitAnonymous, invoker(ctx, method, req, reply, cc, opts...))
 	}
 }
 
-func anonymousStreamHint(server string) grpc.StreamClientInterceptor {
+func credentialFreeStreamHint(server string, explicitAnonymous bool) grpc.StreamClientInterceptor {
 	return func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
 		stream, err := streamer(ctx, desc, cc, method, opts...)
 		if err != nil {
-			return nil, anonymousDialHint(server, err)
+			return nil, credentialFreeDialHint(server, explicitAnonymous, err)
 		}
-		// Server-side auth rejects before the handler runs, and gRPC surfaces that
-		// on the first Recv rather than at stream creation, so the hint has to
-		// cover RecvMsg too.
-		return hintingStream{ClientStream: stream, server: server}, nil
+		return hintingStream{ClientStream: stream, server: server, explicitAnonymous: explicitAnonymous}, nil
 	}
 }
 
 type hintingStream struct {
 	grpc.ClientStream
-	server string
+	server            string
+	explicitAnonymous bool
 }
 
 func (s hintingStream) RecvMsg(m any) error {
-	return anonymousDialHint(s.server, s.ClientStream.RecvMsg(m))
+	return credentialFreeDialHint(s.server, s.explicitAnonymous, s.ClientStream.RecvMsg(m))
 }
 
 type tokenContextKey struct{}
@@ -236,20 +283,11 @@ func (c *Client) Close() error {
 	return c.conn.Close()
 }
 
-// CreateSession allocates a server-side session against an absolute workspace and
-// returns its id together with the server's advertised Capabilities. mode is the
-// proto PermissionMode (see ModeFromString). sel is the optional, proto-free model
-// selection (its zero value ⇒ no provider_id/model_id set ⇒ the server's default).
-// This is the SINGLE proto-build point for the model selection: the ui passes a
-// plain ModelSelection and never sees the proto request. The Capabilities are the
-// proto-free mirror of the create response's ServerCapabilities; an older server
-// that omits the field yields the all-false zero value (see capabilitiesFrom).
-// The ResolvedModel is the EFFECTIVE provider+model the server resolved the session
-// to (echoed verbatim); an older server that omits the field yields the zero value
-// (see resolvedModelFrom), which the ui renders as no model segment.
-func (c *Client) CreateSession(ctx context.Context, workspace string, mode mecatlv1.PermissionMode, sel ModelSelection) (string, Capabilities, ResolvedModel, error) {
+// CreateSession allocates a server-owned session and returns its id together
+// with the server's advertised capabilities and resolved model. The request
+// deliberately carries no client filesystem path.
+func (c *Client) CreateSession(ctx context.Context, mode mecatlv1.PermissionMode, sel ModelSelection) (string, Capabilities, ResolvedModel, error) {
 	return c.createSession(ctx, &mecatlv1.CreateSessionRequest{
-		Workspace:       workspace,
 		Mode:            mode,
 		ProviderId:      sel.ProviderID,
 		ModelId:         sel.ModelID,
@@ -257,30 +295,61 @@ func (c *Client) CreateSession(ctx context.Context, workspace string, mode mecat
 	})
 }
 
-// SessionIDDisplayWidth is the one session-ID width used by the TUI header and
-// by debug-target prefix resolution.
-const SessionIDDisplayWidth = 12
+// SessionHandleWidth is the fixed maximum ASCII-column width of every ordinary
+// session handle shown by mecatui.
+const SessionHandleWidth = 12
 
-// DisplaySessionID returns the session ID exactly as shown in the TUI header.
-func DisplaySessionID(id string) string {
-	if len(id) <= SessionIDDisplayWidth {
-		return id
+// SessionHandle returns the fixed, terminal-safe escaped prefix used by every
+// ordinary mecatui session presentation. Unreserved ASCII is copied verbatim,
+// except that a leading hyphen is escaped; every other UTF-8 byte is one
+// uppercase %HH atom. The longest complete-atom
+// prefix fitting SessionHandleWidth is returned. Empty or invalid UTF-8 IDs have
+// no handle.
+func SessionHandle(id string) string {
+	if id == "" || !utf8.ValidString(id) {
+		return ""
 	}
-	return id[:SessionIDDisplayWidth]
+	const hex = "0123456789ABCDEF"
+	var out strings.Builder
+	out.Grow(SessionHandleWidth)
+	for i, b := range []byte(id) {
+		safe := b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z' || b >= '0' && b <= '9' || b == '.' || b == '_' || b == '-' && i > 0
+		atomLen := 3
+		if safe {
+			atomLen = 1
+		}
+		if out.Len()+atomLen > SessionHandleWidth {
+			break
+		}
+		if safe {
+			out.WriteByte(b)
+		} else {
+			out.WriteByte('%')
+			out.WriteByte(hex[b>>4])
+			out.WriteByte(hex[b&0x0f])
+		}
+	}
+	return out.String()
 }
 
 // CreateDebugSession creates a separate no-filesystem analysis session bound to
-// targetID. A target written exactly as the TUI's 12-character header ID is
-// resolved against the caller-visible session inventory; the server still receives
-// and authorizes only an exact ID. Capability absence is detected from the create
-// response (the first common response carrying ServerCapabilities); an older server
-// may ignore the new target field, so that accidentally-created ordinary session is
+// targetID. A target with the canonical short-handle grammar is resolved against
+// the caller-visible session inventory. Exact inventory equality wins; otherwise
+// a unique projected handle resolves to its full ID. An inventory failure or no
+// projected match leaves the target unchanged so the server's exact-ID authority
+// decides the result. Capability absence is detected from the create response
+// (the first common response carrying ServerCapabilities); an older server may
+// ignore the new target field, so that accidentally-created ordinary session is
 // closed before this method fails closed.
 func (c *Client) CreateDebugSession(ctx context.Context, targetID string, mode mecatlv1.PermissionMode, sel ModelSelection, debugMCP ...string) (string, string, Capabilities, ResolvedModel, error) {
 	resolvedTarget, err := c.resolveDebugTarget(ctx, targetID)
 	if err != nil {
 		return "", "", Capabilities{}, ResolvedModel{}, err
 	}
+	return c.createDebugSession(withSessionAffinity(ctx, resolvedTarget), resolvedTarget, mode, sel, debugMCP...)
+}
+
+func (c *Client) createDebugSession(ctx context.Context, resolvedTarget string, mode mecatlv1.PermissionMode, sel ModelSelection, debugMCP ...string) (string, string, Capabilities, ResolvedModel, error) {
 	id, caps, resolved, err := c.createSession(ctx, &mecatlv1.CreateSessionRequest{
 		Profile:              "no-fs",
 		Mode:                 mode,
@@ -305,68 +374,123 @@ func (c *Client) CreateDebugSession(ctx context.Context, targetID string, mode m
 	return id, resolvedTarget, caps, resolved, nil
 }
 
+const debugTargetExactCopyGuidance = "open /session, copy the full exact session ID, and pass it as TARGET"
+
+func validateDebugTarget(targetID string) error {
+	if targetID == "" {
+		return errors.New("debug target session ID must not be empty")
+	}
+	if !utf8.ValidString(targetID) {
+		return errors.New("debug target session ID must be valid UTF-8")
+	}
+	return nil
+}
+
 func (c *Client) resolveDebugTarget(ctx context.Context, targetID string) (string, error) {
-	if len(targetID) != SessionIDDisplayWidth {
+	if err := validateDebugTarget(targetID); err != nil {
+		return "", err
+	}
+	if !isSessionHandleCandidate(targetID) {
 		return targetID, nil
 	}
 	sessions, err := c.ListSessions(ctx)
 	if err != nil {
-		return "", fmt.Errorf("resolve debug target: list sessions: %w", err)
+		return targetID, nil
 	}
+
+	ids := make(map[string]struct{}, len(sessions))
 	for _, item := range sessions {
-		if item.ID == targetID {
-			return targetID, nil
+		ids[item.ID] = struct{}{}
+	}
+	if _, exact := ids[targetID]; exact {
+		return targetID, nil
+	}
+	matches := make([]string, 0, 1)
+	for id := range ids {
+		if SessionHandle(id) == targetID {
+			matches = append(matches, id)
 		}
 	}
-	match := ""
-	for _, item := range sessions {
-		if !strings.HasPrefix(item.ID, targetID) {
+	if len(matches) > 1 {
+		return "", fmt.Errorf("session handle %q is ambiguous; %s", targetID, debugTargetExactCopyGuidance)
+	}
+	if len(matches) == 0 {
+		return targetID, nil
+	}
+	return matches[0], nil
+}
+
+func isSessionHandleCandidate(value string) bool {
+	if value == "" || len(value) > SessionHandleWidth {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		b := value[i]
+		literal := b >= 'A' && b <= 'Z' || b >= 'a' && b <= 'z' || b >= '0' && b <= '9' || b == '.' || b == '_' || b == '-' && i > 0
+		if literal {
 			continue
 		}
-		if match != "" {
-			return "", fmt.Errorf("session ID prefix %q is ambiguous; use the full session ID", targetID)
+		if b != '%' || i+2 >= len(value) || !isUpperHex(value[i+1]) || !isUpperHex(value[i+2]) {
+			return false
 		}
-		match = item.ID
+		i += 2
 	}
-	if match != "" {
-		return match, nil
-	}
-	// Preserve the server's ordinary not-found posture. The caller-filtered
-	// inventory is only a convenience resolver; the server remains authoritative.
-	return targetID, nil
+	return true
 }
 
-// CreateSessionWithCarryover is CreateSession seeded with the source session's
-// conversation history (issue #20). sourceSessionID, when non-empty, sets
-// source_session_id on the request; the server snapshots the source (it must be
-// at a turn boundary) and seeds the new session's history. The server is the
-// authority on same-vs-cross: a same-provider carryover replays verbatim, a
-// cross-provider carryover strips the prior provider's private replay blobs.
-// An empty sourceSessionID is byte-identical to CreateSession (no carryover).
-// The caller owns closing the source session AFTER the new one is ready (the
-// server snapshotted it at create time). This is the SINGLE proto-build point
-// for the carryover selector — the ui passes plain strings and never sees the
-// proto.
-func (c *Client) CreateSessionWithCarryover(ctx context.Context, workspace string, mode mecatlv1.PermissionMode, sel ModelSelection, sourceSessionID string) (string, Capabilities, ResolvedModel, error) {
-	return c.createSession(ctx, &mecatlv1.CreateSessionRequest{
-		Workspace:       workspace,
-		Mode:            mode,
-		ProviderId:      sel.ProviderID,
-		ModelId:         sel.ModelID,
-		ReasoningEffort: sel.ReasoningEffort,
-		SourceSessionId: sourceSessionID,
+func isUpperHex(b byte) bool {
+	return b >= '0' && b <= '9' || b >= 'A' && b <= 'F'
+}
+
+// CreateSessionWithCarryover forks sourceSessionID with model overrides. Server
+// inheritance supplies placement, mode, limits, and any omitted model fields.
+func (c *Client) CreateSessionWithCarryover(ctx context.Context, sel ModelSelection, sourceSessionID string) (string, Capabilities, ResolvedModel, error) {
+	if sourceSessionID == "" {
+		return "", Capabilities{}, ResolvedModel{}, fmt.Errorf("fork session: source session ID is required")
+	}
+	resp, err := c.svc.ForkSession(withSessionAffinity(ctx, sourceSessionID), &mecatlv1.ForkSessionRequest{
+		SourceSessionId: sourceSessionID, ProviderId: sel.ProviderID, ModelId: sel.ModelID, ReasoningEffort: sel.ReasoningEffort,
 	})
+	if err != nil {
+		return "", Capabilities{}, ResolvedModel{}, fmt.Errorf("fork session: %w", err)
+	}
+	snapshot, err := c.GetSession(ctx, resp.GetSessionId())
+	if err != nil {
+		return "", Capabilities{}, ResolvedModel{}, err
+	}
+	return resp.GetSessionId(), snapshot.Capabilities, snapshot.ResolvedModel, nil
 }
 
-// createSession is the shared proto-build→call→unwrap body for both CreateSession
-// and CreateSessionWithCarryover, so the carryover variant stays byte-identical to
-// the plain create apart from the source_session_id field.
+// createSession is the shared CreateSession proto call and response unwrap body.
 func (c *Client) createSession(ctx context.Context, req *mecatlv1.CreateSessionRequest) (string, Capabilities, ResolvedModel, error) {
 	resp, err := c.svc.CreateSession(ctx, req)
 	if err != nil {
 		return "", Capabilities{}, ResolvedModel{}, fmt.Errorf("create session: %w", err)
 	}
-	return resp.GetSessionId(), capabilitiesFrom(resp.GetCapabilities()), resolvedModelFrom(resp.GetResolvedModel()), nil
+	return resp.GetSessionId(), capabilitiesWithSessionMedia(resp.GetCapabilities(), resp.GetSessionCapabilities()), resolvedModelFrom(resp.GetResolvedModel()), nil
+}
+
+// ClearSession creates an empty-history successor. A nil selector inherits the
+// source placement; a non-nil selector must be one returned by ListWorktrees for
+// this source session. The successor is fetched before return so callers bind
+// only server-authored metadata.
+func (c *Client) ClearSession(ctx context.Context, sourceID string, selector *WorktreeSelector) (string, SessionSnapshot, error) {
+	var token *string
+	if selector != nil {
+		if selector.IsZero() {
+			return "", SessionSnapshot{}, fmt.Errorf("clear session: worktree selector must not be empty")
+		}
+		token = &selector.token
+	}
+	resp, err := c.svc.ClearSession(withSessionAffinity(ctx, sourceID), &mecatlv1.ClearSessionRequest{SourceSessionId: sourceID, WorktreeSelector: token})
+	if err != nil {
+		return "", SessionSnapshot{}, fmt.Errorf("clear session: %w", err)
+	}
+	snapshot, err := c.GetSession(ctx, resp.GetSessionId())
+	if err != nil {
+		return "", SessionSnapshot{}, err
+	}
+	return resp.GetSessionId(), snapshot, nil
 }
 
 // ForkSession creates a peer session from the conversation-history snapshot of the
@@ -377,7 +501,7 @@ func (c *Client) createSession(ctx context.Context, req *mecatlv1.CreateSessionR
 // caller owns the follow-up GetSession refetch for the forked session's resolved
 // model/capabilities echo (ForkSessionResponse carries only the id, no streaming).
 func (c *Client) ForkSession(ctx context.Context, srcID, title, reasoningEffort string) (string, error) {
-	resp, err := c.svc.ForkSession(ctx, &mecatlv1.ForkSessionRequest{
+	resp, err := c.svc.ForkSession(withSessionAffinity(ctx, srcID), &mecatlv1.ForkSessionRequest{
 		SourceSessionId: srcID,
 		Title:           title,
 		ReasoningEffort: reasoningEffort,
@@ -499,18 +623,30 @@ func TransientResultError(text string) bool {
 // surfaces the server's error; the caller treats a close failure best-effort (the
 // new session is created regardless).
 func (c *Client) CloseSession(ctx context.Context, id string) error {
-	_, err := c.svc.CloseSession(ctx, &mecatlv1.CloseSessionRequest{SessionId: id})
+	_, err := c.svc.CloseSession(withSessionAffinity(ctx, id), &mecatlv1.CloseSessionRequest{SessionId: id})
 	if err != nil {
 		return fmt.Errorf("close session: %w", err)
 	}
 	return nil
 }
 
-// OpenConverse opens a fresh bidi Converse stream and wraps it in a Stream
-// (serialised Sends + a Recver for the reader goroutine). Each user prompt opens
-// one stream — matching the "one run per Converse" model. The stream's lifetime
-// is bound to ctx; cancelling ctx aborts the run.
+// OpenConverse opens a fresh unbound bidi Converse stream for compatibility
+// with raw callers. Mecatui uses OpenConverseForSession when it owns a target
+// session.
 func (c *Client) OpenConverse(ctx context.Context) (*Stream, error) {
+	return c.openConverse(ctx)
+}
+
+// OpenConverseForSession opens a Converse stream carrying the exact session
+// affinity metadata before the first prompt or retry frame is sent.
+func (c *Client) OpenConverseForSession(ctx context.Context, sessionID string) (*Stream, error) {
+	if !sessionaffinity.ValidValue(sessionID) {
+		return nil, fmt.Errorf("open converse: session affinity requires 1-256 bytes of printable ASCII without boundary spaces")
+	}
+	return c.openConverse(withSessionAffinity(ctx, sessionID))
+}
+
+func (c *Client) openConverse(ctx context.Context) (*Stream, error) {
 	bidi, err := c.svc.Converse(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("open converse: %w", err)
@@ -608,18 +744,69 @@ func (b bearerCreds) GetRequestMetadata(ctx context.Context, _ ...string) (map[s
 
 func (b bearerCreds) RequireTransportSecurity() bool { return !b.allowInsecure }
 
+// bearerTransportRefusal refuses to hand a bearer to a non-local server over a
+// transport that cannot protect it. Both refusals live here, together, because
+// they prevent the SAME credential leak and the per-RPC credential's
+// RequireTransportSecurity() backstops NEITHER: it blocks plaintext only at send
+// time (an opaque RPC failure instead of this actionable pre-dial error), and it
+// cannot distinguish verified from unverified TLS at all.
+//
+//   - cleartext: anyone on the path reads the token off the wire.
+//   - unverified TLS: encrypted but UNAUTHENTICATED, so an MITM presenting any
+//     certificate terminates the session and reads the token just the same.
+//     Note this arm is reachable precisely because Insecure turns UseTLS on,
+//     which satisfies every other plaintext guard in Dial.
+//
+// It lives in Dial rather than in a caller's transport policy so EVERY caller of
+// this package inherits it. See docs/adr/0287-target-aware-mecatui-tls.md.
+func bearerTransportRefusal(cfg DialConfig, local bool) error {
+	if local || (cfg.AuthToken == "" && cfg.TokenSource == nil) {
+		return nil
+	}
+	switch {
+	case !cfg.UseTLS:
+		return fmt.Errorf(
+			"refusing to send auth token in cleartext to non-loopback %q: use --tls", cfg.Server)
+	case cfg.Insecure:
+		return fmt.Errorf(
+			"refusing to send auth token over unverified TLS to non-loopback %q: drop --insecure (use --tls-ca for a private CA)", cfg.Server)
+	}
+	return nil
+}
+
+// IsLocalTarget reports whether a gRPC dial target is local enough to carry a
+// bearer over plaintext: a loopback host:port, or a "unix://" socket (which the
+// filesystem, not the network, protects). Every plaintext/TLS decision in this
+// package and in the mecatui connect TLS policy goes through THIS predicate, so
+// the pre-dial guards and the per-RPC credential can never disagree about a
+// target. See docs/adr/0287-target-aware-mecatui-tls.md.
+func IsLocalTarget(server string) bool {
+	return strings.HasPrefix(strings.TrimSpace(server), "unix://") || IsLoopbackHost(server)
+}
+
 // IsLoopbackHost reports whether the host part of a "host:port" (or bare host)
 // target is loopback: an IP in 127.0.0.0/8, ::1, or the name "localhost".
 // A target with no resolvable/parseable host is treated as NON-loopback (fail
 // safe — we'd rather demand TLS than leak a token).
 func IsLoopbackHost(server string) bool {
-	host := server
-	if h, _, err := net.SplitHostPort(server); err == nil {
-		host = h
-	}
-	host = strings.TrimSpace(host)
+	host := strings.TrimSpace(server)
 	if host == "" {
 		return false
+	}
+	if strings.Contains(host, ":") {
+		h, port, err := net.SplitHostPort(host)
+		if err != nil {
+			// A bare IPv6 literal is a valid host form; malformed host:port
+			// spellings (including localhost: and localhost:not-a-port) fail closed.
+			if ip := net.ParseIP(host); ip != nil {
+				return ip.IsLoopback()
+			}
+			return false
+		}
+		if _, err := strconv.ParseUint(port, 10, 16); err != nil {
+			return false
+		}
+		host = h
 	}
 	if strings.EqualFold(host, "localhost") {
 		return true

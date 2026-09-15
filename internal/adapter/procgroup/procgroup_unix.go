@@ -8,13 +8,14 @@
 // it exits — defeating the caller's timeout/cancel. Configure(cmd) installs
 // Setpgid plus a Cancel that signals the negative PID, delivering SIGKILL to
 // every process in the group so the pipes close promptly and Run honours its
-// deadline. Shared by the hook runner (hookexec) and the Bash command runner
+// deadline. Shared by the hook runner (hookexec) and the Shell command runner
 // (osfs).
 package procgroup
 
 import (
 	"os/exec"
 	"syscall"
+	"time"
 )
 
 // Supported reports whether this platform can contain a whole command tree.
@@ -30,9 +31,25 @@ func Configure(c *exec.Cmd) {
 		if c.Process == nil {
 			return nil
 		}
-		// Negative PID → the whole process group created via Setpgid. ESRCH
-		// (group already gone) is benign; exec only consults this on the
-		// cancellation path.
-		return syscall.Kill(-c.Process.Pid, syscall.SIGKILL)
+		return Kill(c.Process.Pid)
 	}
+}
+
+// Kill terminates the managed process group. A vanished group is already done.
+func Kill(pid int) error {
+	err := syscall.Kill(-pid, syscall.SIGKILL)
+	if err == syscall.ESRCH {
+		return nil
+	}
+	return err
+}
+
+// WaitGone gives a cancellation kill a bounded chance to finish reaping the
+// complete managed group before its lease is considered for immediate deletion.
+func WaitGone(pid int, limit time.Duration) bool {
+	deadline := time.Now().Add(limit)
+	for GroupAlive(pid) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	return !GroupAlive(pid)
 }

@@ -18,16 +18,18 @@ import (
 type SessionSnapshot struct {
 	Mode            string
 	State           string
-	Workspace       string
+	Placement       Placement
 	CreatedAt       int64
 	ResolvedModel   ResolvedModel
 	Title           string
 	TitleProvenance string
+	TitleRevision   uint64
 	// Capabilities is the server's feature-advertisement snapshot from the Session
-	// proto (the SAME value CreateSessionResponse carries). A client that re-hydrates
-	// a persisted session on adopt (continue, /effort fork) reads this to re-derive
-	// its affordances. An older server (nil field) yields the zero value, which the
-	// consumer treats as "keep current caps" (fail-conservative).
+	// proto (the SAME global value CreateSessionResponse carries), with per-session
+	// media overlaid when SessionCapabilities is present. A client that reloads or
+	// switches to a persisted session (continue, /effort fork, /clear successor)
+	// reads this to re-derive its affordances. An older server (nil fields) yields
+	// the zero value, which the consumer treats as "keep current caps".
 	Capabilities Capabilities
 }
 
@@ -38,13 +40,30 @@ func snapshotFrom(s *mecatlv1.Session) SessionSnapshot {
 	return SessionSnapshot{
 		Mode:            ModeString(s.GetMode()),
 		State:           s.GetState(),
-		Workspace:       s.GetWorkspace(),
+		Placement:       placementFrom(s.GetPlacement()),
 		CreatedAt:       s.GetCreatedAtUnix(),
 		ResolvedModel:   resolvedModelFrom(s.GetResolvedModel()),
-		Title:           s.GetTitle(),
-		TitleProvenance: s.GetTitleProvenance(),
-		Capabilities:    capabilitiesFrom(s.GetCapabilities()),
+		Title:           titleFromProto(s),
+		TitleProvenance: titleProvenanceFromProto(s),
+		TitleRevision:   s.GetTitleMetadata().GetRevision(),
+		Capabilities:    capabilitiesWithSessionMedia(s.GetCapabilities(), s.GetSessionCapabilities()),
 	}
+}
+
+func titleFromProto(s *mecatlv1.Session) string {
+	if title := s.GetTitleMetadata().GetTitle(); title != "" {
+		return title
+	}
+	//nolint:staticcheck // compatibility fallback for a pre-SessionTitle server.
+	return s.GetTitle()
+}
+
+func titleProvenanceFromProto(s *mecatlv1.Session) string {
+	if provenance := s.GetTitleMetadata().GetProvenance(); provenance != "" {
+		return provenance
+	}
+	//nolint:staticcheck // compatibility fallback for a pre-SessionTitle server.
+	return s.GetTitleProvenance()
 }
 
 // GetSession looks up an existing session by id and returns the server-authored
@@ -60,7 +79,7 @@ func snapshotFrom(s *mecatlv1.Session) SessionSnapshot {
 // returns it. A nil Session/ResolvedModel (older server) yields zero values (see
 // snapshotFrom / resolvedModelFrom).
 func (c *Client) GetSession(ctx context.Context, id string) (SessionSnapshot, error) {
-	resp, err := c.svc.GetSession(ctx, &mecatlv1.GetSessionRequest{SessionId: id})
+	resp, err := c.svc.GetSession(withSessionAffinity(ctx, id), &mecatlv1.GetSessionRequest{SessionId: id})
 	if err != nil {
 		return SessionSnapshot{}, fmt.Errorf("get session: %w", err)
 	}
@@ -71,7 +90,7 @@ func (c *Client) GetSession(ctx context.Context, id string) (SessionSnapshot, er
 // the updated authoritative mode. Mid-turn changes are rejected by the server;
 // callers that want next-prompt semantics should defer and retry once idle.
 func (c *Client) SetMode(ctx context.Context, id, mode string) (string, error) {
-	resp, err := c.svc.SetMode(ctx, &mecatlv1.SetModeRequest{SessionId: id, Mode: ModeFromString(mode)})
+	resp, err := c.svc.SetMode(withSessionAffinity(ctx, id), &mecatlv1.SetModeRequest{SessionId: id, Mode: ModeFromString(mode)})
 	if err != nil {
 		return "", fmt.Errorf("set mode: %w", err)
 	}
@@ -97,21 +116,27 @@ func (c *Client) SetMode(ctx context.Context, id, mode string) (string, error) {
 // set-once in submitPrompt only seeds from a prompt the user typed HERE). The
 // reducer adopts it only when the local sessionTitle is still empty (set-once).
 //
-// Capabilities carries the server's feature-advertisement snapshot from the
-// Session proto (issue #348). It arrives on the SAME GetSession refetch so the
-// caps-heal path (/sessions continue, /effort fork) can re-derive affordances in
-// one round-trip. A zero value means an older server (field absent) — the reducer
-// keeps the current caps untouched (fail-conservative).
+// Capabilities carries the server's global feature-advertisement snapshot with
+// per-session media overlaid when SessionCapabilities was present (issue #348).
+// It arrives on the SAME GetSession refetch so the caps-heal path (/sessions
+// continue, /effort fork) can re-derive affordances in one round-trip. A zero
+// value means an older server omitted both fields; the reducer keeps current caps
+// untouched. SessionMediaPresent distinguishes an explicit text-only media
+// snapshot from that older-server absence.
 type ResolvedModelMsg struct {
 	SessionID string
 	Resolved  ResolvedModel
 	Mode      string
 	State     string
-	Workspace string
+	Placement Placement
 	CreatedAt int64
 	// Title is the session's stored title from the snapshot (self-heal channel for
 	// the window title). See the struct doc.
 	Title string
+	// TitleProvenance carries the title's source alongside Title.
+	TitleProvenance string
+	// TitleRevision orders authoritative title metadata updates; zero is legacy.
+	TitleRevision uint64
 	// Capabilities is the server's feature-advertisement snapshot. See the struct doc.
 	Capabilities Capabilities
 	Err          error
@@ -166,8 +191,8 @@ func RefreshResolvedModelCmd(ctx context.Context, g SessionGetter, id string) te
 		snap, err := g.GetSession(ctx, id)
 		return ResolvedModelMsg{
 			SessionID: id, Resolved: snap.ResolvedModel, Mode: snap.Mode,
-			State: snap.State, Workspace: snap.Workspace, CreatedAt: snap.CreatedAt,
-			Title: snap.Title, Capabilities: snap.Capabilities, Err: err,
+			State: snap.State, Placement: snap.Placement, CreatedAt: snap.CreatedAt,
+			Title: snap.Title, TitleProvenance: snap.TitleProvenance, TitleRevision: snap.TitleRevision, Capabilities: snap.Capabilities, Err: err,
 		}
 	}
 }

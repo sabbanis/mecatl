@@ -69,6 +69,8 @@ var genericErrorEntry = errorCodeEntry{
 // switch it replaces, preserving every existing classification exactly. A map
 // would randomise iteration and silently reclassify wrapped sentinels.
 var errorRegistry = []errorCodeEntry{
+	{Sentinel: errConnectorUnavailable, Code: "mcp_connector_unavailable", GRPC: codes.FailedPrecondition, HTTPStatus: http.StatusConflict, Title: "Failed precondition"},
+	{Sentinel: errConnectorUnauthenticated, Code: "unauthenticated", GRPC: codes.Unauthenticated, HTTPStatus: http.StatusUnauthorized, Title: "Authentication required"},
 	{Sentinel: ErrManagementUnauthorized, Code: "management_unauthorized", GRPC: codes.PermissionDenied, HTTPStatus: http.StatusForbidden, Title: "Management authorization required"},
 	{Sentinel: ErrStorageHealthBackend, Code: "storage_health_backend", GRPC: codes.Internal, HTTPStatus: http.StatusInternalServerError, Title: "Storage health unavailable"},
 	{Sentinel: ErrMigrationUnsupported, Code: "migration_unsupported", GRPC: codes.Unimplemented, HTTPStatus: http.StatusNotImplemented, Title: "Session migration is not supported"},
@@ -78,11 +80,24 @@ var errorRegistry = []errorCodeEntry{
 	{Sentinel: ErrCleanupUnsupported, Code: "cleanup_unsupported", GRPC: codes.Unimplemented, HTTPStatus: http.StatusNotImplemented, Title: "Session cleanup is not supported"},
 	{Sentinel: ErrCleanupBackend, Code: "cleanup_backend", GRPC: codes.Internal, HTTPStatus: http.StatusInternalServerError, Title: "Storage maintenance failed"},
 	{Sentinel: ErrStaleRunControl, Code: "stale_run_control", GRPC: codes.Aborted, HTTPStatus: http.StatusConflict, Title: "Control targets a run that is no longer current"},
+	{Sentinel: ErrInvalidPlacementSelection, Code: "placement_selector_invalid", GRPC: codes.InvalidArgument, HTTPStatus: http.StatusBadRequest, Title: "Placement selector is invalid"},
+	{Sentinel: ErrPlacementNotFound, Code: "placement_selector_not_found", GRPC: codes.NotFound, HTTPStatus: http.StatusNotFound, Title: "Placement selector was not found"},
+	{Sentinel: ErrPlacementStale, Code: "placement_selector_stale", GRPC: codes.FailedPrecondition, HTTPStatus: http.StatusConflict, Title: "Placement selector is stale"},
+	{Sentinel: ErrPlacementUnavailable, Code: "placement_unavailable", GRPC: codes.Unavailable, HTTPStatus: http.StatusServiceUnavailable, Title: "Placement is unavailable"},
+	{Sentinel: ErrPlacementChanged, Code: "placement_changed", GRPC: codes.Aborted, HTTPStatus: http.StatusConflict, Title: "Placement changed"},
+	{Sentinel: ErrInvalidPlacementBinding, Code: "placement_binding_invalid", GRPC: codes.FailedPrecondition, HTTPStatus: http.StatusPreconditionFailed, Title: "Placement binding is invalid"},
 	{Sentinel: ErrInvalidArgument, Code: "invalid_argument", GRPC: codes.InvalidArgument, HTTPStatus: http.StatusBadRequest, Title: "Invalid argument"},
 	{Sentinel: ErrNotFound, Code: "session_not_found", GRPC: codes.NotFound, HTTPStatus: http.StatusNotFound, Title: "Session not found"},
 	{Sentinel: ErrTeamNotFound, Code: "team_not_found", GRPC: codes.NotFound, HTTPStatus: http.StatusNotFound, Title: "Team not found"},
 	{Sentinel: ErrChildNotFound, Code: "child_not_found", GRPC: codes.NotFound, HTTPStatus: http.StatusNotFound, Title: "Child agent not found or already finished"},
 	{Sentinel: ErrLearningUnavailable, Code: "learning_unavailable", GRPC: codes.Unimplemented, HTTPStatus: http.StatusNotImplemented, Title: "Learning proposals are not configured"},
+	{Sentinel: ErrAttemptVersionConflict, Code: "attempt_version_conflict", GRPC: codes.Aborted, HTTPStatus: http.StatusConflict, Title: "Learning attempt version conflict"},
+	{Sentinel: ErrAttemptTerminalConflict, Code: "attempt_terminal_conflict", GRPC: codes.FailedPrecondition, HTTPStatus: http.StatusConflict, Title: "Learning attempt terminal conflict"},
+	{Sentinel: ErrAttemptLiveClaimConflict, Code: "attempt_live_claim_conflict", GRPC: codes.FailedPrecondition, HTTPStatus: http.StatusConflict, Title: "Learning attempt has a live claim"},
+	{Sentinel: ErrReflectionCancelled, Code: "reflection_cancelled", GRPC: codes.Canceled, HTTPStatus: 499, Title: "Reflection was cancelled"},
+	{Sentinel: ErrReflectionDeadline, Code: "reflection_deadline", GRPC: codes.DeadlineExceeded, HTTPStatus: http.StatusGatewayTimeout, Title: "Reflection timed out"},
+	{Sentinel: ErrReflectionQueueFull, Code: "reflection_queue_full", GRPC: codes.ResourceExhausted, HTTPStatus: http.StatusTooManyRequests, Title: "Reflection queue is full"},
+	{Sentinel: ErrReflectionFailed, Code: "reflection_failed", GRPC: codes.Unavailable, HTTPStatus: http.StatusServiceUnavailable, Title: "Reflection service failed"},
 	{Sentinel: ErrProposalConflict, Code: "proposal_conflict", GRPC: codes.Aborted, HTTPStatus: http.StatusConflict, Title: "Proposal conflict"},
 	{Sentinel: ErrDreamUnavailable, Code: "dream_unavailable", GRPC: codes.Unimplemented, HTTPStatus: http.StatusNotImplemented, Title: "Manual dream is unavailable"},
 	{Sentinel: ErrDreamNotFound, Code: "dream_not_found", GRPC: codes.NotFound, HTTPStatus: http.StatusNotFound, Title: "Dream plan not found"},
@@ -95,10 +110,12 @@ var errorRegistry = []errorCodeEntry{
 	{Sentinel: ErrDreamDeadline, Code: "dream_deadline", GRPC: codes.DeadlineExceeded, HTTPStatus: http.StatusGatewayTimeout, Title: "Dream plan deadline exceeded"},
 	{Sentinel: ErrDreamRequestFailed, Code: "dream_request_failed", GRPC: codes.Internal, HTTPStatus: http.StatusInternalServerError, Title: "Dream request failed"},
 	{Sentinel: ErrFailedStepRetryIneligible, Code: "failed_step_retry_ineligible", GRPC: codes.FailedPrecondition, HTTPStatus: http.StatusConflict, Title: "Failed-step retry is not eligible"},
+	{Sentinel: errMCPAuthorizationPending, Code: "mcp_authorization_pending", GRPC: codes.FailedPrecondition, HTTPStatus: http.StatusConflict, Title: "MCP authorization is pending"},
 	{Sentinel: ErrFailedPrecondition, Code: "failed_precondition", GRPC: codes.FailedPrecondition, HTTPStatus: http.StatusPreconditionFailed, Title: "Failed precondition"},
 	{Sentinel: ErrNoActiveRun, Code: "no_active_run", GRPC: codes.FailedPrecondition, HTTPStatus: http.StatusConflict, Title: "No active run for session"},
 	{Sentinel: ErrNotAwaitingPlan, Code: "not_awaiting_plan", GRPC: codes.FailedPrecondition, HTTPStatus: http.StatusConflict, Title: "Session is not awaiting a plan approval"},
 	{Sentinel: ErrSessionLeasedElsewhere, Code: "session_leased_elsewhere", GRPC: codes.FailedPrecondition, HTTPStatus: http.StatusConflict, Title: "Session is leased by another process"},
+	{Sentinel: ErrContextWindowUnavailable, Code: "context_window_unavailable", GRPC: codes.Unavailable, HTTPStatus: http.StatusServiceUnavailable, Title: "Context window metadata is unavailable"},
 	{Sentinel: ErrUnavailable, Code: "draining", GRPC: codes.Unavailable, HTTPStatus: http.StatusServiceUnavailable, Title: "Server is draining and not accepting new runs"},
 	{Sentinel: ErrNoMCPProvider, Code: "no_mcp_provider", GRPC: codes.FailedPrecondition, HTTPStatus: http.StatusPreconditionFailed, Title: "No MCP provider configured"},
 	{Sentinel: ErrTeamsDisabled, Code: "teams_disabled", GRPC: codes.FailedPrecondition, HTTPStatus: http.StatusPreconditionFailed, Title: "Agent teams are not enabled"},
@@ -123,6 +140,10 @@ var errorRegistry = []errorCodeEntry{
 	// ErrNoEventLog because it is the same class of honest refusal one level in:
 	// a log exists, it just cannot serve positions.
 	{Sentinel: ErrWatchUnsupported, Code: "watch_unsupported", GRPC: codes.Unimplemented, HTTPStatus: http.StatusNotImplemented, Title: "Durable event watch is not supported by the configured event log"},
+	// Follower admission is exhausted before storage work begins. Like lagging it
+	// is resumable from the client's last received cursor, but the distinct code
+	// keeps backend capacity separate from transport-consumer backpressure.
+	{Sentinel: port.ErrEventFollowCapacity, Code: "watch_capacity", GRPC: codes.ResourceExhausted, HTTPStatus: http.StatusTooManyRequests, Title: "Watch follower capacity is exhausted"},
 	// ResourceExhausted/429 says what actually happened — the bounded delivery
 	// buffer ran out — and marks the failure as the client's to retry. It is
 	// RESUMABLE: reconnect with the last cursor received.

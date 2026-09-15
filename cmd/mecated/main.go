@@ -47,7 +47,11 @@ import (
 	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/internal/adapter/agents"
 	"github.com/stacklok/mecatl/internal/adapter/daemonconfig"
+	"github.com/stacklok/mecatl/internal/adapter/mcpauthority"
+	"github.com/stacklok/mecatl/internal/adapter/mcpbroker"
 	"github.com/stacklok/mecatl/internal/adapter/mcpperf"
+	"github.com/stacklok/mecatl/internal/adapter/permconfig"
+	"github.com/stacklok/mecatl/internal/adapter/productmetrics"
 	"github.com/stacklok/mecatl/internal/adapter/server"
 	"github.com/stacklok/mecatl/internal/adapter/skills"
 	"github.com/stacklok/mecatl/internal/adapter/slogdiag"
@@ -99,15 +103,18 @@ type config struct {
 	// readyFile is the path of the atomically-published readiness document, written
 	// only after composition and every listener are up. Empty writes nothing.
 	readyFile string
-	// lifetimePipeFD is an INHERITED read-end descriptor whose EOF means the
-	// spawning parent died; the daemon then stops through the ordinary shutdown
-	// path. 0 disables it (0/1/2 are the standard streams, never a lifetime pipe).
-	lifetimePipeFD     int
-	workspace          string
-	workspaceAuthority string
-	model              string
-	defaultProvider    string
-	defaultModel       string
+	// lifetimePipeFD is an INHERITED pipe read end or connected UNIX-domain
+	// stream socketpair endpoint whose EOF means the spawning parent died; the
+	// daemon then stops through the ordinary shutdown path. 0 disables it
+	// (0/1/2 are the standard streams, never a lifetime descriptor).
+	lifetimePipeFD int
+	// lifetimeStdin adopts a piped stdin as the same parent-liveness channel.
+	// Deno.Command can create this pipe but cannot assign an arbitrary child fd.
+	lifetimeStdin   bool
+	workspace       string
+	model           string
+	defaultProvider string
+	defaultModel    string
 	// defaultProviderFlagSet is true when --default-provider was passed explicitly
 	// (set after parse via fs.Visit), so composition lets CLI out-rank the
 	// operator-global settings.yaml models.default_provider: key.
@@ -122,9 +129,11 @@ type config struct {
 	// app.Config in appConfig alongside providerFlags.
 	toolhiveLLMFlags     *cliconfig.ToolhiveLLMFlags
 	useMock              bool
+	mockScript           string
+	mockProvider         port.LLMProvider
 	storeDir             string
 	shell                string
-	noBash               bool
+	noShell              bool
 	authorityEvaluator   string
 	cedarAuthorityPolicy string
 
@@ -167,12 +176,24 @@ type config struct {
 	// (the round-boundary brake). 0 (default) disables it.
 	maxTeamTokens int
 
+	// Diagnostics is the configured operational sink shared by application and edge
+	// authentication observability. It is runtime-only and never parsed from flags.
+	diagnostics port.Diagnostics
+
 	// Observability: the Prometheus /metrics listen address (empty disables it),
 	// plus the OTLP trace exporter knobs (empty endpoint disables tracing).
 	metricsAddr  string
 	otlpEndpoint string // OTLP collector endpoint (empty disables tracing)
 	otlpProtocol string // OTLP transport: "grpc" (default) or "http"
 	otlpInsecure bool   // skip TLS when dialing the OTLP collector (dev only)
+
+	// productMetrics reports anonymous product-adoption metrics to Stacklok.
+	// OPT-OUT: ON by default. See the --product-metrics flag help text.
+	productMetrics bool
+	// productMetricsDryRun logs every would-be product-metrics observation
+	// via diag instead of exporting it over OTLP — an audit mode to verify
+	// the no-PII claim before trusting --product-metrics for real.
+	productMetricsDryRun bool
 
 	// Runtime-introspection admin surface (loopback only, on the --metrics-addr
 	// listener): pprof + expvar + a runtime/metrics snapshot + a FlightRecorder.
@@ -217,6 +238,7 @@ type config struct {
 	commandSourceURL string
 	eventLogURL      string
 	scheduleStoreURL string
+	learningStoreURL string
 	driverAuthToken  string
 	driverTLS        bool
 	driverTLSCA      string
@@ -276,7 +298,7 @@ type config struct {
 	// as <dir>/<name>/SKILL.md (repeatable; highest precedence). Empty + no
 	// conventional set disables the Skill tool. skillsConventional adds the
 	// built-in conventional project/user locations (lower precedence), default OFF
-	// to keep skills strictly opt-in (a trust boundary — see resolve.go / usage.md).
+	// to keep skills strictly opt-in (a trust boundary; see the user-docs skills guide).
 	skillsDirs         stringList
 	skillsConventional bool
 
@@ -592,7 +614,7 @@ func runConfigInit(argv []string, out io.Writer) error {
 	var printOnly, force bool
 	fs.BoolVar(&printOnly, "print", false, "print the skeleton to stdout and write NO file (a paste-ready reference)")
 	fs.BoolVar(&force, "force", false, "overwrite an existing settings.yaml (default: refuse, naming the path)")
-	if err := fs.Parse(argv); err != nil {
+	if err := fs.Parse(cliconfig.NormalizeLegacyNoBash(argv)); err != nil {
 		return err
 	}
 
@@ -623,7 +645,7 @@ func runConfigInit(argv []string, out io.Writer) error {
 		return fmt.Errorf("writing %s: %w", path, err)
 	}
 	_, _ = fmt.Fprintf(out, "wrote operator settings skeleton to %s\n", path)
-	_, _ = fmt.Fprintf(out, "edit it, then (re)start mecated. See docs/configuration-reference.md for the full key reference.\n")
+	_, _ = fmt.Fprintf(out, "edit it, then (re)start mecated. See https://mecatl.dev/docs/reference/configuration for the full key reference.\n")
 	return nil
 }
 
@@ -643,7 +665,7 @@ func runConfigDaemonInit(argv []string, out io.Writer) error {
 	var printOnly, force bool
 	fs.BoolVar(&printOnly, "print", false, "print the daemon.yaml skeleton to stdout and write NO file (a paste-ready reference)")
 	fs.BoolVar(&force, "force", false, "overwrite an existing daemon.yaml (default: refuse, naming the path)")
-	if err := fs.Parse(argv); err != nil {
+	if err := fs.Parse(cliconfig.NormalizeLegacyNoBash(argv)); err != nil {
 		return err
 	}
 
@@ -675,7 +697,7 @@ func runConfigDaemonInit(argv []string, out io.Writer) error {
 	}
 	_, _ = fmt.Fprintf(out, "wrote daemon config skeleton to %s\n", path)
 	_, _ = fmt.Fprintf(out, "it is NOT auto-loaded; start the server with 'mecated serve --config %s' to use it.\n", path)
-	_, _ = fmt.Fprintf(out, "validate it with 'mecated config daemon validate'. See docs/usage/mecated.md for the full reference.\n")
+	_, _ = fmt.Fprintf(out, "validate it with 'mecated config daemon validate'. See https://mecatl.dev/docs/building/deployment/mecated for the full reference.\n")
 	return nil
 }
 
@@ -694,7 +716,7 @@ func runConfigDaemonValidate(argv []string, out io.Writer) error {
 	fs.SetOutput(out)
 	var file string
 	fs.StringVar(&file, "file", "", "path to the daemon.yaml to validate (default: the conventional $XDG_CONFIG_HOME/mecatl/daemon.yaml)")
-	if err := fs.Parse(argv); err != nil {
+	if err := fs.Parse(cliconfig.NormalizeLegacyNoBash(argv)); err != nil {
 		return err
 	}
 
@@ -736,7 +758,7 @@ func runSkillsPromote(argv []string, in io.Reader, out io.Writer) error {
 	fs.StringVar(&quarantine, "skills-draft-dir", "", "the QUARANTINE directory the candidate was drafted into")
 	fs.StringVar(&active, "skills-dir", "", "the ACTIVE skills directory to promote the candidate into")
 	fs.BoolVar(&assumeYes, "yes", false, "skip the interactive content review and promote without confirmation (scripted/CI use only)")
-	if err := fs.Parse(argv); err != nil {
+	if err := fs.Parse(cliconfig.NormalizeLegacyNoBash(argv)); err != nil {
 		return err
 	}
 	name := fs.Arg(0)
@@ -783,7 +805,7 @@ func runPerfMCPPrintConfig(argv []string, out io.Writer) error {
 	fs.SetOutput(out)
 	var addr string
 	fs.StringVar(&addr, "metrics-addr", defaultMetricsAddr, "the loopback admin listen address the perf MCP server is mounted on (host:port); sets the host:port in the printed URL")
-	if err := fs.Parse(argv); err != nil {
+	if err := fs.Parse(cliconfig.NormalizeLegacyNoBash(argv)); err != nil {
 		return err
 	}
 
@@ -838,6 +860,12 @@ func run(mode commandMode, remaining []string) error {
 	if err := validateEffectiveConfig(cfg); err != nil {
 		return err
 	}
+	if cfg.mockScript != "" {
+		cfg.mockProvider, err = loadMockScript(cfg.mockScript)
+		if err != nil {
+			return err
+		}
+	}
 
 	logger := cliconfig.NewTextLogger(os.Stderr, cfg.logLevel, cfg.logLevelWarning)
 	// slog.SetDefault stays for the daemon: this is the DELIBERATE, PERMANENT
@@ -855,6 +883,11 @@ func run(mode commandMode, remaining []string) error {
 	// so the facts print identically — but flow through the injected port.Diagnostics
 	// rather than slog.Default().
 	diag := slogdiag.NewFromLogger(logger)
+	cfg.diagnostics = diag
+
+	// Emit the build identity once logging is configured, so every daemon startup
+	// can be tied to the binary that produced its operational logs.
+	slog.Info("mecated starting", "version", buildinfo.BuildID)
 
 	// Log the selected daemon config path when one was loaded (issue #338).
 	// The path was validated during merge; log it so operators can confirm
@@ -900,6 +933,21 @@ func run(mode commandMode, remaining []string) error {
 		defer obs.recorder.Stop()
 	}
 
+	// Product metrics (opt-out, Task 11): resolve the effective enabled value
+	// and build the pipeline. Extracted into a helper (mirroring
+	// setupObservability) so run()'s cyclomatic complexity stays under the
+	// lint gate; the helper owns the resolve/build/disclosure branches and
+	// logs its own failure, so run() only threads the resulting handles.
+	pm, cancelHeartbeat, _ := setupProductMetrics(ctx, cfg, diag)
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if serr := pm.Shutdown(shutdownCtx); serr != nil {
+			slog.Warn("product metrics shutdown", "err", serr)
+		}
+	}()
+	defer cancelHeartbeat()
+
 	tracing := telemetry.NewTracing(otel.GetTracerProvider())
 
 	// Role-scoped main pair (issue #47): the MAIN engine records through the
@@ -919,6 +967,9 @@ func run(mode commandMode, remaining []string) error {
 		slowTurns = telemetry.NewSlowTurnBuffer(telemetry.DefaultSlowTurnCapacity, time.Now)
 		sinks = append(sinks, slowTurns.WithRole(telemetry.RoleMain))
 	}
+	if pm.Sink != nil {
+		sinks = append(sinks, pm.Sink)
+	}
 	sink := telemetry.NewSink(sinks...)
 
 	// Child role scoper (issue #47): the composition hands each CHILD engine a
@@ -935,12 +986,15 @@ func run(mode commandMode, remaining []string) error {
 		return telemetry.NewSink(childSinks...), scoped
 	}
 
-	composition := appConfig(cfg, sink, mainScoped, roleScoper, obs.metrics, diag)
+	composition := appConfig(cfg, sink, cliconfig.TeeToolCallRecorder(mainScoped, pm.ToolCallRecorder), roleScoper, obs.metrics, diag)
 	built, err := app.Build(ctx, composition)
 	if err != nil {
 		return err
 	}
 	defer built.Close()
+	if err := validateBrokerHosting(cfg, built.MCPBroker != nil); err != nil {
+		return err
+	}
 
 	// ACP mode: serve the Agent Client Protocol over stdio instead of the network
 	// daemon. The same engine/service assembly (app.Build) backs it; only the wire
@@ -954,7 +1008,7 @@ func run(mode commandMode, remaining []string) error {
 		return serveACP(ctx, built.Service, cfg.storeDir != "" || cfg.sessionStoreURL != "", diag)
 	}
 
-	return serve(ctx, cfg, built.Service, obs.providers.Registry, obs.recorder, slowTurns)
+	return serveBuilt(ctx, cfg, built, obs.providers.Registry, obs.recorder, slowTurns)
 }
 
 // observability holds the handles setupObservability returns and run() threads
@@ -1045,16 +1099,75 @@ func setupObservability(ctx context.Context, cfg config, diag port.Diagnostics) 
 	return observability{providers: providers, metrics: metrics, recorder: recorder}, nil
 }
 
+// productMetricsSnapshot derives the closed-set FeatureSnapshot the product-
+// metrics heartbeat reports, from fields already resolved on cfg — never a
+// model id/alias, only whether each feature is configured at all.
+func productMetricsSnapshot(cfg config) productmetrics.FeatureSnapshot {
+	mode := productmetrics.ModeInteractive
+	if cfg.headless {
+		mode = productmetrics.ModeHeadless
+	}
+	return productmetrics.FeatureSnapshot{
+		Memory:     cfg.memoryDir != "",
+		Guardrails: cfg.guardrailsModel != "",
+		MCP:        cfg.mcpServers != nil && len(cfg.mcpServers.Servers()) > 0,
+		Scheduling: !cfg.noScheduler,
+		Provider:   cliconfig.ResolveProviderFamily(cfg.useOpenAI, cfg.defaultProvider),
+		Mode:       mode,
+	}
+}
+
+// setupProductMetrics resolves the opt-out product-metrics precedence and
+// builds the pipeline (Task 11). It reads the operator's
+// telemetry.productMetrics.enabled setting via a THROWAWAY resolver built
+// the SAME WAY internal/app/build.go's buildPermResolver constructs its —
+// app.Build's own resolver is internal and never exposed back to run(), so
+// this narrow read-only resolver mirrors mecated's mcplogin.go precedent
+// (loadMCPLoginProfiles). settings.yaml is parsed twice at boot (once here,
+// once inside app.Build); an accepted, negligible boot-time cost.
+//
+// It logs its own build failure. The first-run disclosure notice is printed
+// via a notify callback BuildProductMetrics itself invokes SYNCHRONOUSLY,
+// before starting the heartbeat goroutine and before returning — never
+// deferred to a check on the returned handles' FirstRun field afterward,
+// which would leave a window where the pipeline could record/export before
+// a human ever saw the notice (ADR 0338). run() only threads the resulting
+// handles and the heartbeat-context cancel func (both callers must defer
+// unconditionally: the handles' Shutdown is always a safe no-op when
+// disabled/errored). The returned error is informational only — a caller
+// that just wants the handles can discard it.
+func setupProductMetrics(ctx context.Context, cfg config, diag port.Diagnostics) (cliconfig.ProductMetricsHandles, func(), error) {
+	permResolver := permconfig.NewWithEnv(permconfig.Options{
+		Conventional:  cfg.permissionsConventional,
+		ImportClaude:  cfg.importClaudePermissions,
+		ExplicitFiles: cfg.permissionConfigs,
+		Diagnostics:   diag,
+	}, xdgconfig.OSEnv)
+	productMetricsEnabled := cliconfig.ResolveProductMetricsEnabled(cliconfig.ProductMetricsPrecedence{
+		FlagSet:         cfg.cliExplicit["product-metrics"],
+		FlagValue:       cfg.productMetrics,
+		SettingsEnabled: permResolver.OperatorProductMetricsEnabled(),
+	})
+	heartbeatCtx, cancelHeartbeat := context.WithCancel(context.Background())
+	pm, err := cliconfig.BuildProductMetrics(ctx, heartbeatCtx, productMetricsEnabled, cfg.productMetricsDryRun,
+		productmetrics.BinaryMecated, buildinfo.BuildID, productmetrics.DefaultHeartbeatInterval,
+		productMetricsSnapshot(cfg), "" /* no install-id override: local-file mechanism */, diag,
+		func(notice string) { fmt.Fprint(os.Stderr, notice) })
+	if err != nil {
+		slog.Warn("product metrics disabled: setup failed", "err", err)
+	}
+	return pm, cancelHeartbeat, err
+}
+
 // mecatedServerImplementation is the stable family reported to authenticated clients.
 const mecatedServerImplementation = "mecated"
 
 // appConfig constructs the command root's declarative app.Config. app.Build loads the
 // injected provider credential after resolving operator definitions.
 func appConfig(cfg config, sink port.EventSink, recorder port.ToolCallRecorder, roleScoper func(string) (port.EventSink, port.ToolCallRecorder), metrics *telemetry.Metrics, diag port.Diagnostics) app.Config {
+	nativeEndpointLoader := &cliconfig.NativeEndpointLoader{}
 	out := app.Config{
 		Workspace:                     cfg.workspace,
-		WorkspaceAuthority:            mustWorkspaceAuthority(cfg),
-		AuthoritativeWorkspace:        cfg.workspace,
 		ClientMCPOnCreate:             clientMCPOnCreateForListeners(cfg),
 		Model:                         cfg.model,
 		DefaultProvider:               cfg.defaultProvider,
@@ -1062,9 +1175,10 @@ func appConfig(cfg config, sink port.EventSink, recorder port.ToolCallRecorder, 
 		DefaultProviderFlagSet:        cfg.defaultProviderFlagSet,
 		UseOpenAI:                     cfg.useOpenAI,
 		UseMock:                       cfg.useMock,
+		MockProvider:                  cfg.mockProvider,
 		StoreDir:                      cfg.storeDir,
 		Shell:                         cfg.shell,
-		NoBash:                        cfg.noBash,
+		NoShell:                       cfg.noShell,
 		AuthorityEvaluator:            cfg.authorityEvaluator,
 		CedarAuthorityPolicy:          cfg.cedarAuthorityPolicy,
 		OwnershipEnforced:             cfg.oidc.Enabled(),
@@ -1095,6 +1209,7 @@ func appConfig(cfg config, sink port.EventSink, recorder port.ToolCallRecorder, 
 		MemoryStoreURL:                cfg.memoryStoreURL,
 		EventLogURL:                   cfg.eventLogURL,
 		ScheduleStoreURL:              cfg.scheduleStoreURL,
+		LearningStoreURL:              cfg.learningStoreURL,
 		SessionLeaseURL:               cfg.sessionLeaseURL,
 		SessionLeaseDir:               cfg.sessionLeaseDir,
 		SessionLeaseK8sNamespace:      cfg.sessionLeaseK8sNamespace,
@@ -1143,36 +1258,44 @@ func appConfig(cfg config, sink port.EventSink, recorder port.ToolCallRecorder, 
 		// and cost knobs are operator-tier YAML only (the `guardrails:` subtree of the
 		// user-global settings.yaml), folded onto Config by foldOperatorGuardrails — a
 		// flag cannot express a rule list.
-		GuardrailsModel:          cfg.guardrailsModel,
-		GuardrailsDisabled:       cfg.guardrailsOff,
-		ModelAliases:             cfg.modelAliases.AsMap(),
-		ModelSlots:               cfg.modelSlots.AsMap(),
-		CommandsDir:              cfg.commandsDir,
-		EnableCommands:           cfg.enableCommands,
-		EnableParallel:           cfg.enableParallel,
-		WebSearchURL:             cfg.websearchURL,
-		WebSearchAPIKey:          cfg.websearchAPIKey,
-		WebSearchAuthHeader:      cfg.websearchAuthHeader,
-		WebSearchQueryParam:      cfg.websearchQueryParam,
-		SearXNGURL:               cfg.searxngURL,
-		BraveAPIKey:              cfg.braveAPIKey,
-		ExaAPIKey:                cfg.exaAPIKey,
-		WebSearchOff:             cfg.websearchOff,
-		ForkPreservedCap:         cfg.forkPreservedCap,
-		EnableTeams:              cfg.enableTeams,
-		MCPServers:               cfg.mcpServers.Servers(),
-		MCPProfileLoader:         cliconfig.NewMCPProfileResolver(cfg.mcpServers, os.LookupEnv),
-		ProviderCredentialLoader: cliconfig.NewProviderCredentialResolver(cfg.providerFlags, cfg.providerCredentials),
-		ProviderOverrides:        cfg.providerFlags.EndpointOverrides(),
-		MCPResourceTools:         cfg.mcpResourceTools,
-		MCPPrompts:               cfg.mcpPrompts,
-		ToolHiveEnabled:          cfg.toolHiveEnabled,
-		ToolHiveGroup:            cfg.toolHiveGroup,
-		PermissionsConventional:  cfg.permissionsConventional,
-		ImportClaudePermissions:  cfg.importClaudePermissions,
-		TrustProject:             cfg.trustProject,
-		PermissionConfigs:        cfg.permissionConfigs,
-		AllowAllTools:            cfg.allowAllTools,
+		GuardrailsModel:     cfg.guardrailsModel,
+		GuardrailsDisabled:  cfg.guardrailsOff,
+		ModelAliases:        cfg.modelAliases.AsMap(),
+		ModelSlots:          cfg.modelSlots.AsMap(),
+		CommandsDir:         cfg.commandsDir,
+		EnableCommands:      cfg.enableCommands,
+		EnableParallel:      cfg.enableParallel,
+		WebSearchURL:        cfg.websearchURL,
+		WebSearchAPIKey:     cfg.websearchAPIKey,
+		WebSearchAuthHeader: cfg.websearchAuthHeader,
+		WebSearchQueryParam: cfg.websearchQueryParam,
+		SearXNGURL:          cfg.searxngURL,
+		BraveAPIKey:         cfg.braveAPIKey,
+		ExaAPIKey:           cfg.exaAPIKey,
+		WebSearchOff:        cfg.websearchOff,
+		ForkPreservedCap:    cfg.forkPreservedCap,
+		EnableTeams:         cfg.enableTeams,
+		MCPServers:          cfg.mcpServers.Servers(),
+		MCPProfileLoader:    cliconfig.NewMCPProfileResolver(cfg.mcpServers, os.LookupEnv),
+		// Route mcp.mode through the canonical authority resolver. Broker stays
+		// opt-in so an omitted mode and an empty MCP configuration retain the
+		// existing global/no-broker behavior.
+		MCPAuthorityLoader:                cliconfig.NewMCPProfileResolver(cfg.mcpServers, os.LookupEnv),
+		MCPAuthorityDefault:               mcpauthority.Global,
+		MCPBrokerSupported:                true,
+		ProviderCredentialLoader:          cliconfig.NewProviderCredentialResolver(cfg.providerFlags, cfg.providerCredentials),
+		NativeEndpointCredentialLoader:    nativeEndpointLoader,
+		NativeEndpointCredentialLifecycle: nativeEndpointLoader,
+		ProviderOverrides:                 cfg.providerFlags.EndpointOverrides(),
+		MCPResourceTools:                  cfg.mcpResourceTools,
+		MCPPrompts:                        cfg.mcpPrompts,
+		ToolHiveEnabled:                   cfg.toolHiveEnabled,
+		ToolHiveGroup:                     cfg.toolHiveGroup,
+		PermissionsConventional:           cfg.permissionsConventional,
+		ImportClaudePermissions:           cfg.importClaudePermissions,
+		TrustProject:                      cfg.trustProject,
+		PermissionConfigs:                 cfg.permissionConfigs,
+		AllowAllTools:                     cfg.allowAllTools,
 		// Posture ladder: --posture sets the tier directly; --yolo/--trust-project are
 		// aliases composition folds MAX-tier (resolvePosture). postureFlagSet lets CLI
 		// out-rank the operator-global settings.yaml posture: key. Privileged is the
@@ -1188,7 +1311,7 @@ func appConfig(cfg config, sink port.EventSink, recorder port.ToolCallRecorder, 
 		Privileged:             privilegedProcess(),
 		// mecated serves the bidi Converse + HTTP-SSE surfaces, whose clients CAN
 		// answer a permission ask (ResumeApproval) — so by default a subagent's
-		// unresolved Bash ask is SURFACED to the attached human rather than
+		// unresolved Shell ask is SURFACED to the attached human rather than
 		// auto-denied. --headless inverts this for an autonomous / CI deployment whose
 		// clients drive runs but never answer permission prompts: surfacing there would
 		// park the child until run-end, so we run NON-interactive (Interactive=false),
@@ -1197,13 +1320,14 @@ func appConfig(cfg config, sink port.EventSink, recorder port.ToolCallRecorder, 
 		Interactive: !cfg.headless,
 		// Headless is explicit deployment identity. The posture ladder raises
 		// workspace trust only when this is false.
-		Headless:               cfg.headless,
-		Sink:                   sink,
-		ToolCallRecorder:       recorder,
-		MetricsRoleScoper:      roleScoper,
-		ScheduleMetricsEmitter: metrics.EmitSchedule,
-		LearningMetricsEmitter: metrics.EmitLearning,
-		Diagnostics:            diag,
+		Headless:                         cfg.headless,
+		Sink:                             sink,
+		ToolCallRecorder:                 recorder,
+		MetricsRoleScoper:                roleScoper,
+		ScheduleMetricsEmitter:           metrics.EmitSchedule,
+		SessionLoadFailureMetricsEmitter: metrics.EmitSessionLoadFailure,
+		LearningMetricsEmitter:           metrics.EmitLearning,
+		Diagnostics:                      diag,
 		// Plan-mode auto-approve (issue #206 Wave 6a): the OPT-IN operator flag.
 		PlanModeAutoApprove: cfg.planModeAutoApprove,
 		// Steer (steer-while-running, issue #512): the opt-OUT of the default-ON
@@ -1372,48 +1496,11 @@ func (c config) tcpGRPCConfigured() bool {
 	return c.cliExplicit["grpc-addr"] || c.grpcAddrFromFile
 }
 
-// workspaceAuthorityForListeners derives mecated's API workspace policy from both
-// API listeners. Any listener that is a network boundary wins over a local
-// sibling. An explicit operator selection wins over topology.
-//
-// "Network boundary" is listenerIsNetworkBoundary's decision, not a loopback
-// string test: a UNIX-socket gRPC listener and a DISABLED HTTP listener are both
-// strictly narrower than the loopback TCP bind that already grants
-// client-selected authority, so a gRPC-over-socket daemon keeps it. Reading an
-// empty --http-addr as "not loopback" would have demanded --workspace from
-// exactly the local spawned daemon that has no network surface at all.
-//
-// DISABLED is asserted here, per listener, and only for HTTP — serve() skips
-// that listener when --http-addr is empty. gRPC has no disable path, so an empty
-// --grpc-addr is a WILDCARD bind and stays a boundary. The two are not
-// interchangeable: treating an empty --grpc-addr as "no listener" would grant
-// client-selected root selection on an unauthenticated listener reachable from
-// every interface.
-func workspaceAuthorityForListeners(cfg config) (server.WorkspaceAuthority, error) {
-	switch strings.ToLower(strings.TrimSpace(cfg.workspaceAuthority)) {
-	case "":
-		grpcNetwork := listenerIsNetworkBoundary(cfg.grpcAddr, cfg.grpcUnixSocket != "")
-		httpNetwork := cfg.httpAddr != "" && listenerIsNetworkBoundary(cfg.httpAddr, false)
-		if !grpcNetwork && !httpNetwork {
-			return server.WorkspaceAuthorityClientSelected, nil
-		}
-		return server.WorkspaceAuthorityServerAssigned, nil
-	case "client-selected":
-		return server.WorkspaceAuthorityClientSelected, nil
-	case "server-assigned":
-		return server.WorkspaceAuthorityServerAssigned, nil
-	default:
-		return 0, fmt.Errorf("--workspace-authority %q: want client-selected or server-assigned", cfg.workspaceAuthority)
-	}
-}
-
 // clientMCPOnCreateForListeners derives whether this deployment accepts
 // CLIENT-PROVIDED MCP servers on a session-creating API request (issue #821).
 //
 // The rule is a UNIX-SOCKET gRPC listener WITH HTTP DISABLED, and nothing else.
-// That is deliberately STRICTER than workspaceAuthorityForListeners, which
-// accepts a loopback TCP bind. The two look like the same question about
-// different authority, and the difference between them is the whole point:
+// The rule is intentionally UDS-only; loopback TCP is still a network listener.
 //
 //   - A workspace path lends the daemon's FILESYSTEM authority over a root the
 //     operator already chose. Loopback is accepted there as ADR 0237's shipped
@@ -1456,40 +1543,6 @@ func clientMCPOnCreateForListeners(cfg config) bool {
 	return cfg.grpcUnixSocket != "" && cfg.httpAddr == ""
 }
 
-// mustWorkspaceAuthority is used only after validateEffectiveConfig has accepted
-// the command configuration. Keep the fallback server-assigned so a direct caller
-// that bypasses validation never accidentally grants client root selection.
-func mustWorkspaceAuthority(cfg config) server.WorkspaceAuthority {
-	authority, err := workspaceAuthorityForListeners(cfg)
-	if err != nil {
-		return server.WorkspaceAuthorityServerAssigned
-	}
-	return authority
-}
-
-// validateWorkspaceAuthority rejects a network filesystem deployment without a
-// configured root before app.Build or either API listener starts. The server keeps
-// an empty authoritative root valid for file-less deployments: a later composition
-// root (mecak8s) can select server-assigned authority plus no-FS without inventing
-// a container-root workspace.
-func validateWorkspaceAuthority(cfg config) error {
-	authority, err := workspaceAuthorityForListeners(cfg)
-	if err != nil {
-		return err
-	}
-	if authority == server.WorkspaceAuthorityServerAssigned && cfg.workspace == "" {
-		return errors.New("server-assigned filesystem deployment requires --workspace")
-	}
-	// Mirror NewService's authoritative-root rule at the flag layer so a relative or
-	// unclean --workspace on a network listener fails here with a flag-level message,
-	// not two layers down from app.Build. Matches mecak8s, which rejects the same.
-	if authority == server.WorkspaceAuthorityServerAssigned && cfg.workspace != "" &&
-		(!filepath.IsAbs(cfg.workspace) || filepath.Clean(cfg.workspace) != cfg.workspace) {
-		return fmt.Errorf("--workspace %q must be a clean absolute path for a server-assigned deployment", cfg.workspace)
-	}
-	return nil
-}
-
 // validateEffectiveConfig runs the EFFECTIVE-value cross-validation that must
 // see the post-merge config: the perf-MCP loopback/empty-metrics guard and the
 // rate-limit/rate-burst sanity bounds. It is a PURE helper (no I/O, no side
@@ -1498,27 +1551,37 @@ func validateWorkspaceAuthority(cfg config) error {
 // the earlier CLI-only guard is still caught (review fix #1). The rate_limit=0
 // and rate_burst=0 meanings (disable / derive) are preserved: only negative and
 // non-finite (NaN/Inf) values are rejected (review fix #5).
-// buildAPIHandler assembles the authenticated HTTP API handler, wrapping it in
-// the CORS policy when one is configured.
+// buildAPIHandler assembles the authenticated HTTP API handler, mounts the
+// anonymous RFC 9728 protected-resource metadata endpoint in front of it, and
+// wraps both in the CORS policy when one is configured.
 //
-// The ORDER IS LOAD-BEARING: CORS wraps OUTSIDE auth. A browser preflight is an
-// unauthenticated OPTIONS request — the CORS specification forbids sending
-// credentials on it — so a policy installed inside the auth middleware would 401
-// every preflight and cross-origin access would never work at all. Wrapping
-// outside is safe because a preflight is answered from headers alone: it never
-// reaches a handler, never touches a session, and never returns data. The real
-// request that follows still passes through auth normally.
+// The ORDER IS LOAD-BEARING: CORS wraps OUTSIDE auth AND the metadata mount. A
+// browser preflight is an unauthenticated OPTIONS request — the CORS
+// specification forbids sending credentials on it — so a policy installed
+// inside the auth middleware would 401 every preflight and cross-origin access
+// would never work at all. Wrapping outside is safe because a preflight is
+// answered from headers alone: it never reaches a handler, never touches a
+// session, and never returns data. The real request that follows still passes
+// through auth normally. The metadata endpoint is itself unauthenticated by
+// design (RFC 9728), so it must be reachable cross-origin too — a browser-based
+// OIDC client fetching it after a 401 needs the CORS headers on that response
+// as much as on the API's.
 //
-// A nil policy (no --cors-origins, the default) returns the authenticated
-// handler unchanged, so the default path is byte-identical.
-func buildAPIHandler(corsPolicy *server.CORSPolicy, auth *server.Authenticator, svc *server.Service) http.Handler {
-	return corsPolicy.Middleware(auth.Middleware(server.NewHTTPHandler(svc)))
+// A nil policy (no --cors-origins, the default) returns the handler
+// unchanged, so the default path is byte-identical.
+func buildAPIHandler(corsPolicy *server.CORSPolicy, auth *server.Authenticator, svc *server.Service, profile server.ProtectedResourceProfile) http.Handler {
+	return corsPolicy.Middleware(server.WithProtectedResourceMetadata(profile, auth.Middleware(server.NewHTTPHandler(svc))))
+}
+
+func protectedResourceProfile(c cliconfig.OIDCConfig) server.ProtectedResourceProfile {
+	projection, err := c.ProfileProjection()
+	if err != nil || !c.ProtectedResourceEnabled() {
+		return server.ProtectedResourceProfile{}
+	}
+	return projection.ProtectedResourceProfile()
 }
 
 func validateEffectiveConfig(cfg config) error {
-	if err := validateWorkspaceAuthority(cfg); err != nil {
-		return err
-	}
 	if err := validateDeploymentID(cfg.deploymentID); err != nil {
 		return err
 	}
@@ -1602,9 +1665,10 @@ func parseFlagsModeOut(mode commandMode, argv []string, out io.Writer) (*flag.Fl
 	fs.StringVar(&cfg.readyFile, "ready-file", "",
 		"absolute path to write a JSON readiness document to, ATOMICALLY (temp file + rename) and only AFTER composition and every listener are up, so a spawning parent can wait on the path instead of racing a connect loop. Carries the pid, the transport, the bound gRPC/HTTP addresses, and the non-secret compatibility descriptor — never a credential. Empty writes nothing")
 	fs.IntVar(&cfg.lifetimePipeFD, "lifetime-pipe-fd", 0,
-		"file descriptor of an INHERITED pipe whose read end this daemon watches: EOF means the spawning parent exited or crashed, and the daemon then stops through the ordinary graceful-shutdown path. The parent holds the write end and never writes to it — it has nothing to remember. 0 (default) disables; 0/1/2 are the standard streams and are rejected")
+		"file descriptor of an INHERITED pipe read end or connected UNIX-domain stream socketpair endpoint this daemon watches: EOF means the spawning parent exited or crashed, and the daemon then stops through the ordinary graceful-shutdown path. The parent holds the peer end and never writes to it — it has nothing to remember. 0 (default) disables; 1/2 are standard output/error and are rejected")
+	fs.BoolVar(&cfg.lifetimeStdin, "lifetime-stdin", false,
+		"adopt a PIPED stdin as the inherited parent-liveness channel; EOF stops the daemon through the ordinary graceful-shutdown path. Intended for supervisors such as Deno.Command that cannot assign an arbitrary child file descriptor. Mutually exclusive with --lifetime-pipe-fd")
 	fs.StringVar(&cfg.workspace, "workspace", cwd, "default session workspace root")
-	fs.StringVar(&cfg.workspaceAuthority, "workspace-authority", "", "workspace authority: client-selected or server-assigned (default derives from gRPC + HTTP/SSE listener topology)")
 	fs.StringVar(&cfg.model, "model", "", "model identifier sent to the provider (empty: use the provider-appropriate default)")
 	fs.StringVar(&cfg.defaultProvider, "default-provider", "", "server-configured deployment-wide default provider id shared by every client (e.g. openai, openrouter, anthropic); overrides the built-in provider preference for zero-selector sessions while a client-side selector still wins. Validated FAIL-FAST at startup: an unknown or unavailable provider refuses to start")
 	fs.StringVar(&cfg.defaultModel, "default-model", "", "server-configured deployment-wide default model id for the default provider, shared by every client; sits BELOW client-side defaults and ABOVE the per-provider built-in default. Validated FAIL-FAST at startup: a model not catalogued for the default provider refuses to start (stricter than per-session selectors, which allow passthrough)")
@@ -1623,12 +1687,13 @@ func parseFlagsModeOut(mode commandMode, argv []string, out io.Writer) (*flag.Fl
 	// both, so mecated's help text disambiguates it from --toolhive explicitly.
 	cfg.toolhiveLLMFlags = cliconfig.RegisterToolhiveLLMFlags(fs, cliconfig.DefaultToolhiveLLMFlagHelp)
 	fs.BoolVar(&cfg.useMock, "mock", false, "use a canned offline mock provider (no network; for smoke tests only)")
+	fs.StringVar(&cfg.mockScript, "mock-script", "", "path to a JSON mockllm script (offline; implies --mock and supports text, tool-call, and delayed turns)")
 	fs.StringVar(&cfg.storeDir, "store-dir", "", "directory for the JSONL session store (empty -> in-memory store)")
 	fs.StringVar(&cfg.sessionStoreURL, "session-store-url", "", "host:port of a remote session-store gRPC driver (mecatl.driver.v1.SessionStoreService); replaces the local store, so it is mutually exclusive with --store-dir. Loopback may ride plaintext; pair a non-loopback target with --driver-tls (and --driver-auth-token as needed)")
-	fs.StringVar(&cfg.shell, "shell", "/bin/sh", "shell used to execute Bash-tool commands; empty disables Bash (shell-less mode)")
+	fs.StringVar(&cfg.shell, "shell", "/bin/sh", "shell used to execute Shell-tool commands; empty disables Shell (shell-less mode)")
 	fs.StringVar(&cfg.authorityEvaluator, "authority-evaluator", "local", "authority evaluator: local (default), noop, or cedar; cedar requires --cedar-authority-policy")
 	fs.StringVar(&cfg.cedarAuthorityPolicy, "cedar-authority-policy", "", "path to the static operator Cedar authority policy; read once at startup when --authority-evaluator=cedar")
-	fs.BoolVar(&cfg.noBash, "no-bash", false, "disable the Bash tool entirely (shell-less mode); overrides --shell")
+	fs.BoolVar(&cfg.noShell, "no-shell", false, "disable the Shell tool entirely (shell-less mode); overrides --shell")
 
 	fs.StringVar(&cfg.compaction, "compaction", "heuristic", "compaction strategy: \"heuristic\" (default, single-summary) or \"cascade\" (tiered snip→strip→collapse→summarize)")
 	fs.StringVar(&cfg.tokenizer, "tokenizer", "heuristic", "token counter for the compaction trigger: \"heuristic\" (default, dependency-free) or \"tiktoken\" (offline tiktoken vocab)")
@@ -1650,6 +1715,11 @@ func parseFlagsModeOut(mode commandMode, argv []string, out io.Writer) (*flag.Fl
 	fs.StringVar(&cfg.otlpEndpoint, "otlp-endpoint", "", "OTLP trace collector endpoint, e.g. localhost:4317 (empty disables tracing)")
 	fs.StringVar(&cfg.otlpProtocol, "otlp-protocol", telemetry.ProtocolGRPC, "OTLP transport: \"grpc\" (default) or \"http\"")
 	fs.BoolVar(&cfg.otlpInsecure, "otlp-insecure", false, "skip TLS when dialing the OTLP collector (development only)")
+
+	fs.BoolVar(&cfg.productMetrics, "product-metrics", true,
+		"report anonymous product-adoption metrics to Stacklok (version, OS/arch, enabled features, coarse session/run/tool-call counts — never a prompt, file path, tool name, or model id). ON by default; opt out with --product-metrics=false, MECATL_PRODUCT_METRICS=false, DO_NOT_TRACK=1, or telemetry.productMetrics.enabled: false in settings.yaml")
+	fs.BoolVar(&cfg.productMetricsDryRun, "product-metrics-dry-run", false,
+		"print every product-metrics observation to stderr instead of sending it — verify the no-PII claim yourself before enabling --product-metrics for real")
 
 	fs.IntVar(&cfg.mutexProfileFraction, "mutex-profile-fraction", 0, "runtime.SetMutexProfileFraction: report 1/N mutex contention events for /debug/pprof/mutex. 0 (default) disables it. Adds per-contention sampling overhead; enable only when investigating lock contention")
 	fs.IntVar(&cfg.blockProfileRate, "block-profile-rate", 0, "runtime.SetBlockProfileRate in nanoseconds: sample one blocking event per N ns blocked for /debug/pprof/block. 0 (default) disables it. Adds per-block-event overhead; enable only when investigating blocking")
@@ -1673,9 +1743,10 @@ func parseFlagsModeOut(mode commandMode, argv []string, out io.Writer) (*flag.Fl
 	fs.StringVar(&cfg.memoryStoreURL, "memory-store-url", "", "host:port of a remote memory-store gRPC driver (mecatl.driver.v1.MemoryStoreService); replaces the local flock store, so it is mutually exclusive with --memory-dir. Enables the Remember/Recall tools like --memory-dir does. Same auth/TLS posture as --session-store-url (equal URLs share one connection)")
 	fs.StringVar(&cfg.eventLogURL, "event-log-url", "", "host:port of a remote event-log gRPC driver (mecatl.driver.v1.EventLogService) for the durable per-session event timeline (reasoning, ask/verdict pairs, delegation lifecycle); INDEPENDENT of the session store. Empty keeps the local default (the --store-dir jsonl log, or in-memory). Append happens at the relay (a fault WARNs, never aborts the run); Read is server-streaming. Same auth/TLS posture as --session-store-url (equal URLs share one connection)")
 	fs.StringVar(&cfg.scheduleStoreURL, "schedule-store-url", "", "host:port of a remote schedule-store gRPC driver (mecatl.driver.v1.ScheduleStoreService + ScheduleOneShotReArmerService) for the durable schedule registry (scheduled tasks); INDEPENDENT of the session store — when set, replaces the ScheduleStore() discovery from the configured store. Empty keeps the byte-identical default (the configured store's own ScheduleStore() accessor, or no scheduling). The driver's Claim/ClaimNow/ReArmOneShot run the atomic advance server-side. Same auth/TLS posture as --session-store-url (equal URLs share one connection)")
+	fs.StringVar(&cfg.learningStoreURL, "learning-store-url", "", "host:port of one distributed learning gRPC driver providing AttemptRepositoryService, ProposalRepositoryService, and SkillRepositoryService. The complete set must be explicitly advertised at startup; a partial or legacy driver fails closed with no local-repository fallback. Repository partitions are opaque on this transport. Same auth/TLS posture as --session-store-url (equal URLs share one connection)")
 	fs.StringVar(&cfg.sessionLeaseURL, "session-lease-url", "", "host:port of a remote session-lease gRPC driver (mecatl.driver.v1.SessionLeaseService) for cross-process single-writer enforcement (cloud-native Phase 4, multi-replica). Empty = NO leasing (the byte-identical single-writer-by-affinity default: route every session to one replica). Mutually exclusive with --session-lease-dir / --session-lease-k8s-namespace. Same auth/TLS posture as --session-store-url (equal URLs share one connection)")
 	fs.StringVar(&cfg.sessionLeaseDir, "session-lease-dir", "", "directory for a SINGLE-HOST flock session lease (cross-process single-writer enforcement among processes on ONE machine; flock auto-releases on crash). NOT safe across hosts — use --session-lease-k8s-namespace or --session-lease-url for multi-host/multi-replica. Empty = no leasing")
-	fs.StringVar(&cfg.sessionLeaseK8sNamespace, "session-lease-k8s-namespace", "", "Kubernetes namespace for coordination.k8s.io Lease-backed session leasing (the in-cluster multi-replica path). Uses in-cluster config (or the default kubeconfig out-of-cluster); the ServiceAccount needs get,create,update,delete on leases in coordination.k8s.io for this namespace (never list/watch — see docs/usage.md). Empty = no leasing")
+	fs.StringVar(&cfg.sessionLeaseK8sNamespace, "session-lease-k8s-namespace", "", "Kubernetes namespace for coordination.k8s.io Lease-backed session leasing (the in-cluster multi-replica path). Uses in-cluster config (or the default kubeconfig out-of-cluster); the ServiceAccount needs get,create,update,delete on leases in coordination.k8s.io for this namespace (never list/watch — see https://mecatl.dev/docs/building/deployment/mecated). Empty = no leasing")
 	fs.DurationVar(&cfg.sessionLeaseTTL, "session-lease-ttl", 30*time.Second, "session-lease lifetime: a crashed/killed holder's lease becomes claimable after this long. Only meaningful when a lease backend is selected")
 	fs.DurationVar(&cfg.sessionLeaseRenewInterval, "session-lease-renew-interval", 0, "how often the per-session renewer refreshes a held lease; 0 = --session-lease-ttl / 3. Keep it well below the TTL so a slow store does not lose the lease and cancel the run. Only meaningful when a lease backend is selected")
 	// Scheduled tasks (issue #189, Phase 1f; ADR 0073). The scheduler is ON by
@@ -1731,10 +1802,10 @@ func parseFlagsModeOut(mode commandMode, argv []string, out io.Writer) (*flag.Fl
 	fs.StringVar(&cfg.commandSourceURL, "command-source-url", "", "host:port of a remote slash-command gRPC driver (mecatl.driver.v1.CommandSourceService); COMPOSES with file-backed commands rather than replacing them — a local command file shadows a same-named driver command, and MCP prompts stay last. Consulted LIVE on every expansion/listing (no snapshot); probed once at startup (fatal if unreachable), runtime faults fail soft (raw text passes through). TRUST BOUNDARY: an expanded command body becomes the user prompt — point this only at a driver you trust. Same auth/TLS posture as --session-store-url (equal URLs share one connection)")
 
 	fs.BoolVar(&cfg.enableParallel, "enable-parallel", true, "register the Parallel fan-out tool (parallel isolated child branches)")
-	fs.StringVar(&cfg.websearchURL, "websearch-url", "", "WEBSEARCH (issue #26): base URL of a vendor-neutral HTTP JSON search endpoint (e.g. a SearXNG /search URL or a generic JSON search API) backing the always-present WebSearch tool. This is the EXPLICIT OVERRIDE — it wins over the SEARXNG_URL/BRAVE_API_KEY env tiers and the Exa anonymous default. The API key is read from WEBSEARCH_API_KEY, never a flag value. The adapter carries its own per-call timeout and concurrency limit. Setup walkthrough: docs/usage.md \"Enabling web search\"")
-	fs.StringVar(&cfg.websearchMode, "websearch", "", "WEBSEARCH master switch: pass `--websearch=off` to DISABLE web search entirely (the kill switch — no outbound search calls, the tool reports it is disabled). Web search is ON by default (Exa anonymous tier; set EXA_API_KEY to upgrade the default tier, or SEARXNG_URL / BRAVE_API_KEY to switch backends). Any value other than \"off\" (or unset) leaves web search enabled. See docs/usage.md \"Enabling web search\"")
-	fs.StringVar(&cfg.websearchAuthHeader, "websearch-auth-header", "", "WEBSEARCH: HTTP header the WEBSEARCH_API_KEY is sent in (default \"Authorization\" as a Bearer token; set e.g. \"X-API-Key\" to send the raw key). Ignored when no key is set. See docs/usage.md \"Enabling web search\"")
-	fs.StringVar(&cfg.websearchQueryParam, "websearch-query-param", "", "WEBSEARCH: URL query parameter the search string is placed in (default \"q\"). Tune for a generic JSON search endpoint that expects a different parameter name. See docs/usage.md \"Enabling web search\"")
+	fs.StringVar(&cfg.websearchURL, "websearch-url", "", "WEBSEARCH (issue #26): base URL of a vendor-neutral HTTP JSON search endpoint (e.g. a SearXNG /search URL or a generic JSON search API) backing the always-present WebSearch tool. This is the EXPLICIT OVERRIDE — it wins over the SEARXNG_URL/BRAVE_API_KEY env tiers and the Exa anonymous default. The API key is read from WEBSEARCH_API_KEY, never a flag value. The adapter carries its own per-call timeout and concurrency limit. Setup: https://mecatl.dev/docs/building/what-you-get/core-tools#configure-web-search")
+	fs.StringVar(&cfg.websearchMode, "websearch", "", "WEBSEARCH master switch: pass `--websearch=off` to DISABLE web search entirely (the kill switch — no outbound search calls, the tool reports it is disabled). Web search is ON by default (Exa anonymous tier; set EXA_API_KEY to upgrade the default tier, or SEARXNG_URL / BRAVE_API_KEY to switch backends). Any value other than \"off\" (or unset) leaves web search enabled. See https://mecatl.dev/docs/building/what-you-get/core-tools#configure-web-search")
+	fs.StringVar(&cfg.websearchAuthHeader, "websearch-auth-header", "", "WEBSEARCH: HTTP header the WEBSEARCH_API_KEY is sent in (default \"Authorization\" as a Bearer token; set e.g. \"X-API-Key\" to send the raw key). Ignored when no key is set. See https://mecatl.dev/docs/building/what-you-get/core-tools#configure-web-search")
+	fs.StringVar(&cfg.websearchQueryParam, "websearch-query-param", "", "WEBSEARCH: URL query parameter the search string is placed in (default \"q\"). Tune for a generic JSON search endpoint that expects a different parameter name. See https://mecatl.dev/docs/building/what-you-get/core-tools#configure-web-search")
 	fs.IntVar(&cfg.forkPreservedCap, "fork-preserved-cap", agent.DefaultPreservedForkCap, "max PRESERVED winner forks (join=first/judge) kept on disk at once; the oldest beyond this is LRU-reaped. Preserved forks stay inspectable until reaped")
 	fs.BoolVar(&cfg.enableTeams, "enable-teams", true, "register the experimental agent-teams capability (CreateTeam/SpawnTeammate/RunTeam); on by default and inert until a client drives a team. Pass --enable-teams=false to disable")
 	fs.BoolVar(&cfg.noSteer, "no-steer", false, "disable the mid-run steer inbox (steer-while-running, issue #512): a client `steer` frame on the Converse stream then reports too_late and ServerCapabilities.steer reads false. Steer is ON by default; this is the opt-OUT. The operator-tier settings.yaml `steer: false` scalar is the YAML twin (CLI out-ranks YAML; a project-tier steer: key is ignored)")
@@ -1746,7 +1817,7 @@ func parseFlagsModeOut(mode commandMode, argv []string, out io.Writer) (*flag.Fl
 	fs.BoolVar(&cfg.toolHiveEnabled, "toolhive", true, "discover MCP servers from the running ToolHive workloads (the embedded ToolHive library lists already-running workloads and reads their HTTP proxy URLs; mecatl NEVER starts or spawns a workload). Fails soft to zero servers when no container runtime is reachable. TRUST BOUNDARY: registering tools from running workloads is the same trust class as --mcp-server — every discovered workload's tools enter the model context")
 	fs.StringVar(&cfg.toolHiveGroup, "toolhive-group", "", "ToolHive group to discover workloads from (empty -> the \"default\" group). Only consulted when --toolhive is set")
 
-	fs.Var(&cfg.permissionConfigs, "permission-config", "path to a YAML permission-config file (.mecatl/settings.yaml schema: a permissions.{allow,ask,deny} list of \"Tool(pattern)\" specs) to load at the CLI scope — the HIGHEST config precedence, fully trusted (repeatable). Always loaded regardless of --permissions-conventional. A CLI rule out-ranks a project/user rule of the same effect; a config allow can LOOSEN ONLY the built-in Bash/Edit/Write ask, but a deny/ask in ANY scope still wins and a config allow never suppresses a configured ask")
+	fs.Var(&cfg.permissionConfigs, "permission-config", "path to a YAML permission-config file (.mecatl/settings.yaml schema: a permissions.{allow,ask,deny} list of \"Tool(pattern)\" specs) to load at the CLI scope — the HIGHEST config precedence, fully trusted (repeatable). Always loaded regardless of --permissions-conventional. A CLI rule out-ranks a project/user rule of the same effect; a config allow can LOOSEN ONLY the built-in Shell/Edit/Write ask, but a deny/ask in ANY scope still wins and a config allow never suppresses a configured ask")
 	fs.BoolVar(&cfg.permissionsConventional, "permissions-conventional", true, "auto-discover the per-project permission config: <workspace>/.mecatl/settings.local.yaml (gitignored, personal — higher precedence) and <workspace>/.mecatl/settings.yaml (checked-in, shared), plus — with --import-claude-permissions — the matching .claude/settings.local.json and .claude/settings.json, plus the user-global file ($XDG_CONFIG_HOME/mecatl/settings.yaml). RE-RESOLVED PER SESSION against each session's workspace root (and revalidated on file mtime change), so two sessions in different repos get different decisions. ON by default and INERT when no such file exists. TRUST BOUNDARY: a project's ALLOW rules are honoured ONLY with --trust-project; its deny/ask rules are ALWAYS honoured")
 	fs.BoolVar(&cfg.importClaudePermissions, "import-claude-permissions", false, "also import Claude-Code settings.json permissions (project <workspace>/.claude/settings{,.local}.json and user ~/.claude/settings.json) when --permissions-conventional is set. LOSSY (fail-safe): a WebFetch(domain:...) ALLOW is DEMOTED to ask, a Read(~/...) rule is left INERT (\"~\" unexpanded), an unparseable spec is DROPPED — every case is logged")
 	fs.BoolVar(&cfg.trustProject, "trust-project", false, "honour a discovered PROJECT's ALLOW rules (its deny/ask rules are always honoured regardless). Default OFF (the safe stance): an untrusted repo's permission grants are ignored. TRUST BOUNDARY: enabling this lets a checked-in .mecatl/settings.yaml auto-approve tool calls — only pass it for a repo you trust")
@@ -1792,7 +1863,7 @@ func parseFlagsModeOut(mode commandMode, argv []string, out io.Writer) (*flag.Fl
 		writeServeCommonHelp(out, fs)
 	}
 
-	if err := fs.Parse(argv); err != nil {
+	if err := fs.Parse(cliconfig.NormalizeLegacyNoBash(argv)); err != nil {
 		// Return the fully-registered FlagSet even on a parse/help error so the
 		// progressive-help completeness invariant (validateFlagMeta) can run over
 		// the full real registration path via the --help-triggered ErrHelp path.
@@ -1812,6 +1883,11 @@ func parseFlagsModeOut(mode commandMode, argv []string, out io.Writer) (*flag.Fl
 			writeServeHelpAll(out, fs)
 		}
 		return nil, config{}, flag.ErrHelp
+	}
+	if cfg.mockScript != "" {
+		// Match every existing UseMock short-circuit as well as replacing the
+		// canned provider itself. A script is an additive way to select mock mode.
+		cfg.useMock = true
 	}
 
 	// Post-parse MCP finalize (issue #358): resolve the --mcp-server-insecure-http
@@ -1978,6 +2054,50 @@ func readAskReviewerPolicy(path string) (string, error) {
 	return string(b), nil
 }
 
+// brokerControlAPIAuthenticated reports whether the normal session-scoped
+// authorization-control API verifies callers. Bearer and OIDC middleware do
+// not wrap the separately mounted OAuth protocol routes; those routes remain
+// public by protocol (discovery, authorize, token, callbacks, and token-secured
+// vMCP). Verified mTLS is transport-wide and therefore covers both surfaces.
+func brokerControlAPIAuthenticated(cfg config, tlsCfg *tls.Config) bool {
+	return cfg.authToken != "" || cfg.oidc.Enabled() ||
+		tlsCfg != nil && tlsCfg.ClientAuth == tls.RequireAndVerifyClientCert
+}
+
+// mountBrokerHandlers adds the broker's public OAuth protocol surface only
+// after the complete mecated mux exists. On non-loopback listeners the separate
+// session-scoped control API must be authenticated; this does not claim its
+// bearer/OIDC middleware authenticates browser or provider callbacks.
+func mountBrokerHandlers(mux *http.ServeMux, addr string, controlAPIAuthenticated bool, handlers mcpbroker.HandlerBundle, callbackPath string) error {
+	if handlers.Empty() {
+		return nil
+	}
+	if !controlAPIAuthenticated && !cliconfig.IsLoopbackAddr(addr) {
+		return errors.New("non-loopback MCP broker requires an authenticated authorization-control API; OAuth protocol routes remain public")
+	}
+	slog.Warn("vMCP broker mode is single-process/single-replica; a live session lease rejects non-holders without routing")
+	return handlers.Mount(mux, callbackPath)
+}
+
+// serve retains the established test and non-broker seam.
+func serve(ctx context.Context, cfg config, svc *server.Service, reg *prometheus.Registry, recorder *telemetry.FlightRecorder, slowTurns *telemetry.SlowTurnBuffer) error {
+	return serveWithBroker(ctx, cfg, svc, reg, recorder, slowTurns, false, mcpbroker.HandlerBundle{}, "")
+}
+
+// serveBuilt is the command-root handoff from app.Build to the network server.
+// Keeping the broker-selected bit separate from the HTTP bundle lets startup
+// reject an unreachable broker even when a custom broker has no handlers.
+func serveBuilt(ctx context.Context, cfg config, built *app.Built, reg *prometheus.Registry, recorder *telemetry.FlightRecorder, slowTurns *telemetry.SlowTurnBuffer) error {
+	return serveWithBroker(ctx, cfg, built.Service, reg, recorder, slowTurns, built.MCPBroker != nil, built.MCPBrokerHandlers, built.MCPBrokerCallbackPath)
+}
+
+func validateBrokerHosting(cfg config, brokerSelected bool) error {
+	if brokerSelected && (cfg.acp || cfg.httpAddr == "") {
+		return errors.New("MCP broker mode requires network serve mode with an enabled HTTP listener")
+	}
+	return nil
+}
+
 // serve starts the gRPC and HTTP servers (and, when --metrics-addr is set, the
 // loopback admin endpoint — /metrics plus the pprof/expvar/FlightRecorder
 // runtime-introspection surface — on its own listener) concurrently and blocks
@@ -1990,7 +2110,10 @@ func readAskReviewerPolicy(path string) (string, error) {
 // liveness/readiness probes are mounted OUTSIDE the auth/rate-limit layer so
 // orchestrators can probe without credentials. The gRPC health service shares
 // the server-wide interceptors and therefore requires credentials when auth is on.
-func serve(ctx context.Context, cfg config, svc *server.Service, reg *prometheus.Registry, recorder *telemetry.FlightRecorder, slowTurns *telemetry.SlowTurnBuffer) error {
+func serveWithBroker(ctx context.Context, cfg config, svc *server.Service, reg *prometheus.Registry, recorder *telemetry.FlightRecorder, slowTurns *telemetry.SlowTurnBuffer, brokerSelected bool, brokerHandlers mcpbroker.HandlerBundle, brokerCallbackPath string) error {
+	if err := validateBrokerHosting(cfg, brokerSelected); err != nil {
+		return err
+	}
 	tlsCfg, auth, corsPolicy, err := buildEdge(ctx, cfg)
 	if err != nil {
 		return err
@@ -2031,7 +2154,13 @@ func serve(ctx context.Context, cfg config, svc *server.Service, reg *prometheus
 	if cfg.httpAddr != "" {
 		httpMux := http.NewServeMux()
 		server.NewHealthHandler(func() bool { return true }).RegisterHealth(httpMux)
-		httpMux.Handle("/", buildAPIHandler(corsPolicy, auth, svc))
+		httpMux.Handle("/", buildAPIHandler(corsPolicy, auth, svc, protectedResourceProfile(cfg.oidc)))
+		// Mount last on the actual, fully-populated mux. HandlerBundle.Mount
+		// preflights every route before registration, so a callback or fixed-route
+		// collision fails startup without a partial broker surface.
+		if err := mountBrokerHandlers(httpMux, cfg.httpAddr, brokerControlAPIAuthenticated(cfg, tlsCfg), brokerHandlers, brokerCallbackPath); err != nil {
+			return fmt.Errorf("mount MCP broker handlers: %w", err)
+		}
 		httpSrv = &http.Server{
 			Addr:              cfg.httpAddr,
 			Handler:           httpMux,
@@ -2042,10 +2171,10 @@ func serve(ctx context.Context, cfg config, svc *server.Service, reg *prometheus
 
 	metricsSrv, adminPaths := buildAdminServer(cfg, reg, recorder, slowTurns)
 
-	// Caller identity counts as authentication: an OIDC deployment may carry no
-	// static token at all, and warning "NO authentication" there would be false.
-	authed := auth != nil && (cfg.authToken != "" || cfg.oidc.Enabled() || tlsCfg != nil)
-	logListenerPosture(cfg, authed)
+	// TLS encrypts the transport and authenticates the server; it does not
+	// authenticate callers unless mutual TLS requires a verified client cert.
+	callerAuthenticated := callerAuthenticationConfigured(cfg, tlsCfg)
+	logListenerPosture(cfg, callerAuthenticated)
 
 	// Every listener is bound BEFORE anything serves, so the ready file (written
 	// below) can honestly mean "reachable" — a bind failure is still a startup
@@ -2059,13 +2188,17 @@ func serve(ctx context.Context, cfg config, svc *server.Service, reg *prometheus
 	// The inherited lifetime pipe: EOF on it means the spawning parent is gone.
 	// Adopted here, after the binds, so a startup failure exits without having
 	// claimed a descriptor the parent may still be using.
-	parent, err := openLifetimePipe(cfg.lifetimePipeFD)
+	parent, err := openConfiguredLifetimePipe(cfg.lifetimePipeFD, cfg.lifetimeStdin)
 	if err != nil {
 		return err
 	}
 	defer parent.Close()
 	if parent.Enabled() {
-		slog.Info("watching the inherited lifetime pipe; EOF on it stops this daemon gracefully", "fd", cfg.lifetimePipeFD)
+		fd := cfg.lifetimePipeFD
+		if cfg.lifetimeStdin {
+			fd = 0
+		}
+		slog.Info("watching the inherited lifetime pipe; EOF on it stops this daemon gracefully", "fd", fd)
 	}
 
 	// AC8.3: published only now — composition is complete (app.Build ran before
@@ -2270,18 +2403,18 @@ func buildAdminServer(cfg config, reg *prometheus.Registry, recorder *telemetry.
 // and neither case is either. Calling it with an empty address would emit the
 // prominent unauthenticated-network WARNING for a listener that does not exist —
 // the kind of false alarm that teaches operators to ignore the real one.
-func logListenerPosture(cfg config, authed bool) {
+func logListenerPosture(cfg config, callerAuthenticated bool) {
 	if cfg.grpcUnixSocket != "" {
 		slog.Info("gRPC bound to a UNIX-domain socket (no TCP port); reachability is filesystem permission on the socket path",
-			"flag", "grpc-unix-socket", "socket", cfg.grpcUnixSocket, "authenticated", authed)
+			"flag", "grpc-unix-socket", "socket", cfg.grpcUnixSocket, "caller_authenticated", callerAuthenticated)
 	} else {
-		warnIfNonLoopback("grpc-addr", cfg.grpcAddr, authed)
+		warnIfNonLoopback("grpc-addr", cfg.grpcAddr, callerAuthenticated)
 	}
 	if cfg.httpAddr == "" {
 		slog.Info("HTTP/SSE listener not configured (--http-addr empty); no HTTP surface is exposed", "flag", "http-addr")
 		return
 	}
-	warnIfNonLoopback("http-addr", cfg.httpAddr, authed)
+	warnIfNonLoopback("http-addr", cfg.httpAddr, callerAuthenticated)
 }
 
 // publishReadyFile writes the readiness document when --ready-file is set
@@ -2355,31 +2488,37 @@ func buildEdge(ctx context.Context, cfg config) (*tls.Config, *server.Authentica
 		return nil, nil, nil, err
 	}
 	return tlsCfg, server.NewAuthenticator(server.SecurityConfig{
-		AuthToken: cfg.authToken,
-		RateLimit: cfg.rateLimit,
-		RateBurst: cfg.rateBurst,
-		Validator: validator,
+		AuthToken:   cfg.authToken,
+		RateLimit:   cfg.rateLimit,
+		RateBurst:   cfg.rateBurst,
+		Validator:   validator,
+		Diagnostics: cfg.diagnostics,
 	}), corsPolicy, nil
 }
 
+func callerAuthenticationConfigured(cfg config, tlsCfg *tls.Config) bool {
+	return cfg.authToken != "" || cfg.oidc.Enabled() || (tlsCfg != nil && tlsCfg.ClientAuth == tls.RequireAndVerifyClientCert)
+}
+
 // warnIfNonLoopback logs the API trust assumption for the given bind address.
-// Loopback binds are logged at info. A non-loopback bind WITH authentication
-// (bearer token and/or TLS, indicated by authed) is logged at info; a
-// non-loopback bind with NO authentication is logged as a prominent WARNING,
-// since it exposes command/file execution to the network. It never hard-fails:
-// an operator may legitimately front the server with a service mesh.
-func warnIfNonLoopback(flagName, addr string, authed bool) {
+// Loopback binds are logged at info. A non-loopback bind WITH caller
+// authentication (bearer, OIDC, or mTLS) is logged at info; a non-loopback bind
+// without it is logged as a prominent WARNING, since TLS alone does not identify
+// callers and the endpoint exposes command/file execution to anyone who can reach
+// it. It never hard-fails: an operator may deliberately make a private network or
+// service mesh the shared authority boundary.
+func warnIfNonLoopback(flagName, addr string, callerAuthenticated bool) {
 	if cliconfig.IsLoopbackAddr(addr) {
 		slog.Info("API bound to loopback (single-user localhost trust model)",
-			"flag", flagName, "addr", addr, "authenticated", authed)
+			"flag", flagName, "addr", addr, "caller_authenticated", callerAuthenticated)
 		return
 	}
-	if authed {
-		slog.Info("API bound to a non-loopback address WITH authentication (bearer token and/or TLS)",
+	if callerAuthenticated {
+		slog.Info("API bound to a non-loopback address WITH caller authentication (bearer, OIDC, or mTLS)",
 			"flag", flagName, "addr", addr)
 		return
 	}
-	slog.Warn("API bound to a NON-loopback address with NO authentication: it exposes UNAUTHENTICATED command/file execution to the network — set --auth-token / --tls-cert (or front it with a trusted mesh) before doing this",
+	slog.Warn("API bound to a NON-loopback address with NO caller authentication: it exposes UNAUTHENTICATED command/file execution to every network caller — configure --auth-token, OIDC, or --client-ca, or deliberately enforce shared authority at a trusted private-network/mesh boundary; TLS alone is not caller authentication",
 		"flag", flagName, "addr", addr)
 }
 

@@ -4,7 +4,7 @@
 // performs Grep over the in-memory contents.
 //
 // memfs has no shell, so its Workspace deliberately does NOT execute commands.
-// For deterministic Bash-tool stubbing it exposes a separate, programmable
+// For deterministic Shell-tool stubbing it exposes a separate, programmable
 // tool.CommandRunner (see CommandRunner / NewCommandRunner): by default Run
 // returns ErrNoShell so tests cannot accidentally depend on shell behavior, and
 // a canned result may be programmed via SetResult.
@@ -41,6 +41,8 @@ var ErrNotExist = fs.ErrNotExist
 // programmed: memfs has no shell to run commands against. It wraps
 // tool.ErrNoShell so callers can match either sentinel.
 var ErrNoShell = fmt.Errorf("memfs: %w; program a result with SetResult", tool.ErrNoShell)
+
+const opRename = "rename"
 
 // node is a single in-memory file entry.
 type node struct {
@@ -212,26 +214,25 @@ func hasDotDot(p string) bool {
 	return false
 }
 
-// Workspace is the in-memory session-scoped seam. It composes a FileSystem,
-// performs Grep over in-memory contents, and carries the Edit read-ledger.
-// Command execution is not part of the Workspace; use CommandRunner for that.
+// Workspace is the in-memory session-scoped content seam. Command execution
+// and read-before-write evidence are carried separately by tool.Environment.
 type Workspace struct {
 	fs *FileSystem
-
-	mu     sync.Mutex
-	ledger map[string]tool.FileVersion // path -> recorded version
 }
 
 // NewWorkspace returns an empty in-memory Workspace with the given logical root.
 func NewWorkspace(root string) *Workspace {
-	return &Workspace{
-		fs:     NewFileSystem(root),
-		ledger: make(map[string]tool.FileVersion),
-	}
+	return NewWorkspaceOverFileSystem(NewFileSystem(root))
+}
+
+// NewWorkspaceOverFileSystem returns a Workspace over the given content backend.
+func NewWorkspaceOverFileSystem(backend *FileSystem) *Workspace {
+	return &Workspace{fs: backend}
 }
 
 // Compile-time assertions that Workspace satisfies the filesystem and authority seams.
 var _ tool.Workspace = (*Workspace)(nil)
+var _ tool.WorkspaceNamespace = (*Workspace)(nil)
 var _ tool.AuthorityResourceResolver = (*Workspace)(nil)
 
 // Root returns the absolute session root all paths are scoped to.
@@ -243,6 +244,9 @@ func (w *Workspace) AuthorityResourcePath(p string) (target, workspace string, e
 	workspace = w.Root()
 	if !path.IsAbs(workspace) {
 		return "", "", fmt.Errorf("%w: workspace root is not absolute", ErrPathEscape)
+	}
+	if p == "." {
+		return workspace, workspace, nil
 	}
 	key, err := cleanPath(p)
 	if err != nil {
@@ -332,6 +336,173 @@ func (w *Workspace) ReplaceFile(_ context.Context, p string, old tool.FileVersio
 	return versionOf(stored), nil
 }
 
+// ReadDir returns the immediate children of a virtual directory. Directories
+// are derived from file-path prefixes, so empty directories do not exist.
+func (w *Workspace) ReadDir(_ context.Context, p string) ([]tool.FileInfo, error) {
+	dir, err := cleanDirPath(p)
+	if err != nil {
+		return nil, err
+	}
+	w.fs.mu.RLock()
+	defer w.fs.mu.RUnlock()
+	if dir != "" {
+		if _, ok := w.fs.files[dir]; ok {
+			return nil, &fs.PathError{Op: "readdir", Path: p, Err: fs.ErrInvalid}
+		}
+	}
+	prefix := ""
+	if dir != "" {
+		prefix = dir + "/"
+	}
+	entries := make(map[string]tool.FileInfo)
+	for name, n := range w.fs.files {
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		rest := strings.TrimPrefix(name, prefix)
+		child, _, hasTail := strings.Cut(rest, "/")
+		if child == "" {
+			continue
+		}
+		if hasTail {
+			entries[child] = tool.FileInfo{Name: child, Mode: fs.ModeDir | 0o755, IsDir: true}
+			continue
+		}
+		entries[child] = tool.FileInfo{Name: child, Size: int64(len(n.data)), Mode: 0o644, ModTime: n.modTime}
+	}
+	if len(entries) == 0 && dir != "" {
+		return nil, &fs.PathError{Op: "readdir", Path: p, Err: fs.ErrNotExist}
+	}
+	out := make([]tool.FileInfo, 0, len(entries))
+	for _, entry := range entries {
+		out = append(out, entry)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+// Remove deletes a regular file. Prefix-derived directories are always
+// non-empty, so removing one returns ErrDirectoryNotEmpty.
+func (w *Workspace) Remove(_ context.Context, p string) error {
+	key, err := cleanPath(p)
+	if err != nil {
+		return err
+	}
+	w.fs.mu.Lock()
+	defer w.fs.mu.Unlock()
+	if _, ok := w.fs.files[key]; ok {
+		delete(w.fs.files, key)
+		return nil
+	}
+	prefix := key + "/"
+	for name := range w.fs.files {
+		if strings.HasPrefix(name, prefix) {
+			return &fs.PathError{Op: "remove", Path: p, Err: tool.ErrDirectoryNotEmpty}
+		}
+	}
+	return &fs.PathError{Op: "remove", Path: p, Err: fs.ErrNotExist}
+}
+
+// Rename moves a regular file or a prefix-derived directory without replacing
+// an existing destination.
+func (w *Workspace) Rename(_ context.Context, oldPath, newPath string) error {
+	oldKey, err := cleanPath(oldPath)
+	if err != nil {
+		return err
+	}
+	newKey, err := cleanPath(newPath)
+	if err != nil {
+		return err
+	}
+	if strings.HasPrefix(newKey, oldKey+"/") {
+		return &fs.PathError{Op: opRename, Path: newPath, Err: fs.ErrInvalid}
+	}
+	w.fs.mu.Lock()
+	defer w.fs.mu.Unlock()
+	if _, exists := w.fs.files[newKey]; exists || fileAncestorExists(w.fs.files, newKey) {
+		return &fs.PathError{Op: opRename, Path: newPath, Err: fs.ErrExist}
+	}
+	for name := range w.fs.files {
+		if strings.HasPrefix(name, newKey+"/") {
+			return &fs.PathError{Op: opRename, Path: newPath, Err: fs.ErrExist}
+		}
+	}
+	if n, ok := w.fs.files[oldKey]; ok {
+		w.fs.files[newKey] = n
+		delete(w.fs.files, oldKey)
+		return nil
+	}
+	oldPrefix := oldKey + "/"
+	moved := make(map[string]*node)
+	for name, n := range w.fs.files {
+		if strings.HasPrefix(name, oldPrefix) {
+			moved[newKey+strings.TrimPrefix(name, oldKey)] = n
+		}
+	}
+	if len(moved) == 0 {
+		return &fs.PathError{Op: opRename, Path: oldPath, Err: fs.ErrNotExist}
+	}
+	for name := range moved {
+		if _, exists := w.fs.files[name]; exists {
+			return &fs.PathError{Op: opRename, Path: newPath, Err: fs.ErrExist}
+		}
+	}
+	for name := range w.fs.files {
+		if strings.HasPrefix(name, oldPrefix) {
+			delete(w.fs.files, name)
+		}
+	}
+	for name, n := range moved {
+		w.fs.files[name] = n
+	}
+	return nil
+}
+
+// CopyFile copies one regular file to a new destination without overwriting.
+func (w *Workspace) CopyFile(_ context.Context, source, destination string) (tool.FileVersion, error) {
+	src, err := cleanPath(source)
+	if err != nil {
+		return tool.FileVersion{}, err
+	}
+	dst, err := cleanPath(destination)
+	if err != nil {
+		return tool.FileVersion{}, err
+	}
+	w.fs.mu.Lock()
+	defer w.fs.mu.Unlock()
+	n, ok := w.fs.files[src]
+	if !ok {
+		return tool.FileVersion{}, &fs.PathError{Op: "copy", Path: source, Err: fs.ErrNotExist}
+	}
+	if _, exists := w.fs.files[dst]; exists || fileAncestorExists(w.fs.files, dst) {
+		return tool.FileVersion{}, &fs.PathError{Op: "copy", Path: destination, Err: fs.ErrExist}
+	}
+	for name := range w.fs.files {
+		if strings.HasPrefix(name, dst+"/") {
+			return tool.FileVersion{}, &fs.PathError{Op: "copy", Path: destination, Err: fs.ErrExist}
+		}
+	}
+	data := bytes.Clone(n.data)
+	w.fs.files[dst] = &node{data: data, modTime: w.fs.now()}
+	return versionOf(data), nil
+}
+
+func fileAncestorExists(files map[string]*node, name string) bool {
+	for parent := path.Dir(name); parent != "."; parent = path.Dir(parent) {
+		if _, exists := files[parent]; exists {
+			return true
+		}
+	}
+	return false
+}
+
+func cleanDirPath(p string) (string, error) {
+	if p == "" || p == "." {
+		return "", nil
+	}
+	return cleanPath(p)
+}
+
 // Stat returns metadata for the file at the session-relative path.
 func (w *Workspace) Stat(ctx context.Context, p string) (tool.FileInfo, error) {
 	return w.fs.Stat(ctx, p)
@@ -395,7 +566,7 @@ func (w *Workspace) Grep(ctx context.Context, pattern, pathGlob string) ([]tool.
 }
 
 // CommandRunner is a programmable, in-memory tool.CommandRunner for
-// deterministic Bash-tool stubbing. memfs has no shell, so by default Run
+// deterministic Shell-tool stubbing. memfs has no shell, so by default Run
 // returns ErrNoShell; program a canned result (or error) with SetResult.
 type CommandRunner struct {
 	mu     sync.Mutex
@@ -410,7 +581,10 @@ func NewCommandRunner() *CommandRunner {
 }
 
 // Compile-time assertion that CommandRunner satisfies the runner port.
-var _ tool.CommandRunner = (*CommandRunner)(nil)
+var (
+	_ tool.CommandRunner            = (*CommandRunner)(nil)
+	_ tool.CommandEnvironmentRunner = (*CommandRunner)(nil)
+)
 
 // SetResult programs the deterministic result (and/or error) that the next and
 // subsequent Run calls return. Passing a nil result with a nil error makes Run
@@ -426,8 +600,19 @@ func (r *CommandRunner) SetResult(res *tool.CommandResult, err error) {
 // Run returns the programmed canned result. memfs has no shell, so absent a
 // programmed result it returns ErrNoShell. It honors ctx cancellation. The
 // command string is ignored beyond being a marker; this method exists for
-// deterministic Bash-tool stubbing, not real execution.
+// deterministic Shell-tool stubbing, not real execution.
 func (r *CommandRunner) Run(ctx context.Context, _ string) (tool.CommandResult, error) {
+	return r.run(ctx)
+}
+
+// RunWithEnvironment accepts the trusted overlay for CommandRunner conformance.
+// The in-memory runner has no process environment, so it deliberately has no
+// observable effect on its deterministic canned result.
+func (r *CommandRunner) RunWithEnvironment(ctx context.Context, _ string, _ tool.CommandEnvironmentOverlay) (tool.CommandResult, error) {
+	return r.run(ctx)
+}
+
+func (r *CommandRunner) run(ctx context.Context) (tool.CommandResult, error) {
 	if err := ctx.Err(); err != nil {
 		return tool.CommandResult{}, err
 	}
@@ -441,35 +626,4 @@ func (r *CommandRunner) Run(ctx context.Context, _ string) (tool.CommandResult, 
 		return tool.CommandResult{}, nil
 	}
 	return *res, nil
-}
-
-// RecordRead stores the EXACT authoritative version for path under the session
-// ledger. It performs NO I/O: it stores the FileVersion the caller supplies (the
-// one ReadVersion minted), so a later RecordedVersion lookup compares against the
-// recorded token without re-reading the file. The ledger key is the clean
-// session-relative path (see cleanPath).
-func (w *Workspace) RecordRead(p string, version tool.FileVersion) {
-	key, err := cleanPath(p)
-	if err != nil {
-		// An uncleanable path cannot be recorded; leave it unrecorded (fail-safe:
-		// a later mutation refuses as "not read").
-		return
-	}
-	w.mu.Lock()
-	w.ledger[key] = version
-	w.mu.Unlock()
-}
-
-// RecordedVersion returns the version previously recorded for path via RecordRead,
-// performing NO I/O. ok is false if path was never recorded. The lookup uses the
-// same clean key as RecordRead.
-func (w *Workspace) RecordedVersion(p string) (tool.FileVersion, bool) {
-	key, err := cleanPath(p)
-	if err != nil {
-		return tool.FileVersion{}, false
-	}
-	w.mu.Lock()
-	version, ok := w.ledger[key]
-	w.mu.Unlock()
-	return version, ok
 }

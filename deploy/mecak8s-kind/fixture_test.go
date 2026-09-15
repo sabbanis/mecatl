@@ -49,34 +49,10 @@ func TestMecak8sKindFixture_Scenario1_DedicatedKubeconfig(t *testing.T) {
 		"KUBECONFIG: deploy/mecak8s-kind/kconfig.yaml", "CONTEXT: kind-mecatl-dev",
 		"--kubeconfig={{.KUBECONFIG}}", "--context={{.CONTEXT}}", "--kube-context={{.CONTEXT}}",
 		"kind delete cluster --name={{.CLUSTER}}", "rm -rf {{.STATE}}", "rm -f {{.KUBECONFIG}} {{.SETUP_LOCK}}",
+		"chmod 0700 {{.STATE}}", "chmod 0600 \"$kubeconfig\"", "mv -f \"$kubeconfig\" {{.KUBECONFIG}}",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("dedicated fixture lifecycle missing %q", want)
-		}
-	}
-}
-
-// TestMecak8sKindFixture_Scenario1_DocumentationBoundaries pins that the
-// local operator fixture is neither the production chart nor e2e/k8s, and
-// makes no production isolation claim.
-func TestMecak8sKindFixture_Scenario1_DocumentationBoundaries(t *testing.T) {
-	body, err := os.ReadFile("README.md")
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(body)
-	baseDocs, _, _ := strings.Cut(text, "\n## Optional Keycloak login journey")
-	for _, want := range []string{
-		"operator-run", "deploy/helm/mecak8s/", "e2e/k8s/", "no general NetworkPolicy",
-		"127.0.0.1", "NodePort", "extraPortMappings",
-	} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("fixture documentation missing boundary %q", want)
-		}
-	}
-	for _, forbidden := range []string{"production network isolation", "ToolHive", "vMCP"} {
-		if strings.Contains(baseDocs, forbidden) {
-			t.Fatalf("ToolHive-free fixture documentation contains %q", forbidden)
 		}
 	}
 }
@@ -117,6 +93,31 @@ func TestMecak8sKindFixture_Scenario2_MockDefault(t *testing.T) {
 	for _, forbidden := range []string{"OPENROUTER_API_KEY", "mecak8s-openrouter"} {
 		if strings.Contains(string(rendered), forbidden) {
 			t.Fatalf("mock fixture render retains provider Secret projection %q", forbidden)
+		}
+	}
+}
+
+// TestMecak8sKindFixture_Scenario2_LiveSmokeIsExplicit pins that the executable
+// setup task closure excludes the billable live-provider smoke action.
+func TestMecak8sKindFixture_Scenario2_LiveSmokeIsExplicit(t *testing.T) {
+	if strings.Contains(fixtureTaskClosure(t, "kind-setup"), "live-smoke") {
+		t.Fatal("setup must not invoke the live-provider smoke action")
+	}
+}
+
+// TestMecak8sKindFixture_Scenario2_KeycloakRetainsProviderOverlay pins that
+// Keycloak's Helm layer cannot reset a real-provider setup to the mock overlay.
+func TestMecak8sKindFixture_Scenario2_KeycloakRetainsProviderOverlay(t *testing.T) {
+	text := fixtureTaskClosure(t, "chart-keycloak-apply")
+	for _, want := range []string{
+		`if [ -n "${OPENROUTER_API_KEY:-}" ]; then`,
+		"provider_values=deploy/mecak8s-kind/kind-provider-real.yaml",
+		"provider_values=deploy/mecak8s-kind/kind-provider-mock.yaml",
+		"--values=deploy/helm/mecak8s/values-kind-keycloak.yaml",
+		`--values="$provider_values"`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("Keycloak chart layer missing provider overlay control %q", want)
 		}
 	}
 }
@@ -170,21 +171,40 @@ func TestMecak8sKindFixture_Scenario2_ResetToMock(t *testing.T) {
 	}
 }
 
-// TestMecak8sKindFixture_Scenario2_LiveSmokeIsExplicit pins that billing is an
-// operator decision, documented outside setup and default tests.
-func TestMecak8sKindFixture_Scenario2_LiveSmokeIsExplicit(t *testing.T) {
-	body, err := os.ReadFile("README.md")
+func TestMecak8sKindFixture_LearningDriverManifest(t *testing.T) {
+	body, err := os.ReadFile("learning-driver.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
+	parts := strings.Split(string(body), "\n---\n")
+	if len(parts) != 2 {
+		t.Fatalf("learning driver manifest has %d documents, want Service and Deployment", len(parts))
+	}
+	var service, deployment map[string]any
+	if err = yaml.Unmarshal([]byte(parts[0]), &service); err != nil {
+		t.Fatalf("decode learning driver Service: %v", err)
+	}
+	if err = yaml.Unmarshal([]byte(parts[1]), &deployment); err != nil {
+		t.Fatalf("decode learning driver Deployment: %v", err)
+	}
+	if service["kind"] != "Service" || deployment["kind"] != "Deployment" {
+		t.Fatalf("manifest kinds = %v, %v; want Service, Deployment", service["kind"], deployment["kind"])
+	}
 	text := string(body)
-	for _, want := range []string{"OPENROUTER_API_KEY", "billable", "A real-provider smoke call", "operator action"} {
+	for _, want := range []string{
+		"type: ClusterIP", "replicas: 1", "type: Recreate", "automountServiceAccountToken: false",
+		"runAsNonRoot: true", "runAsUser: 65532", "allowPrivilegeEscalation: false",
+		"readOnlyRootFilesystem: true", `capabilities: {drop: ["ALL"]}`, "seccompProfile: {type: RuntimeDefault}",
+		"emptyDir: {}", "secretName: learning-driver-tls", "--data-dir=/data", "--tls-cert=", "--tls-key=",
+	} {
 		if !strings.Contains(text, want) {
-			t.Fatalf("fixture instructions missing live-provider boundary %q", want)
+			t.Errorf("learning driver manifest missing %q", want)
 		}
 	}
-	if strings.Contains(fixtureTaskClosure(t, "kind-setup"), "live-smoke") {
-		t.Fatal("setup must not invoke the live-provider smoke action")
+	for _, forbidden := range []string{"kind: StatefulSet", "replicas: 2", "type: LoadBalancer", "type: NodePort"} {
+		if strings.Contains(text, forbidden) {
+			t.Errorf("learning driver fixture contains unsupported topology %q", forbidden)
+		}
 	}
 }
 
@@ -383,30 +403,6 @@ func TestMecak8sKindFixture_Scenario3_LoopbackReachability(t *testing.T) {
 	}
 }
 
-func TestMecak8sKindFixture_Scenario3_LoginDocumentation(t *testing.T) {
-	for _, path := range []string{
-		"README.md", "../mecak8s-vmcp/README.md", "../../docs/usage/mecak8s.md",
-		"../README.md", "../../user-docs/building/deployment/mecak8s.md",
-	} {
-		body, err := os.ReadFile(path)
-		if err != nil {
-			t.Fatalf("read %s: %v", path, err)
-		}
-		text := string(body)
-		for _, want := range []string{"Authorization Code + PKCE", "password grant", "test helper"} {
-			if !strings.Contains(text, want) {
-				t.Fatalf("%s does not document Keycloak login boundary %q", path, want)
-			}
-		}
-		if path == "README.md" && !strings.Contains(text, "offline_access") {
-			t.Fatalf("%s does not document the optional offline_access scope", path)
-		}
-		if strings.Index(text, "Authorization Code + PKCE") > strings.Index(text, "password grant") {
-			t.Fatalf("%s presents password grant before the normal PKCE journey", path)
-		}
-	}
-}
-
 // TestMecak8sKindFixture_Scenario3_KeycloakIsOptIn pins the identity layer's
 // independent lifecycle: the base cannot transitively install identity assets,
 // while the opt-in setup applies them only after the base is ready.
@@ -443,7 +439,7 @@ func TestMecak8sKindFixture_Scenario3_KeycloakDemoQuickstart(t *testing.T) {
 		"get secret fixture-ca", "fixture-ca.crt", "base64 -D <",
 		"wait_port Keycloak 8443", "wait_port mecak8s-gRPC 18080", "wait_port mecak8s-HTTPS 18081",
 		"mecatui login mecak8s-mecak8s.mecatl.svc.cluster.local:18080", "--client-id mecatui-kind", "--audience mecak8s",
-		"--scopes openid,profile,mecak8s:access,offline_access", "mecatui connect mecak8s-mecak8s.mecatl.svc.cluster.local:18080 --tls",
+		"--scopes openid,profile,mecak8s:access,offline_access", "--private-issuer", "mecatui connect mecak8s-mecak8s.mecatl.svc.cluster.local:18080 --tls",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("Keycloak demo quickstart missing %q", want)

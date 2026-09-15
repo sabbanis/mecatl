@@ -1,21 +1,21 @@
- mecatui  ·  session #b9ba2286  ·  mock-model  ·  mode default  ·  127.0.0.1:8080
+ mecatui  ·  session sess-test-00  ·  mock-model  ·  mode default  ·  127.0.0.1:8080
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 
 
 
-                             ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-                             ┃                                       ┃
-                             ┃    Subagents    Parallel  ▸ Teams     ┃
-                             ┃                                       ┃
-                             ┃  agent · scout                        ┃
-                             ┃  ◆ · scout · Grep… · ↑1.2K ↓80        ┃
-                             ┃                                       ┃
-                             ┃    searching for the failing path     ┃
-                             ┃    ✓ Grep — 3 matches in dispatch.go  ┃
-                             ┃                                       ┃
-                             ┃  esc back                             ┃
-                             ┃                                       ┃
-                             ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+  ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+  ┃                                                                                              ┃
+  ┃    Subagents    Parallel  ▸ Teams                                                            ┃
+  ┃                                                                                              ┃
+  ┃  agent · scout                                                                               ┃
+  ┃  ◆ · scout · Grep… · ↑1.2K ↓80                                                               ┃
+  ┃                                                                                              ┃
+  ┃    searching for the failing path                                                            ┃
+  ┃    ✓ Grep — 3 matches in dispatch.go                                                         ┃
+  ┃                                                                                              ┃
+  ┃  esc back · ↑/↓ scroll · pgup/pgdn · home/end                                                ┃
+  ┃                                                                                              ┃
+  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 
 
 
@@ -26,5 +26,5 @@
 │
 │
 ────────────────────────────────────────────────────────────────────────────────────────────────────
- connected                                           ⟳ 4/4 working · ctrl+a  ctx 0 · ↑0 ↓0 cache 0%
+ connected                                               ⟳ 4/4 working · f6  ctx 0 · ↑0 ↓0 cache 0%
 ? help · / commands · ctrl+c quit

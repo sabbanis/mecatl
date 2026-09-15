@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stacklok/mecatl/engine/adapter/memledger"
 	"github.com/stacklok/mecatl/engine/adapter/mockllm"
 	"github.com/stacklok/mecatl/engine/adapter/permpolicy"
 	"github.com/stacklok/mecatl/engine/governance"
@@ -48,8 +49,12 @@ func installRelaxedWorkspace(t *testing.T, built *Built, sessID session.SessionI
 	if err != nil {
 		t.Fatalf("NewWorkspace: %v", err)
 	}
-	env, err := tool.NewEnvironment(session.EnvironmentRef{Kind: session.EnvKindLocal, ID: root},
-		newEscapeWorkspace(base, clf), nil)
+	sess, err := built.Service.GetSession(context.Background(), sessID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	env, err := tool.NewEnvironment(sess.EnvironmentRef,
+		newEscapeWorkspace(base, clf), memledger.New(), nil)
 	if err != nil {
 		t.Fatalf("NewEnvironment: %v", err)
 	}
@@ -57,8 +62,8 @@ func installRelaxedWorkspace(t *testing.T, built *Built, sessID session.SessionI
 }
 
 // TestPathEscapePosture_Scenario4_FactoryServesApprovedEscape pins the
-// COMPOSITION half the e2e tests bypass: the REAL workspace factory (the one
-// Build wires into server.Config.Workspaces) must produce the relaxed
+// COMPOSITION half the e2e tests bypass: the local PlacementProvider's private
+// workspace construction must produce the relaxed
 // escape-capable workspace at EVERY posture — at strict/trusted it is what
 // lets an APPROVED escape ask execute; without it the ask is approved and the
 // tool body still dead-ends on ErrPathEscape. A default Build at strict +
@@ -67,12 +72,12 @@ func installRelaxedWorkspace(t *testing.T, built *Built, sessID session.SessionI
 func TestPathEscapePosture_Scenario4_FactoryServesApprovedEscape(t *testing.T) {
 	t.Parallel()
 	f := setupEscapeFS(t)
-	built, err := Build(context.Background(), escapeCfg(t, f, PostureStrict, readEscapeTurns(f.target)...))
+	built, err := buildIsolated(t, context.Background(), escapeCfg(t, f, PostureStrict, readEscapeTurns(f.target)...))
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 	defer built.Close()
-	sess, err := built.Service.CreateSession(context.Background(), f.workspace, session.ModeDefault, session.Limits{})
+	sess, err := built.Service.CreateSession(context.Background(), session.ModeDefault, session.Limits{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -116,12 +121,12 @@ func TestPathEscapePosture_Scenario4_FactoryServesApprovedEscape(t *testing.T) {
 func TestPathEscapePosture_Scenario4_StrictReadEscapeAsks(t *testing.T) {
 	t.Parallel()
 	f := setupEscapeFS(t)
-	built, err := Build(context.Background(), escapeCfg(t, f, PostureStrict, readEscapeTurns(f.target)...))
+	built, err := buildIsolated(t, context.Background(), escapeCfg(t, f, PostureStrict, readEscapeTurns(f.target)...))
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 	defer built.Close()
-	sess, err := built.Service.CreateSession(context.Background(), f.workspace, session.ModeDefault, session.Limits{})
+	sess, err := built.Service.CreateSession(context.Background(), session.ModeDefault, session.Limits{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -137,7 +142,7 @@ func TestPathEscapePosture_Scenario4_StrictReadEscapeAsks(t *testing.T) {
 		if ev.Type == session.EvPermissionAsk && ev.Ask != nil {
 			askSeen = true
 			if ev.Ask.Tool != "Read" {
-				t.Fatalf("ask surfaced for tool %q, want the Read escape (the ask must name the FS tool, not a Bash workaround)", ev.Ask.Tool)
+				t.Fatalf("ask surfaced for tool %q, want the Read escape (the ask must name the FS tool, not a Shell workaround)", ev.Ask.Tool)
 			}
 			if !strings.Contains(ev.Ask.Reason, f.target) || !strings.Contains(ev.Ask.Reason, "outside the workspace") {
 				t.Fatalf("escape ask reason = %q, want it to name the path and that it lies outside the workspace", ev.Ask.Reason)
@@ -171,7 +176,7 @@ func TestPathEscapePosture_Scenario4_TrustedWriteEscapeAsks(t *testing.T) {
 	t.Parallel()
 	f := setupWriteFS(t)
 	call := scenario3Call("w1", "Write", map[string]string{"path": f.target, "content": "trusted-must-never-land"})
-	built, err := Build(context.Background(), writeEscapeCfg(t, f, PostureTrusted,
+	built, err := buildIsolated(t, context.Background(), writeEscapeCfg(t, f, PostureTrusted,
 		mockllm.ToolCallTurn(call),
 		mockllm.TextTurn("done"),
 	))
@@ -179,7 +184,7 @@ func TestPathEscapePosture_Scenario4_TrustedWriteEscapeAsks(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 	defer built.Close()
-	sess, err := built.Service.CreateSession(context.Background(), f.workspace, session.ModeDefault, session.Limits{})
+	sess, err := built.Service.CreateSession(context.Background(), session.ModeDefault, session.Limits{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -230,12 +235,12 @@ func TestPathEscapePosture_Scenario4_TrustedWriteEscapeAsks(t *testing.T) {
 func TestPathEscapePosture_Scenario4_HeadlessEscapeAskDoesNotHang(t *testing.T) {
 	t.Parallel()
 	f := setupEscapeFS(t)
-	built, err := Build(context.Background(), escapeCfg(t, f, PostureStrict, readEscapeTurns(f.target)...))
+	built, err := buildIsolated(t, context.Background(), escapeCfg(t, f, PostureStrict, readEscapeTurns(f.target)...))
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 	defer built.Close()
-	sess, err := built.Service.CreateSession(context.Background(), f.workspace, session.ModeDefault, session.Limits{})
+	sess, err := built.Service.CreateSession(context.Background(), session.ModeDefault, session.Limits{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}

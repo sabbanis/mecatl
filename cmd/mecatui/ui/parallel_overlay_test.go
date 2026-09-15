@@ -1,6 +1,6 @@
 package ui
 
-// Tests for the third ctrl+a tab — Parallel (the fork-join GROUP roster + per-group
+// Tests for the third f6 tab — Parallel (the fork-join GROUP roster + per-group
 // focus). A Parallel run is a GROUP (not a flat fleet): branches share a join mode + a
 // single winner + preserved fork paths. Everything renders from the REDACTED,
 // metadata-only parallel.* event projection — no branch content (gauntlet #7). The seeds
@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 
 	"github.com/stacklok/mecatl/cmd/mecatui/client"
 )
@@ -30,18 +31,18 @@ func branchToolPar(parent string, idx int, tool string, isErr bool, count int) c
 	return client.ParallelMsg{Kind: client.ParallelBranchTool, ParentCallID: parent, BranchIndex: idx, ToolName: tool, IsError: isErr, ToolCount: count}
 }
 
-func branchEndPar(parent string, idx int, in, out int64, count int, stop string, failed bool, ws string) client.ParallelMsg {
+func branchEndPar(parent string, idx int, in, out int64, count int, stop string, failed bool, _ string) client.ParallelMsg {
 	return client.ParallelMsg{
 		Kind: client.ParallelBranchEnd, ParentCallID: parent, BranchIndex: idx,
 		Usage: client.Usage{InputTokens: in, OutputTokens: out}, ToolCount: count,
-		Stop: stop, Failed: failed, Workspace: ws, DurationMs: 900,
+		Stop: stop, Failed: failed, DurationMs: 900,
 	}
 }
 
-func endPar(parent, join string, count, winner int, winnerWS, stop string) client.ParallelMsg {
+func endPar(parent, join string, count, winner int, _ string, stop string) client.ParallelMsg {
 	return client.ParallelMsg{
 		Kind: client.ParallelEnd, ParentCallID: parent, Join: join, BranchCount: count,
-		Winner: winner, WinnerWorkspace: winnerWS, Stop: stop,
+		Winner: winner, Stop: stop,
 	}
 }
 
@@ -92,7 +93,7 @@ func TestParallelRosterRendersGroup(t *testing.T) {
 		branchEndPar("p1", 1, 120, 25, 3, "end_turn", false, "/fork/branch-2"),
 		endPar("p1", "judge", 2, 1, "/fork/branch-2", "end_turn"),
 	)
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	if m.agentsTab != tabParallel {
 		t.Fatalf("expected Parallel tab as default (a finished parallel run, no team/sub), got %v", m.agentsTab)
@@ -119,7 +120,7 @@ func TestParallelGroupFocusWinnerHighlight(t *testing.T) {
 		branchEndPar("p1", 1, 120, 25, 3, "end_turn", false, "/fork/branch-2"),
 		endPar("p1", "judge", 2, 1, "/fork/branch-2", "end_turn"),
 	)
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	mm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = mm.(Model)
@@ -136,8 +137,8 @@ func TestParallelGroupFocusWinnerHighlight(t *testing.T) {
 	if !strings.Contains(out, "branch-1") || !strings.Contains(out, "branch-2") {
 		t.Errorf("group focus should list all branches inline:\n%s", out)
 	}
-	if !strings.Contains(out, "winner fork (preserved)") || !strings.Contains(out, "/fork/branch-2") {
-		t.Errorf("group focus should show the preserved winner fork path:\n%s", out)
+	if strings.Contains(out, "/fork/branch-2") {
+		t.Errorf("group focus leaked the private winner fork path:\n%s", out)
 	}
 	if !strings.Contains(out, "bounded previews") {
 		t.Errorf("group focus should carry the bounded-previews honesty note:\n%s", out)
@@ -162,7 +163,7 @@ func TestParallelFailedBranchGlyph(t *testing.T) {
 		branchEndPar("p1", 1, 120, 25, 3, "end_turn", false, "/fork/branch-2"),
 		endPar("p1", "all", 2, -1, "", "end_turn"),
 	)
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	mm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = mm.(Model)
@@ -189,7 +190,7 @@ func TestParallelGroupFocusBranchDurationAndRunStop(t *testing.T) {
 		branchEndPar("p1", 1, 120, 25, 3, "end_turn", false, "/fork/branch-2"),
 		endPar("p1", "judge", 2, 1, "/fork/branch-2", "end_turn"),
 	)
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	mm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = mm.(Model)
@@ -216,7 +217,7 @@ func TestParallelGroupFocusNoRunStopForJoinAll(t *testing.T) {
 		branchEndPar("p1", 1, 120, 25, 3, "end_turn", false, "/fork/branch-2"),
 		endPar("p1", "all", 2, -1, "", ""), // join=all: no winner, no run stop
 	)
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	mm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = mm.(Model)
@@ -226,7 +227,7 @@ func TestParallelGroupFocusNoRunStopForJoinAll(t *testing.T) {
 	}
 }
 
-// TestParallelTabRoutingAndEsc asserts ctrl+a → tab reaches the Parallel tab and esc
+// TestParallelTabRoutingAndEsc asserts f6 → tab reaches the Parallel tab and esc
 // from the roster closes the overlay.
 func TestParallelTabRoutingAndEsc(t *testing.T) {
 	m := newMCPModel(t, aztec(), nil)
@@ -234,7 +235,7 @@ func TestParallelTabRoutingAndEsc(t *testing.T) {
 	// beats finished parallel), and tab must reach Parallel.
 	m = seedSubagents(m, "s1", startSub("s1", "c1", "audit"))
 	m = seedParallel(m, "p1", startPar("p1", "all", 1), branchStartPar("p1", 0, "branch-1", "go"))
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	if m.agentsTab != tabParallel {
 		// parallel is LIVE (no branch_end) so parallelLive beats haveSub.
@@ -249,6 +250,40 @@ func TestParallelTabRoutingAndEsc(t *testing.T) {
 	m = mm.(Model)
 	if m.team.view != teamNone {
 		t.Errorf("esc from the Parallel roster should close the overlay")
+	}
+}
+
+func TestParallelBranchRowSeparatesSummaryAndActivity(t *testing.T) {
+	br := &parallelBranch{
+		index:         0,
+		label:         "branch-1",
+		goal:          "inspect every presentation detail in the parallel activity panel carefully",
+		done:          true,
+		stop:          "end_turn",
+		durationMs:    900,
+		routedModel:   "gpt-5-mini",
+		routingReason: "fast investigation",
+		toolCount:     2,
+		usage:         client.Usage{InputTokens: 1200, OutputTokens: 340},
+	}
+	selected := stripANSIstr(strings.TrimSuffix(renderParallelBranchRow(aztec(), br, -1, true, 80), "\n"))
+	unselected := stripANSIstr(strings.TrimSuffix(renderParallelBranchRow(aztec(), br, -1, false, 80), "\n"))
+	selectedRows := strings.Split(selected, "\n")
+	unselectedRows := strings.Split(unselected, "\n")
+	if len(selectedRows) != 2 || len(unselectedRows) != 2 {
+		t.Fatalf("branch summaries = %q / %q, want title plus details", selected, unselected)
+	}
+	if !strings.HasPrefix(selectedRows[0], "▶ ✓ branch-1") || !strings.HasPrefix(unselectedRows[0], "  ✓ branch-1") {
+		t.Fatalf("selection markers changed branch title semantics: %q / %q", selectedRows[0], unselectedRows[0])
+	}
+	if selectedRows[1] != unselectedRows[1] || !strings.HasPrefix(selectedRows[1], "    ") {
+		t.Fatalf("details should retain one shared four-column indent: %q / %q", selectedRows[1], unselectedRows[1])
+	}
+	if !strings.Contains(selectedRows[0], "…") || !strings.Contains(selectedRows[1], "gpt-5-mini") {
+		t.Fatalf("summary did not clip title or retain routing details: %q", selected)
+	}
+	if got := indentParallelBranchTrace("  ✓ Edit\n  · changed file", 32); got != "  │   ✓ Edit\n  │   · changed file" {
+		t.Fatalf("activity gutter = %q", got)
 	}
 }
 
@@ -267,7 +302,7 @@ func TestParallelOverlayBoundsBranchContent(t *testing.T) {
 		branchEndPar("p1", 0, 10, 2, 1, "end_turn", false, "/fork/branch-1"),
 		endPar("p1", "all", 1, -1, "", "end_turn"),
 	)
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	mm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = mm.(Model)
@@ -283,7 +318,7 @@ func TestParallelOverlayBoundsBranchContent(t *testing.T) {
 	if strings.Contains(out, longPreview) {
 		t.Errorf("an unbounded preview leaked into the group focus (past maxTraceDetailLen):\n%s", out)
 	}
-	if !strings.Contains(out, strings.Repeat("z", maxTraceDetailLen-1)) {
+	if strings.Count(out, "z") < maxTraceDetailLen-1 {
 		t.Errorf("the bounded preview should render (truncated):\n%s", out)
 	}
 	// A canary in a tool NAME renders only as a name chip — never as a body line.
@@ -295,7 +330,7 @@ func TestParallelOverlayBoundsBranchContent(t *testing.T) {
 		branchEndPar("p1", 0, 10, 2, 1, "end_turn", false, "/fork/branch-1"),
 		endPar("p1", "all", 1, -1, "", "end_turn"),
 	)
-	mm2, _ := m2.Update(ctrlKey('a'))
+	mm2, _ := m2.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m2 = mm2.(Model)
 	mm2, _ = m2.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m2 = mm2.(Model)
@@ -314,6 +349,9 @@ func TestParallelOverlayBoundsBranchContent(t *testing.T) {
 func TestParallelGroupFocusHeightBounded(t *testing.T) {
 	m := newMCPModel(t, aztec(), nil)
 	m = resize(m, 100, 18)
+	// Compact is keyed by terminal height, while this test deliberately offers
+	// the normal UI an 18-line conversation viewport.
+	m.height = 24
 	var msgs []client.ParallelMsg
 	msgs = append(msgs, startPar("p1", "all", 4))
 	for i := 0; i < 4; i++ {
@@ -322,7 +360,7 @@ func TestParallelGroupFocusHeightBounded(t *testing.T) {
 		msgs = append(msgs, branchToolParPreview("p1", i, "message.delta", "", "a branch note", 1))
 	}
 	m = seedParallel(m, "p1", msgs...)
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	mm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = mm.(Model)
@@ -352,13 +390,13 @@ func TestParallelRosterWindowed(t *testing.T) {
 		parent := "p" + string(rune('a'+i))
 		m = seedParallel(m, parent, startPar(parent, "all", 1), branchStartPar(parent, 0, "branch-1", "go"))
 	}
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	if m.agentsTab != tabParallel {
 		t.Fatalf("expected Parallel tab, got %v", m.agentsTab)
 	}
 	out := stripANSIstr(m.View().Content)
-	rows := teamRosterRows(agentsBodyHeight(m.vp.Height()))
+	rows := m.parallelRosterPageSize(m.conv.parallelGroups)
 	if rows >= n {
 		t.Fatalf("test premise broken: window %d must be < groups %d", rows, n)
 	}
@@ -380,7 +418,7 @@ func TestParallelRosterOrderInsertionStable(t *testing.T) {
 	// Insert p_b before p_a — render order must follow INSERTION, not the ids' sort order.
 	m = seedParallel(m, "p_b", startPar("p_b", "all", 1), branchStartPar("p_b", 0, "branch-1", "second-seeded BBB"))
 	m = seedParallel(m, "p_a", startPar("p_a", "judge", 1), branchStartPar("p_a", 0, "branch-1", "first-after AAA"))
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	if m.agentsTab != tabParallel {
 		t.Fatalf("expected Parallel tab, got %v", m.agentsTab)
@@ -420,7 +458,7 @@ func TestParallelBranchOrderByIndex(t *testing.T) {
 		branchEndPar("p1", 1, 20, 4, 1, "end_turn", false, "/fork/branch-2"),
 		endPar("p1", "all", 3, -1, "", "end_turn"),
 	)
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	mm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = mm.(Model)
@@ -451,7 +489,7 @@ func TestParallelBranchTransientToolGlyph(t *testing.T) {
 		branchStartPar("p1", 0, "branch-1", "explore"),
 		branchToolPar("p1", 0, "Grep", true, 1), // a tool errored, but the branch is still RUNNING
 	)
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	mm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = mm.(Model)
@@ -500,7 +538,7 @@ func TestParallelBranchRoutedMetadata(t *testing.T) {
 		branchStartParModel("p1", 1, "branch-2", "unrouted", "anthropic/claude-3.5"),
 		branchStartPar("p1", 2, "branch-3", "no model known"),
 	)
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	mm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = mm.(Model)
@@ -522,5 +560,56 @@ func TestParallelBranchRoutedMetadata(t *testing.T) {
 	// unknown-model branch shows nothing.
 	if n := strings.Count(out, "model:"); n != 1 {
 		t.Errorf("exactly one plain model: cue expected (the inherited-model branch only), got %d:\n%s", n, out)
+	}
+}
+
+// TestParallelJoinModeIsSanitizedAndBounded plants hostile server-derived join
+// metadata and exercises both roster and focused render boundaries through Update/View.
+func TestParallelJoinModeIsSanitizedAndBounded(t *testing.T) {
+	const tail = "HOSTILE_TAIL"
+	join := "judge\x1b]0;owned\a" + strings.Repeat("oversized", 40) + tail
+	m := resize(newMCPModel(t, aztec(), nil), 32, 40)
+	m = seedParallel(m, "p1",
+		startPar("p1", join, 1),
+		branchStartPar("p1", 0, "branch-1", "inspect"),
+	)
+	m.team, m.agentsTab = teamState{view: teamRoster}, tabParallel
+	stored := m.conv.parallelGroups[0].join
+	if strings.ContainsAny(stored, "\x1b\a") || strings.Contains(stored, tail) {
+		t.Fatalf("hostile join was not sanitized and bounded at ingestion: %q", stored)
+	}
+
+	// Plant the violation behind the ingestion boundary: every renderer remains a
+	// trust boundary for directly restored or future-populated state.
+	m.conv.parallelGroups[0].join = join
+	g := &m.conv.parallelGroups[0]
+	for name, rendered := range map[string]string{
+		"roster":    parallelRosterLine(g),
+		"essential": renderEssentialAgentsBody(aztec(), tabParallel, subagentState{}, parallelState{}, teamState{}, nil, nil, m.conv.parallelGroups, defaultHelpKeys(), 120),
+		"focus":     renderParallelGroupFocus(aztec(), parallelState{view: parallelGroupView, group: "p1"}, m.conv.parallelGroups, defaultHelpKeys(), 120, 0),
+	} {
+		plain := stripANSIstr(rendered)
+		if strings.ContainsAny(plain, "\x1b\a") || strings.Contains(plain, tail) {
+			t.Fatalf("%s boundary rendered hostile or unbounded join: %q", name, plain)
+		}
+	}
+
+	for _, focused := range []bool{false, true} {
+		if focused {
+			mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+			m = mm.(Model)
+		}
+		out := m.View().Content
+		plain := stripANSIstr(out)
+		if strings.Contains(plain, tail) {
+			t.Fatalf("focused=%v: unbounded join mode reached final View:\n%s", focused, plain)
+		}
+		for i, line := range strings.Split(plain, "\n") {
+			if strings.Contains(line, "judge") {
+				if got := lipgloss.Width(line); got > 32 {
+					t.Fatalf("focused=%v join line %d width=%d, want <=32: %q", focused, i, got, line)
+				}
+			}
+		}
 	}
 }

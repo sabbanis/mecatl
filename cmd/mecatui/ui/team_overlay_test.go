@@ -1,6 +1,6 @@
 package ui
 
-// Tests for the ctrl+a live agent-team hierarchy OVERLAY (the /team built-in): a
+// Tests for the f6 live agent-team hierarchy OVERLAY (the /team built-in): a
 // full-screen, uncapped view of the most-recent Team tool card's roster, plus a
 // per-member focus pane. It is additive over the inline Team card (which stays
 // capped at maxTeamLanes with a "· +K more" roll-up) — the overlay is the
@@ -73,14 +73,14 @@ func TestNavigateRosterCursor(t *testing.T) {
 	}
 }
 
-// TestAgentsOpensRoster asserts ctrl+a over a populated team opens the roster.
+// TestAgentsOpensRoster asserts f6 over a populated team opens the roster.
 func TestAgentsOpensRoster(t *testing.T) {
 	m := newMCPModel(t, aztec(), nil)
 	m = seedTeam(m, func(c *conversation) {
 		c.setTeamStart("t1", "", roster())
 		c.addTeamMember(member("scout", "tool.call", client.TeamMsg{ToolName: "Grep"}))
 	})
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	if m.team.view != teamRoster {
 		t.Fatalf("view = %v, want teamRoster", m.team.view)
@@ -97,12 +97,12 @@ func TestAgentsOpensRoster(t *testing.T) {
 	}
 }
 
-// TestAgentsNoTeamIsNoOp asserts ctrl+a with no team is a no-op (overlay stays
+// TestAgentsNoTeamIsNoOp asserts f6 with no team is a no-op (overlay stays
 // closed) and surfaces a caps-aware hint: with teams NOT advertised the copy
 // names that, distinguishing "not enabled" from "no team yet" (Gap D).
 func TestAgentsNoTeamIsNoOp(t *testing.T) {
 	m := newMCPModel(t, aztec(), nil) // zero caps → Teams false
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	if m.team.view != teamNone {
 		t.Fatalf("overlay opened with no team: %v", m.team.view)
@@ -156,7 +156,7 @@ func TestAgentsGatedWhileAwaitingApproval(t *testing.T) {
 }
 
 // TestAgentsMidRunKeysDriveOverlayNotInput is the Gap-B end-to-end: with a live
-// team streaming (phaseRunning), ctrl+a opens the overlay, and the roster nav
+// team streaming (phaseRunning), f6 opens the overlay, and the roster nav
 // keys (↑/enter/t/esc) drive the OVERLAY rather than enqueuing a follow-up or
 // cancelling the run. It asserts: the overlay opens to the roster; the queue
 // stays empty across the navigation (no enqueuePrompt); no cancel frame is sent
@@ -172,11 +172,11 @@ func TestAgentsMidRunKeysDriveOverlayNotInput(t *testing.T) {
 	m.stream = client.NewStream(nil, send) // a stream whose Send records frames
 	m.phase = phaseRunning
 
-	// ctrl+a mid-run opens the overlay (Gap B), pre-empting the textarea default.
-	mm, _ := m.Update(ctrlKey('a'))
+	// f6 mid-run opens the overlay (Gap B), pre-empting the textarea default.
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	if m.team.view != teamRoster {
-		t.Fatalf("ctrl+a mid-run did not open the roster: view=%v", m.team.view)
+		t.Fatalf("f6 mid-run did not open the roster: view=%v", m.team.view)
 	}
 
 	// Each nav key must be claimed by the overlay (onTeamKey) before the running
@@ -244,7 +244,7 @@ func TestTeamOverlaySanitizesMemberContent(t *testing.T) {
 	})
 
 	// Roster view: the member name + role are sanitized.
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	if m.team.view != teamRoster {
 		t.Fatalf("view = %v, want teamRoster", m.team.view)
@@ -273,7 +273,7 @@ func TestTeamOverlaySanitizesMemberContent(t *testing.T) {
 }
 
 // TestAgentsMidRunNoTeamNoCapsIsNoOp guards the onRunningKey Agents-branch
-// ordering: ctrl+a pressed MID-RUN with teams NOT enabled and no live team must
+// ordering: f6 pressed MID-RUN with teams NOT enabled and no live team must
 // be a clean no-op — it does NOT open the overlay, does NOT enqueue a follow-up,
 // does NOT cancel the run, and the key is NOT swallowed into the textarea (no
 // stray 'a'/control rune leaks into the input). The Agents case sits BEFORE
@@ -286,24 +286,24 @@ func TestAgentsMidRunNoTeamNoCapsIsNoOp(t *testing.T) {
 	m.phase = phaseRunning
 	before := m.prompt.Value()
 
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 
 	if m.team.view != teamNone {
-		t.Fatalf("ctrl+a mid-run with no team opened the overlay: view=%v", m.team.view)
+		t.Fatalf("f6 mid-run with no team opened the overlay: view=%v", m.team.view)
 	}
 	if len(m.queued) != 0 {
-		t.Errorf("ctrl+a mid-run no-op enqueued a follow-up: queue=%v", m.queued)
+		t.Errorf("f6 mid-run no-op enqueued a follow-up: queue=%v", m.queued)
 	}
 	if m.phase != phaseRunning {
-		t.Errorf("ctrl+a mid-run no-op changed the phase to %v", m.phase)
+		t.Errorf("f6 mid-run no-op changed the phase to %v", m.phase)
 	}
 	if m.prompt.Value() != before {
-		t.Errorf("ctrl+a leaked into the textarea: %q (was %q)", m.prompt.Value(), before)
+		t.Errorf("f6 leaked into the textarea: %q (was %q)", m.prompt.Value(), before)
 	}
 	for _, f := range send.frames() {
 		if f.GetCancel() != nil {
-			t.Fatalf("ctrl+a mid-run no-op sent a cancel frame: %+v", f)
+			t.Fatalf("f6 mid-run no-op sent a cancel frame: %+v", f)
 		}
 	}
 }
@@ -319,7 +319,7 @@ func TestAgentsSelectionAndFocus(t *testing.T) {
 		c.addTeamMember(member("scout", "tool.call", client.TeamMsg{ToolName: "Grep", Detail: "pattern: handleErr"}))
 		c.addTeamMember(member("scout", "tool.result", client.TeamMsg{ToolName: "Grep", Detail: "3 matches"}))
 	})
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 
 	// Lead sorts first (cursor 0). Down → cursor 1 (scout).
@@ -374,9 +374,9 @@ func TestAgentsRosterUncapped(t *testing.T) {
 	// Give the overlay enough vertical room for all n lanes: it windows to the body
 	// height (terminal minus chrome — header/footer/input + the input top-pad row), so
 	// size up generously rather than depend on the exact chrome height.
-	m = applyAll(m, tea.WindowSizeMsg{Width: 100, Height: 40})
+	m = applyAll(m, tea.WindowSizeMsg{Width: 100, Height: 80})
 	m = seedTeam(m, func(c *conversation) { c.setTeamStart("t1", "", big) })
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	out := stripANSIstr(m.View().Content)
 
@@ -414,7 +414,7 @@ func TestAgentsRosterLeadFirst(t *testing.T) {
 	}
 	m := newMCPModel(t, aztec(), nil)
 	m = seedTeam(m, func(c *conversation) { c.setTeamStart("t1", "", leadLast) })
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	out := stripANSIstr(m.View().Content)
 	var laneLines []string
@@ -438,7 +438,7 @@ func TestAgentsShowsLatestTeam(t *testing.T) {
 	m.conv.setTeamStart("tb", "", []client.TeamMemberSpec{{Name: "bravo", Lead: true}})
 	m.refreshView()
 
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	out := stripANSIstr(m.View().Content)
 	if !strings.Contains(out, "bravo") {
@@ -457,7 +457,7 @@ func TestAgentsResolvedSubhead(t *testing.T) {
 		c.setTeamStart("t1", "", roster())
 		c.setTeamEnd("t1", "", 4, "end_turn", client.Usage{InputTokens: 5200, OutputTokens: 410}, nil)
 	})
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	out := stripANSIstr(m.View().Content)
 	if !strings.Contains(out, "4 rounds") || !strings.Contains(out, "stop:done") {
@@ -500,7 +500,7 @@ func TestAgentsRosterRetriedDisposition(t *testing.T) {
 		},
 	})
 	m = mm.(Model)
-	mm, _ = m.Update(ctrlKey('a'))
+	mm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	out := stripANSIstr(m.View().Content)
 
@@ -529,7 +529,7 @@ func TestAgentsRosterRetriedDisposition(t *testing.T) {
 		},
 	})
 	mb = mmb.(Model)
-	mmb, _ = mb.Update(ctrlKey('a'))
+	mmb, _ = mb.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	mb = mmb.(Model)
 	benched := stripANSIstr(mb.View().Content)
 	if !strings.Contains(benched, "stopped — error") {
@@ -558,7 +558,7 @@ func TestAgentsRosterStoppedGolden(t *testing.T) {
 		c.setTeamStart("t1", "", roster())
 		c.setTeamEnd("t1", "", 4, "end_turn", client.Usage{InputTokens: 5200, OutputTokens: 410}, stopped)
 	})
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	got := stripANSI([]byte(m.View().Content))
 	assertFitsViewport(t, got, m.width)
@@ -583,7 +583,7 @@ func TestAgentsRosterStoppedGolden(t *testing.T) {
 		c.setTeamStart("t1", "", roster())
 		c.setTeamEnd("t1", "", 4, "end_turn", client.Usage{InputTokens: 5200, OutputTokens: 410}, allDone)
 	})
-	mmd, _ := md.Update(ctrlKey('a'))
+	mmd, _ := md.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	md = mmd.(Model)
 	doneOut := stripANSIstr(md.View().Content)
 	if strings.Contains(doneOut, "✗") || strings.Contains(doneOut, "stopped") {
@@ -642,7 +642,7 @@ func TestTeamCardStoppedCountInline(t *testing.T) {
 
 // TestTeamStoppedCountMultiple asserts the "N stopped" tell sums correctly at N>=2 (the
 // other count tests only cover N=1): two stopped members + one clean → "2 stopped" on
-// both the inline resolved Team line and the ctrl+a roster sub-header. This exercises
+// both the inline resolved Team line and the f6 roster sub-header. This exercises
 // teamStoppedCount summing across lanes (not just a boolean tell).
 func TestTeamStoppedCountMultiple(t *testing.T) {
 	threeRoster := []client.TeamMemberSpec{
@@ -667,13 +667,13 @@ func TestTeamStoppedCountMultiple(t *testing.T) {
 		t.Errorf("inline resolved Team line must show \"2 stopped\", got %q", inline)
 	}
 
-	// ctrl+a roster sub-header.
+	// f6 roster sub-header.
 	m := newMCPModel(t, aztec(), nil)
 	m = seedTeam(m, func(cv *conversation) {
 		cv.setTeamStart("t1", "", threeRoster)
 		cv.setTeamEnd("t1", "", 4, "end_turn", client.Usage{InputTokens: 5200, OutputTokens: 410}, disps)
 	})
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	overlay := stripANSIstr(m.View().Content)
 	if !strings.Contains(overlay, "2 stopped") {
@@ -710,11 +710,12 @@ func TestAgentsRosterWindowed(t *testing.T) {
 	m := newMCPModel(t, aztec(), nil)
 	m = resize(m, 100, 24) // vp height 16 → ~6 lane rows
 	m = seedTeam(m, func(c *conversation) { c.setTeamStart("t1", "", big) })
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	out := stripANSIstr(m.View().Content)
 
-	rows := teamRosterRows(agentsBodyHeight(m.vp.Height()))
+	th, hk, width, height := m.agentsListGeometry()
+	rows := agentsListPageSize(th, height, teamSelectableList(th, m.team, m.conv.latestTeamBlock(), hk, width))
 	if rows >= n {
 		t.Fatalf("test premise broken: window %d must be smaller than roster %d", rows, n)
 	}
@@ -743,7 +744,7 @@ func TestAgentsWindowFollowsCursor(t *testing.T) {
 	m := newMCPModel(t, aztec(), nil)
 	m = resize(m, 100, 24)
 	m = seedTeam(m, func(c *conversation) { c.setTeamStart("t1", "", big) })
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 
 	// end/G jumps to the last member.
@@ -788,19 +789,22 @@ func TestAgentsPageKeys(t *testing.T) {
 	m := newMCPModel(t, aztec(), nil)
 	m = resize(m, 100, 24)
 	m = seedTeam(m, func(c *conversation) { c.setTeamStart("t1", "", big) })
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 
-	page := teamRosterRows(m.vp.Height())
+	th, hk, width, height := m.agentsListGeometry()
+	page := agentsListPageSize(th, height, teamSelectableList(th, m.team, m.conv.latestTeamBlock(), hk, width))
 	mm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgDown})
 	m = mm.(Model)
 	if m.team.cursor != page {
 		t.Errorf("pgdn moved cursor to %d, want one page (%d)", m.team.cursor, page)
 	}
+	w := teamSelectableList(th, m.team, m.conv.latestTeamBlock(), hk, width).window(th, height)
+	wantUp := max(0, m.team.cursor-(w.end-w.start))
 	mm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyPgUp})
 	m = mm.(Model)
-	if m.team.cursor != 0 {
-		t.Errorf("pgup from one page in should return to 0, got %d", m.team.cursor)
+	if m.team.cursor != wantUp {
+		t.Errorf("pgup moved cursor to %d, want current physical-window move to %d", m.team.cursor, wantUp)
 	}
 }
 
@@ -814,7 +818,7 @@ func TestAgentsRosterShowsRole(t *testing.T) {
 			{Name: "scout", Role: "researcher"},
 		})
 	})
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	out := stripANSIstr(m.View().Content)
 	if !strings.Contains(out, "coordinator") || !strings.Contains(out, "researcher") {
@@ -823,7 +827,7 @@ func TestAgentsRosterShowsRole(t *testing.T) {
 }
 
 // TestInlineTeamRollupAdvertisesOverlay asserts the INLINE Team card's "+K more"
-// roll-up (shown only when the roster exceeds maxTeamLanes) advertises ctrl+a so a
+// roll-up (shown only when the roster exceeds maxTeamLanes) advertises f6 so a
 // capped inline card is the discovery point for the full overlay.
 func TestInlineTeamRollupAdvertisesOverlay(t *testing.T) {
 	var big []client.TeamMemberSpec
@@ -832,14 +836,14 @@ func TestInlineTeamRollupAdvertisesOverlay(t *testing.T) {
 		big = append(big, client.TeamMemberSpec{Name: "m" + string(rune('a'+i))})
 	}
 	out := teamCard(t, false, func(c *conversation) { c.setTeamStart("t1", "", big) })
-	if !strings.Contains(out, "more · ctrl+a") {
-		t.Errorf("inline roll-up should advertise the ctrl+a overlay, got %q", out)
+	if !strings.Contains(out, "more · f6") {
+		t.Errorf("inline roll-up should advertise the f6 overlay, got %q", out)
 	}
 
 	// A small team (no roll-up) must NOT carry the hint — it has nothing to overflow.
 	small := teamCard(t, false, func(c *conversation) { c.setTeamStart("t1", "", roster()) })
-	if strings.Contains(small, "ctrl+a") {
-		t.Errorf("a non-overflowing inline card should not advertise ctrl+a, got %q", small)
+	if strings.Contains(small, "f6") {
+		t.Errorf("a non-overflowing inline card should not advertise f6, got %q", small)
 	}
 }
 
@@ -851,6 +855,33 @@ func ctxTurnEnd(name string, used, window int64) client.TeamMsg {
 		ContextUsed:   used,
 		ContextWindow: window,
 	})
+}
+
+func TestTeamRosterRowUsesIdentityWorkAndRuntimeLines(t *testing.T) {
+	ln := &teamLane{
+		name:           "overlay-reader",
+		role:           "Inspect the Agents overlay rendering and report problems",
+		current:        "RecordFinding",
+		ctxUsed:        33800,
+		ctxWindow:      1100000,
+		routedCategory: "medium",
+		routedModel:    "gpt-5.6-terra",
+		usage:          client.Usage{InputTokens: 100600, OutputTokens: 626},
+	}
+	row := stripANSIstr(renderTeamRosterRow(aztec().Style("spinner"), "▶ ", ln, 0, false, 100))
+	lines := strings.Split(row, "\n")
+	if len(lines) != 3 {
+		t.Fatalf("team row has %d lines, want identity/work/runtime: %q", len(lines), row)
+	}
+	if !strings.HasPrefix(lines[0], "▶ ◆ · overlay-reader") {
+		t.Fatalf("identity line lost selection or member identity: %q", lines[0])
+	}
+	if !strings.HasPrefix(lines[1], "    RecordFinding… · Inspect the Agents") {
+		t.Fatalf("work line should group current action and role: %q", lines[1])
+	}
+	if !strings.HasPrefix(lines[2], "    ↑100.6K ↓626 · ctx ") || !strings.Contains(lines[2], "medium → gpt-5.6-terra") {
+		t.Fatalf("runtime line should group tokens, context, and route: %q", lines[2])
+	}
 }
 
 // TestAgentsRosterContextMeter asserts each roster lane shows the per-member
@@ -873,20 +904,25 @@ func TestAgentsRosterContextMeter(t *testing.T) {
 		c.addTeamMember(member("nowin", "turn.end", client.TeamMsg{
 			Usage: client.Usage{InputTokens: 1200}}))
 	})
-	mm, _ := m.Update(ctrlKey('a'))
+	m = resize(m, 100, 80)
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	out := stripANSIstr(m.View().Content)
 
 	rosterLine := func(name string) string {
-		for _, ln := range strings.Split(out, "\n") {
+		lines := strings.Split(out, "\n")
+		for i, ln := range lines {
 			if strings.Contains(ln, name) {
-				return ln
+				return strings.Join(lines[i:min(i+3, len(lines))], "\n")
 			}
 		}
 		return ""
 	}
 
 	low := rosterLine("low")
+	if strings.Contains(low, "[38;") || strings.Contains(low, "[m") {
+		t.Errorf("roster context meter must not leak stripped ANSI control bytes, got %q", low)
+	}
 	if !strings.Contains(low, "ctx ") || !strings.Contains(low, "20%") {
 		t.Errorf("low-pressure lane should show 'ctx … 20%%', got %q", low)
 	}
@@ -922,7 +958,7 @@ func TestAgentsFocusContextMeter(t *testing.T) {
 		c.setTeamStart("t1", "", []client.TeamMemberSpec{{Name: "scout", Role: "researcher", Lead: true}})
 		c.addTeamMember(ctxTurnEnd("scout", 176000, 200000)) // 88% → warn band
 	})
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	mm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = mm.(Model)
@@ -975,7 +1011,7 @@ func TestSetTeamTasksAttribution(t *testing.T) {
 func TestAgentsTasksToggle(t *testing.T) {
 	m := newMCPModel(t, aztec(), nil)
 	m = seedTeam(m, tasksTeam)
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	if m.team.view != teamRoster {
 		t.Fatalf("view = %v, want teamRoster", m.team.view)
@@ -1058,7 +1094,7 @@ func TestTaskRowTruncatesLongDesc(t *testing.T) {
 func TestAgentsTasksEmpty(t *testing.T) {
 	m := newMCPModel(t, aztec(), nil)
 	m = seedTeam(m, func(c *conversation) { c.setTeamStart("t1", "", roster()) })
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	mm, _ = m.Update(tea.KeyPressMsg{Code: 't', Text: "t"})
 	m = mm.(Model)
@@ -1079,7 +1115,7 @@ func TestAgentsTasksEmpty(t *testing.T) {
 func TestAgentsTasksSummary(t *testing.T) {
 	m := newMCPModel(t, aztec(), nil)
 	m = seedTeam(m, tasksTeam)
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	mm, _ = m.Update(tea.KeyPressMsg{Code: 't', Text: "t"})
 	m = mm.(Model)
@@ -1129,7 +1165,7 @@ func TestSetTeamFindingsAttribution(t *testing.T) {
 func TestAgentsFindingsToggle(t *testing.T) {
 	m := newMCPModel(t, aztec(), nil)
 	m = seedTeam(m, findingsTeam)
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	if m.team.view != teamRoster {
 		t.Fatalf("view = %v, want teamRoster", m.team.view)
@@ -1180,7 +1216,7 @@ func TestAgentsFindingsShowsBody(t *testing.T) {
 	})
 	m = mm.(Model)
 
-	mm, _ = m.Update(ctrlKey('a'))
+	mm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	mm, _ = m.Update(tea.KeyPressMsg{Code: 'f', Text: "f"})
 	m = mm.(Model)
@@ -1230,7 +1266,7 @@ func TestTeamEndSetsTransientNotice(t *testing.T) {
 func TestAgentsFindingsEmpty(t *testing.T) {
 	m := newMCPModel(t, aztec(), nil)
 	m = seedTeam(m, func(c *conversation) { c.setTeamStart("t1", "", roster()) })
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	mm, _ = m.Update(tea.KeyPressMsg{Code: 'f', Text: "f"})
 	m = mm.(Model)
@@ -1272,7 +1308,7 @@ func agentsGoldenTeam(c *conversation) {
 func TestAgentsRosterGolden(t *testing.T) {
 	m := newMCPModel(t, aztec(), nil)
 	m = seedTeam(m, agentsGoldenTeam)
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	if m.team.view != teamRoster {
 		t.Fatalf("view = %v, want teamRoster", m.team.view)
@@ -1302,7 +1338,7 @@ func agentsIdleTeam(c *conversation) {
 func TestAgentsRosterMidRunIdleGolden(t *testing.T) {
 	m := newMCPModel(t, aztec(), nil)
 	m = seedTeam(m, agentsIdleTeam)
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	if m.team.view != teamRoster {
 		t.Fatalf("view = %v, want teamRoster", m.team.view)
@@ -1318,7 +1354,7 @@ func TestAgentsRosterMidRunIdleGolden(t *testing.T) {
 func TestAgentsTasksView(t *testing.T) {
 	m := newMCPModel(t, aztec(), nil)
 	m = seedTeam(m, tasksTeam)
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	mm, _ = m.Update(tea.KeyPressMsg{Code: 't', Text: "t"})
 	m = mm.(Model)
@@ -1334,7 +1370,7 @@ func TestAgentsTasksView(t *testing.T) {
 func TestAgentsFindingsView(t *testing.T) {
 	m := newMCPModel(t, aztec(), nil)
 	m = seedTeam(m, findingsTeam)
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	mm, _ = m.Update(tea.KeyPressMsg{Code: 'f', Text: "f"})
 	m = mm.(Model)
@@ -1353,7 +1389,7 @@ func TestAgentsRosterWindowedGolden(t *testing.T) {
 	m := newMCPModel(t, aztec(), nil)
 	m = resize(m, 100, 24)
 	m = seedTeam(m, func(c *conversation) { c.setTeamStart("t1", "", big) })
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	// Move the cursor down past the first window so both "+K above" and "+K below"
 	// tails render at once (cursor centred in the windowed slice).
@@ -1371,7 +1407,7 @@ func TestAgentsRosterWindowedGolden(t *testing.T) {
 func TestAgentsFocusGolden(t *testing.T) {
 	m := newMCPModel(t, aztec(), nil)
 	m = seedTeam(m, agentsGoldenTeam)
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	// Lead is row 0; scout is row 1.
 	mm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
@@ -1410,7 +1446,7 @@ func TestAgentsFocusWindowed(t *testing.T) {
 	m := newMCPModel(t, aztec(), nil)
 	m = resize(m, 100, 24) // vp height 16 → ~6 trace rows
 	m = seedTeam(m, verboseFocusTeam)
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	// scout is the only (lead) member → row 0; enter focuses it.
 	mm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -1433,26 +1469,26 @@ func TestAgentsFocusWindowed(t *testing.T) {
 	if !strings.Contains(out, "esc back") {
 		t.Errorf("focus footer clipped by the height bound, got %q", out)
 	}
-	// The overflow is surfaced by the "… +N more lines" tail.
-	if !strings.Contains(out, "more line") {
-		t.Errorf("a bounded focus pane should show a '… +N more lines' tail, got %q", out)
+	// The overflow is surfaced by the accurate rendered-line range.
+	if !strings.Contains(out, "lines 1–") {
+		t.Errorf("a bounded focus pane should show an accurate visible range, got %q", out)
 	}
 	// On a TALL terminal the same trace fits with no tail (the bound is min(cap, fit)).
 	tall := resize(m, 100, 80)
 	tallOut := stripANSIstr(tall.View().Content)
-	if strings.Contains(tallOut, "more line") {
+	if strings.Contains(tallOut, " of 12") {
 		t.Errorf("a tall terminal should not truncate the trace, got %q", tallOut)
 	}
 }
 
 // TestAgentsFocusWindowedGolden locks the bounded focus pane at a ~24-row
-// terminal: a capped trace, the "… +N more lines" tail, and the header + "esc
+// terminal: a capped trace, its accurate visible range, and the header + "esc
 // back" footer all visible (no clipping).
 func TestAgentsFocusWindowedGolden(t *testing.T) {
 	m := newMCPModel(t, aztec(), nil)
 	m = resize(m, 100, 24)
 	m = seedTeam(m, verboseFocusTeam)
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	mm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = mm.(Model)
@@ -1464,7 +1500,7 @@ func TestAgentsFocusWindowedGolden(t *testing.T) {
 }
 
 // TestTeamRosterRoutedMetadata asserts the opt-in model router's bare metadata
-// (category + model, ADR 0034) surfaces on a member's roster row in the ctrl+a Teams
+// (category + model, ADR 0034) surfaces on a member's roster row in the f6 Teams
 // tab as a muted "routed: <category> → <model>" cue — and is absent for an unrouted
 // member (a DEFINED member that pinned its own model, or no router). It carries no
 // member content (gauntlet #7).
@@ -1476,7 +1512,7 @@ func TestTeamRosterRoutedMetadata(t *testing.T) {
 			{Name: "deep", Role: "investigate", RoutedCategory: "large", RoutedModel: "anthropic/claude-opus-4", Model: "anthropic/claude-opus-4"},
 		})
 	})
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	out := stripANSIstr(m.View().Content)
 	if !strings.Contains(out, "routed: large → anthropic/claude-opus-4") {
@@ -1515,7 +1551,7 @@ func TestTeamFocusRendersFailureCauseOnStoppedError(t *testing.T) {
 		c.setTeamEnd("t1", "", 1, "end_turn", client.Usage{},
 			[]client.TeamMemberDisposition{{Name: "lead"}, {Name: "scout", Stopped: true, Reason: "error"}})
 	})
-	mm, _ := m.Update(ctrlKey('a'))
+	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyF6})
 	m = mm.(Model)
 	// Move to scout (cursor 1) and focus.
 	mm, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})

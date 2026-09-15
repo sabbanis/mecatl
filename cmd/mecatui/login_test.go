@@ -4,14 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/adrg/xdg"
 
 	"github.com/stacklok/mecatl/cmd/mecatui/client"
 	"github.com/stacklok/mecatl/internal/adapter/clientauth"
+	"github.com/stacklok/mecatl/internal/adapter/credentialstore"
 	"github.com/stacklok/mecatl/mcp/oauthlogin"
 )
 
@@ -35,7 +38,7 @@ func TestRemoteLoginStoresAbsoluteIssuerCAReferenceAcrossCWDChanges(t *testing.T
 	}
 	original := executeRemoteLogin
 	t.Cleanup(func() { executeRemoteLogin = original })
-	executeRemoteLogin = func(_ context.Context, conn clientauth.Connection, _ bool) error {
+	executeRemoteLogin = func(_ context.Context, conn clientauth.Connection, _ bool, _ clientauth.CredentialStoreMode) error {
 		registry, openErr := clientauth.OpenRegistry(filepath.Join(xdg.ConfigHome, "mecatl"))
 		if openErr != nil {
 			return openErr
@@ -64,12 +67,47 @@ func TestRemoteLoginStoresAbsoluteIssuerCAReferenceAcrossCWDChanges(t *testing.T
 	}
 }
 
+func TestRemoteLoginExplicitEmptyIdentityDoesNotFallBackToDiscovery(t *testing.T) {
+	original := discoverRemoteResource
+	t.Cleanup(func() { discoverRemoteResource = original })
+	discoverRemoteResource = func(context.Context, protectedResource) (discoveredResource, error) {
+		t.Fatal("protected-resource discovery was attempted for an explicit identity flag")
+		return discoveredResource{}, nil
+	}
+	for _, flag := range []string{"issuer", "client-id", "audience"} {
+		t.Run(flag, func(t *testing.T) {
+			if err := runRemoteLogin("https://resource.example", []string{"--" + flag + "="}); err == nil || !strings.Contains(err.Error(), "required together") {
+				t.Fatalf("runRemoteLogin with --%s= error = %v, want incomplete explicit identity error", flag, err)
+			}
+		})
+	}
+}
+
+func TestRemoteLoginAllowsSystemIssuerRoots(t *testing.T) {
+	original := executeRemoteLogin
+	t.Cleanup(func() { executeRemoteLogin = original })
+	marker := errors.New("stop after connection capture")
+	executeRemoteLogin = func(_ context.Context, conn clientauth.Connection, _ bool, _ clientauth.CredentialStoreMode) error {
+		if conn.IssuerCAFile != "" {
+			t.Fatalf("issuer CA = %q, want system roots", conn.IssuerCAFile)
+		}
+		return marker
+	}
+
+	err := runRemoteLogin("remote.example:443", []string{
+		"--issuer", "https://issuer.example", "--client-id", "client", "--audience", "audience",
+	})
+	if !errors.Is(err, marker) {
+		t.Fatalf("runRemoteLogin error = %v, want capture marker", err)
+	}
+}
+
 func TestRemoteLoginWiresExactRedirectURL(t *testing.T) {
 	t.Run("command identity", func(t *testing.T) {
 		original := executeRemoteLogin
 		t.Cleanup(func() { executeRemoteLogin = original })
 		marker := errors.New("stop after option capture")
-		executeRemoteLogin = func(_ context.Context, conn clientauth.Connection, _ bool) error {
+		executeRemoteLogin = func(_ context.Context, conn clientauth.Connection, _ bool, _ clientauth.CredentialStoreMode) error {
 			if conn.Identity.RedirectURI != oauthlogin.ExactRedirectURL {
 				t.Fatalf("redirect URI = %q, want exact callback", conn.Identity.RedirectURI)
 			}
@@ -142,6 +180,51 @@ func TestSavedRemoteLoginPreflightsLocalStorageBeforeRuntime(t *testing.T) {
 	}
 }
 
+func TestSavedPublicLoginDoesNotReadEmptyCAPath(t *testing.T) {
+	originalRuntime := newRemoteLoginRuntime
+	originalPrepare := prepareSavedLogin
+	t.Cleanup(func() { newRemoteLoginRuntime = originalRuntime; prepareSavedLogin = originalPrepare })
+	prepareSavedLogin = func(context.Context, clientauth.Connection) (preparedSavedLogin, error) {
+		return preparedSavedLogin{close: func() {}}, nil
+	}
+	marker := errors.New("runtime reached")
+	newRemoteLoginRuntime = func(oauthlogin.Options) (*oauthlogin.Runtime, error) { return nil, marker }
+	if err := runSavedRemoteLogin(t.Context(), clientauth.Connection{IssuerAddressPolicy: clientauth.IssuerAddressPolicyPublic}, false); !errors.Is(err, marker) {
+		t.Fatalf("saved public login error = %v, want runtime marker", err)
+	}
+}
+
+func TestSavedRemoteLoginUnreadableCAIsActionable(t *testing.T) {
+	err := runSavedRemoteLogin(t.Context(), clientauth.Connection{IssuerCAFile: filepath.Join(t.TempDir(), "missing-ca.pem")}, false)
+	want := "authentication unavailable: storage_unavailable: TLS CA file could not be read; check the --tls-ca path and file permissions"
+	if err == nil || err.Error() != want {
+		t.Fatalf("unreadable CA error = %v, want %q", err, want)
+	}
+	var authErr *client.AuthError
+	if !errors.As(err, &authErr) || authErr.StorageStage != client.AuthStorageTLSCA {
+		t.Fatalf("unreadable CA error = %#v, want TLS CA storage stage", err)
+	}
+}
+
+func TestCredentialStorageUnavailableDistinguishesKeyringAndEncryptedStore(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		cause error
+		stage client.AuthStorageStage
+	}{
+		{"keyring", clientauth.ErrKeyUnavailable, client.AuthStorageKeyring},
+		{"encrypted store", credentialstore.ErrUnavailable, client.AuthStorageCredentialStore},
+		{"wrapped encrypted store", fmt.Errorf("%w: %w", clientauth.ErrKeyUnavailable, credentialstore.ErrUnavailable), client.AuthStorageCredentialStore},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var authErr *client.AuthError
+			if err := credentialStorageUnavailable(tc.cause); !errors.As(err, &authErr) || authErr.StorageStage != tc.stage {
+				t.Fatalf("credentialStorageUnavailable() = %#v, want stage %q", err, tc.stage)
+			}
+		})
+	}
+}
+
 func TestExistingSavedRemoteLoginMissingStoreDoesNotLaunchBrowserOrCreateState(t *testing.T) {
 	oldConfigHome := xdg.ConfigHome
 	xdg.ConfigHome = t.TempDir()
@@ -191,5 +274,127 @@ func TestSigninErrorLeavesDiscoveryFailuresUnclassified(t *testing.T) {
 	}
 	if reason, ok := client.AuthFailure(err, false); ok {
 		t.Fatalf("discovery failure classified as %q, want unclassified", reason)
+	}
+}
+
+func TestRemoteLoginIssuerPolicyFlags(t *testing.T) {
+	original := executeRemoteLogin
+	t.Cleanup(func() { executeRemoteLogin = original })
+	var got clientauth.Connection
+	executeRemoteLogin = func(_ context.Context, conn clientauth.Connection, _ bool, _ clientauth.CredentialStoreMode) error {
+		got = conn
+		return nil
+	}
+	args := []string{"--issuer", "https://issuer.example", "--client-id", "client", "--audience", "audience"}
+	if err := runRemoteLogin("remote.example:443", args); err != nil {
+		t.Fatal(err)
+	}
+	if got.IssuerAddressPolicy != clientauth.IssuerAddressPolicyPublic || got.IssuerCAFile != "" {
+		t.Fatalf("public login connection = %#v", got)
+	}
+	if err := runRemoteLogin("remote.example:443", append(args, "--private-issuer")); err == nil || !strings.Contains(err.Error(), "requires --tls-ca") {
+		t.Fatalf("private issuer without CA error = %v", err)
+	}
+}
+
+func TestConfirmDiscoveredLoginRejectsTerminalControls(t *testing.T) {
+	base := discoveredEnrollment{Resource: "https://api.example", MetadataURL: "https://api.example/.well-known/oauth-protected-resource", Connection: clientauth.Connection{Identity: clientauth.Identity{Issuer: "https://issuer.example", ClientID: "client", Audience: "audience", Target: "api.example:443", Scopes: []string{"openid"}}}}
+	for _, value := range []string{"line\nfeed", "line\u2028separator", "line\u2029separator", "\x1b[2J"} {
+		candidate := base
+		candidate.Connection.Identity.Audience = value
+		if _, err := confirmDiscoveredLogin(strings.NewReader("y\n"), io.Discard, candidate); !errors.Is(err, errDiscoveryRejected) {
+			t.Errorf("confirmation accepted unsafe metadata value %q: %v", value, err)
+		}
+	}
+}
+
+func TestConfirmDiscoveredLoginAnswers(t *testing.T) {
+	enrollment := discoveredEnrollment{Resource: "https://api.example", MetadataURL: "https://api.example/.well-known/oauth-protected-resource", Connection: clientauth.Connection{Identity: clientauth.Identity{Issuer: "https://issuer.example", ClientID: "client", Audience: "audience", Target: "api.example:443", Scopes: []string{"openid"}}}}
+	cases := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"bare enter declines", "\n", false},
+		{"EOF with no input declines", "", false},
+		{"y accepts", "y\n", true},
+		{"yes accepts", "yes\n", true},
+		{"YES case-insensitive", "YES\n", true},
+		{"no declines", "no\n", false},
+		{"garbage declines", "maybe\n", false},
+		{"y with no trailing newline accepts", "y", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := confirmDiscoveredLogin(strings.NewReader(tc.input), io.Discard, enrollment)
+			if err != nil {
+				t.Fatalf("confirmDiscoveredLogin(%q) error = %v", tc.input, err)
+			}
+			if got != tc.want {
+				t.Fatalf("confirmDiscoveredLogin(%q) = %v, want %v", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestPrepareSavedRemoteLoginSnapshotsPreventStaleResurrection pins the fix for
+// a review finding: the discovered-login route reused prepareSavedRemoteLogin,
+// which previously returned no ExpectedTarget/ExpectedCredential snapshot at
+// all. That let a concurrent logout for the same target -- racing the
+// interactive browser wait between preflight and Enroll's eventual commit --
+// be silently undone: Enroll would resurrect the removed row because it had
+// no CAS precondition to violate. prepareSavedRemoteLogin must now snapshot
+// the pre-existing state (mirroring prepareExistingSavedRemoteLogin), so
+// Enroll rejects a commit against state that changed underneath it.
+func TestPrepareSavedRemoteLoginSnapshotsPreventStaleResurrection(t *testing.T) {
+	reg, err := clientauth.OpenRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := credentialstore.NewMemoryBackend()
+	store, err := backend.Open("stale-resurrect")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	creds, err := clientauth.NewCredentials(store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := clientauth.Identity{Target: "stale-resurrect.example:443", Issuer: "https://issuer.example", ClientID: "client", Audience: "api", RedirectURI: oauthlogin.ExactRedirectURL}
+	conn := clientauth.Connection{Identity: id}
+	if _, err := reg.Upsert(conn); err != nil {
+		t.Fatal(err)
+	}
+
+	// This is the fix: prepareSavedRemoteLogin's snapshot step, exercised
+	// directly against the fixture above (the real function additionally opens
+	// the OS keyring, which is unavailable in a sandboxed test run).
+	expectedTarget, expectedCredential, err := snapshotSavedLoginState(t.Context(), conn, reg, creds)
+	if err != nil {
+		t.Fatalf("snapshotSavedLoginState: %v", err)
+	}
+	if expectedTarget == nil || len(*expectedTarget) != 1 {
+		t.Fatalf("expectedTarget = %#v, want a snapshot of the one existing row", expectedTarget)
+	}
+	if expectedCredential == nil || expectedCredential.Found {
+		t.Fatalf("expectedCredential = %#v, want Found=false (no credential enrolled yet)", expectedCredential)
+	}
+
+	// Simulate the race: a concurrent logout removes the enrollment while this
+	// sign-in's browser wait would have been in flight.
+	if _, err := reg.DeleteTarget(id.Target, []clientauth.Connection{conn}); err != nil {
+		t.Fatal(err)
+	}
+
+	err = clientauth.Enroll(t.Context(), conn, clientauth.Token{AccessToken: "new", TokenType: "Bearer"}, clientauth.EnrollmentConfig{
+		Registry: reg, Credentials: creds,
+		ExpectedTarget: expectedTarget, ExpectedCredential: expectedCredential,
+	})
+	if !errors.Is(err, clientauth.ErrTargetChanged) {
+		t.Fatalf("Enroll after concurrent logout = %v, want ErrTargetChanged (stale resurrection must be rejected)", err)
+	}
+	if _, err := reg.FindTarget(id.Target); !errors.Is(err, credentialstore.ErrNotFound) {
+		t.Fatalf("FindTarget after rejected stale Enroll = %v, want ErrNotFound (logout must not be undone)", err)
 	}
 }

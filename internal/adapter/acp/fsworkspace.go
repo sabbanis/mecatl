@@ -38,9 +38,11 @@ const fsCallTimeout = 30 * time.Second
 //   - Read / Write — DELEGATED through fs/* over the ACP connection.
 //   - ReadVersion / CreateFile / ReplaceFile — version-bearing reads and explicit
 //     mutations over the editor buffer; versions are sha256 of fs/read content.
-//   - RecordRead / RecordedVersion — the I/O-free session ledger, so Edit's
-//     read-before-edit-and-unchanged invariant tracks the editor's BUFFER, not disk
-//     (strictly better than osfs for an editor session).
+//     The Environment's separately-selected ReadLedger (a fresh memledger,
+//     composition-supplied at session/new) then tracks the editor's BUFFER
+//     versions, not disk (strictly better than osfs for an editor session) —
+//     fsWorkspace itself carries NO ledger (ADR 0281: content and read evidence
+//     are independently composed at the Environment).
 //   - Root / Glob / Grep — COMPOSED from an osfs.Workspace rooted at the SAME
 //     session cwd. ACP has no fs/list or fs/grep, so these read the local on-disk
 //     tree. The residual: Grep/Glob see disk, not unsaved buffers. This is
@@ -56,7 +58,7 @@ const fsCallTimeout = 30 * time.Second
 // It is registered per-session on the shared *server.Service via
 // SetSessionEnvironment and evicted on editor disconnect; concurrent read-only
 // dispatch may fire several Read (hence fs/read_text_file) calls at once, which
-// the ACP Conn handles safely, and the local ledger has its OWN mutex.
+// the ACP Conn handles safely.
 type fsWorkspace struct {
 	conn      *Conn
 	sessionID string
@@ -70,12 +72,6 @@ type fsWorkspace struct {
 	// tests may shrink it to assert the bound fires against a non-responsive peer.
 	callTimeout time.Duration
 
-	// ledgerMu guards ONLY the in-memory ledger map. Ledger methods (RecordRead/
-	// RecordedVersion) take it alone and perform NO I/O, so a parked RPC
-	// mutation never blocks a ledger lookup or record.
-	ledgerMu sync.Mutex
-	ledger   map[string]tool.FileVersion // LedgerKey(path) -> version of last fs/read content
-
 	// callMu serializes the buffer CAS / create RPC SEQUENCES in CreateFile and
 	// ReplaceFile (the read-then-write compare-and-swap), so a same-instance
 	// concurrent CreateFile/ReplaceFile cannot race the editor buffer. It is
@@ -85,6 +81,7 @@ type fsWorkspace struct {
 
 // Compile-time assertion that fsWorkspace satisfies the tool.Workspace port.
 var _ tool.Workspace = (*fsWorkspace)(nil)
+var _ tool.WorkspaceNamespace = (*fsWorkspace)(nil)
 
 // newFSWorkspace builds an fsWorkspace over conn for sessionID, composing an
 // osfs.Workspace rooted at root for the local (Stat/Glob/Grep) view. It returns
@@ -100,7 +97,6 @@ func newFSWorkspace(conn *Conn, sessionID, root string) (*fsWorkspace, error) {
 		sessionID:   sessionID,
 		local:       local,
 		callTimeout: fsCallTimeout,
-		ledger:      make(map[string]tool.FileVersion),
 	}, nil
 }
 
@@ -122,7 +118,7 @@ func (w *fsWorkspace) Root() string { return w.local.Root() }
 //     EXISTING ancestor of the joined target and re-verify the resolved real path
 //     is still within the EvalSymlinks-resolved Root(); reject if it escapes. This
 //     defends against a model creating an in-workspace symlink (e.g. `ln -s
-//     /etc/passwd evil` via Bash) and then reading/writing it — without this the
+//     /etc/passwd evil` via Shell) and then reading/writing it — without this the
 //     editor would receive "<root>/evil" and might follow it out of root.
 //
 // An ABSOLUTE path is accepted iff confineSymlinks confirms it resolves inside
@@ -230,6 +226,34 @@ func (w *fsWorkspace) ReadVersion(ctx context.Context, path string) ([]byte, too
 		return nil, tool.FileVersion{}, err
 	}
 	return data, acpVersion(data), nil
+}
+
+// ReadDir uses the confined local filesystem view. ACP exposes no directory
+// listing RPC, so unsaved buffer-only files cannot be enumerated here.
+func (w *fsWorkspace) ReadDir(ctx context.Context, path string) ([]tool.FileInfo, error) {
+	return w.local.ReadDir(ctx, path)
+}
+
+// Remove is unsupported because ACP has no delete RPC; mutating the local disk
+// would bypass the editor buffer that defines this workspace's authoritative view.
+func (*fsWorkspace) Remove(context.Context, string) error {
+	return fmt.Errorf("acp: remove: %w", tool.ErrFileOperationUnsupported)
+}
+
+// Rename is unsupported because ACP has no rename RPC and local-disk mutation
+// would bypass the editor's authoritative buffers.
+func (*fsWorkspace) Rename(context.Context, string, string) error {
+	return fmt.Errorf("acp: rename: %w", tool.ErrFileOperationUnsupported)
+}
+
+// CopyFile copies the current editor-buffer snapshot to a new buffer path. The
+// destination create remains guarded by CreateFile's no-clobber check.
+func (w *fsWorkspace) CopyFile(ctx context.Context, source, destination string) (tool.FileVersion, error) {
+	data, err := w.Read(ctx, source)
+	if err != nil {
+		return tool.FileVersion{}, err
+	}
+	return w.CreateFile(ctx, destination, data)
 }
 
 // acpVersion mints a FileVersion from content bytes (sha256 via
@@ -492,30 +516,4 @@ func (w *fsWorkspace) Glob(ctx context.Context, pattern string) ([]string, error
 // never become a stale EDIT.
 func (w *fsWorkspace) Grep(ctx context.Context, pattern, pathGlob string) ([]tool.GrepMatch, error) {
 	return w.local.Grep(ctx, pattern, pathGlob)
-}
-
-// RecordRead stores the EXACT authoritative version for path under the session
-// ledger, performing NO I/O: it stores the FileVersion the caller supplies (the
-// one ReadVersion minted). The version authority is the BUFFER (sha256 of the
-// fs/read content), so a later comparison tracks what the editor would actually
-// overwrite. The I/O-free lexical key (tool.LedgerKey over the shared osfs root)
-// makes ordinary absolute-root and relative forms share one entry; symlink
-// aliases may require another Read.
-func (w *fsWorkspace) RecordRead(path string, version tool.FileVersion) {
-	key := tool.LedgerKey(w.Root(), path)
-	w.ledgerMu.Lock()
-	w.ledger[key] = version
-	w.ledgerMu.Unlock()
-}
-
-// RecordedVersion returns the version previously recorded for path via
-// RecordRead, performing NO I/O. ok is false if path was never recorded. The
-// lookup uses the same lexical ledger key (tool.LedgerKey) as RecordRead, so
-// ordinary absolute-root and relative forms agree without filesystem/editor I/O.
-func (w *fsWorkspace) RecordedVersion(path string) (tool.FileVersion, bool) {
-	key := tool.LedgerKey(w.Root(), path)
-	w.ledgerMu.Lock()
-	version, ok := w.ledger[key]
-	w.ledgerMu.Unlock()
-	return version, ok
 }

@@ -1,21 +1,21 @@
- mecatui  ·  session #b9ba2286  ·  mock-model  ·  mode default  ·  127.0.0.1:8080
+ mecatui  ·  session sess-test-00  ·  mock-model  ·  mode default  ·  127.0.0.1:8080
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 
 
 
- ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
- ┃                                                                                                ┃
- ┃    Subagents  ▸ Parallel    Teams                                                              ┃
- ┃                                                                                                ┃
- ┃  parallel · 0 running · 1 done                                                                 ┃
- ┃                                                                                                ┃
- ┃  ╭──────────────────────────────────────────────╮                                              ┃
- ┃  │  › ✓ judge · 3/3 branches · winner branch-2  │                                              ┃
- ┃  ╰──────────────────────────────────────────────╯                                              ┃
- ┃                                                                                                ┃
- ┃  ↑/↓ select · pgup/pgdn page · home/g·end/G first/last · enter focus · tab switch · esc close  ┃
- ┃                                                                                                ┃
- ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
+  ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+  ┃                                                                                              ┃
+  ┃    Subagents  ▸ Parallel    Teams                                                            ┃
+  ┃                                                                                              ┃
+  ┃  parallel · 0 running · 1 done                                                               ┃
+  ┃                                                                                              ┃
+  ┃  ▶ ✓ judge · 3/3 branches · winner branch-2                                                  ┃
+  ┃                                                                                              ┃
+  ┃  esc close · ↑/↓ select · enter focus · tab switch · pgup/pgdn page · ...                    ┃
+  ┃                                                                                              ┃
+  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+
 
 
 
@@ -26,5 +26,5 @@
 │
 │
 ────────────────────────────────────────────────────────────────────────────────────────────────────
- connected                                        ⑂ parallel 0◐ 1✓ · ctrl+a  ctx 0 · ↑0 ↓0 cache 0%
+ connected                                            ⑂ parallel 0◐ 1✓ · f6  ctx 0 · ↑0 ↓0 cache 0%
 ? help · / commands · ctrl+c quit

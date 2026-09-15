@@ -1,22 +1,22 @@
- mecatui  ·  session #b9ba2286  ·  mock-model  ·  mode default  ·  127.0.0.1:8080
+ mecatui  ·  session sess-test-00  ·  mock-model  ·  mode default  ·  127.0.0.1:8080
 ────────────────────────────────────────────────────────────────────────────────────────────────────
 
 
-                   ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-                   ┃                                                            ┃
-                   ┃    Subagents    Parallel  ▸ Teams                          ┃
-                   ┃                                                            ┃
-                   ┃  tasks                                                     ┃
-                   ┃  1 done · 1 in-progress · 2 pending(1 blocked)             ┃
-                   ┃                                                            ┃
-                   ┃    ✓ task-1 · investigate · completed · scout · deps:—     ┃
-                   ┃    ◆ task-2 · implement fix · in_progress · lead · deps:—  ┃
-                   ┃    ⊘ task-3 · review · pending · — · deps:task-2           ┃
-                   ┃    ○ task-4 · lint · pending · — · deps:—                  ┃
-                   ┃                                                            ┃
-                   ┃  t roster · esc close                                      ┃
-                   ┃                                                            ┃
-                   ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
+  ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
+  ┃                                                                                              ┃
+  ┃    Subagents    Parallel  ▸ Teams                                                            ┃
+  ┃                                                                                              ┃
+  ┃  tasks                                                                                       ┃
+  ┃  1 done · 1 in-progress · 2 pending(1 blocked)                                               ┃
+  ┃                                                                                              ┃
+  ┃    ✓ task-1 · investigate · completed · scout · deps:—                                       ┃
+  ┃    ◆ task-2 · implement fix · in_progress · lead · deps:—                                    ┃
+  ┃    ⊘ task-3 · review · pending · — · deps:task-2                                             ┃
+  ┃    ○ task-4 · lint · pending · — · deps:—                                                    ┃
+  ┃                                                                                              ┃
+  ┃  t roster · esc close · ↑/↓ scroll · pgup/pgdn · home/end                                    ┃
+  ┃                                                                                              ┃
+  ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
 
 
 
@@ -26,5 +26,5 @@
 │
 │
 ────────────────────────────────────────────────────────────────────────────────────────────────────
- connected                                           ⟳ 2/2 working · ctrl+a  ctx 0 · ↑0 ↓0 cache 0%
+ connected                                               ⟳ 2/2 working · f6  ctx 0 · ↑0 ↓0 cache 0%
 ? help · / commands · ctrl+c quit

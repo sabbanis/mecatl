@@ -41,6 +41,7 @@ func TestOperatorDefinedLLMProviders_Scenario1_InvalidDefinitionsFailClosed(t *t
 		"providers:\n  custom:\n    base_url: https://x.example\n    default_model: m\n    api_flavor: invalid",
 		"providers:\n  custom:\n    base_url: https://x.example\n    api_flavor: openai-responses",
 		"providers:\n  mock:\n    base_url: https://x.example\n    default_model: m\n    api_flavor: openai-responses",
+		"providers:\n  toolhive-anthropic:\n    base_url: https://x.example\n    default_model: m\n    api_flavor: anthropic-messages",
 		"provider_overrides:\n  toolhive:\n    base_url: https://x.example",
 	}
 	for _, input := range cases {
@@ -53,6 +54,14 @@ func TestOperatorDefinedLLMProviders_Scenario1_InvalidDefinitionsFailClosed(t *t
 				t.Fatalf("error leaked a configuration value: %v", err)
 			}
 		})
+	}
+}
+
+func TestOperatorDefinedLLMProviders_CredentialStoreParseFailureFailsClosed(t *testing.T) {
+	r, _ := newCapturedResolver(t, "/etc/mecatl/operator.yaml", "credential_store:\n  oidc:\n    home: /var/lib/mecatl\n    key: {source: unsupported}\n", true)
+	_, _, err := r.OperatorProviders()
+	if err == nil || err.Error() != "operator provider configuration is invalid" {
+		t.Fatalf("OperatorProviders error = %v, want fail-closed provider configuration error", err)
 	}
 }
 
@@ -97,7 +106,7 @@ func TestADR_0238_BuiltinOverrideAllowlist(t *testing.T) {
 			t.Fatalf("%s override rejected: %v", id, err)
 		}
 	}
-	for _, id := range []string{"openai-codex", "toolhive"} {
+	for _, id := range []string{"openai-codex", "toolhive", "toolhive-anthropic"} {
 		if _, err := parseYAML([]byte("provider_overrides:\n  " + id + ":\n    base_url: https://proxy.example")); err == nil {
 			t.Fatalf("%s override accepted", id)
 		}

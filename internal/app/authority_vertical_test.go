@@ -53,13 +53,13 @@ func TestADR_0233_AuthorityEvaluator_VerticalSlice(t *testing.T) {
 		NoSoul:        true,
 		AllowAllTools: true,
 	}
-	built, err := Build(ctx, cfg)
+	built, err := buildIsolated(t, ctx, cfg)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 	defer built.Close()
 
-	parent, err := built.Service.CreateSession(ctx, workspace, session.ModeDefault, defaultLimits())
+	parent, err := built.Service.CreateSession(ctx, session.ModeDefault, defaultLimits())
 	if err != nil {
 		built.Close()
 		t.Fatalf("CreateSession: %v", err)
@@ -140,7 +140,7 @@ func TestADR_0233_AuthorityEvaluator_VerticalSlice(t *testing.T) {
 		mockllm.TextTurn("resume refused"),
 	)
 	cfg.MockProvider = resumedProvider
-	resumedBuild, err := Build(ctx, cfg)
+	resumedBuild, err := buildIsolated(t, ctx, cfg)
 	if err != nil {
 		t.Fatalf("Build after restart: %v", err)
 	}
@@ -190,7 +190,7 @@ forbid(principal, action, resource) when { resource.path like "` + filepath.ToSl
 		mockllm.TextTurn("review complete"),
 		mockllm.TextTurn("parent complete"),
 	)
-	built, err := Build(ctx, Config{
+	built, err := buildIsolated(t, ctx, Config{
 		Workspace:            workspace,
 		StoreDir:             filepath.Join(t.TempDir(), "sessions"),
 		AgentsDirs:           []string{agentsDir},
@@ -205,7 +205,7 @@ forbid(principal, action, resource) when { resource.path like "` + filepath.ToSl
 	}
 	defer built.Close()
 
-	parent, err := built.Service.CreateSession(ctx, workspace, session.ModeDefault, defaultLimits())
+	parent, err := built.Service.CreateSession(ctx, session.ModeDefault, defaultLimits())
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -257,7 +257,7 @@ forbid(principal, action, resource) when { resource.path like "` + filepath.ToSl
 		t.Fatalf("write Cedar policy: %v", err)
 	}
 
-	built, err := Build(ctx, Config{
+	built, err := buildIsolated(t, ctx, Config{
 		Workspace:            workspace,
 		StoreDir:             filepath.Join(t.TempDir(), "sessions"),
 		MockProvider:         mockllm.New(mockllm.ToolCallTurn(session.NewToolCall("read", "Read", []byte(`{"path":"review/blocked.go"}`))), mockllm.TextTurn("complete")),
@@ -271,7 +271,7 @@ forbid(principal, action, resource) when { resource.path like "` + filepath.ToSl
 	}
 	defer built.Close()
 
-	sess, err := built.Service.CreateSession(ctx, workspace, session.ModeDefault, defaultLimits())
+	sess, err := built.Service.CreateSession(ctx, session.ModeDefault, defaultLimits())
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -304,7 +304,7 @@ func TestADR_0233_AuthorityEvaluator_OwnerlessCompositionUsesLocalEvaluator(t *t
 	if err := os.WriteFile(filepath.Join(workspace, "README.md"), []byte("ownerless readable\n"), 0o600); err != nil {
 		t.Fatalf("write workspace file: %v", err)
 	}
-	built, err := Build(context.Background(), Config{
+	built, err := buildIsolated(t, context.Background(), Config{
 		Workspace:     workspace,
 		StoreDir:      filepath.Join(t.TempDir(), "sessions"),
 		MockProvider:  mockllm.New(mockllm.ToolCallTurn(session.NewToolCall("read", "Read", []byte(`{"path":"README.md"}`))), mockllm.TextTurn("done")),
@@ -316,7 +316,7 @@ func TestADR_0233_AuthorityEvaluator_OwnerlessCompositionUsesLocalEvaluator(t *t
 	}
 	defer built.Close()
 
-	sess, err := built.Service.CreateSession(context.Background(), workspace, session.ModeDefault, defaultLimits())
+	sess, err := built.Service.CreateSession(context.Background(), session.ModeDefault, defaultLimits())
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -354,7 +354,7 @@ func TestADR_0233_AuthorityEvaluator_OwnerlessCedarSessionFailsClosed(t *testing
 	if err := os.WriteFile(policyPath, []byte(`permit(principal, action, resource);`), 0o600); err != nil {
 		t.Fatalf("write Cedar policy: %v", err)
 	}
-	built, err := Build(context.Background(), Config{
+	built, err := buildIsolated(t, context.Background(), Config{
 		Workspace:            workspace,
 		StoreDir:             filepath.Join(t.TempDir(), "sessions"),
 		MockProvider:         mockllm.New(mockllm.ToolCallTurn(session.NewToolCall("read", "Read", []byte(`{"path":"README.md"}`))), mockllm.TextTurn("done")),
@@ -368,7 +368,7 @@ func TestADR_0233_AuthorityEvaluator_OwnerlessCedarSessionFailsClosed(t *testing
 	}
 	defer built.Close()
 
-	sess, err := built.Service.CreateSession(context.Background(), workspace, session.ModeDefault, defaultLimits())
+	sess, err := built.Service.CreateSession(context.Background(), session.ModeDefault, defaultLimits())
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -418,11 +418,11 @@ func assertAuthorityVerticalMetaTarget(ctx context.Context, t *testing.T, worksp
 		NoSoul:        true,
 		AllowAllTools: true,
 	}
-	built, err := Build(ctx, cfg)
+	built, err := buildIsolated(t, ctx, cfg)
 	if err != nil {
 		t.Fatalf("Build meta setup: %v", err)
 	}
-	parent, err := built.Service.CreateSession(ctx, workspace, session.ModeDefault, defaultLimits())
+	parent, err := built.Service.CreateSession(ctx, session.ModeDefault, defaultLimits())
 	if err != nil {
 		built.Close()
 		t.Fatalf("CreateSession meta setup: %v", err)
@@ -451,7 +451,7 @@ func assertAuthorityVerticalMetaTarget(ctx context.Context, t *testing.T, worksp
 		mockllm.ToolCallTurn(session.NewToolCall("meta", "CallMcpWithQuery", []byte(`{"server":"slack","tool":"post_message"}`))),
 		mockllm.TextTurn("meta refused"),
 	)
-	resumed, err := Build(ctx, cfg)
+	resumed, err := buildIsolated(t, ctx, cfg)
 	if err != nil {
 		t.Fatalf("Build meta execution: %v", err)
 	}
@@ -490,7 +490,7 @@ func authoritySnapshotWithNarrowedTools(t *testing.T, source *session.Session, t
 		t.Fatal("cannot narrow an unbound authority")
 	}
 	authority.CapabilitySet.Tools = removeAuthorityTool(tools, removed)
-	narrowed := session.New(source.ID, source.Mode, source.Workspace, source.Limits, source.CreatedAt)
+	narrowed := session.New(source.ID, source.Mode, source.EnvironmentRef, source.Limits, source.CreatedAt)
 	if err := narrowed.RestoreLabels(source.Owner, authority); err != nil {
 		t.Fatalf("stamp narrowed authority snapshot: %v", err)
 	}

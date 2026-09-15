@@ -1,51 +1,112 @@
 ---
 sidebar_position: 2
-title: Get started
+title: Run your first local session
+sidebar_label: Get started
+description:
+  Run mecatui in a project and use an embedded Mecatl server for your first
+  session.
 ---
 
-# Get started with mecatui
+# Run your first local session
 
-Build the binaries through the Taskfile:
+In this tutorial, you will start `mecatui` in a local project and ask Mecatl to
+inspect it. `mecatui` runs a private embedded server, so you do not need to
+start a separate service.
 
-```sh
-task build
-```
+## Prerequisites
 
-Launch in the checkout you want the agent to use. `--workspace` defaults to the current directory, but making it explicit avoids surprises:
+You need:
 
-```sh
-OPENAI_API_KEY=sk-... bin/mecatui --workspace "$PWD"
-```
+- macOS or Linux with [Homebrew](https://brew.sh/);
+- an API key from Anthropic, OpenAI, OpenRouter, or OpenCode; and
+- a local project directory that you trust.
 
-Embedded mecatui detects Anthropic, OpenAI, or OpenRouter credentials from the environment. With no API key, use the offline provider deliberately:
+The project is your **workspace**. Mecatl limits its file tools and commands to
+this directory.
 
-```sh
-bin/mecatui --mock --workspace "$PWD"
-```
+## Install Mecatl
 
-## Start with a task
-
-Type a request and press `enter`, or submit one initial task at launch. The TUI stays open for follow-ups.
+Homebrew installs the `mecatui` client and the `mecated` server:
 
 ```sh
-bin/mecatui --workspace "$PWD" \
-  --prompt "Summarize the failing tests and suggest the smallest fix"
+brew install stacklok/tap/mecatl
+mecatui --version
 ```
 
-For a longer brief, use `--prompt-file path`; it can be combined with `--prompt`. A seed prompt runs once, even if you later change model or clear the conversation.
+The version command should print a release tag.
 
-## Connect to a server
+## Set up a provider
 
-Use `connect` only for a server that is already running:
+Use an API key for this tutorial. Run the interactive setup and select your
+provider:
 
 ```sh
-bin/mecatui connect 127.0.0.1:8080 --workspace "$PWD"
+mecatui providers setup
 ```
 
-Remote mode does not use local provider keys or embedded-server flags. The workspace path is interpreted by the server, so it must name a workspace available **there**, not necessarily on your terminal host. See [Connect to a server](./remote-servers.md) for ownership boundaries, authenticated and TLS connections, and operator next steps.
+Enter the API key when prompted. `mecatui` saves locally managed credentials
+without displaying them. You can check the configured provider later with
+`mecatui providers status`.
 
-## Trust the workspace intentionally
+For custom providers and gateways that use API keys or OIDC, see
+[Use mecatui](./index.md#choose-how-to-connect).
 
-A workspace can contain instructions and files that influence the agent. Start in a repository you recognize, review permission requests before approving them, and treat prompts, tool output, and fetched content as untrusted input. In remote mode, the server's policy and trust configuration control what the agent can access; do not assume local settings apply.
+## Start mecatui
 
-Next, learn how to [work while a run is streaming](./using-the-tui.md), [use everyday keys](./keybindings.md), and [resume the chat later](./sessions.md).
+```sh
+cd <PROJECT_DIRECTORY>
+mecatui
+```
+
+To submit the first prompt at startup while keeping the session interactive,
+pass `--prompt`:
+
+```sh
+mecatui --prompt "Summarize the failing tests in this repository"
+```
+
+The welcome screen shows your workspace and active model. To use a different
+model, enter `/models`, select one, and press `enter`. A small, low-cost model
+is enough for this tutorial.
+
+The header also shows `mode default`, identifying the active permission mode.
+With the default permission policy, read-only tools can run without approval and
+actions that change the workspace ask first.
+
+## Inspect the project
+
+Enter this request:
+
+```text
+Inspect the top-level files and explain what this project does. Cite the files you used.
+```
+
+You should see tool cards as Mecatl reads the workspace, followed by an answer
+based on your project. Press `ctrl+t` on a tool card to inspect its full input
+and result.
+
+You now have a local **session**: the conversation, selected model, workspace,
+and tool history that Mecatl keeps together. Exit with `ctrl+c` twice or
+`/quit`. To continue the newest stored session, run:
+
+```sh
+mecatui --resume-latest
+```
+
+## Add tools from local MCP servers (optional)
+
+MCP servers give agents tools for working with external services and data.
+[ToolHive](https://docs.stacklok.com/toolhive/) is Stacklok's open source
+runtime for running MCP servers locally.
+
+If ToolHive has MCP servers running in its default group, the embedded server
+discovers them at startup. Enter `/mcp` to inspect the available MCP sources and
+tools. Mecatl connects to those servers but does not start them.
+
+## Next steps
+
+- [Connect to a separate server](./remote-servers.md) to move the server out of
+  the `mecatui` process.
+- [Work in the TUI](./using-the-tui.md) to steer runs, review tools, and approve
+  actions.
+- [Manage sessions](./sessions.md) to resume, inspect, and fork conversations.

@@ -26,8 +26,8 @@ func TestLegacyDelegationEventCannotAttachRecreatedChild(t *testing.T) {
 	log := memstore.NewEventLog()
 	owner := &session.Principal{Issuer: "issuer", Subject: "owner", GrantType: session.GrantTypeUser}
 	created := time.Unix(1700000000, 0).UTC()
-	root := session.New("root", session.ModeDefault, "", session.Limits{}, created)
-	child, err := session.NewSubagent("child", session.ModeDefault, "", session.Limits{}, created, root.ID, root.Incarnation(), "call")
+	root := session.New("root", session.ModeDefault, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/workspace", Revision: "in-tree-v1"}, session.Limits{}, created)
+	child, err := session.NewSubagent("child", session.ModeDefault, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/workspace", Revision: "in-tree-v1"}, session.Limits{}, created, root.ID, root.Incarnation(), "call")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestLegacyDelegationEventCannotAttachRecreatedChild(t *testing.T) {
 	if err := base.Delete(ctx, child.ID); err != nil {
 		t.Fatal(err)
 	}
-	replacement, err := session.NewSubagent(child.ID, session.ModeDefault, "", session.Limits{}, created, root.ID, root.Incarnation(), "call")
+	replacement, err := session.NewSubagent(child.ID, session.ModeDefault, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/workspace", Revision: "in-tree-v1"}, session.Limits{}, created, root.ID, root.Incarnation(), "call")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,9 +56,28 @@ func TestLegacyDelegationEventCannotAttachRecreatedChild(t *testing.T) {
 		t.Fatal("replacement reused child incarnation")
 	}
 
+	bound := NewBound(root.ID, session.DebugTargetFingerprint(root), owner, true, base, log).(*inspectTool)
+	currentGraph := bound.scanLineage(ctx, root)
+	evidence := bound.delegationView(ctx, root, currentGraph, 0, 10)
+	if len(evidence.Rows) != 0 {
+		t.Fatalf("stale child event attached to recreated lifetime: %+v", evidence.Rows)
+	}
+	if err := log.Append(ctx, root.ID, session.Event{Type: session.EvSubagentStart, Subagent: &session.SubagentPayload{ParentCallID: "wrong-call", ChildID: string(replacement.ID), ChildIncarnation: replacement.Incarnation()}}); err != nil {
+		t.Fatal(err)
+	}
+	if rows := bound.delegationView(ctx, root, currentGraph, 0, 10).Rows; len(rows) != 0 {
+		t.Fatalf("event with mismatched relationship projected a handle: %+v", rows)
+	}
+	if err := log.Append(ctx, root.ID, session.Event{Type: session.EvSubagentStart, Subagent: &session.SubagentPayload{ParentCallID: "call", ChildID: string(replacement.ID), ChildIncarnation: replacement.Incarnation()}}); err != nil {
+		t.Fatal(err)
+	}
+	if rows := bound.delegationView(ctx, root, currentGraph, 0, 10).Rows; len(rows) != 1 || rows[0].ScopeHandle == "" {
+		t.Fatalf("matching current event did not project exactly one handle: %+v", rows)
+	}
+
 	graph := NewBound(root.ID, session.DebugTargetFingerprint(root), owner, true, store, log).(*inspectTool).scanLineage(ctx, root)
-	if len(graph.Nodes) != 1 || graph.Nodes[0].Incarnation != string(child.Incarnation()) || graph.Nodes[0].Inspectable || graph.Nodes[0].Handle != "" {
-		t.Fatalf("old event attached recreated child: %+v", graph.Nodes)
+	if graph.Available || graph.Supported || len(graph.Nodes) != 0 || graph.Error != "lineage index is not configured" {
+		t.Fatalf("snapshot/event fallback remained active: %+v", graph)
 	}
 
 	legacyLog := memstore.NewEventLog()
@@ -66,7 +85,7 @@ func TestLegacyDelegationEventCannotAttachRecreatedChild(t *testing.T) {
 		t.Fatal(err)
 	}
 	legacy := NewBound(root.ID, session.DebugTargetFingerprint(root), owner, true, store, legacyLog).(*inspectTool).scanLineage(ctx, root)
-	if len(legacy.Nodes) != 0 {
-		t.Fatalf("legacy event without incarnation attached a child: %+v", legacy.Nodes)
+	if legacy.Available || len(legacy.Nodes) != 0 {
+		t.Fatalf("legacy event fallback attached a child: %+v", legacy)
 	}
 }

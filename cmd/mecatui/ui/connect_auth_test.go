@@ -31,7 +31,9 @@ func TestConnectAuthReasonsRenderHonestAffordances(t *testing.T) {
 		reason client.AuthReason
 		want   string
 	}{
-		{client.AuthNotEnrolled, "No saved login"},
+		{client.AuthNotEnrolled, "server requires caller authentication"},
+		{client.AuthNotEnrolled, "OIDC"},
+		{client.AuthAnonymousRejected, "rejected --anonymous"},
 		{client.AuthSessionExpired, "session expired"},
 		{client.AuthCredentialUnusable, "corrupt"},
 		{client.AuthStorageUnavailable, "unavailable"},
@@ -41,11 +43,20 @@ func TestConnectAuthReasonsRenderHonestAffordances(t *testing.T) {
 	} {
 		t.Run(string(tc.reason), func(t *testing.T) {
 			m := newConnectModel([]ConnectTarget{{Target: "remote.example:443"}})
-			m.connect = connectState{open: true, reason: tc.reason}
+			m.connect = connectState{open: true, reason: tc.reason, failedTarget: "remote.example:443"}
 			if got := stripANSIstr(m.View().Content); !strings.Contains(got, tc.want) {
 				t.Fatalf("overlay missing %q: %s", tc.want, got)
 			}
 		})
+	}
+}
+
+func TestConnectChooserLabelsEnrollmentAsOIDCSignIn(t *testing.T) {
+	m := newConnectModel([]ConnectTarget{{Target: "remote.example:443"}})
+	m.connect = connectState{open: true, targets: []ConnectTarget{{Target: "remote.example:443"}}}
+	out := stripANSIstr(m.View().Content)
+	if !strings.Contains(out, "OIDC sign-in for a new target") {
+		t.Fatalf("chooser does not identify OIDC enrollment: %s", out)
 	}
 }
 
@@ -84,6 +95,7 @@ func TestConnectActionTable(t *testing.T) {
 		{"unusable same", client.AuthCredentialUnusable, 0, Reauthenticate, true},
 		{"storage same", client.AuthStorageUnavailable, 0, RetryAfterCleanup, true},
 		{"not enrolled same", client.AuthNotEnrolled, 0, Reauthenticate, true},
+		{"anonymous rejected same", client.AuthAnonymousRejected, 0, ConnectSaved, false},
 		{"cleanup same", client.AuthCredentialCleanup, 0, RetryAfterCleanup, true},
 		{"different target", client.AuthSessionExpired, 1, ConnectSaved, false},
 		{"add target", client.AuthSessionExpired, 2, AddTarget, false},

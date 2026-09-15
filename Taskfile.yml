@@ -1,7 +1,7 @@
 # Taskfile for mecatl (https://taskfile.dev).
 #
 # Required tools (assumed on PATH; install commands below):
-#   - go            >= 1.26.3   (the toolchain)
+#   - go            >= 1.27     (the toolchain)
 #   - golangci-lint (version in scripts/install-golangci-lint.sh)
 #                               task tools:golangci-lint (installs the CI-matching
 #                               official release binary into .tools/bin)
@@ -22,6 +22,12 @@ includes:
   studio:
     taskfile: studio/Taskfile.yml
     dir: studio
+  sdk:
+    taskfile: sdk/typescript/Taskfile.yml
+    dir: sdk/typescript
+  slack-bot:
+    taskfile: sdk/typescript/examples/slack-bot/Taskfile.yml
+    dir: sdk/typescript/examples/slack-bot
   mecak8s:
     taskfile: deploy/mecak8s-kind/Taskfile.yml
     dir: .
@@ -31,9 +37,22 @@ includes:
 
 vars:
   PKG: github.com/stacklok/mecatl
+  # BUILD_ID is an optional explicit linker stamp. Otherwise, resolve the source
+  # checkout identity at build time; direct Go/ko builds retain the runtime VCS fallback.
   BUILD_ID:
-    sh: git describe --tags --always --dirty 2>/dev/null || echo dev
-  BUILD_LDFLAGS: -X github.com/stacklok/mecatl/internal/buildinfo.BuildID={{.BUILD_ID}}
+    sh: |
+      if [ -n "${BUILD_ID:-}" ]; then
+        printf %s "$BUILD_ID"
+      else
+        git describe --tags --match 'v[0-9]*' --always --dirty 2>/dev/null || printf %s dev
+      fi
+  MECATL_METRICS_KEY: '{{.MECATL_METRICS_KEY | default ""}}'
+  BUILD_LDFLAGS: '-X github.com/stacklok/mecatl/internal/buildinfo.BuildID={{.BUILD_ID}} -X github.com/stacklok/mecatl/internal/adapter/productmetrics.bakedKey={{.MECATL_METRICS_KEY}}'
+  # The GoReleaser BINARY version. Must stay in lockstep with the `version:`
+  # pinned in .github/workflows/release.yml and .github/workflows/ci.yml.
+  # .goreleaser.yaml is loaded STRICTLY, so a config field newer than this pin
+  # is a hard failure rather than a warning.
+  GORELEASER_VERSION: v2.16.0
 
 tasks:
   default:
@@ -205,6 +224,101 @@ tasks:
           --image-label=org.stacklok.broodbox.agent=/var/run/ko/agent.yaml
           ./cmd/mecatui
 
+  # --- Release archives / Homebrew formula (GoReleaser) ----------------------
+  #
+  # GoReleaser owns ONLY the mecated+mecatui binary archives, the GitHub Release
+  # they attach to, and the `mecatl` formula in stacklok/homebrew-tap. Container
+  # images stay with ko (the ko:* targets above, .ko.yaml). See .goreleaser.yaml.
+  #
+  # These targets are LOCAL VERIFICATION only — the real release runs from
+  # .github/workflows/release.yml on a vX.Y.Z tag. Deliberately not part of
+  # `task ci`: they need a tool most contributors do not have, exactly like the
+  # ko:* targets and `task vuln`.
+
+  release:require-goreleaser:
+    internal: true
+    desc: Fail early with an actionable message if goreleaser is missing, and warn on version skew
+    cmds:
+      # goreleaser is expected ON PATH, like ko. Deliberately NOT
+      # `go run github.com/goreleaser/goreleaser/v2@<ver>`: goreleaser does not
+      # build from source on this repo's Go toolchain (its module graph resolves
+      # grpc v1.80.0 against an x/net without http2.TrailerPrefix). CI is
+      # unaffected because goreleaser-action downloads a PREBUILT binary.
+      - cmd: |
+          if ! command -v goreleaser >/dev/null 2>&1; then
+            echo "goreleaser is not installed. Install it: https://goreleaser.com/install/"
+            echo "CI pins {{.GORELEASER_VERSION}}; match it locally for representative output."
+            exit 1
+          fi
+          have="$(goreleaser --version 2>/dev/null | awk '/GitVersion:/ {print $2}')"
+          if [ "$have" != "{{.GORELEASER_VERSION}}" ]; then
+            echo "warning: local goreleaser $have differs from the CI pin {{.GORELEASER_VERSION}};"
+            echo "         snapshot output is representative but not identical."
+          fi
+        silent: true
+
+  release:check:
+    desc: Validate .goreleaser.yaml offline (strict schema; tolerates the deliberate `brews` deprecation)
+    cmds:
+      # `goreleaser check` exits 2 for "valid, but uses DEPRECATED properties".
+      # We use the deprecated `brews` block deliberately, because
+      # stacklok/homebrew-tap is a Formula/ tap and casks must live in Casks/
+      # (see the rationale in .goreleaser.yaml). Exit 2 is therefore expected and
+      # accepted; only exit 1 (genuinely invalid config) fails this gate.
+      - task: release:require-goreleaser
+      - cmd: |
+          status=0
+          goreleaser check || status=$?
+          case "$status" in
+            0) ;;
+            2) echo "goreleaser check: config valid; uses deprecated properties (brews) - accepted" ;;
+            *) exit "$status" ;;
+          esac
+
+  release:snapshot:
+    desc: Build the release archives and Homebrew formula locally into dist/ (no tag, no upload, no tokens)
+    cmds:
+      # --snapshot skips publish/announce/validate, so this needs neither a clean
+      # tree, nor a tag, nor GITHUB_TOKEN, nor HOMEBREW_TAP_GITHUB_TOKEN (the tap
+      # token is only templated inside the publish path, which is never reached).
+      # It does NOT skip sign or sbom, so skip those explicitly to avoid needing
+      # cosign and syft locally. --skip=publish is redundant but self-documenting.
+      - task: release:require-goreleaser
+      - goreleaser release --snapshot --clean --skip=publish,sign,sbom
+
+  release:verify:
+    desc: Prove the release:snapshot output - both binaries per archive, the linker stamp, and formula style
+    cmds:
+      # Run `task release:snapshot` first. Three assertions, each guarding a
+      # failure mode that would otherwise reach Homebrew users silently:
+      #   1. the archive is FLAT and carries BOTH binaries (the generated
+      #      `bin.install "mecated"` requires them at the archive root),
+      #   2. --version reports the stamped tag and not buildinfo's `dev+<rev>`
+      #      VCS fallback (which is what a wrong -X symbol path produces),
+      #   3. the generated formula passes Homebrew's own rubocop rules.
+      # Note `brew style` is called WITHOUT --formula: that flag requires the
+      # file to live in a real tap and rejects a path under dist/.
+      - cmd: |
+          set -eu
+          arch="$(ls dist/mecatl_*_"$(go env GOOS)"_"$(go env GOARCH)".tar.gz)"
+          echo "==> $arch"
+          tar -tzf "$arch"
+          for want in mecated mecatui; do
+            tar -tzf "$arch" | grep -qx "$want" || { echo "MISSING $want at archive root"; exit 1; }
+          done
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          tar -xzf "$arch" -C "$work"
+          for bin in mecated mecatui; do
+            out="$("$work/$bin" --version)"
+            echo "==> $out"
+            case "$out" in
+              *"dev+"*) echo "STAMP LOST: $bin reports the buildinfo VCS fallback; check the -X symbol path"; exit 1 ;;
+            esac
+          done
+          echo "==> brew style dist/homebrew/Formula/mecatl.rb"
+          brew style dist/homebrew/Formula/mecatl.rb
+
   test:root-race-partition:
     desc: Test and validate the static root-module race package partition
     cmds:
@@ -347,8 +461,10 @@ tasks:
       session persistence, and OIDC caller identity against an in-cluster Dex.
       Export OPENROUTER_API_KEY to ALSO run the LIVE variant (real LLM turns
       through the pods proving the plumbing under load; the live specs Skip
-      without the key). Needs Docker + kind + ko + helm + kubectl. NOT part of
-      `task test` (slow ~5-8 min mock-only, ~10-15 min with live).
+      without the key). Uses Docker by default, or rootless Podman with
+      `CONTAINER_ENGINE=podman` (Kind's `k8s-file` Podman log driver is required;
+      see https://kind.sigs.k8s.io/docs/user/rootless/). NOT part of `task test`
+      (slow ~5-8 min mock-only, ~10-15 min with live).
     deps: [build]
     preconditions:
       - sh: command -v kind >/dev/null 2>&1
@@ -359,6 +475,18 @@ tasks:
         msg: "helm is not installed (https://helm.sh/docs/intro/install/)"
       - sh: command -v kubectl >/dev/null 2>&1
         msg: "kubectl is not installed"
+      - sh: |
+          runtime="${CONTAINER_ENGINE:-${KIND_EXPERIMENTAL_PROVIDER:-docker}}"
+          case "$runtime" in docker|podman) command -v "$runtime" >/dev/null 2>&1 ;; *) exit 1 ;; esac
+        msg: "CONTAINER_ENGINE must be docker (default) or podman, and the selected runtime must be on PATH"
+      - sh: |
+          runtime="${CONTAINER_ENGINE:-${KIND_EXPERIMENTAL_PROVIDER:-docker}}"
+          test "$runtime" != podman || podman info --format json | grep -Eq '"rootless"[[:space:]]*:[[:space:]]*true'
+        msg: "e2e:k8s:podman supports rootless Podman only"
+      - sh: |
+          runtime="${CONTAINER_ENGINE:-${KIND_EXPERIMENTAL_PROVIDER:-docker}}"
+          test "$runtime" != podman || podman info --format json | grep -Eq '"logDriver"[[:space:]]*:[[:space:]]*"k8s-file"'
+        msg: "rootless Podman requires log_driver = \"k8s-file\"; see https://kind.sigs.k8s.io/docs/user/rootless/"
     cmds:
       # 30m accommodates the LIVE specs when OPENROUTER_API_KEY is exported: a
       # real haiku turn takes 10-30s, the live lease/persistence specs each drive
@@ -366,7 +494,19 @@ tasks:
       # ~1-2 min. Without the key the live specs Skip and the suite fits in 15m;
       # the outer bound only matters when the live variant runs. GOWORK=off proves
       # the image uses tagged external dependencies rather than workspace overlays.
-      - GOWORK=off go test -tags kind_e2e -count=1 -timeout 30m ./e2e/k8s/...
+      - cmd: |
+          runtime="${CONTAINER_ENGINE:-${KIND_EXPERIMENTAL_PROVIDER:-docker}}"
+          case "$runtime:${KIND_EXPERIMENTAL_PROVIDER:-}" in
+            docker:|podman:podman) ;;
+            podman:) export KIND_EXPERIMENTAL_PROVIDER=podman ;;
+            *) echo "CONTAINER_ENGINE and KIND_EXPERIMENTAL_PROVIDER disagree" >&2; exit 2 ;;
+          esac
+          GOWORK=off go test -tags kind_e2e -count=1 -timeout 30m ./e2e/k8s/...
+
+  e2e:k8s:podman:
+    desc: Run e2e:k8s with rootless Podman (requires the k8s-file Podman log driver)
+    cmds:
+      - CONTAINER_ENGINE=podman task e2e:k8s
 
   deploy:check:
     desc: |
@@ -462,7 +602,11 @@ tasks:
         git stash && BENCHCOUNT=10 task bench | tee old.txt && git stash pop
         benchstat old.txt new.txt
       allocs/op is the deterministic, gate-hard signal; treat ns/op as advisory
-      on shared CI. Override the sample count with BENCHCOUNT (default 10).
+      on shared CI. The BenchmarkRun*Turn benchmarks measure startup-inclusive
+      first-session/first-prompt work; BenchmarkSteadyState*Turn prewarms that
+      lifecycle then measures one recurring continuation turn. Both families are
+      hard-gated independently. Override the sample count with BENCHCOUNT (default
+      10).
     vars:
       BENCHCOUNT: '{{.BENCHCOUNT | default "10"}}'
     cmds:
@@ -606,34 +750,27 @@ tasks:
       - sh scripts/install-golangci-lint.sh
 
   lint:
-    desc: Run pinned golangci-lint (parallel-safe) and go vet over the root, engine, authn/oidc, and provider modules
+    desc: Run pinned golangci-lint (parallel-safe) over the root, engine, authn/oidc, and provider modules
     deps: [tools:golangci-lint]
     env:
       GOLANGCI_LINT: "{{.ROOT_DIR}}/.tools/bin/golangci-lint"
     preconditions:
-      - sh: test -x $GOLANGCI_LINT
+      - sh: test -x "$GOLANGCI_LINT"
         msg: "missing pinned golangci-lint; run: task tools:golangci-lint"
     cmds:
-      - $GOLANGCI_LINT run --allow-parallel-runners ./...
-      - go vet ./...
+      - '"$GOLANGCI_LINT" run --allow-parallel-runners ./...'
       # engine/ is its own module — it shares the ROOT golangci config (no
       # engine-local .golangci.yml) so the depguard layering allowlists stay the
       # single source of truth across the module boundary.
-      - cd engine && $GOLANGCI_LINT run --config ../.golangci.yml --allow-parallel-runners ./...
-      - cd engine && go vet ./...
+      - 'cd engine && "$GOLANGCI_LINT" run --config ../.golangci.yml --allow-parallel-runners ./...'
       # authn/oidc is a separate opt-in adapter module, sharing the root config.
-      - cd authn/oidc && $GOLANGCI_LINT run --config ../../.golangci.yml --allow-parallel-runners ./...
-      - cd authn/oidc && go vet ./...
+      - 'cd authn/oidc && "$GOLANGCI_LINT" run --config ../../.golangci.yml --allow-parallel-runners ./...'
       # provider/ submodules (ADR 0093) — each its own module; sharing the ROOT
       # golangci config so the depguard allowlists stay the single source of truth.
-      - cd provider/ssefilter && $GOLANGCI_LINT run --config ../../.golangci.yml --allow-parallel-runners ./...
-      - cd provider/ssefilter && go vet ./...
-      - cd provider/anthropic && $GOLANGCI_LINT run --config ../../.golangci.yml --allow-parallel-runners ./...
-      - cd provider/anthropic && go vet ./...
-      - cd provider/openai && $GOLANGCI_LINT run --config ../../.golangci.yml --allow-parallel-runners ./...
-      - cd provider/openai && go vet ./...
-      - cd provider/openaichat && $GOLANGCI_LINT run --config ../../.golangci.yml --allow-parallel-runners ./...
-      - cd provider/openaichat && go vet ./...
+      - 'cd provider/ssefilter && "$GOLANGCI_LINT" run --config ../../.golangci.yml --allow-parallel-runners ./...'
+      - 'cd provider/anthropic && "$GOLANGCI_LINT" run --config ../../.golangci.yml --allow-parallel-runners ./...'
+      - 'cd provider/openai && "$GOLANGCI_LINT" run --config ../../.golangci.yml --allow-parallel-runners ./...'
+      - 'cd provider/openaichat && "$GOLANGCI_LINT" run --config ../../.golangci.yml --allow-parallel-runners ./...'
 
   vuln:
     desc: |
@@ -657,19 +794,19 @@ tasks:
       # mid-scan govulncheck crash (after the JSON `config` preamble) would let
       # the gate see zero findings and pass green. pipefail propagates the
       # govulncheck failure, matching the CI job.
-      - cmd: set -o pipefail; go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 -format json ./... | go run .github/scripts/govulncheck-gate.go # v1.1.4 — no allowlist (toolhive v0.31.0 cleared the docker/docker vulns)
+      - cmd: set -o pipefail; go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 -format json ./... | go run .github/scripts/govulncheck-gate.go # v1.8.0 — no allowlist (toolhive v0.31.0 cleared the docker/docker vulns)
       # engine/ is a separate module — `./...` from the root does NOT cross the
       # module boundary, so its scan is a second invocation against engine/go.mod.
       # No allowlist: the engine library's closure is clean and must stay clean.
-      - cmd: set -o pipefail; cd engine && go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 -format json ./... | go run ../.github/scripts/govulncheck-gate.go # v1.1.4
+      - cmd: set -o pipefail; cd engine && go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 -format json ./... | go run ../.github/scripts/govulncheck-gate.go # v1.8.0
       # Opt-in OIDC module: independently scan its security-sensitive closure.
-      - cmd: set -o pipefail; cd authn/oidc && go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 -format json ./... | go run ../../.github/scripts/govulncheck-gate.go # v1.1.4
+      - cmd: set -o pipefail; cd authn/oidc && go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 -format json ./... | go run ../../.github/scripts/govulncheck-gate.go # v1.8.0
       # provider/ submodules (ADR 0093) — each its own module; scan against its
       # own go.mod so the provider library's closure is checked independently.
-      - cmd: set -o pipefail; cd provider/ssefilter && go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 -format json ./... | go run ../../.github/scripts/govulncheck-gate.go # v1.1.4
-      - cmd: set -o pipefail; cd provider/anthropic && go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 -format json ./... | go run ../../.github/scripts/govulncheck-gate.go # v1.1.4
-      - cmd: set -o pipefail; cd provider/openai && go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 -format json ./... | go run ../../.github/scripts/govulncheck-gate.go # v1.1.4
-      - cmd: set -o pipefail; cd provider/openaichat && go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 -format json ./... | go run ../../.github/scripts/govulncheck-gate.go # v1.1.4
+      - cmd: set -o pipefail; cd provider/ssefilter && go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 -format json ./... | go run ../../.github/scripts/govulncheck-gate.go # v1.8.0
+      - cmd: set -o pipefail; cd provider/anthropic && go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 -format json ./... | go run ../../.github/scripts/govulncheck-gate.go # v1.8.0
+      - cmd: set -o pipefail; cd provider/openai && go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 -format json ./... | go run ../../.github/scripts/govulncheck-gate.go # v1.8.0
+      - cmd: set -o pipefail; cd provider/openaichat && go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 -format json ./... | go run ../../.github/scripts/govulncheck-gate.go # v1.8.0
 
   lint:fix:
     desc: Run pinned golangci-lint with autofix (parallel-safe) over the root, engine, authn/oidc, and provider modules
@@ -677,16 +814,16 @@ tasks:
     env:
       GOLANGCI_LINT: "{{.ROOT_DIR}}/.tools/bin/golangci-lint"
     preconditions:
-      - sh: test -x $GOLANGCI_LINT
+      - sh: test -x "$GOLANGCI_LINT"
         msg: "missing pinned golangci-lint; run: task tools:golangci-lint"
     cmds:
-      - $GOLANGCI_LINT run --allow-parallel-runners --fix ./...
-      - cd engine && $GOLANGCI_LINT run --config ../.golangci.yml --allow-parallel-runners --fix ./...
-      - cd authn/oidc && $GOLANGCI_LINT run --config ../../.golangci.yml --allow-parallel-runners --fix ./...
-      - cd provider/ssefilter && $GOLANGCI_LINT run --config ../../.golangci.yml --allow-parallel-runners --fix ./...
-      - cd provider/anthropic && $GOLANGCI_LINT run --config ../../.golangci.yml --allow-parallel-runners --fix ./...
-      - cd provider/openai && $GOLANGCI_LINT run --config ../../.golangci.yml --allow-parallel-runners --fix ./...
-      - cd provider/openaichat && $GOLANGCI_LINT run --config ../../.golangci.yml --allow-parallel-runners --fix ./...
+      - '"$GOLANGCI_LINT" run --allow-parallel-runners --fix ./...'
+      - 'cd engine && "$GOLANGCI_LINT" run --config ../.golangci.yml --allow-parallel-runners --fix ./...'
+      - 'cd authn/oidc && "$GOLANGCI_LINT" run --config ../../.golangci.yml --allow-parallel-runners --fix ./...'
+      - 'cd provider/ssefilter && "$GOLANGCI_LINT" run --config ../../.golangci.yml --allow-parallel-runners --fix ./...'
+      - 'cd provider/anthropic && "$GOLANGCI_LINT" run --config ../../.golangci.yml --allow-parallel-runners --fix ./...'
+      - 'cd provider/openai && "$GOLANGCI_LINT" run --config ../../.golangci.yml --allow-parallel-runners --fix ./...'
+      - 'cd provider/openaichat && "$GOLANGCI_LINT" run --config ../../.golangci.yml --allow-parallel-runners --fix ./...'
 
   test:docs-only-classifier:
     desc: Run the offline docs-only CI classifier and workflow-wiring tests
@@ -699,23 +836,19 @@ tasks:
     desc: |
       Lint all GitHub Actions workflows with actionlint (pinned via `go run`, so no
       preinstalled binary is needed). Catches expression-context errors, bad `uses:`
-      refs, and shell issues in `run:` blocks. Runs the reusable-pins check AND the
-      empty-expression template guard too, so a single `task lint:actions` covers the
-      whole Actions surface.
+      refs, and shell issues in `run:` blocks. Runs the empty-expression template guard
+      and the performance-dashboard noindex guard plus the Deslop advisory-workflow
+      contract test, so a single `task lint:actions` covers the whole Actions surface.
     cmds:
-      - go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
-      - task: lint:reusable-pins
+      # -ignore: actionlint's latest release (v1.7.12, 2026-03) predates the `$/`
+      # self-repository `uses:` syntax GitHub shipped in 2026-07, so it rejects a valid
+      # ref as "invalid format". Upstream request: rhysd/actionlint#711. Drop the flag
+      # when it lands — it is scoped to that one message, so every other `uses:` error
+      # still fails the build.
+      - go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -ignore 'specifying action "\$/.*" in invalid format'
       - task: lint:action-templates
-      - bash .github/scripts/lint-vet-workflow_test.sh
-
-  lint:reusable-pins:
-    desc: |
-      Assert every first-party sibling-action pin inside mecatequi-reusable.yml
-      (stacklok/mecatl/.github/actions/*@<tag>) equals the current release tag — the
-      mechanical version-skew guard (an expression is illegal in `uses:`, so the tag is
-      a hardcoded literal the release process must bump in the same tagged commit).
-    cmds:
-      - bash .github/actions/check-reusable-pins.sh
+      - bash .github/scripts/ensure-perf-dashboard-noindex_test.sh
+      - bash .github/scripts/deslop-workflow_test.sh
 
   lint:action-templates:
     desc: |
@@ -768,7 +901,7 @@ tasks:
       - cd provider/openaichat && GOWORK=off go mod tidy
 
   generate:
-    desc: Regenerate contracts/gen from contracts/proto via buf
+    desc: Regenerate Go and TypeScript contracts from contracts/proto via buf
     cmds:
       # Regenerates the gRPC contracts — the harness API (contracts/proto/
       # mecatl/v1) AND the store-driver protocol (contracts/proto/mecatl/
@@ -780,43 +913,32 @@ tasks:
           if [ -f buf.gen.yaml ] && [ -d contracts/proto ]; then
             command -v buf >/dev/null 2>&1 || { echo "buf not found; install: https://buf.build/docs/installation"; exit 1; }
             buf generate
+            buf generate --template buf.gen.ts.yaml
           else
             echo "skip generate: buf.gen.yaml and/or contracts/proto not present"
           fi
         silent: true
       # Regenerate the committed configuration-reference + settings.yaml skeleton
-      # from the permconfig schema (the CI freshness gate enforces this), BEFORE
-      # llms.txt so the new reference page is in the link graph llms.txt indexes.
+      # from the permconfig schema (the CI freshness gate enforces this).
       - task: docs:configref
-      # Regenerate the committed llms.txt navigation surface so it never drifts
-      # from the docs (the CI freshness gate enforces this).
-      - task: docs:llms
-
-  docs:llms:
-    desc: Regenerate the committed llms.txt navigation surface (matlatl)
-    cmds:
-      # matlatl renders an importance-ordered llms.txt from the doc link graph.
-      # Pinned to a matlatl release; --title MUST match the README H1 ("mecatl")
-      # and the freshness gate in .github/workflows/ci.yml. Never hand-edit
-      # llms.txt — regenerate. (A private-module fetch needs GOPRIVATE set.)
-      - go run github.com/stacklok/matlatl/cmd/matlatl@v0.0.8 index . --llms --title "mecatl" > llms.txt
 
   docs:configref:
-    desc: Regenerate the committed config-init skeleton + configuration-reference.md from the permconfig schema
+    desc: Regenerate the committed config-init skeleton + rendered configuration reference from the permconfig schema
     cmds:
       # The generator harvests the permconfig schema's field doc-comments (go/ast) and
       # reflects over the *Section structs, emitting the TWO committed artifacts both
       # surfaces (config init + the reference page) read. go/ast stays in this
       # build-time program — the shipped mecated binary embeds the skeleton. The CI
       # docs job diffs the regenerated artifacts against these committed files and
-      # fails on drift (the llms.txt pattern). Never hand-edit either output.
-      - go run ./internal/configgen/cmd/configref --skeleton internal/configgen/settings.skeleton.yaml --reference docs/configuration-reference.md
+      # fails on drift. Never hand-edit either output.
+      - go run ./internal/configgen/cmd/configref --skeleton internal/configgen/settings.skeleton.yaml --reference user-docs/reference/configuration.md
 
   docs:check:
-    desc: Gate ADR-number uniqueness and stale moved paths, then doc link health with matlatl (strict — broken links/anchors, orphans, unreachable)
+    desc: Gate acceptance-plan checker fixtures, Go-backed document structure, executable operations examples, and doc link health with matlatl (strict — broken links/anchors, orphans, unreachable)
     cmds:
-      - go test ./docs/lint -run '^TestRealADRNumberUniqueness$'
-      - go test ./docs/lint -run '^TestNoStaleMovedADRSlugs$'
+      - bash .claude/skills/to-acceptance-plan/scripts/check-acceptance-plan-test.sh
+      - go test ./docs/lint
+      - go test ./cmd/mecated -run '^TestSessionStorageContinuity_Scenario9_ServiceExamplesExecuteConfiguredArgs$'
       - go run github.com/stacklok/matlatl/cmd/matlatl@v0.0.8 check . --strict
 
   docs:model:
@@ -830,14 +952,23 @@ tasks:
       - go run github.com/stacklok/modelith/cmd/modelith@73429dd46a22b3c3491c4654edca391fc9bd63f2 lint --completeness error docs/architecture/mecatl.modelith.yaml
 
   docs:
-    desc: Refresh the config reference + llms.txt and gate doc links (matlatl) — run before committing doc changes
+    desc: Refresh generated references and gate doc links (matlatl) — run before committing doc changes
     cmds:
       - task: docs:configref
-      - task: docs:llms
+      - task: sdk:docs
       - task: docs:check
 
   ac-trace:
     desc: "Report acceptance-criteria → test coverage for every docs/acceptance/ plan (report-only)"
+    # sdk:install is a REAL dependency, not a convenience: .actrace.yml resolves
+    # titled TypeScript proofs through the `vitest:` and `playwright:` resolvers,
+    # which parse the TypeScript AST using the compiler from
+    # sdk/typescript/node_modules. Without it every titled proof is rejected
+    # ("TypeScript is unavailable"), which is merely noisy here but FATAL under
+    # --strict once its plan lands. The install task is fingerprinted on
+    # package.json + pnpm-lock.yaml, so this is a no-op on an already-installed
+    # tree.
+    deps: [sdk:install]
     cmds:
       # go run (pinned), NOT a go.mod `tool` directive — ac-trace is an INTERNAL
       # module, and a tool directive would force EVERY build of the root module
@@ -847,11 +978,13 @@ tasks:
 
   ac-trace-strict:
     desc: "Gate a landed plan's verify: contract — exit non-zero when a named proof doesn't resolve"
+    deps: [sdk:install]
     cmds:
       - go run github.com/stacklok/ac-trace/cmd/actrace@v0.0.3 --strict
 
   ac-trace-matrix:
     desc: "Regenerate the committed docs/acceptance/traceability.md matrix (AC → proof); never gates"
+    deps: [sdk:install]
     cmds:
       - go run github.com/stacklok/ac-trace/cmd/actrace@v0.0.3 --matrix
 

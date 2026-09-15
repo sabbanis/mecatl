@@ -10,13 +10,18 @@ import (
 // inventories as "not enabled" vs "enabled but empty") WITHOUT importing proto.
 // All-false is the safe default (an older server omits the field).
 type Capabilities struct {
-	MCP           bool
-	SlashCommands bool
-	Memory        bool
-	Skills        bool
-	Teams         bool
-	Agents        bool
-	Bash          bool
+	// MCPConnectorStatus gates the broker-local connector inventory. It is separate
+	// from MCP: broker-only deployments deliberately expose no direct resources or prompts.
+	MCPConnectorStatus bool
+	MCP                bool
+	SlashCommands      bool
+	Memory             bool
+	Skills             bool
+	Teams              bool
+	Agents             bool
+	// Bash reports availability of the canonical Shell tool. Its historical
+	// spelling is retained for compatibility with the established wire/Go API.
+	Bash bool
 	// Soul / UserModel report whether the server has a soul source / user-model store
 	// wired. They gate the /soul and /usermodel read-only inspection panels.
 	Soul      bool
@@ -54,7 +59,6 @@ type Capabilities struct {
 	StorageHealth     bool
 	StorageMigration  bool
 	StorageCleanup    bool
-	LegacyAdoption    bool
 	// ManualDream is nil when an older server does not expose the capability object.
 	// A non-nil value keeps /dream discoverable even when both targets are unavailable,
 	// so the overlay can explain the target-specific reasons.
@@ -75,6 +79,25 @@ type Capabilities struct {
 	SessionDebug bool
 	// DebugMCP gates explicit selected global MCP mounts for debug sessions.
 	DebugMCP bool
+	// WorkspaceEnrollment gates the bundled MCP workspace-enrollment flow.
+	WorkspaceEnrollment bool
+	// SessionMediaPresent records that the wire carried SessionCapabilities even
+	// when both media bools are false. The UI uses it to distinguish an explicit
+	// text-only snapshot from an older server that omitted the message.
+	SessionMediaPresent bool
+}
+
+// capabilitiesWithSessionMedia overlays the selected session's media support while
+// retaining server-wide feature bits. A nil session capability is an older-server
+// response, so the global media values remain unchanged.
+func capabilitiesWithSessionMedia(global *mecatlv1.ServerCapabilities, sessionCaps *mecatlv1.SessionCapabilities) Capabilities {
+	caps := capabilitiesFrom(global)
+	if sessionCaps != nil {
+		caps.Image = sessionCaps.GetImage()
+		caps.Audio = sessionCaps.GetAudio()
+		caps.SessionMediaPresent = true
+	}
+	return caps
 }
 
 // capabilitiesFrom maps a proto ServerCapabilities (nil-safe) to the plain
@@ -84,33 +107,34 @@ func capabilitiesFrom(c *mecatlv1.ServerCapabilities) Capabilities {
 		return Capabilities{}
 	}
 	return Capabilities{
-		MCP:               c.GetMcp(),
-		SlashCommands:     c.GetSlashCommands(),
-		Memory:            c.GetMemory(),
-		Skills:            c.GetSkills(),
-		Teams:             c.GetTeams(),
-		Agents:            c.GetAgents(),
-		Bash:              c.GetBash(),
-		Soul:              c.GetSoul(),
-		UserModel:         c.GetUserModel(),
-		ModelSelection:    c.GetModelSelection(),
-		Image:             c.GetImage(),
-		Audio:             c.GetAudio(),
-		Posture:           c.GetPosture(),
-		Worktrees:         c.GetWorktrees(),
-		Scheduling:        c.GetScheduling(),
-		Reflection:        c.GetReflection(),
-		LearningProposals: c.GetLearningProposals(),
-		LearnedSkills:     c.GetLearnedSkills(),
-		StorageHealth:     c.GetStorageHealth(),
-		StorageMigration:  c.GetStorageMigration(),
-		StorageCleanup:    c.GetStorageCleanup(),
-		LegacyAdoption:    c.GetLegacyAdoption(),
-		ManualDream:       manualDreamCapabilitiesFrom(c.GetManualDream()),
-		Steer:             c.GetSteer(),
-		ManualCompaction:  c.GetManualCompaction(),
-		SessionDebug:      c.GetSessionDebug(),
-		DebugMCP:          c.GetDebugMcp(),
+		MCPConnectorStatus:  c.GetMcpConnectorStatus(),
+		MCP:                 c.GetMcp(),
+		SlashCommands:       c.GetSlashCommands(),
+		Memory:              c.GetMemory(),
+		Skills:              c.GetSkills(),
+		Teams:               c.GetTeams(),
+		Agents:              c.GetAgents(),
+		Bash:                c.GetBash(),
+		Soul:                c.GetSoul(),
+		UserModel:           c.GetUserModel(),
+		ModelSelection:      c.GetModelSelection(),
+		Image:               c.GetImage(),
+		Audio:               c.GetAudio(),
+		Posture:             c.GetPosture(),
+		Worktrees:           c.GetWorktrees(),
+		Scheduling:          c.GetScheduling(),
+		Reflection:          c.GetReflection(),
+		LearningProposals:   c.GetLearningProposals(),
+		LearnedSkills:       c.GetLearnedSkills(),
+		StorageHealth:       c.GetStorageHealth(),
+		StorageMigration:    c.GetStorageMigration(),
+		StorageCleanup:      c.GetStorageCleanup(),
+		ManualDream:         manualDreamCapabilitiesFrom(c.GetManualDream()),
+		Steer:               c.GetSteer(),
+		ManualCompaction:    c.GetManualCompaction(),
+		SessionDebug:        c.GetSessionDebug(),
+		DebugMCP:            c.GetDebugMcp(),
+		WorkspaceEnrollment: c.GetWorkspaceEnrollment(),
 	}
 }
 

@@ -1,6 +1,10 @@
 package ui
 
-import "github.com/stacklok/mecatl/cmd/mecatui/client"
+import (
+	"strings"
+
+	"github.com/stacklok/mecatl/cmd/mecatui/client"
+)
 
 // maxTraceEntries caps how many trace entries a delegation lane (a subagent block,
 // a fleet lane, a parallel branch, a team member) retains for the expanded/focus
@@ -109,7 +113,7 @@ type teamLane struct {
 	// (D16). Empty until the member produces an event (or from an older server); the
 	// x cancel key no-ops then.
 	sessionID string
-	role      string // the member's roster role (e.g. "researcher"); shown in the ctrl+a overlay roster, omitted from the calm inline card
+	role      string // the member's roster role (e.g. "researcher"); shown in the f6 overlay roster, omitted from the calm inline card
 	mutating  bool
 	lead      bool
 	// routedCategory/routedModel are the opt-in model router's bare metadata for this
@@ -160,7 +164,7 @@ type teamLane struct {
 	// prior cause does not render it (it recovered).
 	cause string
 
-	// ctxUsed / ctxWindow back the per-member context meter in the ctrl+a agents
+	// ctxUsed / ctxWindow back the per-member context meter in the f6 agents
 	// overlay. ctxUsed is the CURRENT context occupancy — the most recent turn's
 	// input-token count (ASSIGNED, not summed, each turn.end, mirroring the main
 	// meter's m.contextTokens = turn input tokens) — and ctxWindow is the member
@@ -171,7 +175,7 @@ type teamLane struct {
 }
 
 // teamTask is the ui-local projection of one entry in the team's shared task list,
-// rendered by the ctrl+a agents task sub-view. It mirrors client.TeamTask; it holds
+// rendered by the f6 agents task sub-view. It mirrors client.TeamTask; it holds
 // only task metadata (id / state / assignee / deps), never member content.
 type teamTask struct {
 	id       string
@@ -182,7 +186,7 @@ type teamTask struct {
 }
 
 // teamFinding is the ui-local projection of one entry in the team's shared findings
-// ledger, rendered by the ctrl+a agents findings view. It mirrors client.TeamFinding;
+// ledger, rendered by the f6 agents findings view. It mirrors client.TeamFinding;
 // it holds only the recording member's name and a bounded body preview.
 type teamFinding struct {
 	member string
@@ -209,6 +213,7 @@ const (
 // on the block (not a pre-rendered string) lets a theme/width change re-render
 // the whole history correctly.
 type block struct {
+	id   uint64
 	kind blockKind
 
 	// rev is the block's render revision: bumped on EVERY post-append mutation of a
@@ -317,8 +322,8 @@ type block struct {
 	team         bool
 	teamID       string // the team's stable id (e.g. "team-p1"), shown in the live footer summary segment
 	teamLanes    []teamLane
-	teamTasks    []teamTask    // the team's shared task list (ctrl+a task sub-view)
-	teamFindings []teamFinding // the team's shared findings ledger (ctrl+a findings view)
+	teamTasks    []teamTask    // the team's shared task list (f6 task sub-view)
+	teamFindings []teamFinding // the team's shared findings ledger (f6 findings view)
 	teamRounds   int
 	teamStop     string
 	teamUsage    client.Usage
@@ -335,7 +340,7 @@ type block struct {
 // subagentLane is the flat, fleet-level projection of ONE Subagent child run, keyed by
 // ChildID. It mirrors the per-Subagent-block subagent fields (subGoal/subTrace/…) but is
 // collected ACROSS all Subagent cards into conversation.subagentFleet, so the footer
-// segment can show aggregate running/done counts and the ctrl+a Subagents tab can
+// segment can show aggregate running/done counts and the f6 Subagents tab can
 // list one row per child regardless of where its inline card sits in scrollback. It
 // carries the BOUNDED previews the subagent.* events forward (ADR 0079) — bounded,
 // scrubbed, client-only (gauntlet #7 is about the conversation, not the client).
@@ -379,10 +384,17 @@ type subagentLane struct {
 // subagentFleet is the flat, insertion-ordered collection of Subagent child lanes keyed
 // by ChildID (see subagentLane). It is fed alongside the inline-card routing by
 // applySubagent/upsertSubagentLane, and read by the fleet footer segment and the
-// ctrl+a Subagents tab. It is part of the conversation so a /clear (which rebuilds
+// f6 Subagents tab. It is part of the conversation so a /clear (which rebuilds
 // the conversation) drops it too.
 type conversation struct {
-	blocks []block
+	blocks      []block
+	nextBlockID uint64
+	// filesChanged preserves first-seen order; filesSeen tracks membership. The
+	// appendix receives its identity at the first distinct change, even though it
+	// is not yet a physical rendered block.
+	filesChanged           []string
+	filesSeen              map[string]struct{}
+	changedFilesAppendixID uint64
 	// subagentFleet preserves first-seen order; fleetIndex maps ChildID → its slot so
 	// repeated tool/end events for a child update the same lane in O(1).
 	subagentFleet []subagentLane
@@ -395,6 +407,33 @@ type conversation struct {
 	parallelIndex  map[string]int
 }
 
+// appendBlock assigns the next UI-local document identity before adding a block.
+func (c *conversation) appendBlock(b block) {
+	c.nextBlockID++
+	b.id = c.nextBlockID
+	c.blocks = append(c.blocks, b)
+}
+
+// recordFileChange records a first-seen mutated workspace path. The synthetic
+// appendix gets one stable identity at its first distinct member.
+func (c *conversation) recordFileChange(path string) {
+	if path == "" {
+		return
+	}
+	if c.filesSeen == nil {
+		c.filesSeen = make(map[string]struct{})
+	}
+	if _, ok := c.filesSeen[path]; ok {
+		return
+	}
+	c.filesSeen[path] = struct{}{}
+	c.filesChanged = append(c.filesChanged, path)
+	if c.changedFilesAppendixID == 0 {
+		c.nextBlockID++
+		c.changedFilesAppendixID = c.nextBlockID
+	}
+}
+
 // isEmpty reports whether the conversation has no blocks yet — the first-run
 // state, before any prompt is sent. The zero-state welcome card renders in the
 // empty viewport while this holds (and vanishes the instant the first block,
@@ -403,7 +442,7 @@ func (c *conversation) isEmpty() bool { return len(c.blocks) == 0 }
 
 // addUser appends a text-only user-prompt block.
 func (c *conversation) addUser(text string) {
-	c.blocks = append(c.blocks, block{kind: blockUser, raw: text})
+	c.appendBlock(block{kind: blockUser, raw: text})
 }
 
 // addUserWithMedia appends a user-prompt block carrying media-part placeholders.
@@ -412,13 +451,13 @@ func (c *conversation) addUser(text string) {
 // the text so a multimodal prompt is never silently rendered as text-only. With
 // no media it is equivalent to addUser.
 func (c *conversation) addUserWithMedia(text string, media []string) {
-	c.blocks = append(c.blocks, block{kind: blockUser, raw: text, media: media})
+	c.appendBlock(block{kind: blockUser, raw: text, media: media})
 }
 
 // startAssistant opens a fresh, empty assistant block to accumulate deltas into.
 // Called on turn.start so each turn is its own markdown block.
 func (c *conversation) startAssistant() {
-	c.blocks = append(c.blocks, block{kind: blockAssistant})
+	c.appendBlock(block{kind: blockAssistant})
 }
 
 // appendAssistant appends streamed text to the current assistant block, opening
@@ -432,7 +471,7 @@ func (c *conversation) appendAssistant(text string) {
 		b.reasoningStreaming = false
 		return
 	}
-	c.blocks = append(c.blocks, block{kind: blockAssistant, raw: text})
+	c.appendBlock(block{kind: blockAssistant, raw: text})
 }
 
 // reviseAssistant REPLACES the current assistant block's raw content with text
@@ -456,7 +495,7 @@ func (c *conversation) reviseAssistant(text string) {
 		b.reasoningStreaming = false
 		return
 	}
-	c.blocks = append(c.blocks, block{kind: blockAssistant, raw: text})
+	c.appendBlock(block{kind: blockAssistant, raw: text})
 }
 
 // appendReasoning accumulates streamed reasoning-summary text into the current
@@ -469,7 +508,7 @@ func (c *conversation) reviseAssistant(text string) {
 func (c *conversation) appendReasoning(text string) {
 	b := c.currentAssistant()
 	if b == nil {
-		c.blocks = append(c.blocks, block{kind: blockAssistant})
+		c.appendBlock(block{kind: blockAssistant})
 		b = &c.blocks[len(c.blocks)-1]
 	}
 	b.reasoning += text
@@ -506,12 +545,12 @@ func (c *conversation) currentAssistant() *block {
 
 // addTurnStat appends a muted per-turn usage/elapsed stat line.
 func (c *conversation) addTurnStat(text string) {
-	c.blocks = append(c.blocks, block{kind: blockTurnStat, raw: text})
+	c.appendBlock(block{kind: blockTurnStat, raw: text})
 }
 
 // addTool appends a running tool-call block.
 func (c *conversation) addTool(id, name, args string) {
-	c.blocks = append(c.blocks, block{
+	c.appendBlock(block{
 		kind:     blockTool,
 		toolID:   id,
 		toolName: name,
@@ -736,7 +775,7 @@ func (c *conversation) subagentFleetCounts() (running, done int) {
 }
 
 // hasSubagents reports whether ≥1 subagent has started this session — the gate for
-// showing the fleet footer segment and enabling the ctrl+a Subagents tab. The
+// showing the fleet footer segment and enabling the f6 Subagents tab. The
 // context-sensitive default tab (preferredAgentsTab) keys off this plus liveTeamBlock:
 // it prefers Subagents whenever ANY subagent ran (running OR done, so a finished fleet
 // is still reviewable, mirroring how the Teams tab reviews a finished team), unless a
@@ -779,25 +818,31 @@ type parallelBranch struct {
 	failed     bool
 	stop       string
 	durationMs int64
-	workspace  string
 }
 
 // parallelGroup is the fan-out GROUP projection of ONE Parallel call, keyed by
 // ParentCallID. It holds the run-level facts that have no home on a flat per-branch row —
-// the join strategy, the single winner index (-1 = none/all), the preserved winner fork
-// path, the run-level stop — plus the ordered list of its branches. It is the grouped
+// the join strategy, the single winner index (-1 = none/all), and the run-level
+// stop, plus the ordered list of its branches. It is the grouped
 // analogue of the subagentFleet (which is flat). branches preserves first-seen index order
 // via branchIndex (BranchIndex → slot).
+const maxParallelJoinModeLen = 24
+
+// parallelJoinMode bounds untrusted server metadata once at ingestion so every
+// roster, focus, essential, and compact projection reads the same safe value.
+func parallelJoinMode(join string) string {
+	return truncate(strings.Join(strings.Fields(sanitizeTerminal(join)), " "), maxParallelJoinModeLen)
+}
+
 type parallelGroup struct {
-	parentCallID    string
-	join            string
-	branchCount     int
-	winner          int // -1 until parallel.end resolves a winner (join=all stays -1)
-	winnerWorkspace string
-	stop            string
-	done            bool
-	branches        []parallelBranch
-	branchIndex     map[int]int // BranchIndex → slot in branches
+	parentCallID string
+	join         string
+	branchCount  int
+	winner       int // -1 until parallel.end resolves a winner (join=all stays -1)
+	stop         string
+	done         bool
+	branches     []parallelBranch
+	branchIndex  map[int]int // BranchIndex → slot in branches
 }
 
 // parallelGroups is the insertion-ordered collection of Parallel groups keyed by
@@ -847,7 +892,7 @@ func (c *conversation) parallelStart(parentCallID, join string, branchCount int)
 		return
 	}
 	g := c.parallelGroupFor(parentCallID)
-	g.join = join
+	g.join = parallelJoinMode(join)
 	g.branchCount = branchCount
 }
 
@@ -888,7 +933,7 @@ func (c *conversation) parallelBranchTool(msg client.ParallelMsg) {
 // parallelBranchEnd records a branch's resolved terminal stats (done gates them).
 // The child id backfills defensively (branch_start can be missed), only when
 // non-empty.
-func (c *conversation) parallelBranchEnd(parentCallID string, index int, childID string, usage client.Usage, toolCount int, stop string, failed bool, workspace string, durationMs int64) {
+func (c *conversation) parallelBranchEnd(parentCallID string, index int, childID string, usage client.Usage, toolCount int, stop string, failed bool, durationMs int64) {
 	if parentCallID == "" {
 		return
 	}
@@ -901,24 +946,21 @@ func (c *conversation) parallelBranchEnd(parentCallID string, index int, childID
 	br.toolCount = toolCount
 	br.stop = stop
 	br.failed = failed
-	br.workspace = workspace
 	br.durationMs = durationMs
 }
 
-// parallelEnd records the run-level terminal facts on a group: the join, the resolved
-// winner index (-1 = none/all), the preserved winner workspace, and the run stop.
-func (c *conversation) parallelEnd(parentCallID, join string, branchCount, winner int, winnerWorkspace, stop string) {
+// parallelEnd records the run-level terminal facts on a group.
+func (c *conversation) parallelEnd(parentCallID, join string, branchCount, winner int, stop string) {
 	if parentCallID == "" {
 		return
 	}
 	g := c.parallelGroupFor(parentCallID)
 	g.done = true
-	g.join = join
+	g.join = parallelJoinMode(join)
 	if branchCount > 0 {
 		g.branchCount = branchCount
 	}
 	g.winner = winner
-	g.winnerWorkspace = winnerWorkspace
 	g.stop = stop
 }
 
@@ -929,7 +971,7 @@ func (c *conversation) parallelGroupCounts() (running, done int) {
 }
 
 // hasParallel reports whether ≥1 Parallel run has started this session — the gate for the
-// fleet footer segment and the ctrl+a Parallel tab (mirroring hasSubagents).
+// fleet footer segment and the f6 Parallel tab (mirroring hasSubagents).
 func (c *conversation) hasParallel() bool { return len(c.parallelGroups) > 0 }
 
 // liveParallel reports whether any Parallel group is still RUNNING (no parallel.end yet) —
@@ -953,7 +995,7 @@ func (c *conversation) liveParallel() bool {
 // gateway for the five team mutators (setTeamStart / addTeamMember / setTeamEnd /
 // setTeamTasks / setTeamFindings) — note setTeamTasks/setTeamFindings flip the
 // render-visible b.team flag even though tasks/findings themselves render only in
-// the ctrl+a overlay, so they invalidate too. latestTeamBlock/liveTeamBlock (the
+// the f6 overlay, so they invalidate too. latestTeamBlock/liveTeamBlock (the
 // overlay READ path) deliberately do NOT bump.
 func (c *conversation) teamBlock(parentCallID string) *block {
 	for i := len(c.blocks) - 1; i >= 0; i-- {
@@ -1166,7 +1208,7 @@ func (c *conversation) setTeamFindings(parentCallID string, findings []client.Te
 // latestTeamBlock returns the most-recent tool block that carries team lanes (a
 // Team card with at least one member lane), or nil if no team has been seen this
 // session. It scans from the end so a fresh team supersedes an earlier one — the
-// ctrl+a overlay always reflects the latest team. The block is returned by
+// f6 overlay always reflects the latest team. The block is returned by
 // pointer so the overlay reads the live, accumulating lane state (it never
 // mutates it). A team card with no lanes yet (team.start not seen, or empty
 // roster) is skipped so the overlay never opens onto an empty roster.
@@ -1182,7 +1224,7 @@ func (c *conversation) latestTeamBlock() *block {
 
 // liveTeamBlock returns the latest team block that is still RUNNING (not
 // teamDone) — the footer's live-activity signal. Distinct from latestTeamBlock,
-// which returns the most-recent team done-or-not so the ctrl+a overlay can still
+// which returns the most-recent team done-or-not so the f6 overlay can still
 // review a finished roster.
 func (c *conversation) liveTeamBlock() *block {
 	b := c.latestTeamBlock()
@@ -1194,7 +1236,7 @@ func (c *conversation) liveTeamBlock() *block {
 
 // addNotice appends a muted info block (compaction / permission verb).
 func (c *conversation) addNotice(text string) {
-	c.blocks = append(c.blocks, block{kind: blockNotice, raw: text})
+	c.appendBlock(block{kind: blockNotice, raw: text})
 }
 
 // addRecoverNotice appends a WARNING-styled recover-notice block (a session that
@@ -1204,7 +1246,7 @@ func (c *conversation) addNotice(text string) {
 // bullet — and durable rather than a transient statusMsg so the run's first
 // event does not overwrite it before the user reads it.
 func (c *conversation) addRecoverNotice(text string) {
-	c.blocks = append(c.blocks, block{kind: blockNotice, raw: text, recover: true})
+	c.appendBlock(block{kind: blockNotice, raw: text, recover: true})
 }
 
 // addDelivery appends a fire-result delivery note block: a scheduled-task
@@ -1214,7 +1256,7 @@ func (c *conversation) addRecoverNotice(text string) {
 // engine recorded) — the renderer strips the fence markers + redundant
 // provenance header for display (they are machine markers, not content).
 func (c *conversation) addDelivery(scheduleName, fireID, text string) {
-	c.blocks = append(c.blocks, block{
+	c.appendBlock(block{
 		kind:           blockDelivery,
 		toolName:       scheduleName, // reused for the schedule-name label
 		deliveryFireID: fireID,
@@ -1227,7 +1269,7 @@ func (c *conversation) addDelivery(scheduleName, fireID, text string) {
 // distinctly from a plain notice — a hook glyph + phase, with the outcome
 // coloured (blocked stands out from a benign info/modified notice).
 func (c *conversation) addHook(text, phase, tool, decision string) {
-	c.blocks = append(c.blocks, block{
+	c.appendBlock(block{
 		kind:         blockHook,
 		raw:          text,
 		hookPhase:    phase,
@@ -1238,12 +1280,12 @@ func (c *conversation) addHook(text, phase, tool, decision string) {
 
 // addError appends an error block.
 func (c *conversation) addError(text string) {
-	c.blocks = append(c.blocks, block{kind: blockError, raw: text})
+	c.appendBlock(block{kind: blockError, raw: text})
 }
 
 // addPermanentError appends a permanent-error block: the error is a server-classified
 // PERMANENT provider rejection and retrying cannot help. The renderer shows a one-line
 // human summary; the raw error payload is available on expand (ctrl+t).
 func (c *conversation) addPermanentError(text string) {
-	c.blocks = append(c.blocks, block{kind: blockError, raw: text, permanent: true})
+	c.appendBlock(block{kind: blockError, raw: text, permanent: true})
 }

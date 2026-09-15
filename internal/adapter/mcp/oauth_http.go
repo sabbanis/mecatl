@@ -1,8 +1,11 @@
 package mcp
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
+	"encoding/json"
 	"errors"
 	"io"
 	"mime"
@@ -26,12 +29,80 @@ const (
 type oauthLookupFunc func(context.Context, string, string) ([]netip.Addr, error)
 type oauthDialFunc func(context.Context, string, string) (net.Conn, error)
 
+// HardenedOAuthTokenClientOptions configures an exact-origin OAuth token client.
+// The resulting client refuses redirects and proxies, validates every resolved IP,
+// pins dialing to the validated addresses, requires TLS 1.2+, and applies bounded
+// dial, handshake, response-header, and whole-request timeouts.
+type HardenedOAuthTokenClientOptions struct {
+	TokenEndpoint string
+	Timeout       time.Duration
+	allowLoopback bool
+	rootCAs       *x509.CertPool
+}
+
+// AllowHardenedOAuthTokenLoopbackForTest enables a loopback TLS endpoint and its
+// test CA. The relaxation is deliberately unavailable as production data/config.
+func AllowHardenedOAuthTokenLoopbackForTest(t interface{ Helper() }, opts *HardenedOAuthTokenClientOptions, roots *x509.CertPool) {
+	t.Helper()
+	if opts != nil {
+		opts.allowLoopback = true
+		opts.rootCAs = roots
+	}
+}
+
+// NewHardenedOAuthTokenClient constructs a client restricted to the trusted token
+// endpoint's exact origin. Request path/query remain controlled by oauth2.Config.
+func NewHardenedOAuthTokenClient(opts HardenedOAuthTokenClientOptions) (*http.Client, error) {
+	endpoint, err := validateHTTPURL("OAuth token endpoint", opts.TokenEndpoint, false)
+	if err != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
+		return nil, errors.New("OAuth token endpoint must be a canonical HTTPS URL")
+	}
+	origin := urlOrigin(endpoint)
+	resolver := &net.Resolver{}
+	dialer := &net.Dialer{Timeout: 5 * time.Second}
+	transport := &oauthHTTPTransport{
+		origins:            map[string]struct{}{origin: {}},
+		private:            make(map[string]struct{}),
+		issuerOrigin:       origin,
+		resourceOrigin:     origin,
+		requireClientBasic: true,
+		lookup:             resolver.LookupNetIP,
+		dial:               dialer.DialContext,
+		allowLoopback:      opts.allowLoopback,
+	}
+	transport.base = &http.Transport{
+		Proxy:                  nil,
+		TLSClientConfig:        &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: opts.rootCAs},
+		TLSHandshakeTimeout:    5 * time.Second,
+		ResponseHeaderTimeout:  10 * time.Second,
+		MaxResponseHeaderBytes: 64 << 10,
+		MaxIdleConns:           2,
+		MaxIdleConnsPerHost:    2,
+		IdleConnTimeout:        30 * time.Second,
+		DialContext:            transport.dialContext,
+	}
+	timeout := opts.Timeout
+	if timeout <= 0 {
+		timeout = defaultOAuthTimeout
+	}
+	return &http.Client{
+		Transport: transport,
+		Timeout:   timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return projectOAuthError(ErrOAuthUnavailable)
+		},
+	}, nil
+}
+
 type oauthHTTPTransport struct {
 	origins            map[string]struct{}
 	private            map[string]struct{}
 	issuerOrigin       string
 	resourceOrigin     string
 	requireClientBasic bool
+	dcrPublicClientID  string
+	dcrResource        string
+	dcrIssuer          string
 	lookup             oauthLookupFunc
 	dial               oauthDialFunc
 	allowLoopback      bool
@@ -68,13 +139,15 @@ func newOAuthHTTPClient(resource string, opts OAuthOptions) (*http.Client, *oaut
 		issuerOrigin:       urlOrigin(issuer),
 		resourceOrigin:     urlOrigin(resourceURL),
 		requireClientBasic: opts.Client.Preregistered != nil,
+		dcrResource:        canonical,
 		lookup:             resolver.LookupNetIP,
 		dial:               dialer.DialContext,
 		allowLoopback:      opts.allowLoopbackForTest,
 	}
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: opts.testRootCAs}
 	transport.base = &http.Transport{
 		Proxy:                  nil,
-		TLSClientConfig:        &tls.Config{MinVersion: tls.VersionTLS12},
+		TLSClientConfig:        tlsConfig,
 		TLSHandshakeTimeout:    5 * time.Second,
 		ResponseHeaderTimeout:  10 * time.Second,
 		MaxResponseHeaderBytes: 64 << 10,
@@ -176,6 +249,22 @@ func (t *oauthHTTPTransport) validateEgress(req *http.Request, origin string) er
 		if t.requireClientBasic && !strings.HasPrefix(req.Header.Get("Authorization"), "Basic ") {
 			return errors.New("OAuth confidential client must use client_secret_basic")
 		}
+		if err := t.validateDCRPublicExchange(req, form); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (t *oauthHTTPTransport) validateDCRPublicExchange(req *http.Request, form url.Values) error {
+	if t.dcrPublicClientID == "" || form.Get("grant_type") != "authorization_code" {
+		return nil
+	}
+	if strings.HasPrefix(req.Header.Get("Authorization"), "Basic ") {
+		return errors.New("OAuth public client Basic probe rejected")
+	}
+	if req.Header.Get("Authorization") != "" || len(form["client_id"]) != 1 || form.Get("client_id") != t.dcrPublicClientID || len(form["resource"]) != 1 || form.Get("resource") != t.dcrResource || form.Get("client_secret") != "" || form.Get("client_assertion") != "" || form.Get("client_assertion_type") != "" {
+		return errors.New("OAuth public client token request is invalid")
 	}
 	return nil
 }
@@ -206,7 +295,31 @@ func (t *oauthHTTPTransport) RoundTrip(req *http.Request) (*http.Response, error
 		}
 		return nil, projectOAuthError(err)
 	}
+	if t.dcrIssuer != "" && (strings.Contains(req.URL.Path, "/.well-known/oauth-authorization-server") || strings.Contains(req.URL.Path, "/.well-known/openid-configuration")) {
+		if err := validateDCRRuntimeMetadataIssuer(resp, t.dcrIssuer); err != nil {
+			return nil, projectOAuthError(err)
+		}
+	}
 	return resp, nil
+}
+
+func validateDCRRuntimeMetadataIssuer(resp *http.Response, expected string) error {
+	if resp == nil || resp.Body == nil {
+		return ErrOAuthDCRRecoveryRequired
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxOAuthRequestBody+1))
+	_ = resp.Body.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	if err != nil || len(body) > maxOAuthRequestBody {
+		return ErrOAuthDCRRecoveryRequired
+	}
+	var metadata struct {
+		Issuer string `json:"issuer"`
+	}
+	if err := json.Unmarshal(body, &metadata); err != nil || metadata.Issuer != expected {
+		return ErrOAuthDCRRecoveryRequired
+	}
+	return nil
 }
 
 func (t *oauthHTTPTransport) dialContext(ctx context.Context, network, address string) (net.Conn, error) {

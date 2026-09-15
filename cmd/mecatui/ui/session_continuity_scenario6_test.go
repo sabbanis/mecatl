@@ -2,6 +2,7 @@ package ui
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -13,7 +14,7 @@ import (
 func startupSelection(id, state string) *client.ResumeSelection {
 	return &client.ResumeSelection{
 		Row: client.SessionListItem{
-			ID: id, Title: "Prior chat", State: state, Workspace: "/prior", CreatedAt: 10, ModifiedAt: 20,
+			ID: id, Title: "Prior chat", State: state, Placement: client.Placement{Kind: "local", Label: "prior"}, CreatedAt: 10, ModifiedAt: 20,
 			Kind: client.SessionKindMain, Capabilities: client.SessionInventoryCapabilities{PublicChat: true, Inspect: true},
 		},
 		Transcript: client.SessionTranscript{
@@ -21,7 +22,7 @@ func startupSelection(id, state string) *client.ResumeSelection {
 			Messages: []client.ConversationMessage{{Role: "user", Text: "original question"}, {Role: "assistant", Text: "original answer"}},
 		},
 		Snapshot: client.SessionSnapshot{
-			Title: "Prior chat", State: state, Workspace: "/prior", CreatedAt: 10,
+			Title: "Prior chat", State: state, Placement: client.Placement{Kind: "local", Label: "prior"}, CreatedAt: 10,
 		},
 	}
 }
@@ -52,8 +53,8 @@ func TestSessionContinuityUX_Scenario6_NoThrowawaySession(t *testing.T) {
 	if conv.createCount != 0 {
 		t.Fatalf("startup adoption called CreateSession %d times", conv.createCount)
 	}
-	if m.sessionID != "existing" || m.sessionTitle != "Prior chat" || m.activeWorkspace != "/prior" || m.phase != phaseIdle || len(m.conv.blocks) == 0 || !m.prompt.Focused() {
-		t.Fatalf("adopted model incomplete: id=%q title=%q workspace=%q phase=%v blocks=%d focused=%v", m.sessionID, m.sessionTitle, m.activeWorkspace, m.phase, len(m.conv.blocks), m.prompt.Focused())
+	if m.sessionID != "existing" || m.sessionTitle != "Prior chat" || m.activePlacement.Label != "prior" || m.phase != phaseIdle || len(m.conv.blocks) == 0 || !m.prompt.Focused() {
+		t.Fatalf("adopted model incomplete: id=%q title=%q workspace=%q phase=%v blocks=%d focused=%v", m.sessionID, m.sessionTitle, m.activePlacement.Label, m.phase, len(m.conv.blocks), m.prompt.Focused())
 	}
 }
 
@@ -65,6 +66,55 @@ func TestSessionContinuityUX_Scenario6_StaleRunningDefersToRunEntry(t *testing.T
 	}
 	if conv.getSessionCount != 0 || conv.createCount != 0 {
 		t.Fatalf("static adoption performed run-entry work: get=%d create=%d", conv.getSessionCount, conv.createCount)
+	}
+}
+
+func TestStartupRunEntryFailureRebuildsDocumentProjection(t *testing.T) {
+	resume := startupSelection("existing", "running")
+	resume.Transcript.Messages = []client.ConversationMessage{
+		{Role: "user", Text: "old request"},
+		{Role: "assistant", Text: "old tool", ToolCalls: []client.ConvToolCall{{ID: "call-1", Name: "Read", Args: `{"path":"old.go"}`}}},
+		{Role: "tool", ToolResult: &client.ConvToolResult{CallID: "call-1", Content: "old result"}},
+	}
+	m := newTestModelFromDeps(Deps{
+		Session: &fakeConv{}, Theme: testTheme(), Ctx: t.Context(), Workspace: "/launch", Resume: resume,
+	})
+	m.width, m.height = 100, 30
+	m.vp.SetWidth(100)
+	m.vp.SetHeight(20)
+	m.rend.setWidth(100)
+	m.refreshView() // populate the old document's tool and frame caches.
+	m.sel = selection{active: true}
+	m.selBase = "old selection projection"
+	m.conversationView.mode = anchored
+	m.conversationView.anchor = readingAnchor{blockID: 2, region: conversationRegionArguments, bias: towardStart}
+	m.clickCount, m.clickL, m.clickC, m.clickGen = 2, 7, 3, 41
+
+	resume.Transcript.Messages = []client.ConversationMessage{
+		{Role: "user", Text: "new request"},
+		{Role: "assistant", Text: "new tool", ToolCalls: []client.ConvToolCall{{ID: "call-1", Name: "Bash", Args: `{"command":"printf new"}`}}},
+		{Role: "tool", ToolResult: &client.ConvToolResult{CallID: "call-1", Content: "new result", IsError: true}},
+	}
+	m = m.failStartupRunEntry()
+
+	content := stripANSIstr(m.vp.GetContent())
+	if !strings.Contains(content, "new request") || !strings.Contains(content, "new result") || strings.Contains(content, "old result") {
+		t.Fatalf("replacement rendered stale document content:\n%s", content)
+	}
+	fresh := newRenderer(m.deps.Theme, m.rend.marks)
+	fresh.setWidth(m.rend.width)
+	wantFrame := fresh.renderConversationFrame(&m.conv, m.expandTools)
+	if !reflect.DeepEqual(m.conversationView.frame.provenance, wantFrame.provenance) {
+		t.Fatal("replacement retained stale frame provenance")
+	}
+	if m.sel.active || m.selBase != "" {
+		t.Fatalf("replacement retained selection: active=%v base=%q", m.sel.active, m.selBase)
+	}
+	if m.clickCount != 0 || m.clickL != 0 || m.clickC != 0 || m.clickGen != 42 {
+		t.Fatalf("replacement retained click state: count=%d point=(%d,%d) generation=%d", m.clickCount, m.clickL, m.clickC, m.clickGen)
+	}
+	if m.conversationView.mode != followTail || !m.vp.AtBottom() {
+		t.Fatalf("replacement did not follow tail: mode=%v atBottom=%v", m.conversationView.mode, m.vp.AtBottom())
 	}
 }
 

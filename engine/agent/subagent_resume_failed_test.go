@@ -40,7 +40,7 @@ const (
 func seedFailedChildWithOrphanedToolCall(t *testing.T, store port.SessionStore, id session.SessionID, promptText string) session.ToolCallID {
 	t.Helper()
 	const orphanID = session.ToolCallID("orphan-1")
-	seed := session.New(id, session.ModeDefault, "/ws", session.Limits{}, time.Now())
+	seed := session.New(id, session.ModeDefault, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/ws", Revision: "in-tree-v1"}, session.Limits{}, time.Now())
 	if err := seed.RecordUserPrompt(promptText, nil); err != nil {
 		t.Fatalf("seed RecordUserPrompt: %v", err)
 	}
@@ -372,7 +372,7 @@ func TestReadOnlyResumeNoteKeepsFreshCheckoutWording(t *testing.T) {
 // this child's earlier file changes did NOT survive.
 func seedFailedChildInForkRoot(t *testing.T, store port.SessionStore, id session.SessionID, forkRoot string) {
 	t.Helper()
-	seed := session.New(id, session.ModeDefault, forkRoot, session.Limits{}, time.Now())
+	seed := session.New(id, session.ModeDefault, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: forkRoot, Revision: "in-tree-v1"}, session.Limits{}, time.Now())
 	if err := seed.RecordUserPrompt("investigate the parser", nil); err != nil {
 		t.Fatalf("seed RecordUserPrompt: %v", err)
 	}
@@ -398,7 +398,7 @@ func seedFailedChildInForkRoot(t *testing.T, store port.SessionStore, id session
 // write access so it can apply the fix" is a legal and natural parent move. Keying the note
 // on `writable` alone then hands that child resumeWritableNote: "the file edits you already
 // made are STILL IN PLACE". Its earlier run was in a git worktree that no longer exists, and
-// a read-only child — while it has no Edit/Write — DOES have Bash in that worktree, so it
+// a read-only child — while it has no Edit/Write — DOES have Shell in that worktree, so it
 // may genuinely have applied edits that are now gone. That is exactly the falsehood
 // resumeWritableNote exists to prevent, inverted, and it is worse than the "GONE" wording
 // it replaces: a child that trusts absent edits builds on nothing.

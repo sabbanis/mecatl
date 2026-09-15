@@ -121,6 +121,10 @@ message SaveRequest {
 
   // snapshot is the opaque envelope to store verbatim.
   SessionSnapshot snapshot = 2 [(buf.validate.field).required = true];
+
+  // activity_state is the content-free projection supplied by a capable harness
+  // alongside the opaque snapshot.
+  string activity_state = 3;
 }
 
 // SaveResponse is empty: a successful Save has no payload.
@@ -183,6 +187,12 @@ message PageSessionMetadataRequest {
   string owner_subject = 5;
 }
 
+message StoredEnvironmentRef {
+  string kind = 1;
+  string id = 2;
+  string revision = 3;
+}
+
 message SessionMetadataEntry {
   string session_id = 1;
   google.protobuf.Timestamp modified_at = 2;
@@ -204,7 +214,11 @@ message SessionMetadataEntry {
   string owner_grant_type = 18;
   string owner_name = 19;
   bool has_owner = 20;
-  string workspace = 21;
+  reserved 21;
+  reserved "workspace";
+  // Exact private storage identity. Trusted driver transport only; public
+  // Harness/client projections must never expose it.
+  StoredEnvironmentRef environment_ref = 28;
   // title_provenance is "first-prompt", "operator", or empty for legacy/unknown.
   string title_provenance = 22;
   int64 estimated_bytes = 23;
@@ -212,6 +226,7 @@ message SessionMetadataEntry {
   string parent_incarnation = 25;
   string origin_incarnation = 26;
   string debug_target_incarnation = 27;
+  string activity_state = 29;
 }
 
 message PageSessionMetadataResponse {
@@ -227,12 +242,17 @@ message SessionStoreCapabilitiesResponse {
   bool delete = 3;
   bool lineage = 4;
   bool create = 5;
+  bool activity_projection = 6;
 }
 
 message ReadSessionLineageRequest {
   string root_session_id = 1 [(buf.validate.field).string.min_len = 1];
   int32 limit = 2;
   string root_incarnation = 3 [(buf.validate.field).string.min_len = 1];
+  // Optional exact-record selector. Both fields must be set together; a selected
+  // direct edge is read without returning sibling records.
+  string record_session_id = 4;
+  string record_incarnation = 5;
 }
 
 // SessionLineageEntry is content-free durable relationship metadata. It must

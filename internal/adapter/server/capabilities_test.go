@@ -6,7 +6,6 @@ import (
 	"time"
 
 	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
-	"github.com/stacklok/mecatl/engine/adapter/memfs"
 	"github.com/stacklok/mecatl/engine/adapter/memstore"
 	"github.com/stacklok/mecatl/engine/adapter/mockllm"
 	"github.com/stacklok/mecatl/engine/adapter/permpolicy"
@@ -21,11 +20,11 @@ import (
 )
 
 // noopRunner is a do-nothing tool.CommandRunner used only to construct a real
-// Bash tool (NewBashTool panics on a nil runner). The test never executes it; it
+// Shell tool (NewShellTool panics on a nil runner). The test never executes it; it
 // only needs the tool registered under its real catalog name so capabilities()
 // reports bash=true. Driving caps from the REAL tool constructors (rather than a
-// stub named "Bash") is what makes TestCapabilities a rename-drift backstop.
-// (The runner is bound to the Environment at Execute time, so NewBashTool takes
+// stub named "Shell") is what makes TestCapabilities a rename-drift backstop.
+// (The runner is bound to the Environment at Execute time, so NewShellTool takes
 // no runner now — issue #462.)
 
 // noopMemStore is a do-nothing tool.MemoryStore used only to construct the real
@@ -43,6 +42,10 @@ func (noopMemStore) Index(context.Context) ([]tool.MemoryEntry, error)        { 
 func (noopMemStore) Search(context.Context, string, int) ([]tool.MemoryEntry, error) {
 	return nil, nil
 }
+
+type stubCommandLister struct{}
+
+func (*stubCommandLister) List(context.Context, string) ([]server.Command, error) { return nil, nil }
 
 // stubMemberEngine satisfies Config.MemberEngine (MemberEngineFactory) just
 // enough to be non-nil; the Service only nil-checks it for the teams cap. It is
@@ -75,10 +78,10 @@ func buildCapsService(
 		Model:   "test-model",
 	})
 	cfg := server.Config{
-		Engine:     engine,
-		Store:      memstore.New(),
-		Workspaces: func(root string) tool.Workspace { return memfs.NewWorkspace(root) },
-		Now:        func() time.Time { return time.Unix(0, 0) },
+		Engine: engine,
+		Store:  memstore.New(),
+
+		Now: func() time.Time { return time.Unix(0, 0) },
 	}
 	if mcpProvider {
 		cfg.MCPProvider = &fakeProvider{}
@@ -89,7 +92,7 @@ func buildCapsService(
 	if teams {
 		cfg.MemberEngine = stubMemberEngine
 	}
-	svc, err := server.NewService(cfg)
+	svc, err := newPlacementTestService(cfg)
 	if err != nil {
 		t.Fatalf("new service: %v", err)
 	}
@@ -105,7 +108,7 @@ func capsFromCreate(t *testing.T, svc *server.Service) *mecatlv1.ServerCapabilit
 	defer cleanup()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	resp, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: "/ws"})
+	resp, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -126,11 +129,11 @@ func TestCapabilitiesMediaFromProvider(t *testing.T) {
 		Policy:  permpolicy.NewPolicy(nil, nil),
 		Model:   "test-model",
 	})
-	svc, err := server.NewService(server.Config{
-		Engine:     engine,
-		Store:      memstore.New(),
-		Workspaces: func(root string) tool.Workspace { return memfs.NewWorkspace(root) },
-		Now:        func() time.Time { return time.Unix(0, 0) },
+	svc, err := newPlacementTestService(server.Config{
+		Engine: engine,
+		Store:  memstore.New(),
+
+		Now: func() time.Time { return time.Unix(0, 0) },
 		// The server reads DefaultCapabilities (composition-computed), not the engine.
 		DefaultCapabilities: port.ProviderCapabilities{Image: true},
 	})
@@ -162,12 +165,12 @@ func TestCapabilitiesAgentsFromSnapshot(t *testing.T) {
 			Policy:  permpolicy.NewPolicy(nil, nil),
 			Model:   "test-model",
 		})
-		svc, err := server.NewService(server.Config{
-			Engine:     engine,
-			Store:      memstore.New(),
-			Workspaces: func(root string) tool.Workspace { return memfs.NewWorkspace(root) },
-			Now:        func() time.Time { return time.Unix(0, 0) },
-			Agents:     agents,
+		svc, err := newPlacementTestService(server.Config{
+			Engine: engine,
+			Store:  memstore.New(),
+
+			Now:    func() time.Time { return time.Unix(0, 0) },
+			Agents: agents,
 		})
 		if err != nil {
 			t.Fatalf("new service: %v", err)
@@ -196,10 +199,10 @@ func TestCapabilitiesAgentsFromSnapshot(t *testing.T) {
 // the tool caps are driven by the REAL tool constructors, so it fails if a tool
 // is ever renamed (the spelling the Service probes would drift from the
 // registration), and the seam caps flip with the nil-checks the feature RPCs use.
-func TestCapabilities(t *testing.T) {
+func TestCanonicalShellTool_Scenario1_CapabilityCompatibility(t *testing.T) {
 	remember := memory.NewRememberTool(noopMemStore{})
 	skill := skills.NewTool(nil, nil)
-	bash := tools.NewBashTool()
+	bash := tools.NewShellTool()
 
 	tests := []struct {
 		name  string

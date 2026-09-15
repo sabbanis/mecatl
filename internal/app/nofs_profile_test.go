@@ -31,9 +31,9 @@ import (
 // exactly these — nothing more (a family silently dropped from no-FS) and
 // nothing less (a file tool leaking back in).
 var noFSExcludedTools = []string{
-	"Read", "Edit", "Write", "Grep", "Glob", "Bash",
+	"Read", "ListDir", "Edit", "Write", "Copy", "Move", "Remove", "Grep", "Glob", "Shell",
 	"Parallel",
-	"BashStatus",         // the background-Bash companion: no Bash ⇒ no jobs to status/collect
+	"ShellStatus",        // the background-Shell companion: no Shell ⇒ no jobs to status/collect
 	skills.DraftToolName, // "SkillDraft"
 }
 
@@ -56,7 +56,7 @@ func TestNoFSCatalogProfile(t *testing.T) {
 	reg := regForTest(oa, providerOpenAI, cfg.Model)
 	hooks := hookexec.New(nil)
 
-	sharedCat, assets, _, _, mcpClose, err := buildCatalog(ctx, cfg, reg, oa, hooks, agents.NewRegistry(nil), memstore.New(), nil)
+	sharedCat, assets, _, _, mcpClose, err := buildCatalog(ctx, isolateConfig(t, cfg), reg, oa, hooks, agents.NewRegistry(nil), memstore.New(), nil)
 	if err != nil {
 		t.Fatalf("buildCatalog: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestNoFSParallelAbsent(t *testing.T) {
 	reg := regForTest(oa, providerOpenAI, cfg.Model)
 	hooks := hookexec.New(nil)
 
-	_, assets, _, _, mcpClose, err := buildCatalog(ctx, cfg, reg, oa, hooks, agents.NewRegistry(nil), memstore.New(), nil)
+	_, assets, _, _, mcpClose, err := buildCatalog(ctx, isolateConfig(t, cfg), reg, oa, hooks, agents.NewRegistry(nil), memstore.New(), nil)
 	if err != nil {
 		t.Fatalf("buildCatalog: %v", err)
 	}
@@ -122,12 +122,12 @@ func TestNoFSParallelAbsent(t *testing.T) {
 	// Delegation stays available: Subagent and Team survive the profile.
 	for _, name := range []string{"Subagent", "Team", "Skill", "WebFetch", "FetchMcpResource"} {
 		if _, ok := toolNameSet(noFSCat.Tools())[name]; !ok {
-			t.Errorf("no-FS catalog is missing %q — only file tools/Bash/Parallel/SkillDraft may be excluded", name)
+			t.Errorf("no-FS catalog is missing %q — only file tools/Shell/Parallel/SkillDraft may be excluded", name)
 		}
 	}
 	// PresentPlan (issue #206 Wave 3) is registered in the no-FS catalog too — it
 	// is a signalling affordance, NOT a filesystem act, so it is NOT in the
-	// noFSExcludedTools set {Read,Edit,Write,Grep,Glob,Bash,Parallel,SkillDraft}.
+	// noFSExcludedTools set {Read,ListDir,Edit,Write,Copy,Move,Remove,Grep,Glob,Shell,Parallel,SkillDraft}.
 	// (It implements tool.PlanOnly, so the mode projection hides it outside plan
 	// mode — but it must be REGISTERED so the no-FS and shared name-sets agree.)
 	if _, ok := toolNameSet(noFSCat.Tools())["PresentPlan"]; !ok {
@@ -163,9 +163,9 @@ func TestApplyNoFSPosture(t *testing.T) {
 
 // TestNoFSSubagentChildInheritsNoFS proves the no-FS Subagent child genuinely
 // runs the file-less surface: driven through the REAL buildSubagentTool
-// (noFS=true) with a scripted child, the child's Read and Bash calls come back
+// (noFS=true) with a scripted child, the child's Read and Shell calls come back
 // as unknown-tool errors (no FS tools, no shell — even though the config HAS a
-// shell, proving the no-FS gate beats the shell wiring, and without a Bash
+// shell, proving the no-FS gate beats the shell wiring, and without a Shell
 // child no forker is ever wired: the two move together) while its Remember call
 // AND its global-MCP call succeed against the shared store/manager. The tool
 // specs OFFERED to the child model carry WebFetch + FetchMcpResource + the
@@ -195,7 +195,7 @@ func TestNoFSSubagentChildInheritsNoFS(t *testing.T) {
 			}
 		})},
 		mockllm.ToolCallTurn(session.ToolCall{ID: "r1", Name: "Read", Args: json.RawMessage(`{"file_path":"/etc/passwd"}`)}),
-		mockllm.ToolCallTurn(session.ToolCall{ID: "b1", Name: "Bash", Args: json.RawMessage(`{"command":"echo hi"}`)}),
+		mockllm.ToolCallTurn(session.ToolCall{ID: "b1", Name: "Shell", Args: json.RawMessage(`{"command":"echo hi"}`)}),
 		mockllm.ToolCallTurn(session.ToolCall{ID: "m1", Name: "Remember", Args: json.RawMessage(`{"key":"note/x","value":"hello"}`)}),
 		mockllm.ToolCallTurn(session.ToolCall{ID: "e1", Name: "mcp__globe__echo", Args: json.RawMessage(`{"text":"hi"}`)}),
 		mockllm.TextTurn("nofs child summary"),
@@ -251,7 +251,7 @@ func TestNoFSSubagentChildInheritsNoFS(t *testing.T) {
 		}
 		if p.InnerKind == session.EvToolResult {
 			switch p.ToolName {
-			case "Read", "Bash":
+			case "Read", "Shell":
 				if !p.IsError {
 					t.Errorf("no-FS child's %s call SUCCEEDED — the file/shell tool leaked into the child catalog", p.ToolName)
 				}
@@ -267,7 +267,7 @@ func TestNoFSSubagentChildInheritsNoFS(t *testing.T) {
 		}
 		saw[p.ToolName] = true
 	}
-	for _, name := range []string{"Read", "Bash", "Remember", "mcp__globe__echo"} {
+	for _, name := range []string{"Read", "Shell", "Remember", "mcp__globe__echo"} {
 		if !saw[name] {
 			t.Errorf("scripted child call %q never surfaced on subagent.tool — script not exercised", name)
 		}
@@ -286,7 +286,7 @@ func TestNoFSSubagentChildInheritsNoFS(t *testing.T) {
 			t.Errorf("child request tool specs are missing %q (got %v)", want, offeredTools)
 		}
 	}
-	for _, banned := range []string{"Read", "Edit", "Write", "Grep", "Glob", "Bash"} {
+	for _, banned := range []string{"Read", "ListDir", "Edit", "Write", "Copy", "Move", "Remove", "Grep", "Glob", "Shell"} {
 		if offered[banned] {
 			t.Errorf("child request tool specs OFFER %q — a file/shell tool leaked into the no-FS child surface", banned)
 		}
@@ -319,7 +319,7 @@ func TestCreateSessionNoFSProfileNoWorkspace(t *testing.T) {
 		reqMu   sync.Mutex
 		systems []string
 	)
-	built, err := Build(ctx, Config{
+	built, err := buildIsolated(t, ctx, Config{
 		Workspace:           t.TempDir(), // the SERVER still has a default workspace for the shared engine
 		NoSoul:              true,
 		MemoryDir:           t.TempDir(),
@@ -344,12 +344,12 @@ func TestCreateSessionNoFSProfileNoWorkspace(t *testing.T) {
 	defer built.Close()
 	svc := built.Service
 
-	sess, err := svc.CreateSessionWithProfile(ctx, "", session.ModeDefault, session.Limits{}, server.ProviderSelector{}, server.ProfileNoFS)
+	sess, err := svc.CreateSessionWithProfile(ctx, session.ModeDefault, session.Limits{}, server.ProviderSelector{}, server.ProfileNoFS)
 	if err != nil {
 		t.Fatalf("CreateSessionWithProfile(no-fs, empty workspace): %v", err)
 	}
-	if sess.Workspace != "" {
-		t.Fatalf("no-fs session persisted Workspace = %q, want \"\"", sess.Workspace)
+	if sess.EnvironmentRef.Kind != session.EnvKindNoFS {
+		t.Fatalf("no-fs session persisted EnvironmentRef = %+v, want nofs", sess.EnvironmentRef)
 	}
 
 	run, err := svc.StartRun(ctx, sess.ID, "do a file-free check")
@@ -414,26 +414,14 @@ func TestCreateSessionNoFSProfileNoWorkspace(t *testing.T) {
 	}
 }
 
-// TestCreateSessionNoFSRejectsWorkspace: the contradictory no-fs + workspace
-// combination is rejected loudly (never resolved by dropping either field).
-func TestCreateSessionNoFSRejectsWorkspace(t *testing.T) {
+// TestCreateSessionDefaultProfileUsesServerPlacement proves an omitted workspace
+// binds the provider-owned default.
+func TestCreateSessionDefaultProfileUsesServerPlacement(t *testing.T) {
 	svc := nofsRejectionService(t)
-	_, err := svc.CreateSessionWithProfile(context.Background(), "/some/where", session.ModeDefault, session.Limits{},
-		server.ProviderSelector{}, server.ProfileNoFS)
-	if err == nil || !strings.Contains(err.Error(), "must not carry a workspace") {
-		t.Fatalf("no-fs + workspace must be rejected loudly, got: %v", err)
-	}
-}
-
-// TestCreateSessionDefaultProfileRequiresWorkspace: today's behaviour is
-// preserved byte-for-byte for the default profile — an empty workspace is still
-// rejected.
-func TestCreateSessionDefaultProfileRequiresWorkspace(t *testing.T) {
-	svc := nofsRejectionService(t)
-	_, err := svc.CreateSessionWithProfile(context.Background(), "", session.ModeDefault, session.Limits{},
+	sess, err := svc.CreateSessionWithProfile(context.Background(), session.ModeDefault, session.Limits{},
 		server.ProviderSelector{}, server.ProfileDefault)
-	if err == nil || !strings.Contains(err.Error(), "workspace is required") {
-		t.Fatalf("default profile + empty workspace must be rejected, got: %v", err)
+	if err != nil || !sess.EnvironmentRef.Valid() {
+		t.Fatalf("default profile server placement = %+v, %v", sess, err)
 	}
 }
 
@@ -441,7 +429,7 @@ func TestCreateSessionDefaultProfileRequiresWorkspace(t *testing.T) {
 // invalid-argument, never a silent fallback to the default profile.
 func TestCreateSessionUnknownProfileRejected(t *testing.T) {
 	svc := nofsRejectionService(t)
-	_, err := svc.CreateSessionWithProfile(context.Background(), "", session.ModeDefault, session.Limits{},
+	_, err := svc.CreateSessionWithProfile(context.Background(), session.ModeDefault, session.Limits{},
 		server.ProviderSelector{}, server.SessionProfile("ram-only"))
 	if err == nil || !strings.Contains(err.Error(), "unknown session profile") {
 		t.Fatalf("unknown profile must be rejected loudly, got: %v", err)
@@ -458,10 +446,9 @@ func nofsRejectionService(t *testing.T) *server.Service {
 		Policy:  permpolicy.NewPolicy(defaultRules(), nil),
 		Hooks:   hookexec.New(nil),
 	})
-	svc, err := server.NewService(server.Config{
-		Engine:     eng,
-		Store:      memstore.New(),
-		Workspaces: func(string) tool.Workspace { return nofs.New() },
+	svc, err := newTestServerService(server.Config{
+		Engine: eng,
+		Store:  memstore.New(),
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
@@ -503,11 +490,11 @@ func TestNoFSSessionSurvivesRestartE2E(t *testing.T) {
 	cfg1.providerConstructor = func(_ Config, _, _, _ string) port.LLMProvider {
 		return mockllm.New(mockllm.TextTurn("pre-restart-done"))
 	}
-	built1, err := Build(ctx, cfg1)
+	built1, err := buildIsolated(t, ctx, cfg1)
 	if err != nil {
 		t.Fatalf("Build #1: %v", err)
 	}
-	sess, err := built1.Service.CreateSessionWithProfile(ctx, "", session.ModeDefault, session.Limits{},
+	sess, err := built1.Service.CreateSessionWithProfile(ctx, session.ModeDefault, session.Limits{},
 		server.ProviderSelector{}, server.ProfileNoFS)
 	if err != nil {
 		built1.Close()
@@ -541,7 +528,7 @@ func TestNoFSSessionSurvivesRestartE2E(t *testing.T) {
 			mockllm.TextTurn("rehydrated-done"),
 		)
 	}
-	built2, err := Build(ctx, cfg2)
+	built2, err := buildIsolated(t, ctx, cfg2)
 	if err != nil {
 		t.Fatalf("Build #2: %v", err)
 	}
@@ -726,13 +713,14 @@ func TestSelectorSessionSurvivesRestartE2E(t *testing.T) {
 
 	baseCfg := func() Config {
 		return Config{
-			Workspace:           workspace,
-			NoSoul:              true,
-			StoreDir:            storeDir,
-			MemoryDir:           memoryDir,
-			MaxRunTokens:        budget,
-			envDetector:         fakeEnv(map[string]string{"OPENAI_API_KEY": "sk-openai", "OPENROUTER_API_KEY": "sk-openrouter"}),
-			liveModelHTTPClient: offlineHTTPClient(),
+			Workspace:             workspace,
+			NoSoul:                true,
+			StoreDir:              storeDir,
+			MemoryDir:             memoryDir,
+			MaxRunTokens:          budget,
+			ContextWindowOverride: defaultContextWindowTokens,
+			envDetector:           fakeEnv(map[string]string{"OPENAI_API_KEY": "sk-openai", "OPENROUTER_API_KEY": "sk-openrouter"}),
+			liveModelHTTPClient:   offlineHTTPClient(),
 		}
 	}
 
@@ -752,11 +740,11 @@ func TestSelectorSessionSurvivesRestartE2E(t *testing.T) {
 		}
 		return mockllm.NewWith([]mockllm.Option{record(&openaiCap)}, mockllm.TextTurn("openai-default"))
 	}
-	built1, err := Build(ctx, cfg1)
+	built1, err := buildIsolated(t, ctx, cfg1)
 	if err != nil {
 		t.Fatalf("Build #1: %v", err)
 	}
-	sess, err := built1.Service.CreateSessionWithProfile(ctx, "", session.ModeDefault, session.Limits{},
+	sess, err := built1.Service.CreateSessionWithProfile(ctx, session.ModeDefault, session.Limits{},
 		server.ProviderSelector{ProviderID: providerOpenRouter, ModelID: selectorModel}, server.ProfileNoFS)
 	if err != nil {
 		built1.Close()
@@ -807,7 +795,7 @@ func TestSelectorSessionSurvivesRestartE2E(t *testing.T) {
 		}
 		return mockllm.NewWith([]mockllm.Option{record(&openaiCap)}, mockllm.TextTurn("openai-default"))
 	}
-	built2, err := Build(ctx, cfg2)
+	built2, err := buildIsolated(t, ctx, cfg2)
 	if err != nil {
 		t.Fatalf("Build #2: %v", err)
 	}

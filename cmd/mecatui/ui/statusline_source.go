@@ -1,17 +1,41 @@
 package ui
 
 import (
-	"path/filepath"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/stacklok/mecatl/cmd/mecatui/client"
 	statusline "github.com/stacklok/mecatl/cmd/mecatui/statusline"
 )
 
 type statusLineChangedMsg struct {
 	line statusline.Result
+}
+
+type statusContextMsg struct {
+	sessionID string
+	root      string
+}
+
+func (m Model) refreshStatusContextCmd() tea.Cmd {
+	if m.deps.StatusSource == nil || m.sessionID == "" {
+		return nil
+	}
+	id := m.sessionID
+	statusline.ClearCommandCWD(m.deps.StatusSource)
+	if m.deps.LocalSessionContext == nil {
+		return nil
+	}
+	getter, ctx := m.deps.LocalSessionContext, m.deps.Ctx
+	return func() tea.Msg {
+		root, err := getter.GetLocalSessionContext(ctx, id)
+		if err != nil {
+			return statusContextMsg{sessionID: id}
+		}
+		return statusContextMsg{sessionID: id, root: root}
+	}
 }
 
 // statusLineWaitCmd is the UI's sole source listener.
@@ -135,13 +159,16 @@ func (m Model) statusLineInput(now time.Time) statusline.Input {
 	if m.usage.InputTokens > 0 {
 		cachePercent = int(m.usage.CacheReadTokens * 100 / m.usage.InputTokens)
 	}
-	workspace := statusline.Workspace{Location: "unknown"}
-	if m.activeWorkspace != "" {
-		if m.deps.ConnectionMode == "connect" {
+	workspace := statusline.Workspace{Location: unknownLabel}
+	if m.activePlacement.Kind != "" || m.activePlacement.Label != "" {
+		workspace.Location = "local"
+		if m.deps.ConnectionMode == connectCommand {
 			workspace.Location = "remote"
-		} else {
-			workspace = statusline.Workspace{Location: "local", Path: m.activeWorkspace, Basename: filepath.Base(m.activeWorkspace)}
 		}
+		workspace.Name = m.activePlacement.Label
+	}
+	if workspace.Location == "local" && m.deps.ConnectionMode != "connect" && m.statusContextRoot != "" {
+		workspace.Path = m.statusContextRoot
 	}
 	state, activity, approval := "idle", "", "none"
 	mode := m.activeMode
@@ -151,10 +178,7 @@ func (m Model) statusLineInput(now time.Time) statusline.Input {
 	if m.pendingMode != "" {
 		mode = m.pendingMode + " pending"
 	}
-	digest := ""
-	if m.sessionID != "" {
-		digest = sessionDigest(m.sessionID)[:8]
-	}
+	handle := client.SessionHandle(m.sessionID)
 	switch m.phase {
 	case phaseConnecting:
 		state = "connecting"
@@ -174,7 +198,7 @@ func (m Model) statusLineInput(now time.Time) statusline.Input {
 	return statusline.Input{
 		Version: statusline.ProtocolVersion,
 		Server:  statusline.ServerTarget{DisplayTarget: m.deps.Server, ConnectionMode: m.deps.ConnectionMode},
-		Session: statusline.Session{Title: m.sessionTitle, Digest: digest, Mode: mode, ReasoningEffort: m.resolvedSessionModel.ReasoningEffort},
+		Session: statusline.Session{Title: m.sessionTitle, Handle: handle, Mode: mode, ReasoningEffort: m.resolvedSessionModel.ReasoningEffort},
 		Model:   statusline.Model{ProviderID: m.resolvedSessionModel.ProviderID, ID: m.resolvedSessionModel.ModelID, DisplayName: m.headerModelLabel(), Route: m.providerRoute, ContextWindow: contextAtom(window)},
 		Usage:   statusline.Usage{Input: usageAtom(m.usage.InputTokens), Output: usageAtom(m.usage.OutputTokens), CacheRead: usageAtom(m.usage.CacheReadTokens), CacheWrite: usageAtom(m.usage.CacheWriteTokens), CacheReadPercent: cachePercent},
 		Context: statusline.Context{Used: contextAtom(m.contextTokens), Window: contextAtom(window), Percent: contextPercent}, Workspace: workspace,

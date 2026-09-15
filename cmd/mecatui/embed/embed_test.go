@@ -40,7 +40,7 @@ import (
 // assertion downstream. It uses the generated proto client directly (this package
 // is one of the few allowed to import contracts/gen) because the higher-level
 // client.Stream exposes no synchronous Recv for a test to drain.
-func driveTurn(ctx context.Context, t *testing.T, target, workspace string) {
+func driveTurn(ctx context.Context, t *testing.T, target, _ string) {
 	t.Helper()
 	conn, err := grpc.NewClient(target, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -49,7 +49,7 @@ func driveTurn(ctx context.Context, t *testing.T, target, workspace string) {
 	defer func() { _ = conn.Close() }()
 	svc := mecatlv1.NewHarnessServiceClient(conn)
 
-	cs, err := svc.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: workspace})
+	cs, err := svc.CreateSession(ctx, &mecatlv1.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession for turn: %v", err)
 	}
@@ -88,12 +88,13 @@ func TestStartServesOverSocket(t *testing.T) {
 
 	workspace := t.TempDir()
 	srv, err := embed.Start(ctx, app.Config{
-		Workspace:  workspace,
-		Model:      "mock-model",
-		UseMock:    true, // offline: no network, no OPENAI_API_KEY needed
-		Shell:      "/bin/sh",
-		Compaction: "heuristic",
-		Tokenizer:  "heuristic",
+		Workspace:    workspace,
+		UserModelDir: t.TempDir(),
+		Model:        "mock-model",
+		UseMock:      true, // offline: no network, no OPENAI_API_KEY needed
+		Shell:        "/bin/sh",
+		Compaction:   "heuristic",
+		Tokenizer:    "heuristic",
 	}, embed.PerfConfig{})
 	if err != nil {
 		t.Fatalf("embed.Start: %v", err)
@@ -113,7 +114,7 @@ func TestStartServesOverSocket(t *testing.T) {
 	}
 	defer func() { _ = cl.Close() }()
 
-	sessID, _, _, err := cl.CreateSession(ctx, workspace, client.ModeFromString("default"), client.ModelSelection{})
+	sessID, _, _, err := cl.CreateSession(ctx, client.ModeFromString("default"), client.ModelSelection{})
 	if err != nil {
 		t.Fatalf("CreateSession over embedded socket: %v", err)
 	}
@@ -140,6 +141,7 @@ func TestStartWithMemoryDirServes(t *testing.T) {
 	workspace := t.TempDir()
 	srv, err := embed.Start(ctx, app.Config{
 		Workspace:      workspace,
+		UserModelDir:   t.TempDir(),
 		Model:          "mock-model",
 		UseMock:        true, // offline: no network, no OPENAI_API_KEY needed
 		Shell:          "/bin/sh",
@@ -164,7 +166,7 @@ func TestStartWithMemoryDirServes(t *testing.T) {
 	}
 	defer func() { _ = cl.Close() }()
 
-	sessID, caps, resolved, err := cl.CreateSession(ctx, workspace, client.ModeFromString("default"), client.ModelSelection{})
+	sessID, caps, resolved, err := cl.CreateSession(ctx, client.ModeFromString("default"), client.ModelSelection{})
 	if err != nil {
 		t.Fatalf("CreateSession over embedded socket (memory enabled): %v", err)
 	}
@@ -221,6 +223,7 @@ func TestStartListAgentsOverSocket(t *testing.T) {
 	workspace := t.TempDir()
 	srv, err := embed.Start(ctx, app.Config{
 		Workspace:          workspace,
+		UserModelDir:       t.TempDir(),
 		Model:              "mock-model",
 		UseMock:            true,
 		Shell:              "/bin/sh",
@@ -240,7 +243,7 @@ func TestStartListAgentsOverSocket(t *testing.T) {
 	}
 	defer func() { _ = cl.Close() }()
 
-	_, caps, _, err := cl.CreateSession(ctx, workspace, client.ModeFromString("default"), client.ModelSelection{})
+	_, caps, _, err := cl.CreateSession(ctx, client.ModeFromString("default"), client.ModelSelection{})
 	if err != nil {
 		t.Fatalf("CreateSession over embedded socket: %v", err)
 	}
@@ -297,14 +300,16 @@ func TestStartProviderError(t *testing.T) {
 
 // mockAppConfig is the offline (mock-provider) app.Config shared by the perf
 // tests — no network, no OPENAI_API_KEY.
-func mockAppConfig(workspace string) app.Config {
+func mockAppConfig(t testing.TB, workspace string) app.Config {
+	t.Helper()
 	return app.Config{
-		Workspace:  workspace,
-		Model:      "mock-model",
-		UseMock:    true,
-		Shell:      "/bin/sh",
-		Compaction: "heuristic",
-		Tokenizer:  "heuristic",
+		Workspace:    workspace,
+		UserModelDir: t.TempDir(),
+		Model:        "mock-model",
+		UseMock:      true,
+		Shell:        "/bin/sh",
+		Compaction:   "heuristic",
+		Tokenizer:    "heuristic",
 	}
 }
 
@@ -315,7 +320,7 @@ func TestStartPerfDisabledStartsNoAdminListener(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	srv, err := embed.Start(ctx, mockAppConfig(t.TempDir()), embed.PerfConfig{})
+	srv, err := embed.Start(ctx, mockAppConfig(t, t.TempDir()), embed.PerfConfig{})
 	if err != nil {
 		t.Fatalf("embed.Start (perf off): %v", err)
 	}
@@ -337,7 +342,7 @@ func TestStartPerfMCPRefusesNonLoopback(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	srv, err := embed.Start(ctx, mockAppConfig(t.TempDir()), embed.PerfConfig{
+	srv, err := embed.Start(ctx, mockAppConfig(t, t.TempDir()), embed.PerfConfig{
 		Enabled: true,
 		MCP:     true,
 		Addr:    "0.0.0.0:0", // non-loopback: must be refused
@@ -358,11 +363,11 @@ func TestStartPerfMCPRefusesNonLoopback(t *testing.T) {
 func TestStartPerfDefaultUnixIsCollisionFree(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	first, err := embed.Start(ctx, mockAppConfig(t.TempDir()), embed.PerfConfig{Enabled: true})
+	first, err := embed.Start(ctx, mockAppConfig(t, t.TempDir()), embed.PerfConfig{Enabled: true})
 	if err != nil {
 		t.Fatalf("start first: %v", err)
 	}
-	second, err := embed.Start(ctx, mockAppConfig(t.TempDir()), embed.PerfConfig{Enabled: true})
+	second, err := embed.Start(ctx, mockAppConfig(t, t.TempDir()), embed.PerfConfig{Enabled: true})
 	if err != nil {
 		_ = first.Close()
 		t.Fatalf("start second: %v", err)
@@ -417,7 +422,7 @@ func TestStartPerfDefaultUnixIsCollisionFree(t *testing.T) {
 func TestStartPerfExplicitTCPOverride(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	srv, err := embed.Start(ctx, mockAppConfig(t.TempDir()), embed.PerfConfig{
+	srv, err := embed.Start(ctx, mockAppConfig(t, t.TempDir()), embed.PerfConfig{
 		Enabled: true,
 		Addr:    "127.0.0.1:0",
 	})
@@ -458,7 +463,7 @@ func TestStartPerfServesAdminSurface(t *testing.T) {
 	defer cancel()
 
 	workspace := t.TempDir()
-	srv, err := embed.Start(ctx, mockAppConfig(workspace), embed.PerfConfig{
+	srv, err := embed.Start(ctx, mockAppConfig(t, workspace), embed.PerfConfig{
 		Enabled:                true,
 		MCP:                    true,    // empty Addr => ephemeral loopback for streaming HTTP
 		GoroutineWarnThreshold: 1 << 30, // armed but never fires
@@ -490,7 +495,7 @@ func TestStartPerfServesAdminSurface(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial embedded gRPC server with perf enabled: %v", err)
 	}
-	perfSessID, _, _, err := cl.CreateSession(ctx, workspace, client.ModeFromString("default"), client.ModelSelection{})
+	perfSessID, _, _, err := cl.CreateSession(ctx, client.ModeFromString("default"), client.ModelSelection{})
 	if err != nil {
 		t.Fatalf("CreateSession with perf enabled: %v", err)
 	}
@@ -713,7 +718,7 @@ func TestStartPerfServesAdminSurface(t *testing.T) {
 func startEmbeddedBuiltServer(t *testing.T, cfg app.Config) (target string, built *app.Built, teardown func()) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	b, err := app.Build(ctx, cfg)
+	b, err := buildIsolated(t, ctx, cfg)
 	if err != nil {
 		cancel()
 		t.Fatalf("app.Build: %v", err)
@@ -772,7 +777,7 @@ func TestFireDelivery_EmbeddedEndToEnd(t *testing.T) {
 	defer cancel()
 
 	workspace := t.TempDir()
-	cfg := mockAppConfig(workspace)
+	cfg := mockAppConfig(t, workspace)
 	// The durable jsonlstore (StoreDir) exposes a ScheduleStore, so the scheduler
 	// + the durable DeliveryQueue wire up (buildScheduler + buildDeliveryQueue).
 	cfg.StoreDir = t.TempDir()
@@ -801,7 +806,7 @@ func TestFireDelivery_EmbeddedEndToEnd(t *testing.T) {
 	hc := mecatlv1.NewHarnessServiceClient(conn)
 
 	// 1. Create the ORIGIN session S over the real socket.
-	cs, err := hc.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: workspace})
+	cs, err := hc.CreateSession(ctx, &mecatlv1.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession origin: %v", err)
 	}
@@ -863,12 +868,11 @@ func TestFireDelivery_EmbeddedEndToEnd(t *testing.T) {
 	// picks up exercises the REAL tick→fire→deliver chain (stronger than FireNow:
 	// it proves the tick loop, the Claim-before-fire, and the deliverFireResult
 	// callback all wire together). The schedule is read-leaning (mutating:false)
-	// in plan mode, rooted at the workspace.
+	// in plan mode and inherits the origin session's exact private placement.
 	schedName := "embedded-delivery-e2e"
 	spec := port.ScheduleSpec{
 		Name:            schedName,
 		Prompt:          "monitor the build",
-		Workspace:       workspace,
 		Mode:            session.ModePlan,
 		Mutating:        false,
 		OriginSessionID: originID, // <- the metadata-only routing key the wire cannot carry

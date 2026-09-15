@@ -35,7 +35,7 @@ func writeOperatorSettingsFile(t *testing.T, body string) string {
 // the YAML override is what routes zero-selector sessions to toolhive.
 func buildWithToolhiveAndKey(t *testing.T, operatorSettingsPath string, diag port.Diagnostics) (*Built, error) {
 	t.Helper()
-	return Build(context.Background(), Config{
+	return buildIsolated(t, context.Background(), Config{
 		Workspace: t.TempDir(),
 		NoSoul:    true,
 		// An openrouter key makes openrouter a keyed, key-driven provider — the
@@ -75,7 +75,7 @@ func TestBuildOperatorYAMLDefaultProviderSeam(t *testing.T) {
 	// A zero-selector session inherits the deployment default: with the YAML
 	// override ACTIVE, the resolved provider is toolhive (NOT openrouter, the
 	// keyed ladder winner absent the override).
-	sess, err := svc.CreateSession(ctx, t.TempDir(), session.ModeDefault, defaultLimits())
+	sess, err := svc.CreateSession(ctx, session.ModeDefault, defaultLimits())
 	if err != nil {
 		t.Fatalf("CreateSession(zero-selector): %v", err)
 	}
@@ -100,7 +100,7 @@ func TestBuildOperatorYAMLDefaultProviderAbsentKeepsLadderDefault(t *testing.T) 
 	defer built.Close()
 	svc := built.Service
 
-	sess, err := svc.CreateSession(ctx, t.TempDir(), session.ModeDefault, defaultLimits())
+	sess, err := svc.CreateSession(ctx, session.ModeDefault, defaultLimits())
 	if err != nil {
 		t.Fatalf("CreateSession(zero-selector): %v", err)
 	}
@@ -116,7 +116,7 @@ func TestBuildOperatorYAMLDefaultProviderAbsentKeepsLadderDefault(t *testing.T) 
 func TestBuildOperatorYAMLDefaultProviderCLIWins(t *testing.T) {
 	ctx := context.Background()
 	settings := writeOperatorSettingsFile(t, "models:\n  default_provider: toolhive\n")
-	built, err := Build(context.Background(), Config{
+	built, err := buildIsolated(t, context.Background(), Config{
 		Workspace: t.TempDir(),
 		NoSoul:    true,
 		envDetector: fakeEnv(map[string]string{
@@ -141,7 +141,7 @@ func TestBuildOperatorYAMLDefaultProviderCLIWins(t *testing.T) {
 	defer built.Close()
 	svc := built.Service
 
-	sess, err := svc.CreateSession(ctx, t.TempDir(), session.ModeDefault, defaultLimits())
+	sess, err := svc.CreateSession(ctx, session.ModeDefault, defaultLimits())
 	if err != nil {
 		t.Fatalf("CreateSession(zero-selector): %v", err)
 	}

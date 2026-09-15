@@ -17,7 +17,6 @@ import (
 	"google.golang.org/grpc/status"
 
 	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
-	"github.com/stacklok/mecatl/engine/adapter/memfs"
 	"github.com/stacklok/mecatl/engine/adapter/memstore"
 	"github.com/stacklok/mecatl/engine/adapter/mockllm"
 	"github.com/stacklok/mecatl/engine/adapter/permpolicy"
@@ -84,7 +83,7 @@ func (p *blockingRetryLLM) Stream(ctx context.Context, _ port.LLMRequest) (iter.
 func failedSession(t *testing.T, llm *mockllm.Provider, id string) (*server.Service, session.SessionID) {
 	t.Helper()
 	svc := newService(t, llm, nil)
-	sess, err := svc.CreateSessionWithProfile(context.Background(), "/ws", session.ModeDefault, session.Limits{}, server.ProviderSelector{}, server.ProfileDefault, server.WithSessionID(session.SessionID(id)))
+	sess, err := svc.CreateSessionWithProfile(context.Background(), session.ModeDefault, session.Limits{}, server.ProviderSelector{}, server.ProfileDefault, server.WithSessionID(session.SessionID(id)))
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -97,6 +96,74 @@ func failedSession(t *testing.T, llm *mockllm.Provider, id string) (*server.Serv
 	svc.Persist(context.Background(), sess.ID)
 	svc.FinishRun(sess.ID, run)
 	return svc, sess.ID
+}
+
+func TestStartRunAwaitsContextWindowBeforePromptAndInference(t *testing.T) {
+	ctx := context.Background()
+	store := memstore.New()
+	entered := make(chan struct{})
+	release := make(chan struct{}, 1)
+	defer func() {
+		select {
+		case release <- struct{}{}:
+		default:
+		}
+	}()
+	var inference atomic.Int32
+	llm := mockllm.NewWith([]mockllm.Option{mockllm.WithRequestObserver(func(port.LLMRequest) { inference.Add(1) })}, mockllm.TextTurn("done"))
+	eng := agent.NewEngine(agent.Deps{LLM: llm, Catalog: tool.NewCatalog(), Policy: permpolicy.NewPolicy(nil, nil), Model: "selected"})
+	svc, err := newPlacementTestService(server.Config{
+		Engine:               eng,
+		Store:                store,
+		DefaultResolvedModel: server.ResolvedModel{ProviderID: "provider", ModelID: "selected"},
+		AwaitContextWindow: func(context.Context, string, string) error {
+			close(entered)
+			<-release
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := svc.CreateSession(ctx, session.ModeDefault, session.Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	type result struct {
+		run *agent.Run
+		err error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		run, runErr := svc.StartRun(ctx, sess.ID, "must wait")
+		resultCh <- result{run: run, err: runErr}
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for admission callback")
+	}
+	blocked, err := store.Load(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(blocked.Conversation.Messages); got != 0 || inference.Load() != 0 {
+		t.Fatalf("work started before admission release: messages=%d inference=%d", got, inference.Load())
+	}
+	release <- struct{}{}
+	var got result
+	select {
+	case got = <-resultCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for admitted run")
+	}
+	if got.err != nil {
+		t.Fatalf("StartRun: %v", got.err)
+	}
+	if text := drainServerRun(got.run); text != "done" {
+		t.Fatalf("run result = %q, want done", text)
+	}
+	svc.FinishRun(sess.ID, got.run)
 }
 
 func TestRetryFailedRunEligibility(t *testing.T) {
@@ -118,7 +185,7 @@ func TestRetryFailedRunEligibility(t *testing.T) {
 	}
 
 	svc := newService(t, mockllm.New(), nil)
-	idle, err := svc.CreateSessionWithProfile(context.Background(), "/ws", session.ModeDefault, session.Limits{}, server.ProviderSelector{}, server.ProfileDefault, server.WithSessionID("nonfailed"))
+	idle, err := svc.CreateSessionWithProfile(context.Background(), session.ModeDefault, session.Limits{}, server.ProviderSelector{}, server.ProfileDefault, server.WithSessionID("nonfailed"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,11 +196,11 @@ func TestRetryFailedRunEligibility(t *testing.T) {
 	blocking := &blockingRetryLLM{started: make(chan struct{}), release: make(chan struct{})}
 	activeStore := memstore.New()
 	activeEngine := agent.NewEngine(agent.Deps{LLM: blocking, Catalog: tool.NewCatalog(), Policy: permpolicy.NewPolicy(nil, nil), Model: "active-model", MaxNoProgressNudges: -1})
-	activeSvc, err := server.NewService(server.Config{Engine: activeEngine, Store: activeStore, Workspaces: func(root string) tool.Workspace { return memfs.NewWorkspace(root) }})
+	activeSvc, err := newPlacementTestService(server.Config{Engine: activeEngine, Store: activeStore})
 	if err != nil {
 		t.Fatal(err)
 	}
-	active, err := activeSvc.CreateSession(context.Background(), "/ws", session.ModeDefault, session.Limits{})
+	active, err := activeSvc.CreateSession(context.Background(), session.ModeDefault, session.Limits{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +219,7 @@ func TestRetryFailedRunEligibility(t *testing.T) {
 	activeSvc.FinishRun(active.ID, activeRun)
 
 	childSvc := newService(t, mockllm.New(), nil)
-	child, err := childSvc.CreateSessionWithProfile(context.Background(), "/ws", session.ModeDefault, session.Limits{}, server.ProviderSelector{}, server.ProfileDefault, server.WithSessionID(agent.SubagentSessionPrefix+"child"))
+	child, err := childSvc.CreateSessionWithProfile(context.Background(), session.ModeDefault, session.Limits{}, server.ProviderSelector{}, server.ProfileDefault, server.WithSessionID(agent.SubagentSessionPrefix+"child"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,7 +228,7 @@ func TestRetryFailedRunEligibility(t *testing.T) {
 	}
 
 	scheduledSvc := newService(t, mockllm.New(), nil)
-	scheduled, err := scheduledSvc.CreateSessionWithProfile(context.Background(), "/ws", session.ModeDefault, session.Limits{}, server.ProviderSelector{}, server.ProfileDefault,
+	scheduled, err := scheduledSvc.CreateSessionWithProfile(context.Background(), session.ModeDefault, session.Limits{}, server.ProviderSelector{}, server.ProfileDefault,
 		server.WithSessionID("sched--retry"), server.WithScheduledRelationship("job", ""))
 	if err != nil {
 		t.Fatal(err)
@@ -178,18 +245,18 @@ func TestRetryFailedRunRehydratesPersistedSelector(t *testing.T) {
 	factory := func(turn mockllm.Turn, seen *atomic.Value) server.SessionEngineFactory {
 		return func(_ context.Context, got server.ProviderSelector, _ []mcp.ServerConfig, _ server.SessionProfile, _ string, _ session.PermissionMode) (server.SessionEngineResult, error) {
 			seen.Store(got)
-			return server.SessionEngineResult{Engine: agent.NewEngine(agent.Deps{LLM: mockllm.New(turn), Catalog: tool.NewCatalog(), Policy: permpolicy.NewPolicy(nil, nil), Model: got.ModelID})}, nil
+			return server.SessionEngineResult{Engine: agent.NewEngine(agent.Deps{LLM: mockllm.New(turn), Catalog: tool.NewCatalog(), Policy: permpolicy.NewPolicy(nil, nil), Model: got.ModelID}), ProviderID: got.ProviderID, ModelID: got.ModelID}, nil
 		}
 	}
 	shared := func() *agent.Engine {
 		return agent.NewEngine(agent.Deps{LLM: mockllm.New(mockllm.TextTurn("wrong shared model")), Catalog: tool.NewCatalog(), Policy: permpolicy.NewPolicy(nil, nil), Model: "shared"})
 	}
 	var firstSeen atomic.Value
-	svc1, err := server.NewService(server.Config{Engine: shared(), Store: store, Workspaces: func(root string) tool.Workspace { return memfs.NewWorkspace(root) }, SessionEngine: factory(mockllm.ErrorTurn(&retryFailure{session.RetryDispositionRetryable, session.StreamProgressPrecommit}), &firstSeen)})
+	svc1, err := newPlacementTestService(server.Config{Engine: shared(), Store: store, SessionEngine: factory(mockllm.ErrorTurn(&retryFailure{session.RetryDispositionRetryable, session.StreamProgressPrecommit}), &firstSeen)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := svc1.CreateSessionWithProvider(ctx, "/ws", session.ModeDefault, session.Limits{}, selector)
+	sess, err := svc1.CreateSessionWithProvider(ctx, session.ModeDefault, session.Limits{}, selector)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +274,7 @@ func TestRetryFailedRunRehydratesPersistedSelector(t *testing.T) {
 	failingFactory := func(context.Context, server.ProviderSelector, []mcp.ServerConfig, server.SessionProfile, string, session.PermissionMode) (server.SessionEngineResult, error) {
 		return server.SessionEngineResult{}, errors.New("factory unavailable")
 	}
-	failedSetupSvc, err := server.NewService(server.Config{Engine: shared(), Store: store, Workspaces: func(root string) tool.Workspace { return memfs.NewWorkspace(root) }, SessionEngine: failingFactory})
+	failedSetupSvc, err := newPlacementTestService(server.Config{Engine: shared(), Store: store, SessionEngine: failingFactory})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -233,12 +300,36 @@ func TestRetryFailedRunRehydratesPersistedSelector(t *testing.T) {
 				recoveredBeforeProvider.Store(pending && d == session.RetryDispositionRetryable && p == session.StreamProgressPrecommit)
 			}
 		})}, mockllm.TextTurn("same selector retried"))
-		return server.SessionEngineResult{Engine: agent.NewEngine(agent.Deps{LLM: llm, Catalog: tool.NewCatalog(), Policy: permpolicy.NewPolicy(nil, nil), Model: got.ModelID})}, nil
+		return server.SessionEngineResult{Engine: agent.NewEngine(agent.Deps{LLM: llm, Catalog: tool.NewCatalog(), Policy: permpolicy.NewPolicy(nil, nil), Model: got.ModelID}), ProviderID: got.ProviderID, ModelID: got.ModelID}, nil
 	}
-	svc2, err := server.NewService(server.Config{Engine: shared(), Store: store, Workspaces: func(root string) tool.Workspace { return memfs.NewWorkspace(root) }, SessionEngine: retryFactory})
+	admissionErr := errors.New("context window unavailable")
+	rejectAdmission := true
+	var admittedProvider, admittedModel string
+	awaitWindow := func(_ context.Context, providerID, modelID string) error {
+		admittedProvider, admittedModel = providerID, modelID
+		if rejectAdmission {
+			return admissionErr
+		}
+		return nil
+	}
+	svc2, err := newPlacementTestService(server.Config{Engine: shared(), Store: store, SessionEngine: retryFactory, AwaitContextWindow: awaitWindow})
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := svc2.RetryFailedRun(ctx, sess.ID); !errors.Is(err, admissionErr) {
+		t.Fatalf("RetryFailedRun admission failure = %v, want %v", err, admissionErr)
+	}
+	stillFailed, err = store.Load(ctx, sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d, p := stillFailed.FailureMetadata(); stillFailed.State != session.StateFailed || d != session.RetryDispositionRetryable || p != session.StreamProgressPrecommit {
+		t.Fatalf("admission failure consumed eligibility: state=%s disposition=%v progress=%v", stillFailed.State, d, p)
+	}
+	if admittedProvider != selector.ProviderID || admittedModel != selector.ModelID {
+		t.Fatalf("admission identity = %q/%q, want %q/%q", admittedProvider, admittedModel, selector.ProviderID, selector.ModelID)
+	}
+	rejectAdmission = false
 	run, err := svc2.RetryFailedRun(ctx, sess.ID)
 	if err != nil {
 		t.Fatalf("RetryFailedRun after restart: %v", err)
@@ -286,7 +377,7 @@ func TestRetryFailedRunAdmitsVisibleAndSecondFailureGovernsNextRetry(t *testing.
 func TestRetryPendingRestartBlocksPromptAndRetryIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	store := memstore.New()
-	sess := session.New("retry-crash-window", session.ModeDefault, "/ws", session.Limits{}, time.Now())
+	sess := session.New("retry-crash-window", session.ModeDefault, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/ws", Revision: "in-tree-v1"}, session.Limits{}, time.Now())
 	if err := sess.BeginTurn(); err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +400,7 @@ func TestRetryPendingRestartBlocksPromptAndRetryIsIdempotent(t *testing.T) {
 	}
 	llm := mockllm.New(mockllm.TextTurn("retried after crash"))
 	eng := agent.NewEngine(agent.Deps{LLM: llm, Catalog: tool.NewCatalog(), Policy: permpolicy.NewPolicy(nil, nil), Model: "retry"})
-	svc, err := server.NewService(server.Config{Engine: eng, Store: store, Workspaces: func(root string) tool.Workspace { return memfs.NewWorkspace(root) }})
+	svc, err := newPlacementTestService(server.Config{Engine: eng, Store: store})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,11 +426,11 @@ func TestGRPCRetryEmitsAndPersistsModelRetry(t *testing.T) {
 		mockllm.TextTurn("replacement"),
 	)
 	eng := agent.NewEngine(agent.Deps{LLM: llm, Catalog: tool.NewCatalog(), Policy: permpolicy.NewPolicy(nil, nil), Model: "retry"})
-	svc, err := server.NewService(server.Config{Engine: eng, Store: store, EventLog: log, Workspaces: func(root string) tool.Workspace { return memfs.NewWorkspace(root) }})
+	svc, err := newPlacementTestService(server.Config{Engine: eng, Store: store, EventLog: log})
 	if err != nil {
 		t.Fatal(err)
 	}
-	sess, err := svc.CreateSession(context.Background(), "/ws", session.ModeDefault, session.Limits{})
+	sess, err := svc.CreateSession(context.Background(), session.ModeDefault, session.Limits{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -451,7 +542,7 @@ func TestGRPCConverseRetrySupportsApprovalControl(t *testing.T) {
 		mockllm.TextTurn("approved retry"),
 	)
 	svc := newService(t, llm, nil, read)
-	sess, err := svc.CreateSessionWithProfile(context.Background(), "/ws", session.ModeDefault, session.Limits{}, server.ProviderSelector{}, server.ProfileDefault, server.WithSessionID("grpc-control-retry"))
+	sess, err := svc.CreateSessionWithProfile(context.Background(), session.ModeDefault, session.Limits{}, server.ProviderSelector{}, server.ProfileDefault, server.WithSessionID("grpc-control-retry"))
 	if err != nil {
 		t.Fatal(err)
 	}

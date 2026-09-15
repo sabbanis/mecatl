@@ -1,12 +1,15 @@
 package flocklease_test
 
 import (
+	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/stacklok/mecatl/engine/adapter/leaseconformance"
 	"github.com/stacklok/mecatl/engine/port"
+	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/internal/adapter/flocklease"
 )
 
@@ -29,9 +32,115 @@ func (c *fakeClock) advance(d time.Duration) {
 	c.t = c.t.Add(d)
 }
 
-// TestFlockleaseConformance runs the shared SessionLease conformance table
-// against the single-host flock lease over a temp dir, driving its injected fake
-// clock past the TTL.
+// TestRenewReclaimsExpiredLeaseWithNoCompetitor covers issue #1333: a process
+// suspended (e.g. laptop sleep) past the TTL must not lose its lease to a
+// competitor that never ran. On a single host, the durable record still
+// naming the caller at the caller's own token — read under the same stable
+// transition lock Acquire/Release use — proves nobody raced an Acquire in the
+// interim, so Renew reclaims with a fresh expiry instead of declaring loss.
+func TestRenewReclaimsExpiredLeaseWithNoCompetitor(t *testing.T) {
+	const ttl = time.Minute
+	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	adapter, err := flocklease.New(t.TempDir(), ttl, clk)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	ctx := context.Background()
+	first, err := adapter.Acquire(ctx, session.SessionID("same-owner-expiry"), "owner")
+	if err != nil {
+		t.Fatalf("Acquire first: %v", err)
+	}
+	clk.advance(2 * ttl)
+	renewed, err := adapter.Renew(ctx, first)
+	if err != nil {
+		t.Fatalf("Renew expired-but-uncontested lease: %v", err)
+	}
+	if renewed.Token != first.Token {
+		t.Fatalf("renewed token = %d, want unchanged %d", renewed.Token, first.Token)
+	}
+	if !renewed.Expiry.After(first.Expiry) {
+		t.Fatalf("renewed expiry %v not extended past original %v", renewed.Expiry, first.Expiry)
+	}
+	wantExpiry := clk.Now().Add(ttl)
+	if !renewed.Expiry.Equal(wantExpiry) {
+		t.Fatalf("renewed expiry = %v, want %v", renewed.Expiry, wantExpiry)
+	}
+}
+
+// TestRenewStillFailsAfterGenuineTakeover is the critical safety case: a
+// record whose owner/token DID change during the gap — a genuine competitor
+// took over — must still return ErrLeaseHeld unconditionally. A paused holder
+// (e.g. laptop sleep) past its TTL and a second local process racing an
+// Acquire in that gap is a real single-host scenario, not merely a simulated
+// one, so the competitor's takeover runs through a SECOND *Lease instance
+// over the same directory. That keeps the original holder's `held` map entry
+// intact (only its OWN Acquire/Renew/Release calls ever touch it), so
+// Renew(first) is forced through the durable owner/token mismatch check
+// instead of short-circuiting on the unrelated held == nil branch.
+func TestRenewStillFailsAfterGenuineTakeover(t *testing.T) {
+	const ttl = time.Minute
+	dir := t.TempDir()
+	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	holder, err := flocklease.New(dir, ttl, clk)
+	if err != nil {
+		t.Fatalf("New holder: %v", err)
+	}
+	rival, err := flocklease.New(dir, ttl, clk)
+	if err != nil {
+		t.Fatalf("New rival: %v", err)
+	}
+	ctx := context.Background()
+	id := session.SessionID("contested-expiry")
+	first, err := holder.Acquire(ctx, id, "owner-a")
+	if err != nil {
+		t.Fatalf("Acquire first: %v", err)
+	}
+	clk.advance(ttl)
+	competitor, err := rival.Acquire(ctx, id, "owner-b")
+	if err != nil {
+		t.Fatalf("Acquire competitor: %v", err)
+	}
+	if competitor.Token <= first.Token {
+		t.Fatalf("competitor token = %d, want > original token %d", competitor.Token, first.Token)
+	}
+	if _, err := holder.Renew(ctx, first); !errors.Is(err, port.ErrLeaseHeld) {
+		t.Fatalf("Renew after genuine takeover = %v, want ErrLeaseHeld", err)
+	}
+}
+
+// TestRenewFailsWithoutLocallyTrackedGeneration isolates the held == nil
+// hard-fail branch: Renew must fail closed for a caller with no locally
+// tracked generation handle for that lease, even when the durable record
+// still names that exact owner and token and is not expired. Two independent
+// *Lease instances over the SAME dir simulate this — the second instance
+// never ran the first's Acquire, so it never populated its own `held` map for
+// that generation, regardless of what the shared on-disk record says.
+func TestRenewFailsWithoutLocallyTrackedGeneration(t *testing.T) {
+	const ttl = time.Minute
+	dir := t.TempDir()
+	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	holder, err := flocklease.New(dir, ttl, clk)
+	if err != nil {
+		t.Fatalf("New holder: %v", err)
+	}
+	stranger, err := flocklease.New(dir, ttl, clk)
+	if err != nil {
+		t.Fatalf("New stranger: %v", err)
+	}
+	ctx := context.Background()
+	held, err := holder.Acquire(ctx, session.SessionID("untracked-generation"), "owner")
+	if err != nil {
+		t.Fatalf("Acquire via holder: %v", err)
+	}
+	// Copy the returned Lease value: the record on disk still names this exact
+	// owner and token, and it has not expired, yet `stranger` never tracked the
+	// generation locally.
+	copied := held
+	if _, err := stranger.Renew(ctx, copied); !errors.Is(err, port.ErrLeaseHeld) {
+		t.Fatalf("Renew from an instance with no locally tracked generation = %v, want ErrLeaseHeld", err)
+	}
+}
+
 func TestFlockleaseConformance(t *testing.T) {
 	leaseconformance.Run(t, func(t *testing.T) (port.SessionLease, func(time.Duration)) {
 		clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}

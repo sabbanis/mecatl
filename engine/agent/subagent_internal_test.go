@@ -36,10 +36,10 @@ func TestSurfaceAskAttribution(t *testing.T) {
 		wantPrefix string
 		wantClean  bool // assert no raw control byte survived in the Reason
 	}{
-		{"subagent goal", `subagent "fix flaky tests"`, `subagent "fix flaky tests" requests approval to run Bash`, false},
-		{"team member name", `team member "researcher"`, `team member "researcher" requests approval to run Bash`, false},
-		{"parallel branch label", `parallel branch "branch-2"`, `parallel branch "branch-2" requests approval to run Bash`, false},
-		{"empty label keeps generic framing", "", "subagent requests approval to run Bash", false},
+		{"subagent goal", `subagent "fix flaky tests"`, `subagent "fix flaky tests" requests approval to run Shell`, false},
+		{"team member name", `team member "researcher"`, `team member "researcher" requests approval to run Shell`, false},
+		{"parallel branch label", `parallel branch "branch-2"`, `parallel branch "branch-2" requests approval to run Shell`, false},
+		{"empty label keeps generic framing", "", "subagent requests approval to run Shell", false},
 		{"control-bearing label is neutralised", "team member \"a\x07b\"", "", true},
 	}
 	for _, tc := range tests {
@@ -62,7 +62,7 @@ func TestSurfaceAskAttribution(t *testing.T) {
 			child := &Run{events: make(chan session.Event, 1), asks: newAskRegistry()}
 			ask := session.PendingAsk{
 				AskID:  "child-sess:1:k1",
-				Tool:   "Bash",
+				Tool:   "Shell",
 				Args:   json.RawMessage(`{"command":"cat data.txt"}`),
 				Reason: "command substitution requires approval",
 			}
@@ -243,7 +243,7 @@ func TestDriveChildStructuredPlainTextExhaustsToCleanTerminal(t *testing.T) {
 
 	ws := memfs.NewWorkspace("/ws")
 	childID := session.SessionID("subagent-c1")
-	child := session.New(childID, session.ModeDefault, ws.Root(), session.Limits{}, time.Now())
+	child := session.New(childID, session.ModeDefault, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: ws.Root(), Revision: "in-tree-v1"}, session.Limits{}, time.Now())
 	submit := newSubmitResultTool(schema)
 	call := session.NewToolCall("c1", subagentToolName, nil)
 
@@ -297,7 +297,7 @@ func TestDriveChildStructuredRetryPreservesMaxRunTokensOverride(t *testing.T) {
 	})
 	ws := memfs.NewWorkspace("/ws")
 	childID := session.SessionID("subagent-budget-copy")
-	child := session.New(childID, session.ModeDefault, ws.Root(), session.Limits{}, time.Now())
+	child := session.New(childID, session.ModeDefault, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: ws.Root(), Revision: "in-tree-v1"}, session.Limits{}, time.Now())
 	schema := json.RawMessage(`{"type":"object","required":["answer"]}`)
 	submit := newSubmitResultTool(schema)
 	call := session.NewToolCall("c-budget-copy", subagentToolName, nil)
@@ -344,7 +344,7 @@ func TestSalvageEmptyStopPreservesMaxRunTokensOverride(t *testing.T) {
 	})
 	ws := memfs.NewWorkspace("/ws")
 	childID := session.SessionID("subagent-salvage-budget-copy")
-	child := session.New(childID, session.ModeDefault, ws.Root(), session.Limits{MaxTurns: 1}, time.Now())
+	child := session.New(childID, session.ModeDefault, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: ws.Root(), Revision: "in-tree-v1"}, session.Limits{MaxTurns: 1}, time.Now())
 	call := session.NewToolCall("c-salvage-copy", subagentToolName, nil)
 
 	final, stop, _, usage, _ := driveChild(context.Background(), engine, child, testEnvironment(ws, nil),
@@ -396,7 +396,7 @@ func TestSubmitResultOverlayWinsAndIsAdvertised(t *testing.T) {
 	}
 
 	// (b) buildRequest advertises the OVERLAY's spec for the colliding name, exactly once.
-	sess := session.New("s1", session.ModeDefault, "/ws", session.Limits{}, time.Now())
+	sess := session.New("s1", session.ModeDefault, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/ws", Revision: "in-tree-v1"}, session.Limits{}, time.Now())
 	req := engine.buildRequest(context.Background(), r, sess, memEnv("/ws"))
 	count, sawOverlay := 0, false
 	for _, spec := range req.Tools {
@@ -412,6 +412,20 @@ func TestSubmitResultOverlayWinsAndIsAdvertised(t *testing.T) {
 	}
 	if !sawOverlay {
 		t.Fatal("buildRequest must advertise the OVERLAY schema, not the catalog decoy")
+	}
+}
+
+func TestExtraToolAuthorityExemptionDefaultsToRestricted(t *testing.T) {
+	extra := &fakeOverlayTool{name: "RunControl", schema: json.RawMessage(`{"type":"object"}`)}
+	req := RunRequest{ExtraTools: []tool.Tool{extra}}
+	if req.extraToolAuthorityExempt(extra.Spec().Name) {
+		t.Fatal("an extra tool must require delegated authority by default")
+	}
+	req.extraToolOptions = map[string]extraToolOptions{
+		extra.Spec().Name: {AuthorityExempt: true},
+	}
+	if !req.extraToolAuthorityExempt(extra.Spec().Name) {
+		t.Fatal("runtime-provided authority exemption was not applied")
 	}
 }
 

@@ -22,7 +22,7 @@ import (
 // EFFECTIVE read-only Subagent tool scope (allowlist ∩ base, mutating
 // dropped, sorted), raw permissionMode/color strings.
 func TestAgentSnapshotLiteralPin(t *testing.T) {
-	cfg := Config{Model: "gpt-test"} // no shell => no Bash in the base set
+	cfg := Config{Model: "gpt-test"} // no shell => no Shell in the base set
 	reg := agents.NewRegistry([]agents.AgentDef{
 		{
 			Name:           "explorer",
@@ -61,7 +61,7 @@ func TestAgentSnapshotLiteralPin(t *testing.T) {
 	if second.GetPermissionMode() != "" || second.GetColor() != "" {
 		t.Errorf("agent[1] optional fields must stay empty: %+v", second)
 	}
-	if want := []string{"FetchMcpResource", "Glob", "Grep", "Read", "WebFetch"}; !equalStrings(second.GetTools(), want) {
+	if want := []string{"FetchMcpResource", "Glob", "Grep", "ListDir", "Read", "WebFetch"}; !equalStrings(second.GetTools(), want) {
 		t.Errorf("agent[1] tools = %v, want the full read-only base %v", second.GetTools(), want)
 	}
 }
@@ -131,7 +131,7 @@ func TestBuildResolvesAgentRegistryExactlyOnce(t *testing.T) {
 		driverv1.RegisterAgentSourceServiceServer(gs, srv)
 	})
 
-	built, err := Build(context.Background(), Config{
+	built, err := buildIsolated(t, context.Background(), Config{
 		Workspace:      t.TempDir(),
 		Model:          "mock",
 		UseMock:        true,

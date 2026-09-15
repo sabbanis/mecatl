@@ -63,11 +63,13 @@ type statusSurfaceTemplates struct {
 	Minimal string `yaml:"minimal"`
 }
 
-// statusCommand is a trusted user-global direct executable selection. It has no
-// environment or working-directory fields: the status source owns both.
+// statusCommand is a trusted user-global direct executable selection. Its
+// PassthroughEnv list is an explicit allowlist; the status source owns the
+// remaining environment and working-directory policy.
 type statusCommand struct {
-	Path string   `yaml:"executable"`
-	Args []string `yaml:"args"`
+	Path           string   `yaml:"executable"`
+	Args           []string `yaml:"args"`
+	PassthroughEnv []string `yaml:"passthrough_env"`
 }
 
 // legacySettings mirrors the keymap: key out of the SERVER-owned operator-tier
@@ -143,15 +145,28 @@ func readClientSettings() (clientSettings, error) {
 	}
 	var raw clientSettingsYAML
 	if err := yaml.NewDecoder(bytes.NewReader(nil), yaml.DisallowUnknownField()).DecodeFromNode(document.Mapping(), &raw); err != nil {
-		return clientSettings{}, fmt.Errorf("parsing %s: does not match the expected client settings schema (unknown key or type)", path)
+		return clientSettings{}, clientSettingsSchemaError(path, err)
 	}
 	status, err := decodeStatusCustomization(raw.StatusCustomization)
 	if err != nil {
+		var passthroughErr *statusline.PassthroughEnvError
+		if errors.As(err, &passthroughErr) {
+			return clientSettings{}, fmt.Errorf("parsing %s: %w", path, err)
+		}
 		return clientSettings{}, fmt.Errorf("parsing %s: invalid status_customization configuration", path)
 	}
 	return clientSettings{Keymap: raw.Keymap, StatusCustomization: status}, nil
 }
 
+func clientSettingsSchemaError(path string, err error) error {
+	const guidance = "this is the client-owned settings file; server configuration such as models: belongs in ~/.config/mecatl/settings.yaml"
+
+	diagnostic := yamldiag.Classify("parse client settings", err)
+	if diagnostic.HasLocation {
+		return fmt.Errorf("parsing %s: does not match the expected client settings schema at line %d, column %d (unknown key or type; %s)", path, diagnostic.Line, diagnostic.Column, guidance)
+	}
+	return fmt.Errorf("parsing %s: does not match the expected client settings schema (unknown key or type; %s)", path, guidance)
+}
 func clientKeymapSyntaxError(path string, err error) error {
 	var documentError *yamldiag.DocumentError
 	if errors.As(err, &documentError) && documentError.Location.HasLocation {
@@ -185,7 +200,7 @@ func newSource(customization statusCustomization) statusline.Source {
 	if customization.Command != nil {
 		launchDir, _ := os.Getwd()
 		return statusline.NewCommandSource(statusline.Command{
-			Path: customization.Command.Path, Args: customization.Command.Args, LaunchDir: launchDir, RefreshInterval: customization.Interval,
+			Path: customization.Command.Path, Args: customization.Command.Args, PassthroughEnv: customization.Command.PassthroughEnv, LaunchDir: launchDir, RefreshInterval: customization.Interval,
 		})
 	}
 	if customization.Templates == nil {
@@ -227,10 +242,16 @@ func decodeStatusCustomization(raw *statusCustomizationYAML) (*statusCustomizati
 	if raw.Templates != nil && raw.Templates.Header == nil && raw.Templates.Footer == nil {
 		return nil, errors.New("template source has no surface")
 	}
-	if raw.Command != nil && !(statusline.Command{
-		Path: raw.Command.Path, Args: raw.Command.Args,
-	}).Valid() {
-		return nil, errors.New("invalid command")
+	if raw.Command != nil {
+		command := statusline.Command{
+			Path: raw.Command.Path, Args: raw.Command.Args, PassthroughEnv: raw.Command.PassthroughEnv,
+		}
+		if err := command.ValidatePassthroughEnv(); err != nil {
+			return nil, err
+		}
+		if !command.Valid() {
+			return nil, errors.New("invalid command")
+		}
 	}
 	if raw.Templates != nil && (!validStatusSurfaceTemplates(raw.Templates.Header) || !validStatusSurfaceTemplates(raw.Templates.Footer)) {
 		return nil, errors.New("template source has no variant")
@@ -337,7 +358,7 @@ func applyKeyOverridesToDeps(cfg config, deps *ui.Deps) error {
 		// alt-screen. XDG-relative paths, not a possibly-wrong absolute path.
 		fmt.Fprintln(os.Stderr, "mecatui: WARNING: the keymap: key in ~/.config/mecatl/settings.yaml is deprecated; move it to ~/.config/mecatui/settings.yaml (the client settings file). The legacy key still works but will be removed in a future release.")
 	}
-	if os.Getenv("MECATUI_DEBUG_KEYMAP") == "1" {
+	if cfg.debugKeymap {
 		fmt.Fprintf(os.Stderr, "mecatui keymap (legacy YAML): %v\n", legacyMap)
 		fmt.Fprintf(os.Stderr, "mecatui keymap (client YAML): %v\n", clientMap)
 		fmt.Fprintf(os.Stderr, "mecatui keymap (CLI): %v\n", cliMap)

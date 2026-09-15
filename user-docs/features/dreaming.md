@@ -1,24 +1,24 @@
 ---
-sidebar_position: 4
+sidebar_position: 240
 title: Dreaming and memory consolidation
-description: Consolidate project memory and the user model with bounded, reviewed operations.
+description:
+  Consolidate project memory and the user model with bounded, reviewed
+  operations.
 ---
 
 # Dreaming and memory consolidation
 
-Consolidation is maintenance for facts that are already in memory. It finds
-exact duplicates and, when explicitly reviewed, can propose synthesized
-replacements. It is deliberately separate from completed-trajectory learning:
-consolidation does not enable `learning.mode`, and learning does not silently
-rewrite memory.
+Consolidation removes duplicate memory entries and can propose synthesized
+replacements for review. It is separate from completed-run learning and does not
+change `learning.mode`.
 
 ## Availability
 
-Two maintenance surfaces are available:
+Two maintenance options are available:
 
 - **Automatic consolidation** is optional, off by default, and intended for
   exact duplicate cleanup on supported local stores.
-- **Manual review** is available in mecatui through `/dream` when the server
+- **Manual review** is available in `mecatui` through `/dream` when the server
   advertises a planner and reviewed atomic operations for the selected store.
 
 Both can target either per-project memory or the cross-project user model. The
@@ -29,7 +29,7 @@ to the user model.
 
 Enable the two scopes independently:
 
-```console
+```sh
 mecated serve \
   --memory-consolidate-interval 24h \
   --user-model-consolidate-interval 24h \
@@ -37,11 +37,11 @@ mecated serve \
   --user-model-dir "$HOME/.local/state/mecatl/usermodel"
 ```
 
-Automatic application is deliberately narrow. The local file-backed store may
-only tombstone a source when its active value and description are byte-identical
-to the displayed survivor, and it must compare the expected versions
-atomically. The survivor is never rewritten. Synthesized replacements are not
-applied by this unattended path.
+Automatic application is narrow. The local file-backed store may only tombstone
+a source when its active value and description are byte-identical to the
+displayed survivor, and it must compare the expected versions atomically. The
+survivor is never rewritten. Synthesized replacements are not applied by this
+unattended path.
 
 These intervals do not change `learning.mode`. A project setting of
 `learning.mode: off` cannot suppress an explicit operator consolidation
@@ -49,11 +49,13 @@ schedule. Zero disables the corresponding schedule.
 
 ## Manual `/dream` review
 
-In mecatui, `/dream` opens the reviewed maintenance flow when the server advertises it. The exact command behavior and TUI interaction live in [Commands and memory](/mecatui/commands-and-memory.md); the consolidation semantics, authorization, and storage limitations are documented here.
+In `mecatui`, `/dream` opens the reviewed maintenance flow when the server
+advertises it. See [Commands and memory](/mecatui/commands-and-memory.md) for
+the TUI workflow. This page covers consolidation behavior, authorization, and
+storage limitations.
 
-The review evaluates the proposed survivor and source entries, exact duplicates,
-synthesized replacements, bounded reasons and evidence, and the canonical values
-needed for an informed decision.
+The review shows the proposed survivor, source entries, replacement text,
+reasons, and evidence.
 
 The operator applies or dismisses the entire plan. The receipt reports planned,
 applied, conflicted, skipped, and failed source counts. There are no per-source
@@ -66,17 +68,15 @@ survivor unchanged. Hidden controls and Unicode format characters in
 model-authored replacement or reason text reject the plan before it can be
 retained.
 
-The plan is process-local and short-lived. Restart, expiry, or another replica
-makes it unavailable and offers a fresh plan. A same-decision request that is
-still applying, or an indeterminate transport error, preserves the plan ID for
-explicit same-decision receipt retrieval; do not submit the opposite decision.
-A known terminal conflict permits a new generation, but an opposite decision
-while an apply is in progress does not.
+The plan is process-local and short-lived. Generate a new plan after it expires
+or the process or replica changes. If application is still running or its result
+is uncertain, use the same decision and plan ID to retrieve the receipt. Do not
+submit the opposite decision.
 
 ## Safety and authorization
 
-Manual dreaming is a maintenance authorization, not an ordinary memory write.
-It is unavailable when:
+Manual dreaming is a maintenance authorization, not an ordinary memory write. It
+is unavailable when:
 
 - ownership enforcement is enabled;
 - no planner is configured;
@@ -91,20 +91,20 @@ normal management authorization and a working cross-process lease where the
 backend is shareable.
 
 The model never receives raw secrets, tool arguments, or hidden control data as
-part of the review rendering. Provider/model identity and recall-usage telemetry
-are not exposed by the manual review surface.
+part of the review. Manual review does not expose provider and model identity or
+recall-usage telemetry.
 
 ## Project memory and user model
 
-| Target | Scope | Typical content |
-| --- | --- | --- |
-| Project memory | One workspace/project | Repository conventions, project decisions, local facts |
-| User model | Cross-project `user/` namespace | Operator preferences and durable personal facts |
+|Target|Scope|Typical content|
+|-|-|-|
+|Project memory|One workspace/project|Repository conventions, project decisions, local facts|
+|User model|Cross-project `user/` namespace|Operator preferences and durable personal facts|
 
 Project operations require a convergence-capable project store for the exact
-trusted configured workspace. Candidates from another or alternate workspace
-may remain staged and inspectable but cannot approve, undo, or write launch-root
-project memory. User-model operations use the configured user-model store.
+trusted configured workspace. Candidates from another or alternate workspace may
+remain staged and inspectable but cannot approve, undo, or change the configured
+project's memory. User-model operations use the configured user-model store.
 
 ## Limitations
 
@@ -120,16 +120,15 @@ project memory. User-model operations use the configured user-model store.
   plans, and conflicts do not cross between them.
 - Consolidation does not provide semantic or embedding recall. Memory search
   remains BM25 lexical search, and consolidation does not create vectors.
-- The feature requires bounded model calls for manual planning. It is not a
-  no-network maintenance operation.
+- Manual planning requires a model call.
 
 For the underlying memory tools, tiers, lifecycle versions, and learning
-boundary, see [Memory & knowledge](/building/what-you-get/memory.md). For the broader
-`/dream` UI and receipt behavior, see [mecatui memory commands](/mecatui/commands-and-memory.md#review-and-maintain-memory).
+boundary, see [Memory & knowledge](/building/what-you-get/memory.md). For the
+broader `/dream` UI and receipt behavior, see
+[mecatui memory commands](/mecatui/commands-and-memory.md#review-and-maintain-memory).
 
 ## Next steps
 
 - [Learning](./learning.md)
 - [Memory and knowledge](/building/what-you-get/memory.md)
 - [Session continuity](./session-continuity.md)
-- [Capability and deployment matrix](./capability-matrix.md)

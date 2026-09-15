@@ -43,7 +43,7 @@ immediately and drives the loop in a background goroutine; the `Run` exposes:
    final user text through the aggregate root.
 3. **Pre-turn stop guard**: announce any newly-finished background children
    (one harness-note user message, ids + stop labels only, family-aware across
-   the delegation families and background-Bash jobs; [subagents & teams](subagents-and-teams.md));
+   the delegation families and background-Shell jobs; [subagents & teams](subagents-and-teams.md));
    drain the fire-result delivery queue (ADR 0075) and the **steer inbox**
    (below) — the Step 2a boundary injections,
    `engine/agent/loop.go` (`runBoundaryInjections`); then, if
@@ -83,13 +83,18 @@ A permanently-failed session that is recovered for re-entry emits a one-time
 `recover_notice` advisory BEFORE the first turn, so the operator sees the
 warning before burning a provider call.
 
-A run-level **token budget** bounds the whole loop: `Deps.MaxRunTokens`
-(`--max-run-tokens`; **default: unlimited**, `0` disables the brake) is checked at the turn boundary — never
-mid-stream, so an in-flight turn always completes — against the run's
+A run-level **per-engine token budget** bounds that engine's loop: `Deps.MaxRunTokens`
+(`--max-run-tokens`; **default: unlimited**, `0` disables the brake) is a token
+ceiling, not a currency billing cap. It is checked at the turn boundary — never
+mid-stream, so an in-flight turn always completes — against that engine session's
 accumulated `session.Usage` (input + output; cache tokens excluded). Crossing
 it ends the run cleanly with `StopBudget` (a NON-error terminal → `completed`,
 Reopen-recoverable, mirroring `StopNoProgress`). Every child engine — Subagent,
-Parallel branch, team member, lead synthesis — inherits it; a per-call override
+Parallel branch, team member, and lead synthesis — inherits the configured value
+as its own ceiling; each engine checks only its own persisted session usage. Parent
+usage and `EvResult` do not include child spend, so a delegation tree can exceed
+`MaxRunTokens`; cross-tree aggregate observability and enforcement are deferred
+and out of scope. A per-call override
 (`RunRequest.MaxRunTokensOverride`, the Subagent `max_run_tokens` arg — `max_tokens`
 is the deprecated alias for the same budget) may only
 **tighten** it. The team-aggregate counterpart is `--max-team-tokens` ([parallelism](parallelism.md)).
@@ -125,15 +130,25 @@ sequenceDiagram
 
 ### Read-parallel / mutate-serial dispatch (`dispatch.go`)
 
-Enforced in `Engine.dispatch`, keyed off `Tool.ReadOnly()`:
-- Calls are processed **in original order**, batched into maximal runs of
-  consecutive read-only tools.
+Enforced in `Engine.dispatch`:
+- Calls are processed **in original order**. Ordinary `Tool.ReadOnly()==true`
+  sibling calls form maximal concurrent batches.
+- A read-only tool implementing the static `tool.DispatchSerial` marker forms a
+  **run-local barrier**: the dispatcher flushes the preceding read batch, runs
+  the marked call alone, then starts the following batch. The marker changes
+  neither `ReadOnly` semantics nor tool advertisement.
 - A read-only batch (`runReadBatch`) authorizes + runs PreToolUse hooks for
   every call first (permission **asks are sequenced one at a time**, never two
   at once), then executes the cleared calls **concurrently**, one goroutine per
   call, results merged under a mutex.
 - A mutating or **unknown** tool (`runOne`) runs **alone, serially**, never
-  overlapping anything.
+  overlapping a sibling call in that dispatch.
+- A read-only tool whose specific call implements the unexported
+  `parentMutatingCaller` predicate and returns true gets the same run-local
+  barrier, preserving writable Subagent and auto-merging Parallel behavior.
+- These barriers apply only among sibling calls within one run/dispatch.
+  Shared adapter state reached by concurrent runs still requires its own
+  synchronization.
 - Results are keyed by `CallID` and re-assembled in input order.
 
 A `cancelled` flag propagates from `dispatch` so the loop terminates as
@@ -261,13 +276,18 @@ askable ask, a serialized provenance marker, and a verdict tail.
   opt-in from the model's side: the tool description, the plan-mode Role suffix
   (`internal/app/build.go` (`applyPlanModePosture`)), and the per-turn plan-mode
   prompt reminder (`engine/prompt/builder.go`) all state the contract — present the
-  plan, call `PresentPlan` once, and STOP; an inline "acceptable" in chat is NOT
-  approval.
+  current plan, call `PresentPlan` once for that presentation, and STOP. If the
+  operator chooses iterate/deny or cancels the pending run, the model waits for new
+  user input; it then presents a revised or unchanged plan through a new
+  `PresentPlan` call and stops again. Later chat assent requests another gated
+  review and never authorizes execution.
 - **The dispatcher intercepts by name+mode.** `engine/agent/dispatch.go`
   (`surfacePlanAsk`) — a sibling of `askHookApproval` over the shared `surfaceAsk`
   spine — mints a `session.PendingAsk{PlanOriginated: true}`, parks the run
-  `StateAwaiting`, and emits `EvPermissionAsk`. It is sequenced one-at-a-time in
-  dispatch Phase 1 (never the parallel fan-out). The headless guard
+  `StateAwaiting`, and emits `EvPermissionAsk`. A presentation remains pending until
+  a verdict resolves it or its run is cancelled; merely hiding or leaving a client
+  review view does not invalidate a server-side pending ask. It is sequenced
+  one-at-a-time in dispatch Phase 1 (never the parallel fan-out). The headless guard
   (`!Interactive && !PlanModeAutoApprove`) synthesizes a deny result (fail-safe —
   no silent mode flip); the opt-in `PlanModeAutoApprove` surfaces the ask even
   headless so the composition observer can resolve it.
@@ -275,7 +295,11 @@ askable ask, a serialized provenance marker, and a verdict tail.
   `ModeAccept`; deny → terminate CLEANLY with `engine/session/session.go`
   (`StopPlanIterate`) (the iterate pause — issue #206 UX fix: the run ENDS so the
   operator's next typed prompt drives the revision; the model does NOT continue
-  iterating in-turn with no operator input). The session stays `ModePlan` on Deny
+  iterating in-turn with no operator input). Cancellation is distinct from Deny:
+  it leaves the session cancelled in `ModePlan`, and the next prompt enters through
+  the service's normal `Interrupt` recovery, which pairs the interrupted tool call
+  without recording a deny verdict. Either path requires a new `PresentPlan` call
+  and fresh approval before execution. The session stays `ModePlan` on Deny
   (no mode flip). On Allow the run
   terminates with the clean `engine/session/session.go` (`StopPlanApproved`)
   terminal; `engine/agent/loop.go` (`terminateComplete`) flips the mode AT the
@@ -306,8 +330,8 @@ askable ask, a serialized provenance marker, and a verdict tail.
 A **steer** is an operator-supplied message injected into an *in-flight* run
 (issue #512, [ADR 0232](../adr/0232-steer-while-running.md)): it takes effect at
 a turn boundary after the current streamed response and its tool batch settle —
-never mid-stream, never aborting an in-flight model call — and rides the gRPC
-`Converse` stream as `steer` / `steer_cancel` frames. The pieces:
+never mid-stream, never aborting an in-flight model call — and enters through
+gRPC `Converse` controls or unary HTTP controls. The pieces:
 
 - **The run-scoped mutex inbox** (`engine/agent/steer.go` (`steerInbox`)). Each
   `Run` carries a single-slot pending-steer box guarded by one mutex
@@ -368,19 +392,25 @@ never mid-stream, never aborting an in-flight model call — and rides the gRPC
   The promoted run is `FinishRun`-deregistered before the RPC returns, and its
   terminal outcome is reported inline as the `steer.outcome` ack
   (`promoted=true`) — never an orphaned relay, never an ack after close.
+- **The unary HTTP control pair** (`internal/adapter/server/http.go`).
+  `POST /v1/sessions/{id}/steer` and `POST
+  /v1/sessions/{id}/cancel-steer` call the same Service owners as gRPC. HTTP
+  stays deterministically unary when a terminal-race steer promotes: the JSON
+  acknowledgement carries the new `run_id`, while a request-detached relay
+  records and drains that run in the background before deregistering it. The
+  `http_steer` compatibility feature advertises this transport surface.
 - **The `message_id` watermark correlation.** Steer frames carry a
   client-minted `message_id` (`contracts/proto/mecatl/v1/harness.proto`). The
-  engine inbox parks text plus media while the Service keeps a small per-session FIFO
-  (`internal/adapter/server/service.go` (`trackSteerMessageID`)) of the ordered
-  frame ids appended into the pending bundle. On drain, the relay pops the
-  whole list and stamps the `EvSteer` echo with the LATEST (tail) id — the
-  **watermark** the client splits its ordered queue on (sends up to and
-  including it drained, sends after it still pending). The ack lane echoes each
-  frame's own id on its outcome; a retract drops the whole correlation list
-  (`dropSteerMessageID`); a `CloseSession` clears the map entry with the
-  session. The correlation is positional (never text-match) — pinned by
-  `internal/adapter/server/steer_watermark_pin_test.go`
-  (`TestLookupSteerMessageIDExactUnderDuplicateTexts`).
+  engine inbox parks the id with the text and media in one mutex-guarded bundle.
+  Each append replaces the bundled id, making the latest contributing id the
+  **watermark** the client uses to split its ordered queue. The drain takes the
+  content and watermark atomically, and `EvSteer` carries both. An enqueue into
+  the newly empty inbox cannot change an already-drained bundle while its event
+  is waiting for relay projection. The ack lane echoes each frame's own id on
+  its outcome, and a retract removes the whole pending bundle atomically. IDs
+  longer than 64 Unicode code points are rejected before admission rather than
+  truncated. `TestSteerMessageIDIsAtomicWithDrainedBundle` pins the critical
+  drain, enqueue, and projection ordering.
 - **Fidelity.** The inbox is in-memory and best-effort: a pending (un-drained)
   steer is lost with its run on a crash — reset-by-design, inventoried in
   [ADR 0027](../adr/0027-cloud-native.md) (List 1 / List 2). Only a steer that
@@ -390,7 +420,8 @@ never mid-stream, never aborting an in-flight model call — and rides the gRPC
 Awaiting-ask runs hold the steer parked: the loop is suspended in
 `PauseForApproval`, and the resumed run's first Step 2a drains it (the steer is
 purely additive — the ask still requires an explicit verdict). Steer-to-child
-(subagent / team / parallel) and HTTP/SSE + ACP steer are deferred (ADR 0232).
+(subagent / team / parallel) and ACP steer are deferred (ADR 0232). HTTP steer
+is specified by [ADR 0252](../adr/0252-http-steer-endpoint.md).
 
 ## Follow-on reading
 

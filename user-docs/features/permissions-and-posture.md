@@ -1,50 +1,49 @@
 ---
-sidebar_position: 6
+sidebar_position: 300
 title: Permissions and posture
-description: Control approvals, project trust, guardrails, and autonomous mecatl operation.
+description:
+  Control approvals, project trust, guardrails, and autonomous Mecatl operation.
 ---
 
 # Permissions and posture
 
-Mecatl has two separate safety controls:
+Configure two independent safety controls:
 
 1. **Permissions** decide whether a tool call is allowed, needs approval, or is
    denied before it runs.
 2. **Guardrails** are an optional model-backed checker that inspects selected
    tool arguments and results. They are independent of the permission rules.
 
-The permission rules are always present, including when no configuration file
-exists. Guardrails are disabled until an operator configures a checker model.
+Permissions always apply. Guardrails require an operator-configured checker
+model.
 
-This page is the user/operator guide. For the evaluator, authority-set, and
-custom-policy contracts, see [Permissions & guardrails for builders](/building/what-you-get/permissions.md).
+For evaluator, authority-set, and custom-policy contracts, see
+[Permissions and guardrails for builders](/building/what-you-get/permissions.md).
 
 ## Availability
 
 Permissions and posture apply to `mecated`, `mecak8s`, `mecatequi`, and the
-embedded server hosted by mecatui. A connected mecatui uses the posture and
+embedded server hosted by `mecatui`. A connected `mecatui` uses the posture and
 permission configuration of the remote server; local embedded-server flags do
 not apply to `connect` sessions.
 
-Interactive clients such as mecatui can answer approval requests. Headless
-servers and one-shot jobs must be configured so that the calls they need do not
-wait for a human.
+Interactive clients such as `mecatui` can answer approval requests. For headless
+servers and one-shot jobs, configure the permissions required by the workload
+before it starts.
 
 ## Choose a posture
 
 `--posture` selects the operator posture ladder:
 
-| Posture | Behavior |
-| --- | --- |
-| `strict` | Default for interactive `mecated`; read-only calls are allowed and mutating calls use the permission rules, normally asking before they run. Project trust is not granted by the posture. |
-| `trusted` | Interactive roots admit trusted project instructions and project permission allows, but mutating calls still use the normal approval rules. |
-| `auto` | Enables the allow-all posture for the main agent and children while keeping deny rules and deliberately configured asks effective. Child substitution defenses remain enabled. |
-| `yolo` | Extends `auto` by allowing child command substitutions, backticks, and heredoc-style substitutions that `auto` keeps behind the child safety floor. Use only for isolated, disposable, single-tenant deployments. |
+|Posture|Behavior|
+|-|-|
+|`strict`|Default for interactive `mecated`; read-only calls are allowed and mutating calls use the permission rules, normally asking before they run. Project trust is not granted by the posture.|
+|`trusted`|Interactive roots admit trusted project instructions and project permission allows, but mutating calls still use the normal approval rules.|
+|`auto`|Enables the allow-all posture for the main agent and children while keeping deny rules and deliberately configured asks effective. Child substitution defenses remain enabled.|
+|`yolo`|Extends `auto` by allowing child command substitutions, backticks, and heredoc-style substitutions that `auto` keeps behind the child safety floor. Use only for isolated, disposable, single-tenant deployments.|
 
-`--yolo` and `--trust-project` are compatibility aliases that raise the
-posture tier. The highest effective tier wins. An operator-global `posture:`
-setting can also provide the baseline; a project file cannot raise the
-operator's posture.
+`--yolo`, `--trust-project`, and operator-global `posture:` settings can raise
+the posture tier; the highest tier wins. A project file cannot raise it.
 
 Deployment defaults differ: `mecated` is interactive and defaults to `strict`,
 while unattended `mecak8s` and `mecatequi` deployments commonly select `auto`.
@@ -64,15 +63,40 @@ Allow-all postures are refused when running as root unless the deployment
 explicitly declares an isolated sandbox with `MECATL_SANDBOX=1` or
 `IS_SANDBOX=1`.
 
+## Choose a permission mode
+
+A permission mode controls one session. It works alongside the deployment
+posture and configured rules.
+
+|Mode|Behavior|
+|-|-|
+|`default`|Uses the normal permission policy: read-only work is usually allowed, while operations that can mutate state normally ask first.|
+|`plan`|Exposes a read-only toolset so the model can inspect the workspace and prepare a plan without changing it.|
+|`accept-edits`|Automatically allows `Edit` and `Write` when they would otherwise hit only the built-in approval floor. Shell commands and other tools still use the normal policy, and configured asks and denies still win.|
+
+In `mecatui`, press `shift+tab` to cycle the active session through **default →
+plan → accept-edits → default**. You can remap the `ModeSwitch` action in the
+client keymap or with `--keymap`; see [Keybindings](/mecatui/keybindings.md).
+
+To select the initial mode when launching `mecatui`, use `--mode`:
+
+```sh
+mecatui --workspace "$PWD" --mode plan
+mecatui --workspace "$PWD" --mode accept-edits
+```
+
+The header displays the active mode. Changing modes does not bypass configured
+permission rules or guardrails.
+
 ## Approve and constrain work
 
 The built-in permission floor allows read-only exploration and asks before
 operations that can mutate state:
 
-| Default effect | Tools |
-| --- | --- |
-| Allow | `Read`, `Grep`, `Glob`, `WebFetch`, `WebSearch`, and read-only `Subagent` exploration |
-| Ask | `Bash`, `Edit`, `Write`, `Team`, and `SkillDraft` |
+|Default effect|Tools|
+|-|-|
+|Allow|`Read`, `ListDir`, `Grep`, `Glob`, `WebFetch`, `WebSearch`, and read-only `Subagent` exploration|
+|Ask|`Shell`, `Edit`, `Write`, `Team`, and `SkillDraft`|
 
 A matching `deny` always wins. Otherwise an `ask` wins over an `allow`, and
 higher configuration scopes break ties. A configured allow can loosen only the
@@ -85,19 +109,28 @@ needs approval, an interactive client shows the call and lets the operator:
 - allow the matching call for the session; or
 - deny it.
 
-An allow-always decision is learned only at the lowest built-in scope. It never
-overrides a deny or configured ask. Headless deployments do not have a human
-approval channel, so configure explicit allows or choose an appropriate
-posture before starting work.
+An allow-always decision never overrides a deny or configured ask. Headless
+deployments have no human approval channel, so configure their required access
+before starting work.
 
 ### Plan mode
 
-Plan mode denies `Edit`, `Write`, and mutating Bash commands. Read-only
+Plan mode denies `Edit`, `Write`, and mutating Shell commands. Read-only
 exploration remains available so the model can inspect the workspace and prepare
-a plan. In an interactive client, the model presents the completed plan for
-review before leaving plan mode. Headless plan approval is denied by default;
-`--plan-mode-auto-approve` is an explicit operator opt-in and should be treated
-as an autonomous approval capability.
+a plan. For each current presentation, the model calls `PresentPlan` once and
+stops for review before leaving plan mode. Choosing iterate/deny ends that run;
+your next prompt supplies feedback, and a revised or unchanged plan requires a
+new `PresentPlan` call and fresh approval. Later chat assent never starts
+execution by itself.
+
+In `mecatui`, **Esc** from the plan review means iterate/deny. The guarded
+**Ctrl+C** quit path instead cancels the run; it is not a neutral dismissal and
+does not record a deny verdict. The next prompt recovers the cancelled session,
+which remains in plan mode, before a fresh plan review can be presented. Hiding
+a client review does not itself clear an ask that remains pending on the server.
+Headless plan approval is denied by default; `--plan-mode-auto-approve` is an
+explicit operator opt-in and should be treated as an autonomous approval
+capability.
 
 ## Configure permission rules
 
@@ -107,17 +140,17 @@ section:
 ```yaml
 permissions:
   allow:
-    - "Read"
-    - "Bash(go test:*)"
+    - 'Read'
+    - 'Shell(go test:*)'
   ask:
-    - "Bash(git push:*)"
+    - 'Shell(git push:*)'
   deny:
-    - "Bash(rm:*)"
+    - 'Shell(rm:*)'
   subagent:
     deny:
-      - "Bash(gh pr merge:*)"
+      - 'Shell(gh pr merge:*)'
     allow:
-      - "Bash(go vet:*)"
+      - 'Shell(go vet:*)'
 ```
 
 Rules use `Tool(pattern)` syntax. A bare tool name applies to the whole tool;
@@ -135,18 +168,16 @@ The configuration scopes, from highest to lowest precedence, are:
 6. the built-in default floor.
 
 Project permission files are resolved per session against that session's
-workspace. Project `deny` and `ask` rules remain effective, but project
-`allow` rules require project trust.
+workspace. Project `deny` and `ask` rules remain effective, but project `allow`
+rules require project trust.
 
 Use `--import-claude-permissions` to import supported rules from Claude Code
-`settings.json`. The import is intentionally lossy and fail-safe: unsupported
-or ambiguous rules are dropped or demoted to approval rather than widening
-access.
+`settings.json`. The import is lossy and fail-safe: unsupported or ambiguous
+rules are dropped or demoted to approval rather than widening access.
 
 ## Project trust
 
-Project trust is a separate positive decision from permission evaluation. It
-controls whether project-provided authority is admitted, including:
+Project trust controls whether Mecatl admits project-provided authority:
 
 - permission `allow` rules;
 - project instructions and rules;
@@ -158,10 +189,9 @@ undrifted remembered trust decision, or the interactive posture floor. A
 headless root does not gain project trust merely because it uses `trusted`,
 `auto`, or `yolo`; it needs an explicit trust source.
 
-This means `--posture auto` on an untrusted headless checkout can provide
-allow-all behavior for the admitted tools without admitting attacker-controlled
-project steering or a read-only child shell. Treat `--trust-project` as an
-operator assertion that the repository and its `.git` metadata are trusted.
+On an untrusted headless checkout, `--posture auto` can allow admitted tools
+without loading project steering or enabling a read-only child shell.
+`--trust-project` asserts that you trust the repository and its `.git` metadata.
 
 ## Guardrails
 
@@ -182,14 +212,13 @@ weaken or disable the operator's checker. A checker failure follows the
 configured fail-open/fail-closed behavior, and unsafe or malformed sanitized
 content is not silently accepted.
 
-See the [guardrails reference](https://github.com/stacklok/mecatl/blob/main/docs/usage/guardrails.md)
-for matchers, modes, and checker failure handling.
+See the [guardrails reference](/building/what-you-get/permissions.md) for
+matchers, modes, and checker failure handling.
 
 ## Limitations
 
-- `strict` does not mean every call is denied; it preserves the built-in
-  read-allow/mutate-ask floor.
-- `auto` and `yolo` do not override a deny or a deliberately configured ask.
+- `strict` preserves the built-in read-allow and mutate-ask floor.
+- `auto` and `yolo` preserve denies and configured asks.
 - Headless main-session asks can still wait indefinitely unless the deployment
   configures the required permissions; headless child asks use the fail-safe
   child path instead of waiting for a client.
@@ -200,15 +229,13 @@ for matchers, modes, and checker failure handling.
   disable guardrails, and a guardrail advisory does not change the tool's
   permission result.
 - `--posture`, `--trust-project`, and permission configuration on a local
-  mecatui invocation do not change a remote server used through `connect`.
+  `mecatui` invocation do not change a remote server used through `connect`.
 
 ## Next steps
 
-- [Permissions and guardrails](/building/what-you-get/permissions.md) for the detailed
-  rule-resolution and approval reference.
+- [Permissions and guardrails](/building/what-you-get/permissions.md) for the
+  detailed rule-resolution and approval reference.
 - [Project instructions and rules](./project-instructions-and-rules.md) for
   project-ingestion behavior.
 - [Execution environments](./execution-environments.md) for workspace and shell
   isolation.
-- [Start and resume sessions](./start-and-resume-sessions.md) for session
-  lifecycle.

@@ -42,7 +42,7 @@ func (m *recordingMerger) count() int {
 
 // TestBuildSubagentToolWritableWritesParentDirectly drives the REAL buildSubagentTool
 // with a writable subagent (mode:"read-write") and proves the direct-write wiring
-// (ADR 0041): the writable child runs Edit/Write/Bash DIRECTLY against the parent repo
+// (ADR 0041): the writable child runs Edit/Write/Shell DIRECTLY against the parent repo
 // (no fork, no merge). The probe is a child that writes a real file into the workspace
 // it is handed; the test asserts the file lands in the REAL repo and NO sibling fork
 // directory was created. A recording merger placed on the assets must receive ZERO
@@ -120,7 +120,7 @@ func TestNoFSSubagentToolRejectsWritable(t *testing.T) {
 
 	res, err := task.Execute(context.Background(),
 		session.NewToolCall("c1", "Subagent", []byte(`{"prompt":"go","mode":"read-write"}`)),
-		tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindNoFS, ID: "test"}, nofs.New(), nil))
+		tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindNoFS, ID: "test"}, nofs.New(), testReadLedger(), nil))
 	if err != nil {
 		t.Fatalf("Subagent.Execute: %v", err)
 	}

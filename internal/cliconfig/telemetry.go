@@ -35,6 +35,9 @@ type HeadlessTelemetryConfig struct {
 	// when empty (matches telemetry.Setup).
 	ServiceName string
 
+	// InstallationID sets the optional mecatl.installation.id resource attribute.
+	InstallationID string
+
 	// OTLPTraceEndpoint enables OTLP TRACE push when non-empty. Mirrors mecated's
 	// --otlp-endpoint. Empty disables tracing.
 	OTLPTraceEndpoint string
@@ -88,6 +91,9 @@ type HeadlessTelemetryHandles struct {
 	// internal/app's roleFamily already resolved; nil when disabled (children
 	// unmetered, byte-identical).
 	MetricsRoleScoper func(familyRole string) (port.EventSink, port.ToolCallRecorder)
+	// SessionLoadFailureMetricsEmitter records ownership-concealed load failures
+	// with one closed class label. Nil when telemetry is disabled.
+	SessionLoadFailureMetricsEmitter func(port.SessionLoadFailureClass)
 }
 
 // HeadlessTelemetry builds the OTel metrics + (optional) tracing pipeline for a
@@ -113,6 +119,7 @@ func HeadlessTelemetry(ctx context.Context, cfg HeadlessTelemetryConfig) (Headle
 		Protocol:        cfg.OTLPTraceProtocol,
 		Insecure:        cfg.OTLPTraceInsecure,
 		ServiceName:     cfg.ServiceName,
+		InstallationID:  cfg.InstallationID,
 		MetricsEndpoint: cfg.OTLPMetricsEndpoint,
 		MetricsProtocol: cfg.OTLPMetricsProtocol,
 		MetricsInsecure: cfg.OTLPMetricsInsecure,
@@ -153,11 +160,12 @@ func HeadlessTelemetry(ctx context.Context, cfg HeadlessTelemetryConfig) (Headle
 	}
 
 	return HeadlessTelemetryHandles{
-		Shutdown:          providers.Shutdown,
-		Registry:          providers.Registry,
-		Metrics:           metrics,
-		Sink:              sink,
-		ToolCallRecorder:  mainScoped,
-		MetricsRoleScoper: roleScoper,
+		Shutdown:                         providers.Shutdown,
+		Registry:                         providers.Registry,
+		Metrics:                          metrics,
+		Sink:                             sink,
+		ToolCallRecorder:                 mainScoped,
+		MetricsRoleScoper:                roleScoper,
+		SessionLoadFailureMetricsEmitter: metrics.EmitSessionLoadFailure,
 	}, nil
 }

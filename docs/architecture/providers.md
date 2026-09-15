@@ -52,7 +52,12 @@
 
 **SSE → Chunk translation** (`stream.go`, `translate` — a pure function driven
 directly from recorded fixtures by `decodeSSE` in tests):
-- `response.output_text.delta` → `ChunkText`
+- `response.output_text.delta` → `ChunkText`. Every non-empty visible delta is
+  projected in serial SSE arrival order, even when item, output, or content
+  identities differ. Those provider identities are deliberately discarded at the
+  adapter boundary; the engine concatenates the chunks into the one
+  `Message.Text` string without synthetic separators or text-part metadata
+  ([ADR 0302](../adr/0302-openai-visible-text-delta-projection.md)).
 - `response.reasoning_summary_text.delta` / `response.reasoning_text.delta` →
   `ChunkReasoning` (the DISPLAY summary)
 - `response.output_item.done` (reasoning) → BUFFERED into `streamState.reasoning`
@@ -69,8 +74,9 @@ directly from recorded fixtures by `decodeSSE` in tests):
   `Usage.CacheReadTokens`)
 - `response.incomplete` → `ChunkUsage` then `ChunkDone(error)`
 - `response.failed` / `error` → a non-nil stream **error** carrying the
-  provider's message verbatim (so the real reason reaches the terminal
-  `result`, not an opaque "error")
+  provider's in-band message verbatim; HTTP API rejections instead render only
+  their structured `code` (or `type`) and message as `code: message`, never the
+  SDK's raw response body, request URL, or correlation ID.
 
 **Cancellation**: `Stream` (`openai.go`) selects on `ctx.Done()` each iteration
 and abandons the underlying stream; a deliberate `ctx` cancel is **not** reported
@@ -123,6 +129,40 @@ into the opaque `Message.Reasoning` STRING) are absorbed at adapter-construction
 the DTO. `UseMock` short-circuits to a single synthetic
 `mock` entry (offline). The zero-keys case is the named, actionable `errNoProvider`.
 
+### Operator-defined OIDC providers
+
+An operator-defined `providers.<name>` entry with `auth.method: oidc` adds an
+OIDC-backed Responses provider to the same composition-owned registry; it does not
+create a second registry or entitlement layer. The exact provider name is the existing
+durable `provider_id`, and `default_model` is the deployment-wide inventory floor.
+Custom OIDC is valid only with `api_flavor: openai-responses`. Its identity and trust
+configuration lives under `providers.<name>.auth.oidc`, while
+`credential_store.oidc` selects the shared protected credential home and encryption-key
+custody. Build does no authenticated model probe. A usable encrypted record makes live
+listing global to the deployment; a missing record leaves an optional provider
+unavailable and makes a selected/default provider fail closed without ToolHive or
+default fallback.
+
+The provider record is in `mecatl/provider-oidc/v1`, encrypted under the shared
+credential home and bound to the provider name, canonical gateway, exact issuer,
+client, resource audience, scopes, redirect, and both trust identities. Its access and
+refresh tokens are never exposed through events, snapshots, diagnostics, model
+context, or RPC. `mecated` opens and refreshes an existing record only;
+browser/loopback enrollment belongs to embedded local
+`mecatui providers login PROVIDER`. Status is passive local inspection and logout
+deletes local state before bounded best-effort revocation. The lifecycle uses a
+provider-scoped cross-process lock through exchange and CAS commit; a crash after
+upstream refresh rotation but before local persistence can require login again.
+
+Gateway authority is deployment-scoped. All callers admitted by mecated share a usable
+provider's gateway identity, quota, gateway-side audit/retention posture, and model
+availability; operators should use a dedicated deployment/service identity. Caller
+OIDC remains authentication and session ownership only: raw inbound caller bearers are
+dropped after authentication and are never forwarded or retained. Separate deployments
+are required for mutually untrusted or per-user upstream authorization until explicit
+forwarded-token or RFC 8693 token-exchange contracts exist. This is distinct from the
+ToolHive LLM gateway's retained provider identity/modes and from ToolHive MCP discovery.
+
 ### Experimental `openai-codex` subscription provider
 
 `openai-codex` is a distinct, credential-driven registry entry for a ChatGPT
@@ -163,7 +203,7 @@ floating semantics and follows the deployment default after restart. The manual
 credential is read once at startup; every request rechecks that snapshot's expiry,
 but there is no refresh, login, or auth-file writer. Replacing an expired/rejected
 token requires restarting the process. The plaintext and same-UID threat boundary
-is documented in the [operator setup](../usage/mecated.md#openai-codex-subscription-manual-token-experimental).
+is documented in the [operator setup](https://mecatl.dev/docs/building/deployment/settings#configure-provider-credentials).
 
 **OpenCode Go (`provider/openaichat`)** is the Chat Completions wire adapter —
 the sibling of the openai Responses adapter, built on the same `openai-go` SDK via
@@ -251,35 +291,41 @@ prompt-cache prefix untouched. The routed downstream echoes back as
 (`"provider.route"`), absent on a cache hit — never fabricated. See
 [`docs/adr/0210-openrouter-downstream-provider-steering.md`](../adr/0210-openrouter-downstream-provider-steering.md).
 
-**Intent-driven availability (issue #262, ADR 0064).** Every provider above is
-**key-driven** — available iff a credential resolves. The ToolHive LLM gateway proxy
-entry (`providerToolhive`, id `"toolhive"`) is **intent-driven** instead: it is
-registered when `resolveToolhiveIntent` detects ToolHive's own config file (or an
-explicit `--toolhive-llm-base-url`) — no credential required, and NEVER gated by
-reachability (register-on-intent; a session persisting `provider_id: "toolhive"` must
-survive a restart with the proxy down, never rejected as "unknown or unavailable
-provider"). Each `providerEntry` carries an `intentDriven` bit that
+**Intent-driven availability (issue #262, ADR 0064; ADR 0334).** Every provider above
+is **key-driven** — available iff a credential resolves. One ToolHive gateway identity
+instead registers two **intent-driven**, protocol-specific entries: `toolhive` uses
+OpenAI Responses (`GET /v1/models`, `POST /v1/responses`) and
+`toolhive-anthropic` uses native Anthropic Messages (`GET /anthropic/v1/models`,
+`POST /anthropic/v1/messages`). Both are registered when `resolveToolhiveIntent`
+detects ToolHive's config (or an explicit `--toolhive-llm-base-url`) — no credential
+required, and NEVER gated by reachability. Their inventories, status, counts, and
+last-known-good snapshots are independent; model IDs are never merged across wire
+adapters. `toolhive` remains the preferred intent-driven default. Each
+`providerEntry` carries an `intentDriven` bit that
 `preferredDefaultProvider` reads to place intent-driven providers at an explicit
-LOWEST-preference tier (any key-driven provider always wins the default) and that the
-`ListModels` `provider_status` projection also carries operator-actionable Codex
-entitlement outcomes, while `intentDriven` alone controls the TUI's `org` tier and
-gateway availability notices. A BOUNDED (≤1.5s) Build-time probe runs immediately after
-registration and drives ONLY the startup diagnostic, the initial live-model snapshot,
-and default-model eligibility for a SOLE intent-driven provider — never registration
-itself. See `docs/adr/0064-toolhive-llm-gateway-provider.md` for the full design
+LOWEST-preference tier (any key-driven provider always wins the default).
+`ListModels` `provider_status` projects operator-actionable live-listing outcomes
+for intent-driven gateways, Codex entitlements, and operator-defined custom
+providers (identified by their configured custom default model); it exposes only
+safe provider ID/state/hint metadata, never an endpoint, credential, or raw
+listing error/body. `intentDriven` alone controls the TUI's `org` tier and gateway
+availability notices. The two bounded Build-time probes start concurrently under one
+≤1.5s deadline and drive ONLY startup diagnostics, initial live-model snapshots, and
+default-model eligibility — never registration itself. See
+`docs/adr/0064-toolhive-llm-gateway-provider.md` and
+`docs/adr/0334-toolhive-protocol-specific-providers.md` for the designs
 (including the accepted sole+probe-down boot deviation) and
 `internal/adapter/openaicompat` / `internal/adapter/toolhivellm` for the two-layer leaf
 split (protocol-generic lister + the one ToolHive-aware config reader).
 
-**DIRECT mode (issue #265, ADR 0102).** The gateway entry can also talk DIRECTLY to the
+**DIRECT mode (issue #265, ADR 0102).** Both gateway entries can talk DIRECTLY to the
 real `gateway_url` with no local proxy hop: mecatl imports ToolHive as a Go library (one
 file, `internal/adapter/toolhivellm/tokensource.go`, the package's sole toolhive-importing
 file alongside the stdlib-only `detect*.go`) and builds an in-process OIDC token source
 — the SAME `llm.NewTokenSource` `thv llm token` uses — so the bearer is minted and
-refreshed in-process. The token rides a custom `http.RoundTripper` inside the
-`*http.Client` passed to `openai.WithHTTPClient` (`bearerRoundTripper` in
-`internal/app/registry.go`), which strips the SDK's placeholder `Authorization` header
-and sets `Bearer <real-token>` per request — mirroring the ToolHive proxy's own `Rewrite`.
+refreshed in-process. One token source and bearer-authenticated `*http.Client` serve
+both protocol adapters. `bearerRoundTripper` strips conflicting `Authorization` and
+`X-Api-Key` headers and sets `Bearer <real-token>` on every outbound attempt.
 The `WithHTTPClient` option rides every per-session/heal re-mint (the
 `newOpenAICompatEntry` closure appends it to every `construct()` call), so the token
 injection cannot drift off a re-minted adapter. A new `--toolhive-llm-mode
@@ -289,12 +335,15 @@ auto|proxy|direct` flag (default `auto`) drives the routing in
 (`http://localhost`/`http://127.0.0.1` carve-out; a non-HTTPS gateway would send the
 bearer over cleartext), else falls back to the loopback proxy with a WARN; `proxy`
 forces the loopback path; `direct` forces the gateway path and Build-fails when OIDC
-is absent. The direct base URL is derived (`gateway_url + "/v1"`), never hand-set. The
+is absent. Direct bases are derived (`gateway_url + "/v1"` for Responses and
+`gateway_url + "/anthropic"` for the Anthropic SDK), while proxy mode uses the
+equivalent loopback paths. Legitimate path prefixes survive; userinfo, query, and
+fragment data do not. The
 token never enters a log, an error string, or an env var (OS keyring; only its
-reference is persisted; errors are sanitised via `llm.SanitizeTokenError`). `mecatui
-llm login` runs the interactive OIDC flow in-process; a headless `mecated` cache-miss
-surfaces an actionable error naming `thv llm setup` / `mecatui llm login` /
-`--toolhive-llm-mode proxy`. `tls_skip_verify` is NOT honored in direct mode (upstream
+reference is persisted; errors are sanitised via `llm.SanitizeTokenError`). ToolHive's
+own `thv llm setup` command runs the interactive OIDC flow; a headless `mecated` cache
+miss surfaces an actionable error naming `thv llm setup` or the
+`--toolhive-llm-mode proxy` escape hatch. `tls_skip_verify` is NOT honored in direct mode (upstream
 gap) — a self-signed gateway must use `--toolhive-llm-mode proxy`. See
 `docs/adr/0102-toolhive-direct-mode.md` for the full design.
 
@@ -341,12 +390,18 @@ the provider id.)
 **Model inventory (`ListModels` / `internal/app/modelsnapshot.go`).** `modelSnapshot`
 joins the registry's AVAILABLE providers to the embedded catalog and projects each
 model into the proto `ModelInfo` (public metadata only — id, provider_id, display_name,
-image/reasoning flags, context_limit — never a key/env/base-URL). The composition root
-injects the snapshot into `server.Config.Models`; the server adapter holds only the
-proto slice (mirroring the `ListAgents` idiom). The `mock` provider advertises no
-selectable models. `ServerCapabilities.model_selection` is true iff the snapshot is
-non-empty, gating the client's model picker the way `agents` gates `/agents`. Provider
-key/base-URL flags landed in `cmd/mecated` earlier; the picker UX is a client concern.
+image/reasoning flags, context_limit — never a key/env/base-URL). Composition stores
+that projection in one atomic resolved inventory shared by `ListModels` and the
+read-only `DiscoverModels` tool. Live refresh swaps that same inventory, so both views
+retain the existing floor/last-known-good/empty semantics without a second lister or
+probe. `DiscoverModels` exact-filters only `provider_id` and `model_id`, returns at most
+50 complete provider/model handles (20 by default), and has a 32 KiB output ceiling.
+The pair is the exact selection handle; a model id never implies its provider. The tool
+is registered through the common catalog assembly, including no-FS sessions, and
+receives no workspace or shell input. The `mock` provider advertises no selectable
+models. `ServerCapabilities.model_selection` is true iff the inventory is non-empty or
+a refresh source is available, gating the client's model picker. Provider key/base-URL
+flags landed in `cmd/mecated` earlier; the picker UX is a client concern.
 
 **Capability single-source (`internal/app/capability.go`).** A model's true input
 capability is the INTERSECTION `catalog-per-model-modalities ∩ adapter-Capabilities()`,
@@ -566,7 +621,7 @@ MISS logs an INFO naming the reason (`degenerate-input`/`classifier-error`/`canc
 `empty-model` — metadata only, issue #287); the breaker-open INFO is unchanged. The
 routed fields surface end-to-end: the session struct + the proto/client wire
 (`routed_category`/`routed_model` on the `Subagent` event payload), relayed through
-the gRPC + HTTP relays and rendered by mecatui (inline card + ctrl+a fleet roster).
+the gRPC + HTTP relays and rendered by mecatui (inline card + f6 fleet roster).
 
 The structured miss/gate half of this observability surface is described below under the
 per-delegation routing-reason surface ([ADR 0083](../adr/0083-routing-reason-on-delegation-start.md)).
@@ -593,7 +648,7 @@ families). The per-family seam respects each family's engine lifetime:
 Like the Subagent family, the team and parallel routed fields surface **end-to-end on the
 proto/client wire**: `routed_category`/`routed_model` on the `TeamMemberSpec` (team.start
 roster) and on the `Parallel` event (branch_start), relayed through the gRPC + HTTP relays
-and rendered by mecatui (the ctrl+a Teams roster row and the Parallel group-focus branch
+and rendered by mecatui (the f6 Teams roster row and the Parallel group-focus branch
 row). Bare metadata only — a category label + a model id, never member/branch content
 (gauntlet #7).
 

@@ -154,7 +154,7 @@ func TestRemoteSkillSourceDefaultAndNoFSLogicalAssetWiring(t *testing.T) {
 	provider := mockllm.New(mockllm.TextTurn("x"))
 	cfg := Config{SkillSourceURL: addr}
 
-	defaultCat, assets, _, _, closeFn, err := buildCatalog(ctx, cfg, regForTest(provider, providerMock, cfg.Model), provider, hookexec.New(nil), agents.NewRegistry(nil), memstore.New(), nil)
+	defaultCat, assets, _, _, closeFn, err := buildCatalog(ctx, isolateConfig(t, cfg), regForTest(provider, providerMock, cfg.Model), provider, hookexec.New(nil), agents.NewRegistry(nil), memstore.New(), nil)
 	if err != nil {
 		t.Fatalf("buildCatalog(skill driver): %v", err)
 	}
@@ -181,7 +181,7 @@ func TestRemoteSkillSourceDefaultAndNoFSLogicalAssetWiring(t *testing.T) {
 				t.Errorf("%s Skill description missing %q: %q", profile, want, spec.Description)
 			}
 		}
-		for _, forbidden := range []string{"path", "Read", "Bash", "base director"} {
+		for _, forbidden := range []string{"path", "Read", "Shell", "base director"} {
 			if strings.Contains(spec.Description, forbidden) {
 				t.Errorf("%s Skill description contains retired guidance %q: %q", profile, forbidden, spec.Description)
 			}
@@ -200,7 +200,7 @@ func TestRemoteSkillSourceDefaultAndNoFSLogicalAssetWiring(t *testing.T) {
 		provider: provider, providerID: providerMock, model: cfg.Model, noFS: true,
 	})
 	defer func() { _ = noFSClose() }()
-	for _, name := range []string{"Read", "Bash"} {
+	for _, name := range []string{"Read", "Shell"} {
 		if _, ok := noFSCat.Lookup(name); ok {
 			t.Fatalf("no-fs catalog contains %s", name)
 		}
@@ -216,8 +216,8 @@ func TestRemoteSkillSourceDefaultAndNoFSLogicalAssetWiring(t *testing.T) {
 		tl   tool.Tool
 		env  tool.Environment
 	}{
-		{"default", defaultSkill, tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: "default"}, memfs.NewWorkspace("/workspace"), nil)},
-		{"no-fs", noFSSkill, tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindNoFS, ID: "no-fs"}, nofs.New(), nil)},
+		{"default", defaultSkill, tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: "default"}, memfs.NewWorkspace("/workspace"), testReadLedger(), nil)},
+		{"no-fs", noFSSkill, tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindNoFS, ID: "no-fs"}, nofs.New(), testReadLedger(), nil)},
 	}
 	for _, profile := range profiles {
 		t.Run(profile.name, func(t *testing.T) {
@@ -229,7 +229,7 @@ func TestRemoteSkillSourceDefaultAndNoFSLogicalAssetWiring(t *testing.T) {
 			if got := source.assetReads.Load(); got != before {
 				t.Fatalf("activation called ReadSkillAsset %d times, want zero", got-before)
 			}
-			for _, forbidden := range []string{"Base directory", "absolute path", "Read tool", "via Bash"} {
+			for _, forbidden := range []string{"Base directory", "absolute path", "Read tool", "via Shell"} {
 				if strings.Contains(activated.Content, forbidden) {
 					t.Errorf("activation leaked path-based guidance %q: %q", forbidden, activated.Content)
 				}
@@ -284,7 +284,7 @@ func TestRemoteSkillSourceBuildRunDefaultAndNoFS(t *testing.T) {
 				mockllm.TextTurn("done"),
 			)
 			ctx := context.Background()
-			built, err := Build(ctx, Config{
+			built, err := buildIsolated(t, ctx, Config{
 				Workspace:      t.TempDir(),
 				Model:          "mock",
 				MockProvider:   provider,
@@ -297,12 +297,7 @@ func TestRemoteSkillSourceBuildRunDefaultAndNoFS(t *testing.T) {
 			}
 			defer built.Close()
 
-			var sess *session.Session
-			if profile == server.ProfileNoFS {
-				sess, err = built.Service.CreateSessionWithProfile(ctx, "", session.ModeDefault, session.Limits{}, server.ProviderSelector{}, profile)
-			} else {
-				sess, err = built.Service.CreateSessionWithProfile(ctx, t.TempDir(), session.ModeDefault, session.Limits{}, server.ProviderSelector{}, profile)
-			}
+			sess, err := built.Service.CreateSessionWithProfile(ctx, session.ModeDefault, session.Limits{}, server.ProviderSelector{}, profile)
 			if err != nil {
 				t.Fatalf("CreateSessionWithProfile: %v", err)
 			}
@@ -356,7 +351,7 @@ func TestRemoteSkillSourceBuildRunDefaultAndNoFS(t *testing.T) {
 						t.Errorf("request %d Skill description missing %q: %q", i, want, skillSpec.Description)
 					}
 				}
-				for _, forbidden := range []string{"path", "Read", "Bash"} {
+				for _, forbidden := range []string{"path", "Read", "Shell"} {
 					if strings.Contains(skillSpec.Description, forbidden) {
 						t.Errorf("request %d Skill description contains retired %q guidance: %q", i, forbidden, skillSpec.Description)
 					}
@@ -490,7 +485,7 @@ func TestBuildSoulDriverProbeFatal(t *testing.T) {
 	addr := lis.Addr().String()
 	_ = lis.Close()
 
-	_, err = Build(context.Background(), Config{
+	_, err = buildIsolated(t, context.Background(), Config{
 		Workspace:     t.TempDir(),
 		Model:         "mock",
 		UseMock:       true,
@@ -605,7 +600,7 @@ func TestBuildAgentDriverUnreachableFatal(t *testing.T) {
 		t.Fatal("resolveAgentSeam(unreachable driver) = nil error, want a fatal snapshot failure")
 	}
 
-	_, berr := Build(context.Background(), Config{
+	_, berr := buildIsolated(t, context.Background(), Config{
 		Workspace:      t.TempDir(),
 		Model:          "mock",
 		UseMock:        true,
@@ -627,7 +622,7 @@ func TestBuildCommandDriverProbeFatal(t *testing.T) {
 	addr := lis.Addr().String()
 	_ = lis.Close()
 
-	_, err = Build(context.Background(), Config{
+	_, err = buildIsolated(t, context.Background(), Config{
 		Workspace:        t.TempDir(),
 		Model:            "mock",
 		UseMock:          true,
@@ -813,7 +808,7 @@ func TestBuildCommandDriverProbeOnceAcrossSessionEngines(t *testing.T) {
 	addr := startSourceDriver(t, func(gs *grpc.Server) {
 		driverv1.RegisterCommandSourceServiceServer(gs, srv)
 	})
-	built, err := Build(context.Background(), Config{
+	built, err := buildIsolated(t, context.Background(), Config{
 		Workspace:        t.TempDir(),
 		Model:            "mock",
 		UseMock:          true,
@@ -830,7 +825,7 @@ func TestBuildCommandDriverProbeOnceAcrossSessionEngines(t *testing.T) {
 	// TWO per-session engines through the production factory (a non-zero
 	// provider selector forces the per-session path).
 	for i := range 2 {
-		if _, serr := built.Service.CreateSessionWithProvider(context.Background(), t.TempDir(),
+		if _, serr := built.Service.CreateSessionWithProvider(context.Background(),
 			session.ModeDefault, defaultLimits(), server.ProviderSelector{ProviderID: providerMock}); serr != nil {
 			t.Fatalf("CreateSessionWithProvider #%d: %v", i, serr)
 		}
@@ -875,7 +870,7 @@ func TestSessionEngineCommandExpanderUsesStashedDriverSource(t *testing.T) {
 		if ferr != nil {
 			t.Fatalf("factory #%d: %v", i, ferr)
 		}
-		sess := session.New(session.SessionID(fmt.Sprintf("cmd-sess-%d", i)), session.ModeDefault, "/ws",
+		sess := session.New(session.SessionID(fmt.Sprintf("cmd-sess-%d", i)), session.ModeDefault, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/ws", Revision: "in-tree-v1"},
 			session.Limits{MaxTurns: 3}, time.Now())
 		drainRun(res.Engine.Run(ctx, sess, memEnvironment("/ws"), agent.RunRequest{Text: "/driver-cmd fix-it", Parts: nil}))
 		expanded := false

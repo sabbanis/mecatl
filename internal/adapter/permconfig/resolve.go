@@ -196,6 +196,15 @@ type Resolver struct {
 	// (explicit files) out-ranks user-global (first-non-nil keeps CLI).
 	operatorOpenRouter *OpenRouterSection
 
+	// operatorTelemetry is the OPERATOR-TIER telemetry: subtree, read ONCE at
+	// construction from the user-global + CLI tiers ONLY (the SOLE capture path
+	// is captureTelemetry from loadUserRules — mirroring captureOpenRouter). A
+	// project-tier file's telemetry: block is IGNORED with a WARN in
+	// loadProjectRules. nil when no operator-tier file carried a telemetry:
+	// section. CLI (explicit files) out-ranks user-global (first-non-nil keeps
+	// CLI).
+	operatorTelemetry *TelemetrySection
+
 	// operatorMCP is the first complete operator-tier mcp: subtree. Explicit CLI
 	// files are visited before user-global settings, so precedence is whole-block,
 	// first-non-nil; project mcp blocks are warning-only and never captured.
@@ -209,11 +218,14 @@ type Resolver struct {
 	// block. Parse failures are retained so composition fails closed at startup.
 	operatorStorageManagement    *StorageManagementSection
 	operatorStorageManagementErr error
+	operatorTemporaryStorage     *TemporaryStorageSection
+	operatorTemporaryStorageErr  error
 
 	// operatorProviders and operatorProviderOverrides are immutable operator-tier
 	// provider configuration captured once at resolver construction.
 	operatorProviders         ProviderDefinitions
 	operatorProviderOverrides ProviderOverrides
+	operatorCredentialStore   *CredentialStoreSection
 	operatorProviderConfigErr error
 
 	mu    sync.RWMutex
@@ -230,6 +242,14 @@ func (r *Resolver) OperatorProviders() (ProviderDefinitions, ProviderOverrides, 
 	return r.operatorProviders, r.operatorProviderOverrides, r.operatorProviderConfigErr
 }
 
+// OperatorCredentialStore returns the operator-tier credential-store configuration.
+func (r *Resolver) OperatorCredentialStore() *CredentialStoreSection {
+	if r == nil {
+		return nil
+	}
+	return r.operatorCredentialStore
+}
+
 // OperatorStorageManagement returns the immutable operator-tier management
 // authority block and any strict parse failure that would otherwise disable it.
 func (r *Resolver) OperatorStorageManagement() (*StorageManagementSection, error) {
@@ -237,6 +257,15 @@ func (r *Resolver) OperatorStorageManagement() (*StorageManagementSection, error
 		return nil, nil
 	}
 	return r.operatorStorageManagement, r.operatorStorageManagementErr
+}
+
+// OperatorTemporaryStorage returns the immutable operator-tier command temporary
+// storage policy and any strict parse failure that would otherwise disable it.
+func (r *Resolver) OperatorTemporaryStorage() (*TemporaryStorageSection, error) {
+	if r == nil {
+		return nil, nil
+	}
+	return r.operatorTemporaryStorage, r.operatorTemporaryStorageErr
 }
 
 // OperatorGuardrails returns the operator-tier guardrails config (user-global + CLI
@@ -379,6 +408,19 @@ func (r *Resolver) OperatorOpenRouter() *OpenRouterSection {
 		return nil
 	}
 	return r.operatorOpenRouter
+}
+
+// OperatorProductMetricsEnabled returns the operator-tier
+// telemetry.productMetrics.enabled: value (user-global + CLI only), or nil
+// when none was configured. It is the SOLE accessor composition uses to
+// read the product-metrics opt-out from config — by construction it never
+// returns a project-tier value (a project telemetry: block is ignored with
+// a WARN in loadProjectRules). nil-safe. Mirrors OperatorOpenRouter().
+func (r *Resolver) OperatorProductMetricsEnabled() *bool {
+	if r == nil || r.operatorTelemetry == nil || r.operatorTelemetry.ProductMetrics == nil {
+		return nil
+	}
+	return r.operatorTelemetry.ProductMetrics.Enabled
 }
 
 // OperatorMCP returns the complete operator-tier mcp subtree, or nil when absent.
@@ -599,17 +641,16 @@ func (r *Resolver) loadProjectRules(ws tool.WorkspaceReader) ([]governance.Rule,
 				"lost_deny", deny, "lost_ask", ask, "lost_allow", allow, "counts_known", counted)
 			continue
 		}
-		// Guardrails are OPERATOR-TIER ONLY (issue #27, decision 3): a project file's
-		// guardrails: block is IGNORED with a loud WARN. Honouring it would let a
-		// project repo weaken or disable a security checker — a downgrade the usual
-		// tighten-only project gate does NOT permit (it reverses here: project config
-		// can only TIGHTEN permissions, but a guardrail relaxation is a LOOSENING).
+		// Provider configuration is OPERATOR-TIER ONLY.
 		if cfg.Providers != nil {
 			r.diag.Log(context.Background(), port.LevelWarn, "providers: IGNORING project-tier providers block (operator-tier only)", "file", src.path, "root", ws.Root())
 		}
 		if cfg.ProviderOverrides != nil {
 			r.diag.Log(context.Background(), port.LevelWarn, "provider_overrides: IGNORING project-tier provider_overrides block (operator-tier only)", "file", src.path, "root", ws.Root())
 		}
+		// Guardrails are OPERATOR-TIER ONLY (issue #27, decision 3): a project file's
+		// guardrails block is ignored because letting a project weaken or disable a
+		// security checker would reverse the usual tighten-only project gate.
 		if cfg.Guardrails != nil {
 			r.diag.Log(context.Background(), port.LevelWarn,
 				"guardrails: IGNORING a project-tier guardrails: block (operator-tier only — a project repo cannot configure/disable a security checker; set guardrails in your user-global settings.yaml or via --guardrails-model)",
@@ -663,6 +704,11 @@ func (r *Resolver) loadProjectRules(ws tool.WorkspaceReader) ([]governance.Rule,
 				"openrouter: IGNORING a project-tier openrouter: block (operator-tier only — a project repo cannot steer the OpenRouter downstream provider; set openrouter in your user-global settings.yaml)",
 				"file", src.path, "root", ws.Root())
 		}
+		if cfg.Telemetry != nil {
+			r.diag.Log(context.Background(), port.LevelWarn,
+				"telemetry: IGNORING a project-tier telemetry: block (operator-tier only — a project repo cannot change a user's own product-metrics opt-out in either direction; set telemetry in your user-global settings.yaml)",
+				"file", src.path, "root", ws.Root())
+		}
 		if cfg.MCP != nil {
 			r.diag.Log(context.Background(), port.LevelWarn,
 				"mcp: IGNORING a project-tier mcp: block (operator-tier only — a project repo cannot configure global MCP servers)",
@@ -671,6 +717,11 @@ func (r *Resolver) loadProjectRules(ws tool.WorkspaceReader) ([]governance.Rule,
 		if cfg.Retention != nil {
 			r.diag.Log(context.Background(), port.LevelWarn,
 				"retention: IGNORING a project-tier retention block (operator-tier only; projects cannot weaken cleanup protection)",
+				"file", src.path, "root", ws.Root())
+		}
+		if cfg.TemporaryStorage != nil {
+			r.diag.Log(context.Background(), port.LevelWarn,
+				"temporary_storage: IGNORING a project-tier temporary_storage block (operator-tier only; projects cannot redirect command temporary storage or alter cleanup retention)",
 				"file", src.path, "root", ws.Root())
 		}
 		if cfg.StorageManagement != nil {
@@ -833,7 +884,7 @@ func (r *Resolver) applyTrustGate(rules []governance.Rule, report *Report) []gov
 // Read from the host filesystem via the injectable env (NOT a workspace — these
 // live outside any session root). Fail-soft per file.
 func (r *Resolver) captureOperatorParseError(data []byte, err error) {
-	if (hasTopLevelKey(data, "providers") || hasTopLevelKey(data, "provider_overrides")) && r.operatorProviderConfigErr == nil {
+	if (hasTopLevelKey(data, "providers") || hasTopLevelKey(data, "provider_overrides") || hasTopLevelKey(data, "credential_store")) && r.operatorProviderConfigErr == nil {
 		r.operatorProviderConfigErr = errors.New("operator provider configuration is invalid")
 	}
 	if hasTopLevelKey(data, "retention") && r.operatorRetentionErr == nil {
@@ -841,6 +892,9 @@ func (r *Resolver) captureOperatorParseError(data []byte, err error) {
 	}
 	if hasTopLevelKey(data, "storage_management") && r.operatorStorageManagementErr == nil {
 		r.operatorStorageManagementErr = err
+	}
+	if hasTopLevelKey(data, "temporary_storage") && r.operatorTemporaryStorageErr == nil {
+		r.operatorTemporaryStorageErr = err
 	}
 }
 
@@ -886,11 +940,14 @@ func (r *Resolver) loadUserRules(report *Report) []governance.Rule {
 		r.captureModels(cfg.Models)
 		// Operator-tier openrouter: same first-non-nil-keeps-CLI discipline (issue #480).
 		r.captureOpenRouter(cfg.OpenRouter)
+		// Operator-tier telemetry (opt-out product metrics): same
+		// first-non-nil-keeps-CLI discipline as openrouter.
+		r.captureTelemetry(cfg.Telemetry)
 		// Operator-tier MCP profiles: capture the complete first block; never field-merge.
 		r.captureMCP(cfg.MCP)
 		r.captureRetention(cfg.Retention)
 		r.captureStorageManagement(cfg.StorageManagement)
-		r.captureProviders(cfg.Providers, cfg.ProviderOverrides)
+		r.captureProviders(cfg.Providers, cfg.ProviderOverrides, cfg.CredentialStore)
 	}
 
 	if !r.opts.Conventional {
@@ -925,11 +982,15 @@ func (r *Resolver) loadUserRules(report *Report) []governance.Rule {
 				r.captureModels(cfg.Models)
 				// User-global openrouter: captured only if no higher CLI file already did.
 				r.captureOpenRouter(cfg.OpenRouter)
+				// Operator-tier telemetry (opt-out product metrics): same
+				// first-non-nil-keeps-CLI discipline as openrouter.
+				r.captureTelemetry(cfg.Telemetry)
 				// User-global MCP: captured only if no higher CLI file already did.
 				r.captureMCP(cfg.MCP)
 				r.captureRetention(cfg.Retention)
 				r.captureStorageManagement(cfg.StorageManagement)
-				r.captureProviders(cfg.Providers, cfg.ProviderOverrides)
+				r.captureTemporaryStorage(cfg.TemporaryStorage)
+				r.captureProviders(cfg.Providers, cfg.ProviderOverrides, cfg.CredentialStore)
 			}
 		}
 	}
@@ -953,12 +1014,15 @@ func (r *Resolver) loadUserRules(report *Report) []governance.Rule {
 
 // captureProviders records the first complete operator provider snapshot. Explicit
 // files precede user-global settings, so the command-line operator tier wins.
-func (r *Resolver) captureProviders(definitions ProviderDefinitions, overrides ProviderOverrides) {
+func (r *Resolver) captureProviders(definitions ProviderDefinitions, overrides ProviderOverrides, store *CredentialStoreSection) {
 	if r.operatorProviders == nil && definitions != nil {
 		r.operatorProviders = definitions
 	}
 	if r.operatorProviderOverrides == nil && overrides != nil {
 		r.operatorProviderOverrides = overrides
+	}
+	if r.operatorCredentialStore == nil && store != nil {
+		r.operatorCredentialStore = store
 	}
 }
 
@@ -1066,6 +1130,16 @@ func (r *Resolver) captureOpenRouter(s *OpenRouterSection) {
 	r.operatorOpenRouter = s
 }
 
+// captureTelemetry records the FIRST operator-tier telemetry: block seen
+// during loadUserRules (CLI files out-rank user-global, so first-non-nil
+// keeps CLI). Mirrors captureOpenRouter.
+func (r *Resolver) captureTelemetry(s *TelemetrySection) {
+	if s == nil || r.operatorTelemetry != nil {
+		return
+	}
+	r.operatorTelemetry = s
+}
+
 // captureMCP records the first complete operator-tier mcp block. It is called
 // only by loadUserRules, whose explicit-files-before-user order defines precedence.
 func (r *Resolver) captureMCP(s *MCPSection) {
@@ -1080,6 +1154,13 @@ func (r *Resolver) captureRetention(s *RetentionSection) {
 		return
 	}
 	r.operatorRetention = s
+}
+
+func (r *Resolver) captureTemporaryStorage(s *TemporaryStorageSection) {
+	if s == nil || r.operatorTemporaryStorage != nil {
+		return
+	}
+	r.operatorTemporaryStorage = s
 }
 
 func (r *Resolver) captureStorageManagement(s *StorageManagementSection) {

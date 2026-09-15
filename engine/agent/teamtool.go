@@ -40,8 +40,8 @@ const maxTeamPreview = 200
 // composition root supplies it; it is expected to capture nothing (the team is
 // passed per-call) and to shape the member's catalog per the three-tier workspace
 // policy (a base-sharing read-only member must NOT be handed workspace-mutating
-// tools; a read-only-isolated member may have Bash and sets IsolateReadOnly; a
-// Mutating member may have Edit/Write/Bash) plus the team coordination tools
+// tools; a read-only-isolated member may have Shell and sets IsolateReadOnly; a
+// Mutating member may have Edit/Write/Shell) plus the team coordination tools
 // (MemberTools). Returning a MemberBuild (rather than a bare *Engine) is how a
 // member's agent-definition permissionMode reaches the supervisor's per-member
 // session — it is the exact shape server.MemberEngineFactory has, so one factory
@@ -63,7 +63,7 @@ type TeamMemberArg struct {
 	// the member's InitialPrompt.
 	Role string `json:"role"`
 	// Mutating requests a self-contained copied workspace (own `.git`) with
-	// edit/write/shell tools (Edit/Write/Bash). A read-only member (the default,
+	// edit/write/shell tools (Edit/Write/Shell). A read-only member (the default,
 	// false) runs in an isolated throwaway git worktree with full shell for
 	// INSPECTION (git log/show, cat, build, test) but no Edit/Write. Neither tier is
 	// merged back into the base.
@@ -158,13 +158,11 @@ type TeamTool struct {
 	// cheap git worktree. Required only if the factory marks a read-only member
 	// IsolateReadOnly (which the composition root does only when this is wired). When
 	// nil, read-only members base-share with no shell.
-	roForker tool.EnvironmentForker
-	// sharedBaseWS re-views the parent workspace for a BASE-SHARING read-only
-	// member (the no-shell fallback tier) so it never inherits the main session's
-	// out-of-root relaxation (the path-escape-posture Scenario 5 boundary —
-	// threaded into the supervisor as WithTeamSharedBaseWorkspace). nil keeps the
-	// historical verbatim base share.
-	sharedBaseWS func(root string) tool.Workspace
+	roForker      tool.EnvironmentForker
+	ledgerFactory func() tool.ReadLedger
+	// sharedBaseWS narrows base-sharing member authority without replacing the
+	// parent Workspace's content backend.
+	sharedBaseWS func(tool.Workspace) tool.Workspace
 	// hooks fires the team lifecycle hooks (TeammateIdle) — shared with the member
 	// coordination tools by the composition root. nil disables them.
 	hooks port.HookRunner
@@ -197,16 +195,15 @@ func WithTeamToolReadOnlyForker(f tool.EnvironmentForker) TeamOption {
 	return func(t *TeamTool) { t.roForker = f }
 }
 
-// WithTeamToolSharedBaseWorkspace injects the NON-relaxed workspace view a
-// BASE-SHARING read-only member runs against (threaded into the supervisor as
-// WithTeamSharedBaseWorkspace). The composition root wires it whenever the
-// parent workspace may carry out-of-root relaxation (the path-escape-posture
-// auto/yolo main-session relax): the in-loop Team tool's base IS the parent's
-// relaxed workspace at those postures, so a shell-less member must re-view it
-// through the non-relaxed construction. nil (the default) is byte-identical to
-// the pre-option behaviour.
-func WithTeamToolSharedBaseWorkspace(f func(root string) tool.Workspace) TeamOption {
-	return func(t *TeamTool) { t.sharedBaseWS = f }
+// WithTeamToolReadLedgerFactory injects the fresh ledger factory for members.
+func WithTeamToolReadLedgerFactory(factory func() tool.ReadLedger) TeamOption {
+	return func(t *TeamTool) { t.ledgerFactory = factory }
+}
+
+// WithTeamToolSharedBaseWorkspace injects the capability-narrowing Workspace
+// view the Team tool forwards to its Supervisor for base-sharing members.
+func WithTeamToolSharedBaseWorkspace(view func(tool.Workspace) tool.Workspace) TeamOption {
+	return func(t *TeamTool) { t.sharedBaseWS = view }
 }
 
 // WithTeamToolHooks injects the HookRunner threaded into the Supervisor (and, by
@@ -357,6 +354,7 @@ func (t *TeamTool) run(ctx context.Context, call session.ToolCall, env tool.Envi
 		// here: the in-loop Team tool's goal is always principal-authored and trusted.
 		WithTeamGoal(args.Goal),
 		WithMemberSessionPrefix(memberSessionIDPrefix + teamID),
+		WithTeamReadLedgerFactory(t.ledgerFactory),
 	}
 	if t.forker != nil {
 		opts = append(opts, WithForker(t.forker))
@@ -614,7 +612,7 @@ func projectTeamEvent(parentCallID, teamID string, te TeamEvent) (session.Event,
 	case session.EvTurnEnd:
 		if ev.TurnEnd != nil {
 			base.Usage = ev.TurnEnd.Usage
-			// The per-member context meter (ctrl+a overlay) reads the CURRENT context
+			// The per-member context meter (f6 overlay) reads the CURRENT context
 			// occupancy — this turn's input-token count — as its numerator, and the
 			// producing member engine's window as its denominator. Both ride the
 			// turn.end projection so a client can draw a band bar per member lane.
@@ -741,7 +739,7 @@ func projectTeamTasksSnapshot(tasks []team.Task) []session.TeamTaskSnapshot {
 }
 
 // projectTeamTasks wraps a task snapshot in a first-class EvTeamTasks event — the
-// team-WIDE projection the client routes to the ctrl+a task sub-view. It carries no
+// team-WIDE projection the client routes to the f6 task sub-view. It carries no
 // Member (the task list is team-wide, not per-member), so it does not borrow the
 // per-member EvTeamMember envelope.
 func projectTeamTasks(parentCallID, teamID string, tasks []session.TeamTaskSnapshot) session.Event {

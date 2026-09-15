@@ -2,8 +2,9 @@
 
 *Status: strawman / working draft. Speculative scoping, not a design record under
 [ADR 0002](adr/0002-documentation-lifecycle.md) (no frozen decision here). Same
-tier as [`docs/cloud-native-harness-kit.md`](cloud-native-harness-kit.md). It
-picks up the shared-handle problem (§1) from the companion
+tier as [`docs/cloud-native-harness-kit.md`](cloud-native-harness-kit.md) and the
+[session-state/read-ledger boundary proposal](session-state-and-read-ledger.md).
+It picks up the shared-handle problem (§1) from the companion
 ["Cloud-Native Harness Systems"](cloud-native-harness-systems.md) scoping doc.
 If this direction is ever committed, it becomes one or more ADRs and this doc
 gets superseded.*
@@ -329,7 +330,7 @@ enforced, and subject to the metadata layer. A grep must not surface matches
 from files the mount's composition excluded or its tags forbid.
 
 This also fixes an existing capability gap: mecatl's shell-less posture
-(`--no-bash`) currently has no way to rename or delete a file at all.
+(`--no-shell`) currently has no way to rename or delete a file at all.
 Directory manipulation becomes first-class verbs on the service rather than a
 side effect of having a shell.
 
@@ -487,7 +488,7 @@ token at the interface instead of harness-side state.
 The deliverable, when this opens up, is the protocol plus exported conformance
 suites, not a server. That is already this repo's discipline ("the conformance
 suites are the contract"), and it is what an outside implementer or a public
-service would build against. Bash-needs-real-exec remains true and remains out
+service would build against. Shell-needs-real-exec remains true and remains out
 of scope here: command execution against a granted view is the §3
 execution-environment problem in the companion doc, and a remote runner would
 be a *consumer* of these grants, not a feature of them.
@@ -655,8 +656,8 @@ status namespace.
   want a local fast path?
 - **Renewal cadence versus cache TTLs versus clock skew.** Three timers that
   interact; they need to be designed together, with stated tolerances.
-- **Bash coexistence.** The long-term goal displaces open-ended shell, but
-  Bash is load-bearing today and the migration is gradual. ADR 0108 rejected
+- **Shell coexistence.** The long-term goal displaces open-ended shell, but
+  Shell is load-bearing today and the migration is gradual. ADR 0108 rejected
   implicit skill-asset materialization: textual references stay logical, while
   workflows needing shell files must create or obtain them explicitly. Should a
   future granted filesystem view materialize locally for shell consumption, and

@@ -178,7 +178,7 @@ func reasoningEffortFor(token string) (shared.ReasoningEffort, bool) {
 // Tools are sent NON-STRICT (Strict left unset → SDK omits it → upstream default
 // is non-strict). Strict mode requires every tool schema's `required` to list ALL
 // of its `properties` keys, but many built-in tools carry genuinely optional
-// params (Bash timeout_ms, Edit replace_all, Read offset/limit, Grep path, the
+// params (Shell timeout_ms, Edit replace_all, Read offset/limit, Grep path, the
 // memory Remember/query tools, ToolSearch, Fork, Team, Subagent,…). A
 // strict-enforcing OpenAI-compatible upstream (e.g. Azure reached via OpenRouter)
 // would 400 those schemas. We do not need strict's guarantee: tool arguments are
@@ -281,8 +281,10 @@ func toolOutputItem(tr session.ToolResult, caps port.ProviderCapabilities) respo
 		// EMPTY Content (see emptyToolOutputPlaceholder's doc for the
 		// permanent-brick rationale). Non-empty Content stays BYTE-IDENTICAL
 		// (prompt-cache byte-stability + existing fixtures).
-		return responses.ResponseInputItemParamOfFunctionCallOutput(
-			string(tr.CallID), cmp.Or(tr.Content, emptyToolOutputPlaceholder))
+		item := responses.ResponseInputItemParamOfFunctionCallOutput(
+			cmp.Or(tr.Content, emptyToolOutputPlaceholder))
+		item.OfFunctionCallOutput.CallID = oai.String(string(tr.CallID))
+		return item
 	}
 	list := make(responses.ResponseFunctionCallOutputItemListParam, 0, len(blocks))
 	for _, b := range blocks {
@@ -305,7 +307,9 @@ func toolOutputItem(tr session.ToolResult, caps port.ProviderCapabilities) respo
 			list = append(list, responses.ResponseFunctionCallOutputItemParamOfInputText(session.ToolBlockText(b)))
 		}
 	}
-	return responses.ResponseInputItemParamOfFunctionCallOutput(string(tr.CallID), list)
+	item := responses.ResponseInputItemParamOfFunctionCallOutput(list)
+	item.OfFunctionCallOutput.CallID = oai.String(string(tr.CallID))
+	return item
 }
 
 // userContentList builds the Responses input-message content list for a

@@ -18,7 +18,9 @@ import (
 
 	"github.com/stacklok/mecatl/engine/adapter/mockllm"
 	"github.com/stacklok/mecatl/engine/port"
+	"github.com/stacklok/mecatl/internal/adapter/llmendpoint"
 	"github.com/stacklok/mecatl/internal/adapter/llmresilience"
+	"github.com/stacklok/mecatl/internal/adapter/openaibearer"
 	"github.com/stacklok/mecatl/internal/adapter/openaicodex"
 	"github.com/stacklok/mecatl/internal/adapter/openaicompat"
 	"github.com/stacklok/mecatl/internal/adapter/openrouter"
@@ -51,6 +53,11 @@ const (
 	// proxy entry: unlike the three above, it is registered by CONFIG-DETECTED
 	// INTENT (or an explicit base-url override), never a credential.
 	providerToolhive = "toolhive"
+	// providerToolhiveAnthropic is the native Anthropic Messages surface exposed
+	// by the same configured ToolHive gateway identity. It is deliberately a
+	// distinct provider: models listed here must execute through /anthropic/v1/messages,
+	// never the OpenAI Responses adapter used by providerToolhive.
+	providerToolhiveAnthropic = "toolhive-anthropic"
 	// providerMock is the synthetic offline provider id used only when UseMock is
 	// set. It never reaches the wire as a selectable provider; it exists so the
 	// registry has exactly one entry in offline/smoke-test runs.
@@ -108,6 +115,12 @@ var (
 // lookup so registry construction never touches the real process environment.
 type envDetector func(name string) string
 
+type nativeCredentialLoaderFunc func(context.Context, permconfig.ProviderDefinition) (llmendpoint.BearerSource, error)
+
+func (f nativeCredentialLoaderFunc) Load(ctx context.Context, definition permconfig.ProviderDefinition) (llmendpoint.BearerSource, error) {
+	return f(ctx, definition)
+}
+
 // providerEnvVars returns the ordered list of environment variables whose
 // non-empty value makes a provider AVAILABLE (any one suffices). The var NAMES
 // come from the embedded models.dev catalog's per-provider env[] (S2 replaced
@@ -155,6 +168,9 @@ type providerEntry struct {
 	provider  port.LLMProvider // resilience-wrapped, ready to hand to an engine
 	available bool             // ≥1 of the provider's env[] keys resolved
 	baseURL   string           // for logging/diagnostics ONLY; never wired
+	// nativeEndpoint marks a deployment-wide native gateway. Its credentialed
+	// live listing is on-demand only; Build publishes the configured model floor.
+	nativeEndpoint bool
 	// defaultModel is the composition-owned floor for a custom provider. Built-in
 	// entries leave it empty and resolve through builtinDefaultModel.
 	defaultModel string
@@ -205,6 +221,10 @@ type providerEntry struct {
 	// unreachable diagnostic from INFO to WARN on this path (the operator
 	// asked for this endpoint directly).
 	intentExplicit bool
+	// toolhiveMode records the family entry's resolved route so status hints can
+	// distinguish a local proxy failure from a direct gateway/OIDC failure.
+	// It is meaningful only when intentDriven is true for a ToolHive provider.
+	toolhiveMode toolhiveRoutingMode
 	// defaultEffort is the OPERATOR-DEFAULT reasoning-effort token (ADR 0055,
 	// already normalised + per-provider clamped by operatorDefaultEffortFor) this
 	// entry was built with. Stamped by buildProviderRegistry's fixup loop
@@ -224,9 +244,13 @@ type providerEntry struct {
 // provider so the Build call site is unchanged); per-session multi-provider
 // routing is S3.
 type providerRegistry struct {
-	entries      map[string]providerEntry // keyed by provider id; only AVAILABLE entries
-	defaultID    string                   // resolved default provider (precedence: resolveDefaultModel)
-	defaultModel string                   // resolved default model for defaultID ("" => adapter/endpoint default)
+	entries map[string]providerEntry // keyed by provider id; only AVAILABLE entries
+	// unavailableNative retains configured endpoint identities that are valid but
+	// not enrolled. They remain status-visible and explicit selection can return
+	// an actionable error without falling back.
+	unavailableNative map[string]struct{}
+	defaultID         string // resolved default provider (precedence: resolveDefaultModel)
+	defaultModel      string // resolved default model for defaultID ("" => adapter/endpoint default)
 	// meta is the composition-owned live-metadata store the request-path resolvers
 	// read (output ceiling / context window / modalities / thinking). It is seeded
 	// from the catalog at build BEFORE any network call and atomically swapped by the
@@ -474,7 +498,7 @@ var errNoProvider = errors.New(
 		"or OPENCODE_API_KEY (OpenCode Go) " +
 		"in the environment; for an OpenAI- or Anthropic-compatible/proxy endpoint pass the matching key " +
 		"plus --openai-base-url / --anthropic-base-url / --openrouter-base-url / --opencode-base-url; to try mecatl offline with " +
-		"no key run with --mock; see docs/usage.md for provider setup")
+		"no key run with --mock; see https://mecatl.dev/docs/features/choose-models for provider setup")
 
 // buildProviderRegistry constructs the registry from cfg and the injected env
 // detector. It builds (and resilience-wraps) ONLY the available providers — there
@@ -489,13 +513,21 @@ func buildProviderRegistry(cfg Config, detect envDetector) (*providerRegistry, e
 	return buildProviderRegistryContext(context.Background(), cfg, detect)
 }
 
+func mockDefaultModel(configured string) string {
+	if configured != "" {
+		return configured
+	}
+	return providerMock
+}
+
+//nolint:gocyclo // Registry assembly branches once per independently configured provider and auth mode.
 func buildProviderRegistryContext(ctx context.Context, cfg Config, detect envDetector) (*providerRegistry, error) {
 	ctx = providerRegistryContext(ctx)
 	detect = providerRegistryDetector(detect)
 
 	// UseMock short-circuit: a single synthetic entry, offline, regardless of env.
 	if cfg.UseMock || cfg.MockProvider != nil {
-		cfg.diag().Log(ctx, port.LevelWarn, "LLM provider: mock (canned, offline) — for smoke tests only")
+		logMockProvider(ctx, cfg)
 		mock := port.LLMProvider(mockllm.New(
 			mockllm.TextTurn("Mock provider: no real model is configured. Set OPENAI_API_KEY for live use."),
 		))
@@ -504,14 +536,16 @@ func buildProviderRegistryContext(ctx context.Context, cfg Config, detect envDet
 			// scripted provider replaces the canned single text turn.
 			mock = cfg.MockProvider
 		}
+		defaultModel := mockDefaultModel(cfg.Model)
+
 		// The mock is intentionally left UNWRAPPED by resilience: it never fails over
 		// the network, so retries/breaker would be inert.
 		return &providerRegistry{
 			entries:   map[string]providerEntry{providerMock: {id: providerMock, provider: mock, available: true}},
 			defaultID: providerMock,
-			// The mock ignores the model entirely; carry cfg.Model so an explicit
-			// --model is still echoed (snapshots/capabilities) without inventing one.
-			defaultModel: cfg.Model,
+			// The mock ignores the model entirely; preserve an explicit --model and
+			// otherwise use its synthetic provider id as a stable non-empty default.
+			defaultModel: defaultModel,
 			// An EMPTY (non-nil) meta store: the mock has no lister and no catalog rows,
 			// so it stays empty, but an explicit store keeps the resolver helpers'
 			// invariant uniform (every production registry carries one) and future-proofs
@@ -521,6 +555,14 @@ func buildProviderRegistryContext(ctx context.Context, cfg Config, detect envDet
 			// never records anything, but every production registry carries one.
 			outcomes: newLiveOutcomeStore(),
 		}, nil
+	}
+
+	openAIKey := providerKey(cfg.OpenAIKey, providerOpenAI, detect)
+	if openAIKey != "" && cfg.OpenAIBearerTokenFile != "" {
+		return nil, errors.New("OpenAI API key and --openai-bearer-token-file are mutually exclusive; remove the OpenAI API-key credential or remove --openai-bearer-token-file")
+	}
+	if cfg.OpenAIBearerTokenFile != "" && builtinBaseURL(cfg, providerOpenAI) == "" {
+		return nil, errors.New("--openai-bearer-token-file requires an explicit nonempty --openai-base-url")
 	}
 
 	entries := make(map[string]providerEntry)
@@ -533,13 +575,19 @@ func buildProviderRegistryContext(ctx context.Context, cfg Config, detect envDet
 	// floor — see liveMetaStore.
 	meta := newLiveMetaStore()
 
-	// openai: AVAILABLE iff a key resolves — from cfg.OpenAIKey (which the cmd layer
-	// reads from OPENAI_API_KEY) or, failing that, the OPENAI_API_KEY env var via
-	// detect. Availability is purely KEY-DRIVEN; the legacy cfg.UseOpenAI flag is a
-	// back-compat selector the cmd layer still sets when a key is present, but it does
-	// NOT gate the registry (a key alone suffices — env auto-detection is the S1 model).
-	if key := providerKey(cfg.OpenAIKey, providerOpenAI, detect); key != "" {
-		entries[providerOpenAI] = newOpenAICompatEntry(cfg, providerOpenAI, key, builtinBaseURL(cfg, providerOpenAI))
+	// openai: AVAILABLE iff an API key resolves or a bearer-token file is
+	// configured. The file is read by the transport for every request so projected
+	// Kubernetes ServiceAccount token rotation is observed without a restart.
+	if openAIKey != "" {
+		entries[providerOpenAI] = newOpenAICompatEntry(cfg, providerOpenAI, openAIKey, builtinBaseURL(cfg, providerOpenAI))
+	} else if cfg.OpenAIBearerTokenFile != "" {
+		baseURL := builtinBaseURL(cfg, providerOpenAI)
+		client, err := openaibearer.NewHTTPClient(cfg.OpenAIBearerTokenFile, baseURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("configure OpenAI bearer token file: %w", err)
+		}
+		entries[providerOpenAI] = newOpenAICompatEntry(cfg, providerOpenAI, "", baseURL,
+			openai.WithHTTPClient(client), openai.WithMaxRetries(0))
 	}
 
 	if entry, err := newOpenAICodexEntry(cfg); err != nil {
@@ -600,27 +648,35 @@ func buildProviderRegistryContext(ctx context.Context, cfg Config, detect envDet
 		entries[providerAnthropic] = newAnthropicEntryFor(cfg, providerAnthropic, key, builtinBaseURL(cfg, providerAnthropic), meta, true)
 	}
 
-	addCustomProviderEntries(entries, cfg, meta)
+	unavailableNative, err := addCustomProviderEntries(ctx, entries, cfg, meta)
+	if err != nil {
+		return nil, err
+	}
 
-	// toolhive (issue #262, D1): registered by CONFIG-DETECTED INTENT alone —
+	// ToolHive (issue #262, D1): both protocol-specific entries are registered
+	// by CONFIG-DETECTED INTENT alone —
 	// resolveToolhiveIntent NEVER runs a network probe, so registration never
-	// blocks on (or is gated by) reachability (R1.1). With toolhive registered,
+	// blocks on (or is gated by) reachability (R1.1). With the family registered,
 	// len(entries)>0 even with ZERO provider keys, so errNoProvider no longer
 	// fires for a ToolHive-only operator — intended (zero-API-key onboarding).
 	// Issue #265: the intent now carries a routing mode — proxy (loopback,
 	// today's behaviour) or direct (gateway_url + in-process OIDC token).
 	if intent, ok := resolveToolhiveIntent(cfg); ok {
-		switch intent.mode {
-		case toolhiveModeDirect:
-			entries[providerToolhive] = newDirectGatewayEntry(cfg, providerToolhive, intent, cfg.toolhiveConfigPath)
-		default: // toolhiveModeProxy (the zero value + the explicit-override path)
-			lister := gatewayLister{inner: openaicompat.NewLister(intent.baseURL, toolhivellm.PlaceholderToken, cfg.liveModelHTTPClient)}
-			entries[providerToolhive] = newGatewayEntry(cfg, providerToolhive, intent.baseURL, intent.gatewayURL, intent.explicit, lister)
-		}
+		openAIEntry, anthropicEntry := newToolhiveEntries(cfg, intent, cfg.toolhiveConfigPath, meta)
+		entries[providerToolhive] = openAIEntry
+		entries[providerToolhiveAnthropic] = anthropicEntry
 	}
 
 	if len(entries) == 0 {
+		if len(unavailableNative) > 0 {
+			return nil, fmt.Errorf("OIDC provider is not enrolled: run `mecatui providers` to inspect configured providers, then `mecatui providers login PROVIDER`")
+		}
 		return nil, errNoProvider
+	}
+	if cfg.DefaultProvider != "" {
+		if _, unavailable := unavailableNative[cfg.DefaultProvider]; unavailable {
+			return nil, fmt.Errorf("provider %q is not enrolled: run `mecatui providers login %s`", cfg.DefaultProvider, cfg.DefaultProvider)
+		}
 	}
 
 	// Stamp each entry's OPERATOR-DEFAULT effort BEFORE the registry is handed
@@ -634,14 +690,20 @@ func buildProviderRegistryContext(ctx context.Context, cfg Config, detect envDet
 		entries[id] = entry
 	}
 
-	reg := &providerRegistry{entries: entries, meta: meta, outcomes: newLiveOutcomeStore()}
+	outcomes := newLiveOutcomeStore()
+	for id := range unavailableNative {
+		outcomes.recordFailure(id, statusNotEnrolled, "run `mecatui providers login "+id+"`")
+	}
+	reg := &providerRegistry{entries: entries, unavailableNative: unavailableNative, meta: meta, outcomes: outcomes}
 	reg.defaultID, reg.defaultModel = resolveDefaultModel(cfg, reg)
 	// Seed the live-metadata store from the embedded catalog for every available
 	// provider — the t=0 floor every resolver reads before the background live swap.
 	meta.seedFromCatalog(reg.Available())
 	meta.seedCustomProviderFloors(reg)
-	if err := bootstrapOpenAICodexDefault(ctx, reg, cfg); err != nil {
-		return nil, err
+	if !cfg.skipProviderNetworkDiscovery {
+		if err := bootstrapOpenAICodexDefault(ctx, reg, cfg); err != nil {
+			return nil, err
+		}
 	}
 	// T7 post-assembly fixup: stamp each real adapter entry's shared .provider
 	// with the DEFAULT model's capability intersection (catalog ∩ adapter) and
@@ -665,14 +727,24 @@ func buildProviderRegistryContext(ctx context.Context, cfg Config, detect envDet
 		}
 		reg.remintEntry(id, model)
 	}
-	// Build-time probe (issue #262, R1.2): only runs when a toolhive entry
-	// exists (a single map lookup otherwise). It NEVER gates registration
+	// Build-time probe (issue #262, R1.2): only runs when the ToolHive family
+	// exists. It NEVER gates registration
 	// (already done above) — it drives the startup diagnostic, the initial
 	// provider_status + last-known-good seed, and default-model eligibility.
-	if err := probeToolhive(reg, cfg); err != nil {
-		return nil, err
+	if !cfg.skipProviderNetworkDiscovery {
+		if err := probeToolhive(reg, cfg); err != nil {
+			return nil, err
+		}
 	}
 	return reg, nil
+}
+
+func logMockProvider(ctx context.Context, cfg Config) {
+	if cfg.MockProvider == nil {
+		cfg.diag().Log(ctx, port.LevelWarn, "LLM provider: mock (canned, offline) — for smoke tests only")
+		return
+	}
+	cfg.diag().Log(ctx, port.LevelWarn, "LLM provider: mock (scripted, offline) — for testing only")
 }
 
 func providerRegistryContext(ctx context.Context) context.Context {
@@ -718,14 +790,52 @@ func sortedProviderDefinitions(definitions permconfig.ProviderDefinitions) []per
 	return out
 }
 
-func addCustomProviderEntries(entries map[string]providerEntry, cfg Config, meta *liveMetaStore) {
+func addCustomProviderEntries(ctx context.Context, entries map[string]providerEntry, cfg Config, meta *liveMetaStore) (map[string]struct{}, error) {
+	unavailableNative := make(map[string]struct{})
 	for _, definition := range sortedProviderDefinitions(cfg.ProviderDefinitions) {
+		if definition.Auth.Method == "oidc" {
+			if cfg.NativeEndpointCredentialLoader == nil {
+				unavailableNative[definition.ID] = struct{}{}
+				continue
+			}
+			source, err := cfg.NativeEndpointCredentialLoader.Load(ctx, definition)
+			if err != nil || source == nil {
+				unavailableNative[definition.ID] = struct{}{}
+				continue
+			}
+			entry, err := newNativeProviderEntry(cfg, definition, source)
+			if err != nil {
+				return nil, err
+			}
+			entries[definition.ID] = entry
+			continue
+		}
 		key := cfg.CustomProviderAPIKeys[definition.ID]
 		if definition.Auth.Method == "api_key" && key == "" {
 			continue
 		}
 		entries[definition.ID] = newCustomProviderEntry(cfg, definition, key, meta)
 	}
+	return unavailableNative, nil
+}
+
+func newNativeProviderEntry(cfg Config, definition permconfig.ProviderDefinition, source llmendpoint.BearerSource) (providerEntry, error) {
+	transport := cfg.nativeEndpointTransport
+	if transport == nil {
+		if bound, ok := source.(interface{ GatewayTransport() http.RoundTripper }); ok {
+			transport = bound.GatewayTransport()
+		}
+	}
+	client, err := llmendpoint.NewGatewayHTTPClient(definition.BaseURL, source, transport)
+	if err != nil {
+		return providerEntry{}, fmt.Errorf("configure OIDC provider %q: %w", definition.ID, err)
+	}
+	entry := newOpenAICompatEntry(cfg, definition.ID, "transport-owned", definition.BaseURL,
+		openai.WithHTTPClient(client), openai.WithMaxRetries(0))
+	entry.nativeEndpoint = true
+	entry.defaultModel = definition.DefaultModel
+	entry.lister = gatewayLister{inner: openaicompat.NewLister(definition.BaseURL, "", client)}
+	return entry, nil
 }
 
 func newCustomProviderEntry(cfg Config, definition permconfig.ProviderDefinition, key string, meta *liveMetaStore) providerEntry {
@@ -837,7 +947,7 @@ func bootstrapOpenAICodexDefault(parent context.Context, reg *providerRegistry, 
 		}
 		return fmt.Errorf("openai-codex: default model discovery unreachable: %w", err)
 	}
-	reg.outcomes.recordSuccess(providerOpenAICodex, models)
+	reg.outcomes.recordSuccess(entry, models)
 	if len(models) == 0 {
 		return errors.New("openai-codex: account returned no picker-visible models; replace the manual token or choose an explicit model")
 	}
@@ -1231,26 +1341,24 @@ const (
 	toolhiveModeDirect toolhiveRoutingMode = 1 // gateway_url + in-process OIDC token
 )
 
-// toolhiveIntent is the resolved toolhive registration intent: whether to
-// register, and — when registering — the routing mode + the URLs
-// newGatewayEntry/newDirectGatewayEntry consume. baseURL is the request URL
-// (loopback for proxy, gateway_url+"/v1" for direct); gatewayURL is the
+// toolhiveIntent is the resolved ToolHive-family registration intent and its
+// routing mode. baseURL is the OpenAI-compatible request URL (loopback for
+// proxy, gateway_url+"/v1" for direct); the native Anthropic URL is derived
+// from it without losing a gateway path prefix. gatewayURL is the
 // upstream the proxy forwards to (DIAGNOSTIC ONLY for proxy, the SAME as
 // baseURL's origin for direct); explicit marks an --toolhive-llm-base-url
 // override (proxy-only — direct is config-driven).
 type toolhiveIntent struct {
-	mode           toolhiveRoutingMode
-	baseURL        string
-	gatewayURL     string
-	explicit       bool
-	oidcConfigured bool // F3: loaded once after DetectConfig, used by newDirectGatewayEntry
+	mode       toolhiveRoutingMode
+	baseURL    string
+	gatewayURL string
+	explicit   bool
 }
 
-// resolveToolhiveIntent decides whether a "toolhive" registry entry should be
-// registered (issue #262, D1) and, if so, what routing mode + URLs to serve it
-// on (issue #265). It NEVER runs a network probe — registration is intent-only,
-// and the intent it returns feeds newGatewayEntry/newDirectGatewayEntry, which
-// the LATER Build-time probe (probeToolhive) reads off the constructed entry.
+// resolveToolhiveIntent decides whether the ToolHive provider family should be
+// registered (issue #262, D1) and, if so, what routing mode + URLs serve both
+// protocol entries (issue #265). It NEVER runs a network probe — registration
+// is intent-only; the LATER Build-time probe reads the constructed entries.
 //
 // Precedence: an EXPLICIT cfg.ToolhiveLLMBaseURL (already loopback-validated
 // by validateToolhiveBaseURL at Build) wins outright and SKIPS the config-file
@@ -1310,6 +1418,7 @@ func resolveToolhiveIntent(cfg Config) (toolhiveIntent, bool) {
 	// F3: load the OIDC config ONCE after DetectConfig validates the file, so
 	// newDirectGatewayEntry consumes the validated result rather than re-reading.
 	oidcOK := toolhivellm.OIDCConfigured(path)
+	diagnosticGatewayURL := sanitizeGatewayURL(detected.GatewayURL)
 
 	// Mode discriminator (issue #265). auto upgrades to direct when the OIDC
 	// trio is configured; proxy is the byte-identical fallback. direct is the
@@ -1318,7 +1427,7 @@ func resolveToolhiveIntent(cfg Config) (toolhiveIntent, bool) {
 	// and would be surprised by a loopback that has no token to inject).
 	switch cfg.ToolhiveLLMMode {
 	case "proxy":
-		return toolhiveIntent{mode: toolhiveModeProxy, baseURL: detected.BaseURL(), gatewayURL: detected.GatewayURL}, true
+		return toolhiveIntent{mode: toolhiveModeProxy, baseURL: detected.BaseURL(), gatewayURL: diagnosticGatewayURL}, true
 	case "direct":
 		if !oidcOK {
 			// Not a fail-soft miss: validateToolhiveLLMMode (Build) already
@@ -1332,21 +1441,21 @@ func resolveToolhiveIntent(cfg Config) (toolhiveIntent, bool) {
 		if !gatewayURLIsHTTPS(detected.GatewayURL) {
 			cfg.diag().Log(context.Background(), port.LevelWarn,
 				"toolhive direct mode: gateway_url is not HTTPS, falling back to proxy mode",
-				"gateway_url", detected.GatewayURL)
-			return toolhiveIntent{mode: toolhiveModeProxy, baseURL: detected.BaseURL(), gatewayURL: detected.GatewayURL}, true
+				"gateway_url", diagnosticGatewayURL)
+			return toolhiveIntent{mode: toolhiveModeProxy, baseURL: detected.BaseURL(), gatewayURL: diagnosticGatewayURL}, true
 		}
-		return toolhiveIntent{mode: toolhiveModeDirect, baseURL: directBaseURL(detected.GatewayURL), gatewayURL: detected.GatewayURL, oidcConfigured: true}, true
+		return toolhiveIntent{mode: toolhiveModeDirect, baseURL: directBaseURL(detected.GatewayURL), gatewayURL: diagnosticGatewayURL}, true
 	default: // "auto" (and any unknown, treated as the default)
 		if oidcOK {
 			if !gatewayURLIsHTTPS(detected.GatewayURL) {
 				cfg.diag().Log(context.Background(), port.LevelWarn,
 					"toolhive direct mode: gateway_url is not HTTPS, falling back to proxy mode",
-					"gateway_url", detected.GatewayURL)
-				return toolhiveIntent{mode: toolhiveModeProxy, baseURL: detected.BaseURL(), gatewayURL: detected.GatewayURL}, true
+					"gateway_url", diagnosticGatewayURL)
+				return toolhiveIntent{mode: toolhiveModeProxy, baseURL: detected.BaseURL(), gatewayURL: diagnosticGatewayURL}, true
 			}
-			return toolhiveIntent{mode: toolhiveModeDirect, baseURL: directBaseURL(detected.GatewayURL), gatewayURL: detected.GatewayURL, oidcConfigured: true}, true
+			return toolhiveIntent{mode: toolhiveModeDirect, baseURL: directBaseURL(detected.GatewayURL), gatewayURL: diagnosticGatewayURL}, true
 		}
-		return toolhiveIntent{mode: toolhiveModeProxy, baseURL: detected.BaseURL(), gatewayURL: detected.GatewayURL}, true
+		return toolhiveIntent{mode: toolhiveModeProxy, baseURL: detected.BaseURL(), gatewayURL: diagnosticGatewayURL}, true
 	}
 }
 
@@ -1397,14 +1506,60 @@ func gatewayURLIsHTTPS(raw string) bool {
 // gateway_url yields "" (the same contract as the empty input); in practice
 // gatewayURLIsHTTPS has already rejected it and forced proxy mode.
 func directBaseURL(gatewayURL string) string {
-	if gatewayURL == "" {
+	return deriveGatewayBaseURL(gatewayURL, "v1", false)
+}
+
+// toolhiveAnthropicBaseURL derives the base expected by anthropic-sdk-go. A
+// normal ToolHive OpenAI base ends in /v1; native Anthropic is its sibling
+// /anthropic, because the SDK appends /v1/models or /v1/messages itself. An
+// explicit proxy override that does not end in /v1 instead gains a trailing
+// /anthropic. In both cases any legitimate path prefix is retained.
+func toolhiveAnthropicBaseURL(openAIBaseURL string) string {
+	return deriveGatewayBaseURL(openAIBaseURL, "anthropic", true)
+}
+
+// deriveGatewayBaseURL joins a protocol segment onto a gateway URL without
+// carrying credential-shaped userinfo, a query, or a fragment into request or
+// diagnostic URLs. When replaceV1 is true, only a terminal path segment named
+// exactly "v1" is replaced; an interior segment is preserved.
+func deriveGatewayBaseURL(raw, segment string, replaceV1 bool) string {
+	sanitized := sanitizeGatewayURL(raw)
+	if sanitized == "" {
 		return ""
 	}
-	joined, err := url.JoinPath(gatewayURL, "v1")
+	u, _ := url.Parse(sanitized)
+	u.RawPath = ""
+	if replaceV1 {
+		clean := strings.TrimRight(u.Path, "/")
+		if clean == "/v1" {
+			u.Path = ""
+		} else if strings.HasSuffix(clean, "/v1") {
+			u.Path = strings.TrimSuffix(clean, "/v1")
+		} else {
+			u.Path = clean
+		}
+	}
+	joined, err := url.JoinPath(u.String(), segment)
 	if err != nil {
 		return ""
 	}
 	return joined
+}
+
+func sanitizeGatewayURL(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	u.User = nil
+	u.RawQuery = ""
+	u.ForceQuery = false
+	u.Fragment = ""
+	u.RawFragment = ""
+	return u.String()
 }
 
 // ToolhiveAvailable reports whether a ToolHive LLM gateway would be registered
@@ -1438,6 +1593,52 @@ func newGatewayEntry(cfg Config, id, baseURL, gatewayURL string, explicit bool, 
 	entry.intentDriven = true
 	entry.intentGatewayURL = gatewayURL
 	entry.intentExplicit = explicit
+	entry.toolhiveMode = toolhiveModeProxy
+	return entry
+}
+
+// toolhiveTokenSourceFactory constructs the one OIDC token source shared by
+// both protocol-specific ToolHive entries in direct mode.
+type toolhiveTokenSourceFactory func(string, port.Diagnostics) (toolhivellm.TokenSourceFunc, error)
+
+// newToolhiveEntries constructs the two protocol-specific providers backed by
+// one detected ToolHive gateway identity. The OpenAI entry remains the legacy
+// provider/default; the Anthropic entry always uses the native Messages adapter.
+func newToolhiveEntries(cfg Config, intent toolhiveIntent, configPath string, meta *liveMetaStore) (providerEntry, providerEntry) {
+	if intent.mode == toolhiveModeDirect {
+		client := newDirectGatewayClient(cfg, intent, configPath)
+		return newDirectGatewayEntry(cfg, providerToolhive, intent, client),
+			newToolhiveAnthropicEntry(cfg, intent, meta, client)
+	}
+
+	openAILister := gatewayLister{inner: openaicompat.NewLister(
+		intent.baseURL, toolhivellm.PlaceholderToken, cfg.liveModelHTTPClient)}
+	openAIEntry := newGatewayEntry(cfg, providerToolhive, intent.baseURL,
+		intent.gatewayURL, intent.explicit, openAILister)
+
+	// The native SDK must never forward an x-api-key placeholder through the
+	// proxy. This transport strips both authentication schemes and adds only the
+	// proxy's documented loopback bearer on the cloned request.
+	client := newToolhiveBearerClient(cfg.liveModelHTTPClient,
+		func(context.Context) (string, error) { return toolhivellm.PlaceholderToken, nil })
+	return openAIEntry, newToolhiveAnthropicEntry(cfg, intent, meta, client)
+}
+
+// newToolhiveAnthropicEntry wires native Anthropic discovery and inference to
+// the same ToolHive route. No API key is supplied to the SDK: the authoritative
+// bearer transport owns authentication and strips any conflicting header.
+func newToolhiveAnthropicEntry(cfg Config, intent toolhiveIntent, meta *liveMetaStore, client *http.Client) providerEntry {
+	baseURL := toolhiveAnthropicBaseURL(intent.baseURL)
+	entry := newAnthropicEntryFor(cfg, providerToolhiveAnthropic, "", baseURL, meta, false,
+		anthropic.WithRequestOption(
+			anthropicoption.WithHTTPClient(client),
+			anthropicoption.WithMaxRetries(0),
+		))
+	entry.lister = anthropicLister{inner: anthropic.NewLister("", baseURL, client)}
+	entry.intentDriven = true
+	entry.intentGatewayURL = intent.gatewayURL
+	entry.intentExplicit = intent.explicit
+	entry.toolhiveMode = intent.mode
 	return entry
 }
 
@@ -1461,19 +1662,22 @@ func newGatewayEntry(cfg Config, id, baseURL, gatewayURL string, explicit bool, 
 // to every mint, not just the initial build (zero drift, the same property the
 // proxy entry relies on).
 //
-// The token source is built ONCE here (toolhivellm.DirectTokenSource) and
-// captured by the RoundTripper; a per-request Token(ctx) call handles refresh
+// newDirectGatewayClient builds one token source and one bearer client shared
+// by both protocol entries. A per-request Token(ctx) call handles refresh
 // internally, so the RoundTripper is stateless across requests. A construction
 // failure (config unreadable, secrets provider unavailable) does NOT fail Build:
 // it logs ERROR once and installs a token source that returns the cause on every
 // request, so the operator learns the reason at the first request instead of a
 // startup crash (the proxy-mode §1 deviation — a down gateway must never brick
 // Build — applies here too). The live lister is
-// wired too (direct mode serves /v1/models the same way), authenticated by the
-// SAME bearer RoundTripper so the probe and inference paths share one
-// credential.
-func newDirectGatewayEntry(cfg Config, id string, intent toolhiveIntent, configPath string) providerEntry {
-	tokenSource, err := toolhivellm.DirectTokenSource(configPath, cfg.diag())
+// paths for both protocols are authenticated by the SAME bearer RoundTripper,
+// so discovery and inference share one credential flow.
+func newDirectGatewayClient(cfg Config, intent toolhiveIntent, configPath string) *http.Client {
+	factory := cfg.toolhiveTokenSourceFactory
+	if factory == nil {
+		factory = toolhivellm.DirectTokenSource
+	}
+	tokenSource, err := factory(configPath, cfg.diag())
 	if err != nil {
 		// Deliberately NOT a Build failure. The caller
 		// (buildProviderRegistry) cannot see this error anyway
@@ -1485,14 +1689,13 @@ func newDirectGatewayEntry(cfg Config, id string, intent toolhiveIntent, configP
 		// and every other provider in the registry stays usable.
 		cfg.diag().Log(context.Background(), port.LevelError,
 			"toolhive direct-mode token source unavailable — requests will fail until the gateway is configured",
-			"provider", id, "base_url", intent.baseURL, "error", err.Error())
+			"provider", providerToolhive, "base_url", intent.baseURL, "error", err.Error())
 		tokenSource = func(context.Context) (string, error) { return "", err }
 	}
-	rt := &bearerRoundTripper{base: http.DefaultTransport, token: tokenSource}
-	client := &http.Client{
-		Transport:     rt,
-		CheckRedirect: openaicompat.RefuseRedirects,
-	}
+	return newToolhiveBearerClient(cfg.liveModelHTTPClient, tokenSource)
+}
+
+func newDirectGatewayEntry(cfg Config, id string, intent toolhiveIntent, client *http.Client) providerEntry {
 	entry := newOpenAICompatEntry(cfg, id, toolhivellm.PlaceholderToken, intent.baseURL,
 		openai.WithHTTPClient(client),
 		openai.WithMaxRetries(0))
@@ -1505,7 +1708,26 @@ func newDirectGatewayEntry(cfg Config, id string, intent toolhiveIntent, configP
 	entry.intentDriven = true
 	entry.intentGatewayURL = intent.gatewayURL
 	entry.intentExplicit = intent.explicit
+	entry.toolhiveMode = toolhiveModeDirect
 	return entry
+}
+
+// newToolhiveBearerClient shallow-clones the supplied client so lister tests
+// retain their injected transport and timeout while ToolHive always owns the
+// redirect and authentication policies. Production supplies nil and receives a
+// standard client over http.DefaultTransport.
+func newToolhiveBearerClient(baseClient *http.Client, token toolhivellm.TokenSourceFunc) *http.Client {
+	client := &http.Client{}
+	if baseClient != nil {
+		*client = *baseClient
+	}
+	base := client.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	client.Transport = &bearerRoundTripper{base: base, token: token}
+	client.CheckRedirect = openaicompat.RefuseRedirects
+	return client
 }
 
 // bearerRoundTripper injects a fresh OIDC access token onto every request as
@@ -1533,6 +1755,11 @@ type bearerRoundTripper struct {
 // forwarding the request (no partial credentials on the wire); the
 // llmresilience wrapper surfaces it as a failed attempt. It must never log.
 func (b *bearerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	// Clone and remove both SDK authentication schemes before consulting the
+	// authoritative source. If token resolution fails, no request is forwarded.
+	clone := req.Clone(req.Context())
+	clone.Header.Del("Authorization")
+	clone.Header.Del("X-Api-Key")
 	tok, err := b.token(req.Context())
 	if err != nil {
 		// The error is already sanitised (no bearer material). Do NOT include
@@ -1548,10 +1775,6 @@ func (b *bearerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 		// unhealthy" verdict for as long as the credential stays broken.
 		return nil, fmt.Errorf("%w: %w", llmresilience.ErrCredentials, err)
 	}
-	// Clone the request per RoundTripper contract (the caller may reuse it);
-	// mutate ONLY the Authorization header on the clone.
-	clone := req.Clone(req.Context())
-	clone.Header.Del("Authorization")
 	clone.Header.Set("Authorization", "Bearer "+tok)
 	return b.base.RoundTrip(clone)
 }
@@ -1566,17 +1789,28 @@ const (
 	statusOK           = "ok"
 	statusUnreachable  = "unreachable"
 	statusUnauthorized = "unauthorized"
+	statusNotEnrolled  = "not-enrolled"
 	statusEmpty        = "empty"
 )
 
 // toolhiveStatusHints is the ONE place the remediation-hint copy lives,
 // shared by the Build-time probe diagnostics, the v1 provider_status
-// projection (providerStatusProto), and (verbatim) docs/usage.md's
+// projection (providerStatusProto), and the public model-selection guide's
 // troubleshooting table — so the three surfaces cannot drift on wording.
 var toolhiveStatusHints = map[string]string{
 	statusUnreachable:  "start it with `thv llm proxy start`",
 	statusUnauthorized: "re-auth with `thv llm setup`",
 	statusEmpty:        "your ToolHive gateway credential lists no models — ask your platform admin or re-run `thv llm setup`",
+}
+
+var toolhiveDirectStatusHints = map[string]string{
+	statusUnreachable:  "check gateway connectivity or use `--toolhive-llm-mode proxy`",
+	statusUnauthorized: "re-auth with `mecatui providers login toolhive` or `thv llm setup`",
+	statusEmpty:        toolhiveStatusHints[statusEmpty],
+}
+
+func isToolhiveProvider(pid string) bool {
+	return pid == providerToolhive || pid == providerToolhiveAnthropic
 }
 
 // openAICodexStatusHints keeps manual-token remediation distinct from the
@@ -1589,13 +1823,19 @@ var openAICodexStatusHints = map[string]string{
 	statusEmpty:        "the ChatGPT account lists no selectable Codex models; replace the manual token or check the subscription",
 }
 
-// statusHintFor returns provider-specific remediation only for providers whose
-// listing outcome is operator-actionable on provider_status. Ordinary provider
-// outages (for example OpenRouter) get "". Keep each vendor's copy in its own
-// table so gateway and manual-token remedies cannot cross-contaminate.
-func statusHintFor(pid, state string) string {
-	switch pid {
-	case providerToolhive:
+// statusHintFor returns provider-specific remediation for ToolHive and Codex.
+// It consumes the whole entry so ToolHive routing mode is structural data, not
+// something callers infer from the resulting prose. Custom-provider listing
+// failures are also projected through provider_status, but deliberately receive
+// no endpoint-specific hint. Ordinary provider outages (for example OpenRouter)
+// get "". Keep each vendor's copy in its own table so gateway and manual-token
+// remedies cannot cross-contaminate.
+func statusHintFor(entry providerEntry, state string) string {
+	switch entry.id {
+	case providerToolhive, providerToolhiveAnthropic:
+		if entry.toolhiveMode == toolhiveModeDirect {
+			return toolhiveDirectStatusHints[state]
+		}
 		return toolhiveStatusHints[state]
 	case providerOpenAICodex:
 		return openAICodexStatusHints[state]
@@ -1642,59 +1882,91 @@ func classifyLiveListError(err error) string {
 // every other outcome is diagnosed, never fatal (the §1 accepted deviation: a
 // down/unauthorized proxy must never brick Build when toolhive is sole).
 func probeToolhive(reg *providerRegistry, cfg Config) error {
-	entry, ok := reg.Lookup(providerToolhive)
-	if !ok || entry.lister == nil {
+	type probeResult struct {
+		pid    string
+		entry  providerEntry
+		models []modelEntry
+		err    error
+	}
+
+	var targets []probeResult
+	for _, pid := range []string{providerToolhive, providerToolhiveAnthropic} {
+		if entry, ok := reg.Lookup(pid); ok && entry.lister != nil {
+			targets = append(targets, probeResult{pid: pid, entry: entry})
+		}
+	}
+	if len(targets) == 0 {
 		return nil
 	}
+
 	diag := cfg.diag()
 	ctx, cancel := context.WithTimeout(context.Background(), toolhiveProbeTimeout)
 	defer cancel()
+	results := make(chan probeResult, len(targets))
+	for _, target := range targets {
+		go func(target probeResult) {
+			target.models, target.err = target.entry.lister.ListModels(ctx)
+			results <- target
+		}(target)
+	}
+	byID := make(map[string]probeResult, len(targets))
+	for range targets {
+		result := <-results
+		byID[result.pid] = result
+	}
 
-	models, err := entry.lister.ListModels(ctx)
-	switch {
-	case err != nil:
-		state := classifyLiveListError(err)
-		hint := toolhiveStatusHints[state]
-		reg.outcomes.recordFailure(providerToolhive, state, hint)
-		// An explicit --toolhive-llm-base-url is the operator asking directly for
-		// THIS endpoint, so an unreachable probe is upgraded to WARN (never
-		// silent on a deliberate ask); an unauthorized credential is always a
-		// WARN (a stale/rejected credential is actionable right now) regardless
-		// of source.
-		level := port.LevelInfo
-		if entry.intentExplicit || state == statusUnauthorized {
-			level = port.LevelWarn
+	// Publish every successful protocol result before selecting or re-minting a
+	// default. The startup probe has already paid for this authoritative metadata,
+	// so an immediate session must not fall back to a guessed output limit,
+	// thinking mode, or input capability while the later background refresh is
+	// still pending. A present empty slice deliberately removes only that
+	// protocol's row; failed protocols are omitted and retain their existing floor.
+	successful := make(map[string][]modelEntry, len(targets))
+	for _, target := range targets {
+		result := byID[target.pid]
+		if result.err == nil {
+			successful[result.pid] = result.models
 		}
-		diag.Log(ctx, level, "toolhive LLM gateway: probe failed — "+hint,
-			"provider", providerToolhive, "base_url", entry.baseURL, "state", state)
-	case len(models) == 0:
-		reg.outcomes.recordSuccess(providerToolhive, nil)
-		diag.Log(ctx, port.LevelWarn, "toolhive LLM gateway: "+toolhiveStatusHints[statusEmpty],
-			"provider", providerToolhive, "base_url", entry.baseURL)
-		if reg.defaultID == providerToolhive {
-			return errToolhiveNoModels
+	}
+	reg.meta.mergeSwap(successful)
+
+	defaultEmpty := false
+	// Process in stable family order even though the fetches complete concurrently.
+	for _, target := range targets {
+		result := byID[target.pid]
+		pid, entry, models, err := result.pid, result.entry, result.models, result.err
+		switch {
+		case err != nil:
+			state := classifyLiveListError(err)
+			hint := statusHintFor(entry, state)
+			reg.outcomes.recordFailure(pid, state, hint)
+			level := port.LevelInfo
+			if entry.intentExplicit || state == statusUnauthorized {
+				level = port.LevelWarn
+			}
+			diag.Log(ctx, level, "toolhive LLM gateway: probe failed — "+hint,
+				"provider", pid, "base_url", entry.baseURL, "state", state)
+		case len(models) == 0:
+			reg.outcomes.recordSuccess(entry, nil)
+			diag.Log(ctx, port.LevelWarn, "toolhive LLM gateway: "+statusHintFor(entry, statusEmpty),
+				"provider", pid, "base_url", entry.baseURL)
+			defaultEmpty = defaultEmpty || reg.defaultID == pid
+		default:
+			reg.outcomes.recordSuccess(entry, models)
+			diag.Log(ctx, port.LevelInfo, "toolhive LLM gateway: registered and reachable",
+				"provider", pid, "base_url", entry.baseURL, "gateway_url", entry.intentGatewayURL, "models", len(models))
+			if reg.defaultID == pid && reg.defaultModel == "" {
+				reg.defaultModel = models[0].ID
+				reg.defaultModelAutoSelected = true
+				reg.remintEntry(pid, reg.defaultModel)
+				diag.Log(ctx, port.LevelInfo, "toolhive LLM gateway: default model (auto-selected)",
+					"provider", pid, "model", reg.defaultModel,
+					"base_url", entry.baseURL, "gateway_url", entry.intentGatewayURL)
+			}
 		}
-	default:
-		// models is ALREADY []modelEntry (entry.lister is the composition
-		// modelLister interface; the concrete gatewayLister already stamped
-		// ToolCall:true per entry) — use it directly, never re-map it (that
-		// would duplicate the ToolCall business rule in a second place).
-		reg.outcomes.recordSuccess(providerToolhive, models)
-		diag.Log(ctx, port.LevelInfo, "toolhive LLM gateway: registered and reachable",
-			"provider", providerToolhive, "base_url", entry.baseURL, "gateway_url", entry.intentGatewayURL, "models", len(models))
-		if reg.defaultID == providerToolhive && reg.defaultModel == "" {
-			reg.defaultModel = models[0].ID
-			reg.defaultModelAutoSelected = true // issue #262 review finding 7
-			// Re-run the T7 caps fixup for the toolhive entry now that a real
-			// default model is known — via the SAME shared remintEntry helper
-			// buildProviderRegistry's post-assembly fixup loop and
-			// healDefaultModel use (issue #262 review finding 4: the three
-			// re-mint sites cannot drift on the caps/effort computation).
-			reg.remintEntry(providerToolhive, reg.defaultModel)
-			diag.Log(ctx, port.LevelInfo, "toolhive LLM gateway: default model (auto-selected)",
-				"provider", providerToolhive, "model", reg.defaultModel,
-				"base_url", entry.baseURL, "gateway_url", entry.intentGatewayURL)
-		}
+	}
+	if defaultEmpty {
+		return errToolhiveNoModels
 	}
 	return nil
 }

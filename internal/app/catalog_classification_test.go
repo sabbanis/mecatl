@@ -24,7 +24,7 @@ func (classificationNamedTool) Execute(_ context.Context, call session.ToolCall,
 
 func TestCallerSeparation_ClassificationKindsMatchRealRegistrationContext(t *testing.T) {
 	var got map[string]server.ClassificationEntry
-	built, err := Build(context.Background(), Config{
+	built, err := buildIsolated(t, context.Background(), Config{
 		Workspace:           t.TempDir(),
 		Model:               "mock",
 		NoSoul:              true,
@@ -47,7 +47,7 @@ func TestCallerSeparation_ClassificationKindsMatchRealRegistrationContext(t *tes
 		"Subagent":        server.KindCallerOwned,
 		"InspectSubagent": server.KindCallerOwned,
 		"InspectMember":   server.KindCallerOwned,
-		"BashStatus":      server.KindDerived,
+		"ShellStatus":     server.KindDerived,
 		"SubagentStatus":  server.KindDerived,
 		"Parallel":        server.KindDerived,
 		"Team":            server.KindDerived,
@@ -114,7 +114,7 @@ func TestCallerSeparation_RegisteredUnclassifiedToolFailsRealCatalogGuard(t *tes
 		}
 	}()
 
-	_, _ = Build(context.Background(), Config{
+	_, _ = buildIsolated(t, context.Background(), Config{
 		Workspace:           t.TempDir(),
 		Model:               "mock",
 		NoSoul:              true,
@@ -127,7 +127,7 @@ func TestCallerSeparation_RegisteredUnclassifiedToolFailsRealCatalogGuard(t *tes
 
 func TestCallerSeparation_RealCatalogClassifiesAllMemoryLifecycleTools(t *testing.T) {
 	var got map[string]server.ClassificationEntry
-	built, err := Build(context.Background(), Config{
+	built, err := buildIsolated(t, context.Background(), Config{
 		Workspace:           t.TempDir(),
 		Model:               "mock",
 		NoSoul:              true,

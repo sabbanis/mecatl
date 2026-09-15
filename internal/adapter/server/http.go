@@ -14,6 +14,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 
 	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
+	"github.com/stacklok/mecatl/contracts/sessionaffinity"
 	"github.com/stacklok/mecatl/engine/agent"
 	"github.com/stacklok/mecatl/engine/learning"
 	"github.com/stacklok/mecatl/engine/port"
@@ -30,12 +31,18 @@ import (
 //	POST   /v1/sessions/{id}/rename   -> RenameSession (persist an explicit title)
 //	POST   /v1/sessions/{id}/delete   -> DeleteSession (physical snapshot + sidecars)
 //	POST   /v1/sessions/{id}/compact  -> CompactSession (bodyless manual compaction)
+//	GET    /v1/sessions/{id}/mcp-authorizations/{authorization_id}/presentation -> live browser URL
+//	POST   /v1/sessions/{id}/mcp-authorizations/{authorization_id}/recheck -> status/continuation SSE
+//	POST   /v1/sessions/{id}/mcp-authorizations/{authorization_id}/cancel  -> cancellation/continuation SSE
+//	POST   /v1/sessions/{id}/workspace-enrollment/connect -> begin or observe workspace enrollment
+//	POST   /v1/sessions/{id}/workspace-enrollment/{enrollment_id}/retry -> replace one exact enrollment
+//	POST   /v1/sessions/{id}/workspace-enrollment/{enrollment_id}/cancel -> cancel one exact enrollment
 //	POST   /v1/sessions/{id}/prompt   -> start a run; text/event-stream of Events
 //	POST   /v1/sessions/{id}/approve  -> resolve the paused ask on the run
 //	POST   /v1/sessions/{id}/cancel   -> cancel the in-flight run
 //	POST   /v1/sessions/{id}/cancel-child -> cancel ONE child (subagent) of the run
-//	POST   /v1/sessions/{id}/steer    -> enqueue a mid-run steer (unary; outcome JSON; promoted follow-up relayed as SSE)
-//	POST   /v1/sessions/{id}/cancel-steer -> retract the pending (un-drained) steer (steer-cancel kept as a deprecated alias)
+//	POST   /v1/sessions/{id}/steer    -> enqueue a mid-run steer; JSON outcome
+//	POST   /v1/sessions/{id}/cancel-steer -> retract a pending steer; JSON outcome
 //	POST   /v1/sessions/{id}/fork     -> ForkSession (peer session from a history snapshot; 201)
 //	GET    /v1/sessions/{id}/events   -> replay the durable event log; the stream ENDS
 //	GET    /v1/sessions/{id}/watch    -> durable replay-then-follow; the stream STAYS OPEN
@@ -54,30 +61,46 @@ func NewHTTPHandler(svc *Service) *HTTPHandler {
 	h.mux.HandleFunc("GET /v1/info", h.getServerInfo)
 	h.mux.HandleFunc("GET /v1/compatibility", h.getCompatibilityInfo)
 	h.mux.HandleFunc("POST /v1/sessions", h.createSession)
-	h.mux.HandleFunc("GET /v1/sessions/{id}", h.getSession)
-	h.mux.HandleFunc("GET /v1/sessions/{id}/transcript", h.getSessionTranscript)
-	h.mux.HandleFunc("POST /v1/sessions/{id}/mode", h.setMode)
-	h.mux.HandleFunc("DELETE /v1/sessions/{id}", h.closeSession)
-	h.mux.HandleFunc("POST /v1/sessions/{id}/rename", h.renameSession)
-	h.mux.HandleFunc("POST /v1/sessions/{id}/delete", h.deleteSession)
-	h.mux.HandleFunc("POST /v1/sessions/{id}/compact", h.compactSession)
-	h.mux.HandleFunc("POST /v1/sessions/{id}/prompt", h.prompt)
-	h.mux.HandleFunc("POST /v1/sessions/{id}/retry", h.retry)
-	h.mux.HandleFunc("POST /v1/sessions/{id}/approve", h.approve)
-	h.mux.HandleFunc("POST /v1/sessions/{id}/plan:approve", h.approvePlan)
-	h.mux.HandleFunc("POST /v1/sessions/{id}/cancel", h.cancel)
-	h.mux.HandleFunc("POST /v1/sessions/{id}/cancel-child", h.cancelChild)
-	h.mux.HandleFunc("POST /v1/sessions/{id}/steer", h.steer)
-	h.mux.HandleFunc("POST /v1/sessions/{id}/cancel-steer", h.steerCancel)
-	// Deprecated alias for cancel-steer (the pre-ADR-0252 name); remove after
-	// clients migrate.
-	h.mux.HandleFunc("POST /v1/sessions/{id}/steer-cancel", h.steerCancel)
-	h.mux.HandleFunc("POST /v1/sessions/{id}/fork", h.forkSession)
-	h.mux.HandleFunc("POST /v1/sessions/{id}/adoption:preflight", h.preflightSessionAdoption)
-	h.mux.HandleFunc("POST /v1/sessions/{id}/adopt", h.adoptSession)
-	h.mux.HandleFunc("POST /v1/sessions/{id}/reflect", h.reflectSession)
+	for _, route := range []struct {
+		pattern string
+		handler http.HandlerFunc
+	}{
+		{"GET /v1/sessions/{id}", h.getSession},
+		{"GET /v1/sessions/{id}/mcp/connectors", h.listSessionMcpConnectors},
+		{"GET /v1/sessions/{id}/transcript", h.getSessionTranscript},
+		{"POST /v1/sessions/{id}/mode", h.setMode},
+		{"DELETE /v1/sessions/{id}", h.closeSession},
+		{"POST /v1/sessions/{id}/rename", h.renameSession},
+		{"POST /v1/sessions/{id}/delete", h.deleteSession},
+		{"POST /v1/sessions/{id}/compact", h.compactSession},
+		{"GET /v1/sessions/{id}/mcp-authorizations/{authorization_id}/presentation", h.mcpAuthorizationPresentation},
+		{"POST /v1/sessions/{id}/mcp-authorizations/{authorization_id}/recheck", h.recheckMCPAuthorization},
+		{"POST /v1/sessions/{id}/mcp-authorizations/{authorization_id}/cancel", h.cancelMCPAuthorization},
+		{"POST /v1/sessions/{id}/workspace-enrollment/connect", h.connectWorkspaceServices},
+		{"POST /v1/sessions/{id}/workspace-enrollment/{enrollment_id}/retry", h.retryWorkspaceEnrollment},
+		{"POST /v1/sessions/{id}/workspace-enrollment/{enrollment_id}/cancel", h.cancelWorkspaceEnrollment},
+		{"POST /v1/sessions/{id}/prompt", h.prompt},
+		{"POST /v1/sessions/{id}/retry", h.retry},
+		{"POST /v1/sessions/{id}/approve", h.approve},
+		{"POST /v1/sessions/{id}/plan:approve", h.approvePlan},
+		{"POST /v1/sessions/{id}/cancel", h.cancel},
+		{"POST /v1/sessions/{id}/cancel-child", h.cancelChild},
+		{"POST /v1/sessions/{id}/steer", h.steer},
+		{"POST /v1/sessions/{id}/cancel-steer", h.cancelSteer},
+		{"POST /v1/sessions/{id}/fork", h.forkSession},
+		{"POST /v1/sessions/{id}/clear", h.clearSession},
+		{"POST /v1/sessions/{id}/reflect", h.reflectSession},
+		{"GET /v1/sessions/{id}/events", h.streamSessionEvents},
+		{"GET /v1/sessions/{id}/watch", h.watchSessionEvents},
+	} {
+		h.mux.HandleFunc(route.pattern, requireSessionAffinity(route.handler))
+	}
 	h.mux.HandleFunc("POST /v1/dream/plans", h.generateDreamPlan)
 	h.mux.HandleFunc("POST /v1/dream/plans/{plan_id}/decision", h.decideDreamPlan)
+	h.mux.HandleFunc("GET /v1/learning/attempts", h.listLearningAttempts)
+	h.mux.HandleFunc("GET /v1/learning/attempts/{id}", h.getLearningAttempt)
+	h.mux.HandleFunc("POST /v1/learning/attempts/{id}/retry", h.retryLearningAttempt)
+	h.mux.HandleFunc("POST /v1/learning/attempts/{id}/abandon", h.abandonLearningAttempt)
 	h.mux.HandleFunc("GET /v1/learning/proposals", h.listLearningProposals)
 	h.mux.HandleFunc("GET /v1/learning/proposals/{id}", h.getLearningProposal)
 	h.mux.HandleFunc("POST /v1/learning/proposals/{id}/decision", h.decideLearningProposal)
@@ -114,8 +137,7 @@ func NewHTTPHandler(svc *Service) *HTTPHandler {
 	h.mux.HandleFunc("POST /v1/storage/cleanup:apply", h.applySessionCleanup)
 	h.mux.HandleFunc("POST /v1/storage/cleanup/jobs/{id}/cancel", h.cancelSessionCleanup)
 	h.mux.HandleFunc("GET /v1/storage/cleanup/jobs/{id}", h.getSessionCleanupJob)
-	h.mux.HandleFunc("GET /v1/sessions/{id}/events", h.streamSessionEvents)
-	h.mux.HandleFunc("GET /v1/sessions/{id}/watch", h.watchSessionEvents)
+	// Session event routes are registered with the session route inventory above.
 	h.mux.HandleFunc("POST /v1/teams", h.createTeam)
 	h.mux.HandleFunc("POST /v1/teams/{id}/members", h.spawnTeammate)
 	h.mux.HandleFunc("POST /v1/teams/{id}/messages", h.sendTeammateMessage)
@@ -140,7 +162,52 @@ func NewHTTPHandler(svc *Service) *HTTPHandler {
 
 // ServeHTTP routes to the registered handlers.
 func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// ServeMux canonicalizes the doubled separator in this one session-scoped
+	// route before matching, which would turn an empty id into a redirect. Keep
+	// the REST contract aligned with gRPC: it is an invalid request, never a
+	// cacheable redirect.
+	if r.Method == http.MethodGet && r.URL.Path == "/v1/sessions//mcp/connectors" {
+		requireSessionAffinity(h.listSessionMcpConnectors)(w, r)
+		return
+	}
 	h.mux.ServeHTTP(w, r)
+}
+
+func requireCreateSessionAffinity(w http.ResponseWriter, r *http.Request, debugTargetID string) bool {
+	values := r.Header.Values(sessionaffinity.HeaderName)
+	if len(values) == 0 {
+		return true
+	}
+	if debugTargetID == "" || len(values) != 1 || !sessionaffinity.ValidValue(values[0]) || values[0] != debugTargetID {
+		writeProblem(w, entryForHTTPStatus(http.StatusBadRequest), "invalid session affinity header")
+		return false
+	}
+	return true
+}
+
+func requireSessionAffinityValue(w http.ResponseWriter, r *http.Request, authoritativeID string) bool {
+	values := r.Header.Values(sessionaffinity.HeaderName)
+	if len(values) == 0 {
+		return true
+	}
+	if len(values) != 1 || !sessionaffinity.ValidValue(values[0]) || values[0] != authoritativeID {
+		writeProblem(w, entryForHTTPStatus(http.StatusBadRequest), "invalid session affinity header")
+		return false
+	}
+	return true
+}
+
+// requireSessionAffinity admits an optional, exact session-affinity header only
+// after the mux has decoded the authoritative path value. It is transport
+// routing metadata, not an authority grant; the wrapped handler still performs
+// its ordinary authentication, ownership, and management checks.
+func requireSessionAffinity(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !requireSessionAffinityValue(w, r, r.PathValue("id")) {
+			return
+		}
+		next(w, r)
+	}
 }
 
 // getServerInfo returns safe build, composition, and the caller-selected provider endpoint projection.
@@ -156,19 +223,17 @@ func (h *HTTPHandler) getServerInfo(w http.ResponseWriter, r *http.Request) {
 // --- request/response bodies ------------------------------------------------
 
 type createSessionBody struct {
-	Workspace string    `json:"workspace"`
-	Mode      string    `json:"mode,omitempty"`
-	Limits    *limitsIn `json:"limits,omitempty"`
+	Mode   string    `json:"mode,omitempty"`
+	Limits *limitsIn `json:"limits,omitempty"`
 	// ProviderID / ModelID select a per-session provider+model (multi-provider
 	// Phase 0, S3). Empty both => the server default provider. ProviderID without
 	// ModelID => the provider's default model; ModelID without ProviderID is a
 	// client error (a bare model on the default provider is ambiguous).
 	ProviderID string `json:"provider_id,omitempty"`
 	ModelID    string `json:"model_id,omitempty"`
-	// Profile selects the session's tool-surface profile (issue #55), mirroring
-	// the proto field: "" = default (full filesystem, REQUIRES workspace),
-	// "no-fs" = the no-filesystem profile (REQUIRES an EMPTY workspace). Any
-	// other value is a 400.
+	// Profile selects server-owned placement: "" binds the deployment default and
+	// "no-fs" explicitly attenuates filesystem access. The public request carries
+	// no workspace, cwd, placement ID, or selector. Any other value is a 400.
 	Profile string `json:"profile,omitempty"`
 	// ReasoningEffort sets the session's reasoning-effort tier (ADR 0055),
 	// mirroring the proto field: "" / "auto" = unset (operator/provider default),
@@ -176,13 +241,6 @@ type createSessionBody struct {
 	// capability-gates it; an unknown value falls back to the operator default with
 	// a WARN. The effective value is echoed on resolved_model.reasoning_effort.
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
-	// SourceSessionID, when non-empty, seeds the new session's conversation history
-	// from the named source session (issue #20: model-switch context carryover).
-	// Always allowed across providers: same-provider replays verbatim,
-	// cross-provider seeds a provider-neutral copy (blobs stripped). A
-	// running/awaiting source is a 4xx (FailedPrecondition). Empty means no
-	// carryover.
-	SourceSessionID string `json:"source_session_id,omitempty"`
 	// DebugTargetSessionID creates a separate no-fs diagnostic session bound to
 	// one authorized target; it never copies target conversation state.
 	DebugTargetSessionID string   `json:"debug_target_session_id,omitempty"`
@@ -249,7 +307,15 @@ type createSessionResp struct {
 	// (the composition single source via Service.ResolvedModel), so an HTTP client
 	// shows the same effective model the gRPC client gets. Omitted (nil) when no
 	// model resolved (older-server-equivalent fallback).
-	ResolvedModel *resolvedModelJSON `json:"resolved_model,omitempty"`
+	ResolvedModel *resolvedModelJSON     `json:"resolved_model,omitempty"`
+	Placement     *placementMetadataJSON `json:"placement,omitempty"`
+}
+
+type placementMetadataJSON struct {
+	Kind     string `json:"kind,omitempty"`
+	Label    string `json:"label,omitempty"`
+	Branch   string `json:"branch,omitempty"`
+	Revision string `json:"revision,omitempty"`
 }
 
 // sessionCapabilitiesJSON mirrors mecatlv1.SessionCapabilities for the JSON
@@ -269,6 +335,13 @@ type resolvedModelJSON struct {
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
+func placementMetadataToJSON(meta session.PlacementMetadata) *placementMetadataJSON {
+	if meta.Kind == "" {
+		return nil
+	}
+	return &placementMetadataJSON{Kind: meta.Kind, Label: meta.Label, Branch: meta.Branch, Revision: meta.Revision}
+}
+
 // resolvedModelToJSON maps the server-side ResolvedModel to its JSON form, nil for
 // the zero value (round-trips to "absent" so the client falls back to today's
 // behavior). Mirrors resolvedModelToProto.
@@ -284,28 +357,28 @@ func resolvedModelToJSON(rm ResolvedModel) *resolvedModelJSON {
 // client gets. Populated from the shared Service.capabilities() so the two
 // surfaces cannot drift.
 type serverCapabilitiesJSON struct {
-	MCP               bool                              `json:"mcp"`
-	SlashCommands     bool                              `json:"slash_commands"`
-	Memory            bool                              `json:"memory"`
-	Skills            bool                              `json:"skills"`
-	Teams             bool                              `json:"teams"`
-	Bash              bool                              `json:"bash"`
-	Image             bool                              `json:"image"`
-	Audio             bool                              `json:"audio"`
-	ModelSelection    bool                              `json:"model_selection"`
-	Reflection        bool                              `json:"reflection"`
-	LearningProposals bool                              `json:"learning_proposals"`
-	LearnedSkills     bool                              `json:"learned_skills"`
-	StorageHealth     bool                              `json:"storage_health"`
-	StorageMigration  bool                              `json:"storage_migration"`
-	StorageCleanup    bool                              `json:"storage_cleanup"`
-	LegacyAdoption    bool                              `json:"legacy_adoption"`
-	SessionDebug      bool                              `json:"session_debug"`
-	DebugMCP          bool                              `json:"debug_mcp"`
-	ManualDream       *mecatlv1.ManualDreamCapabilities `json:"manual_dream,omitempty"`
-	Steer             bool                              `json:"steer"`
-	ManualCompaction  bool                              `json:"manual_compaction"`
-	Posture           string                            `json:"posture,omitempty"`
+	MCPConnectorStatus bool                              `json:"mcp_connector_status"`
+	MCP                bool                              `json:"mcp"`
+	SlashCommands      bool                              `json:"slash_commands"`
+	Memory             bool                              `json:"memory"`
+	Skills             bool                              `json:"skills"`
+	Teams              bool                              `json:"teams"`
+	Bash               bool                              `json:"bash"`
+	Image              bool                              `json:"image"`
+	Audio              bool                              `json:"audio"`
+	ModelSelection     bool                              `json:"model_selection"`
+	Reflection         bool                              `json:"reflection"`
+	LearningProposals  bool                              `json:"learning_proposals"`
+	LearnedSkills      bool                              `json:"learned_skills"`
+	StorageHealth      bool                              `json:"storage_health"`
+	StorageMigration   bool                              `json:"storage_migration"`
+	StorageCleanup     bool                              `json:"storage_cleanup"`
+	SessionDebug       bool                              `json:"session_debug"`
+	DebugMCP           bool                              `json:"debug_mcp"`
+	ManualDream        *mecatlv1.ManualDreamCapabilities `json:"manual_dream,omitempty"`
+	Steer              bool                              `json:"steer"`
+	ManualCompaction   bool                              `json:"manual_compaction"`
+	Posture            string                            `json:"posture,omitempty"`
 }
 
 // capabilitiesJSON projects the shared proto capabilities onto the JSON shape.
@@ -314,38 +387,41 @@ func capabilitiesJSON(c *mecatlv1.ServerCapabilities) *serverCapabilitiesJSON {
 		return nil
 	}
 	return &serverCapabilitiesJSON{
-		MCP:               c.GetMcp(),
-		SlashCommands:     c.GetSlashCommands(),
-		Memory:            c.GetMemory(),
-		Skills:            c.GetSkills(),
-		Teams:             c.GetTeams(),
-		Bash:              c.GetBash(),
-		Image:             c.GetImage(),
-		Audio:             c.GetAudio(),
-		ModelSelection:    c.GetModelSelection(),
-		Reflection:        c.GetReflection(),
-		LearningProposals: c.GetLearningProposals(),
-		LearnedSkills:     c.GetLearnedSkills(),
-		StorageHealth:     c.GetStorageHealth(),
-		StorageMigration:  c.GetStorageMigration(),
-		StorageCleanup:    c.GetStorageCleanup(),
-		LegacyAdoption:    c.GetLegacyAdoption(),
-		SessionDebug:      c.GetSessionDebug(),
-		DebugMCP:          c.GetDebugMcp(),
-		ManualDream:       c.GetManualDream(),
-		Steer:             c.GetSteer(),
-		ManualCompaction:  c.GetManualCompaction(),
-		Posture:           c.GetPosture(),
+		MCPConnectorStatus: c.GetMcpConnectorStatus(),
+		MCP:                c.GetMcp(),
+		SlashCommands:      c.GetSlashCommands(),
+		Memory:             c.GetMemory(),
+		Skills:             c.GetSkills(),
+		Teams:              c.GetTeams(),
+		Bash:               c.GetBash(),
+		Image:              c.GetImage(),
+		Audio:              c.GetAudio(),
+		ModelSelection:     c.GetModelSelection(),
+		Reflection:         c.GetReflection(),
+		LearningProposals:  c.GetLearningProposals(),
+		LearnedSkills:      c.GetLearnedSkills(),
+		StorageHealth:      c.GetStorageHealth(),
+		StorageMigration:   c.GetStorageMigration(),
+		StorageCleanup:     c.GetStorageCleanup(),
+		SessionDebug:       c.GetSessionDebug(),
+		DebugMCP:           c.GetDebugMcp(),
+		ManualDream:        c.GetManualDream(),
+		Steer:              c.GetSteer(),
+		ManualCompaction:   c.GetManualCompaction(),
+		Posture:            c.GetPosture(),
 	}
 }
 
 type sessionResp struct {
-	SessionID string `json:"session_id"`
-	State     string `json:"state"`
-	Mode      string `json:"mode"`
-	Workspace string `json:"workspace"`
-	Turns     int    `json:"turns"`
-	ToolCalls int    `json:"tool_calls"`
+	SessionID string                 `json:"session_id"`
+	State     string                 `json:"state"`
+	Mode      string                 `json:"mode"`
+	Placement *placementMetadataJSON `json:"placement,omitempty"`
+	Turns     int                    `json:"turns"`
+	ToolCalls int                    `json:"tool_calls"`
+	// SessionCapabilities mirrors the per-session media capability carried by the
+	// create and gRPC snapshot surfaces. Global feature bits remain on capabilities.
+	SessionCapabilities *sessionCapabilitiesJSON `json:"session_capabilities,omitempty"`
 	// Title is the human-readable session label (snapshot Title, or the lazy
 	// deriveTitle fallback when the snapshot Title is empty). Omitted via
 	// omitempty only when both are empty (no genuine prompt).
@@ -353,6 +429,10 @@ type sessionResp struct {
 	// TitleProvenance records whether Title is prompt-derived, operator-authored,
 	// or legacy/unknown.
 	TitleProvenance string `json:"title_provenance,omitempty"`
+	// TitleMetadata is the bounded source-free title lifecycle projection.
+	TitleMetadata *sessionTitleJSON `json:"title_metadata,omitempty"`
+	// TokenUsage is the canonical durable accounting projection.
+	TokenUsage map[string]tokenUsageJSON `json:"token_usage,omitempty"`
 	// ResolvedModel mirrors the gRPC Session snapshot's resolved_model so the HTTP
 	// read surface is consistent with gRPC GetSession: the EFFECTIVE provider+model
 	// this session resolved to (from Service.ResolvedModel, the composition single
@@ -360,6 +440,40 @@ type sessionResp struct {
 	ResolvedModel *resolvedModelJSON            `json:"resolved_model,omitempty"`
 	Kind          string                        `json:"kind,omitempty"`
 	Relationship  *mecatlv1.SessionRelationship `json:"relationship,omitempty"`
+}
+
+type sessionTitleJSON struct {
+	Title           string                   `json:"title"`
+	Provenance      string                   `json:"provenance"`
+	GenerationState string                   `json:"generation_state"`
+	LatestAttempt   *titleAttemptSummaryJSON `json:"latest_attempt,omitempty"`
+	Revision        uint64                   `json:"revision"`
+}
+
+type titleAttemptSummaryJSON struct {
+	ID      string `json:"id"`
+	Outcome string `json:"outcome"`
+}
+
+type tokenUsageJSON struct {
+	Total  usageJSON            `json:"total"`
+	Models map[string]usageJSON `json:"models"`
+}
+
+type usageJSON struct {
+	InputTokens      int `json:"input_tokens"`
+	OutputTokens     int `json:"output_tokens"`
+	CacheReadTokens  int `json:"cache_read_tokens"`
+	CacheWriteTokens int `json:"cache_write_tokens"`
+	ReasoningTokens  int `json:"reasoning_tokens"`
+}
+
+func sessionTitleToJSON(p session.TitlePayload) *sessionTitleJSON {
+	out := &sessionTitleJSON{Title: valid(p.Title), Provenance: valid(string(p.Provenance)), GenerationState: valid(string(p.GenerationState)), Revision: p.Revision}
+	if p.LatestAttempt != nil {
+		out.LatestAttempt = &titleAttemptSummaryJSON{ID: valid(p.LatestAttempt.ID), Outcome: valid(string(p.LatestAttempt.Outcome))}
+	}
+	return out
 }
 
 type dreamGenerateBody struct {
@@ -468,9 +582,16 @@ func (h *HTTPHandler) createSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		return
 	}
-	// Session profile (issue #55): the workspace requirement is PROFILE-AWARE and
-	// enforced in the service (default requires one; no-fs requires an EMPTY one),
-	// so there is deliberately NO unconditional empty-workspace guard here.
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid JSON body: multiple JSON values")
+		return
+	}
+	if !requireCreateSessionAffinity(w, r, body.DebugTargetSessionID) {
+		return
+	}
+	// Parse only the public profile attenuation. The service binds either the
+	// deployment default or no-FS placement and validates the exact EnvironmentRef;
+	// this transport has no workspace-derived fallback.
 	profile, err := ParseSessionProfile(body.Profile)
 	if err != nil {
 		writeServiceError(w, err)
@@ -486,9 +607,6 @@ func (h *HTTPHandler) createSession(w http.ResponseWriter, r *http.Request) {
 	}
 	sel := ProviderSelector{ProviderID: body.ProviderID, ModelID: body.ModelID, ReasoningEffort: body.ReasoningEffort}
 	var opts []CreateSessionOption
-	if body.SourceSessionID != "" {
-		opts = append(opts, WithSourceSession(session.SessionID(body.SourceSessionID)))
-	}
 	if body.DebugTargetSessionID != "" {
 		opts = append(opts, WithDebugTarget(session.SessionID(body.DebugTargetSessionID)))
 	}
@@ -506,17 +624,18 @@ func (h *HTTPHandler) createSession(w http.ResponseWriter, r *http.Request) {
 	if !grant.IsEmpty() {
 		opts = append(opts, WithClientMCP(grant))
 	}
-	sess, err := h.svc.CreateSessionWithProfile(r.Context(), body.Workspace, modeFromString(body.Mode), limits, sel, profile, opts...)
+	sess, err := h.svc.CreateSessionWithProfile(r.Context(), modeFromString(body.Mode), limits, sel, profile, opts...)
 	if err != nil {
 		writeServiceError(w, err)
 		return
 	}
-	scaps := h.svc.SessionCapabilities(sess.ID)
+	scaps := h.svc.sessionCapabilitiesFor(sess)
 	writeJSON(w, http.StatusCreated, createSessionResp{
 		SessionID:           string(sess.ID),
-		Capabilities:        capabilitiesJSON(h.svc.capabilities()),
+		Capabilities:        capabilitiesJSON(h.svc.capabilitiesFor(r.Context())),
 		SessionCapabilities: &sessionCapabilitiesJSON{Image: scaps.Image, Audio: scaps.Audio},
 		ResolvedModel:       resolvedModelToJSON(h.svc.ResolvedModel(sess.ID)),
+		Placement:           placementMetadataToJSON(sess.Placement),
 	})
 }
 
@@ -557,110 +676,81 @@ func (h *HTTPHandler) setMode(w http.ResponseWriter, r *http.Request) {
 	h.writeSession(w, http.StatusOK, sess)
 }
 
-// forkSession handles POST /v1/sessions/{id}/fork, creating a peer session whose
-// conversation history is a snapshot of {id}'s (ADR 0065). The new session
-// inherits the source's mode, workspace, limits, and provider/model/profile
-// labels; same provider and model only. The source must be at a turn boundary
-// (idle/terminal); a running/awaiting source is rejected with 412. An OPTIONAL
-// JSON body `{"title": "...", "reasoning_effort": "..."}` overrides the forked
-// session's title and/or reasoning-effort tier (ADR 0068; empty/absent inherits
-// the source's — provider and model always inherit). Returns 201 + the new
-// session id.
-func (h *HTTPHandler) forkSession(w http.ResponseWriter, r *http.Request) {
-	id := session.SessionID(r.PathValue("id"))
-	var body struct {
-		Title           string `json:"title"`
-		ReasoningEffort string `json:"reasoning_effort"`
+type successorBody struct {
+	WorktreeSelector *string `json:"worktree_selector,omitempty"`
+	Title            string  `json:"title,omitempty"`
+	ProviderID       string  `json:"provider_id,omitempty"`
+	ModelID          string  `json:"model_id,omitempty"`
+	ReasoningEffort  string  `json:"reasoning_effort,omitempty"`
+}
+
+func decodeOptionalStrictJSON(r *http.Request, dst any) error {
+	if r.ContentLength == 0 {
+		return nil
 	}
-	// An empty body is valid (title/effort inherit the source's); only a malformed
-	// non-empty body is an error.
-	if r.ContentLength != 0 {
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			writeError(w, http.StatusBadRequest, "invalid JSON body")
-			return
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(dst); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("multiple JSON values")
 		}
+		return err
 	}
-	newID, err := h.svc.ForkSession(r.Context(), id, body.Title, body.ReasoningEffort)
+	return nil
+}
+
+func (h *HTTPHandler) clearSession(w http.ResponseWriter, r *http.Request) {
+	var body successorBody
+	if err := decodeOptionalStrictJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	selector := ""
+	if body.WorktreeSelector != nil {
+		selector = *body.WorktreeSelector
+	}
+	newID, err := h.svc.ClearSessionSuccessor(r.Context(), session.SessionID(r.PathValue("id")), SuccessorPlacement{Selector: selector, SelectorPresent: body.WorktreeSelector != nil})
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	h.writeSuccessor(r.Context(), w, newID)
+}
+
+func (h *HTTPHandler) forkSession(w http.ResponseWriter, r *http.Request) {
+	var body successorBody
+	if err := decodeOptionalStrictJSON(r, &body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	selector := ""
+	if body.WorktreeSelector != nil {
+		selector = *body.WorktreeSelector
+	}
+	newID, err := h.svc.ForkSessionSuccessor(r.Context(), ForkSuccessorRequest{
+		Source: session.SessionID(r.PathValue("id")), Placement: SuccessorPlacement{Selector: selector, SelectorPresent: body.WorktreeSelector != nil},
+		Title: body.Title, ProviderID: body.ProviderID, ModelID: body.ModelID, ReasoningEffort: body.ReasoningEffort,
+	})
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	h.writeSuccessor(r.Context(), w, newID)
+}
+
+func (h *HTTPHandler) writeSuccessor(ctx context.Context, w http.ResponseWriter, id session.SessionID) {
+	created, err := h.svc.GetSession(ctx, id)
 	if err != nil {
 		writeServiceError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, struct {
-		SessionID string `json:"session_id"`
-	}{SessionID: string(newID)})
-}
-
-type adoptionBindingsJSON struct {
-	Workspace       string `json:"workspace"`
-	EnvironmentKind string `json:"environment_kind"`
-	EnvironmentID   string `json:"environment_id"`
-	ProviderID      string `json:"provider_id"`
-	ModelID         string `json:"model_id"`
-	Profile         string `json:"profile"`
-	IdempotencyKey  string `json:"idempotency_key,omitempty"`
-}
-
-func (b adoptionBindingsJSON) bindings() (AdoptionBindings, error) {
-	profile, err := ParseSessionProfile(b.Profile)
-	if err != nil {
-		return AdoptionBindings{}, err
-	}
-	return AdoptionBindings{Workspace: b.Workspace, EnvironmentRef: session.EnvironmentRef{Kind: session.EnvironmentKind(b.EnvironmentKind), ID: b.EnvironmentID}, ProviderID: b.ProviderID, ModelID: b.ModelID, Profile: profile}, nil
-}
-
-func adoptionBindingsJSONFrom(binding AdoptionBindings) adoptionBindingsJSON {
-	return adoptionBindingsJSON{Workspace: binding.Workspace, EnvironmentKind: string(binding.EnvironmentRef.Kind), EnvironmentID: binding.EnvironmentRef.ID, ProviderID: binding.ProviderID, ModelID: binding.ModelID, Profile: string(binding.Profile)}
-}
-
-const maxAdoptionBodyBytes = 1 << 20
-
-func (h *HTTPHandler) preflightSessionAdoption(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxAdoptionBodyBytes)
-	var body adoptionBindingsJSON
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
-		return
-	}
-	bindings, err := body.bindings()
-	if err != nil {
-		writeServiceError(w, err)
-		return
-	}
-	result, err := h.svc.PreflightSessionAdoption(r.Context(), session.SessionID(r.PathValue("id")), bindings)
-	if err != nil {
-		writeServiceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusOK, struct {
-		Eligible bool                 `json:"eligible"`
-		Reason   string               `json:"reason_code,omitempty"`
-		Bindings adoptionBindingsJSON `json:"bindings"`
-	}{result.Eligible, string(result.Reason), adoptionBindingsJSONFrom(result.Bindings)})
-}
-
-func (h *HTTPHandler) adoptSession(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, maxAdoptionBodyBytes)
-	var body adoptionBindingsJSON
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
-		return
-	}
-	bindings, err := body.bindings()
-	if err != nil {
-		writeServiceError(w, err)
-		return
-	}
-	sess, err := h.svc.AdoptSession(r.Context(), session.SessionID(r.PathValue("id")), body.IdempotencyKey, bindings)
-	if err != nil {
-		writeServiceError(w, err)
-		return
-	}
-	writeJSON(w, http.StatusCreated, struct {
-		SessionID       string                  `json:"session_id"`
-		SourceSessionID string                  `json:"source_session_id"`
-		Capabilities    *serverCapabilitiesJSON `json:"capabilities"`
-		ResolvedModel   *resolvedModelJSON      `json:"resolved_model"`
-	}{string(sess.ID), string(adoptionSourceID(sess)), capabilitiesJSON(h.svc.capabilities()), resolvedModelToJSON(h.svc.ResolvedModel(sess.ID))})
+		SessionID string                 `json:"session_id"`
+		Placement *placementMetadataJSON `json:"placement,omitempty"`
+	}{string(id), placementMetadataToJSON(created.Placement)})
 }
 
 func (h *HTTPHandler) writeSession(w http.ResponseWriter, status int, sess *session.Session) {
@@ -669,19 +759,39 @@ func (h *HTTPHandler) writeSession(w http.ResponseWriter, status int, sess *sess
 		// Lazy display-time fallback (no write-on-read: sess.Title is not mutated).
 		title = DeriveTitle(sess)
 	}
+	scaps := h.svc.sessionCapabilitiesFor(sess)
 	writeJSON(w, status, sessionResp{
-		SessionID:       string(sess.ID),
-		State:           string(sess.State),
-		Mode:            string(sess.Mode),
-		Workspace:       sess.Workspace,
-		Turns:           sess.Counters.Turns,
-		ToolCalls:       sess.Counters.ToolCalls,
-		Title:           title,
-		TitleProvenance: string(sess.TitleProvenance),
-		ResolvedModel:   resolvedModelToJSON(h.svc.ResolvedModel(sess.ID)),
-		Kind:            string(sess.Kind),
-		Relationship:    toProtoSessionRelationship(sess.Relationship),
+		SessionID:           string(sess.ID),
+		State:               string(sess.State),
+		Mode:                string(sess.Mode),
+		Placement:           placementMetadataToJSON(sess.Placement),
+		Turns:               sess.Counters.Turns,
+		ToolCalls:           sess.Counters.ToolCalls,
+		SessionCapabilities: &sessionCapabilitiesJSON{Image: scaps.Image, Audio: scaps.Audio},
+		Title:               valid(title),
+		TitleProvenance:     valid(string(sess.TitleProvenance)),
+		TitleMetadata:       sessionTitleToJSON(titlePayload(sess)),
+		TokenUsage:          tokenUsageToJSON(sess.TokenUsageSnapshot()),
+		ResolvedModel:       resolvedModelToJSON(h.svc.ResolvedModel(sess.ID)),
+		Kind:                string(sess.Kind),
+		Relationship:        toProtoSessionRelationship(sess.Relationship),
 	})
+}
+
+func tokenUsageToJSON(in map[session.UsageKind]session.TokenUsage) map[string]tokenUsageJSON {
+	out := make(map[string]tokenUsageJSON, len(in))
+	for kind, bucket := range in {
+		models := make(map[string]usageJSON, len(bucket.Models))
+		for model, usage := range bucket.Models {
+			models[valid(model)] = usageToJSON(usage)
+		}
+		out[string(kind)] = tokenUsageJSON{Total: usageToJSON(bucket.Total), Models: models}
+	}
+	return out
+}
+
+func usageToJSON(usage session.Usage) usageJSON {
+	return usageJSON{InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, CacheReadTokens: usage.CacheReadTokens, CacheWriteTokens: usage.CacheWriteTokens, ReasoningTokens: usage.ReasoningTokens}
 }
 
 // maxPromptBodyBytes bounds the POST /prompt request body so an oversized
@@ -693,6 +803,217 @@ func (h *HTTPHandler) writeSession(w http.ResponseWriter, status int, sess *sess
 // comfortably covers the 20 MiB decoded cap (~27 MiB base64) with headroom while
 // still bounding the read.
 const maxPromptBodyBytes = 32 << 20 // 32 MiB
+
+func (h *HTTPHandler) connectWorkspaceServices(w http.ResponseWriter, r *http.Request) {
+	if !controlRequestBodyEmpty(r) {
+		writeError(w, http.StatusBadRequest, "workspace enrollment controls do not accept a request body")
+		return
+	}
+	id := session.SessionID(r.PathValue("id"))
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "session ID is required")
+		return
+	}
+	result, err := h.svc.ConnectWorkspaceServices(r.Context(), id)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toProtoWorkspaceEnrollment(result))
+}
+
+func (h *HTTPHandler) retryWorkspaceEnrollment(w http.ResponseWriter, r *http.Request) {
+	h.workspaceEnrollmentControl(w, r, true)
+}
+
+func (h *HTTPHandler) cancelWorkspaceEnrollment(w http.ResponseWriter, r *http.Request) {
+	h.workspaceEnrollmentControl(w, r, false)
+}
+
+func (h *HTTPHandler) workspaceEnrollmentControl(w http.ResponseWriter, r *http.Request, retry bool) {
+	if !controlRequestBodyEmpty(r) {
+		writeError(w, http.StatusBadRequest, "workspace enrollment controls do not accept a request body")
+		return
+	}
+	id, enrollmentID := session.SessionID(r.PathValue("id")), session.WorkspaceEnrollmentID(r.PathValue("enrollment_id"))
+	if id == "" || !enrollmentID.Valid() {
+		writeError(w, http.StatusBadRequest, "valid session and enrollment IDs are required")
+		return
+	}
+	var (
+		result WorkspaceEnrollmentProjection
+		err    error
+	)
+	if retry {
+		result, err = h.svc.RetryWorkspaceEnrollment(r.Context(), id, enrollmentID)
+	} else {
+		result, err = h.svc.CancelWorkspaceEnrollment(r.Context(), id, enrollmentID)
+	}
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toProtoWorkspaceEnrollment(result))
+}
+
+func (h *HTTPHandler) mcpAuthorizationPresentation(w http.ResponseWriter, r *http.Request) {
+	if !controlRequestBodyEmpty(r) {
+		writeError(w, http.StatusBadRequest, "MCP authorization controls do not accept a request body")
+		return
+	}
+	id, authorizationID := session.SessionID(r.PathValue("id")), r.PathValue("authorization_id")
+	if id == "" || !session.ValidAuthorizationID(authorizationID) {
+		writeError(w, http.StatusBadRequest, "invalid session or authorization ID")
+		return
+	}
+	url, err := h.svc.MCPAuthorizationPresentation(r.Context(), id, MCPAuthorizationControl{SessionID: id, AuthorizationID: authorizationID})
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, &mecatlv1.GetMcpAuthorizationPresentationResponse{Url: valid(url)})
+}
+
+func (h *HTTPHandler) recheckMCPAuthorization(w http.ResponseWriter, r *http.Request) {
+	h.relayMCPAuthorizationControlSSE(w, r, false)
+}
+
+func (h *HTTPHandler) cancelMCPAuthorization(w http.ResponseWriter, r *http.Request) {
+	h.relayMCPAuthorizationControlSSE(w, r, true)
+}
+
+// controlRequestBodyEmpty enforces the correlation-only HTTP shape.
+// Reading at most one byte rejects JSON success/status/code/token assertions
+// without buffering attacker-controlled bodies.
+func controlRequestBodyEmpty(r *http.Request) bool {
+	if r.Body == nil || r.Body == http.NoBody {
+		return true
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, 1))
+	return err == nil && len(body) == 0
+}
+
+//nolint:gocyclo // relays a live continuation over SSE while racing client disconnect and cancellation; inherent.
+func (h *HTTPHandler) relayMCPAuthorizationControlSSE(w http.ResponseWriter, r *http.Request, cancel bool) {
+	if !controlRequestBodyEmpty(r) {
+		writeError(w, http.StatusBadRequest, "MCP authorization controls do not accept a request body")
+		return
+	}
+	id, authorizationID := session.SessionID(r.PathValue("id")), r.PathValue("authorization_id")
+	if id == "" || !session.ValidAuthorizationID(authorizationID) {
+		writeError(w, http.StatusBadRequest, "invalid session or authorization ID")
+		return
+	}
+	// Recheck and cancel may register a continuation run. Prove this response can
+	// drain that run before invoking either mutating control, so an incapable
+	// ResponseWriter cannot leave a live continuation orphaned.
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+	control := MCPAuthorizationControl{SessionID: id, AuthorizationID: authorizationID}
+	var result MCPAuthorizationResult
+	var err error
+	if cancel {
+		result, err = h.svc.CancelMCPAuthorization(r.Context(), id, control)
+	} else {
+		result, err = h.svc.RecheckMCPAuthorization(r.Context(), id, control)
+	}
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+	enc := json.NewEncoder(w)
+	if result.Run == nil {
+		if _, err := w.Write([]byte("data: ")); err != nil {
+			return
+		}
+		if err := enc.Encode(toProto(result.Event)); err != nil {
+			return
+		}
+		_, _ = w.Write([]byte("\n"))
+		flusher.Flush()
+		return
+	}
+	defer h.svc.FinishRun(id, result.Run)
+	logCtx := context.WithoutCancel(r.Context())
+	recorder := NewRunEventRecorder(logCtx, h.svc, id)
+	defer recorder.Close()
+	failed := false
+	fail := func() {
+		if failed {
+			return
+		}
+		failed = true
+		result.Run.Cancel()
+	}
+	writeEvent := func(event session.Event) bool {
+		if _, err := w.Write([]byte("data: ")); err != nil {
+			return false
+		}
+		if err := enc.Encode(toProto(event)); err != nil {
+			return false
+		}
+		if _, err := w.Write([]byte("\n")); err != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+
+	// The status precedes the continuation. If it cannot be delivered, retain
+	// ownership of the registered run: cancel it, drain its events into the log,
+	// then finish it below.
+	if r.Context().Err() != nil || !writeEvent(result.Event) {
+		fail()
+	}
+	requestDone := r.Context().Done()
+	for events := result.Run.Events(); events != nil; {
+		if !failed && r.Context().Err() != nil {
+			fail()
+			requestDone = nil
+		}
+		select {
+		case <-requestDone:
+			// A lost HTTP request has no control channel to recover through. Cancel
+			// the continuation but keep draining so it can emit its terminal event.
+			fail()
+			requestDone = nil
+		case event, ok := <-events:
+			if !ok {
+				events = nil
+				continue
+			}
+			if failed {
+				recorder.Observe(event)
+				continue
+			}
+			if r.Context().Err() != nil {
+				fail()
+				requestDone = nil
+				recorder.Observe(event)
+				continue
+			}
+			if !h.svc.relayEvent(r.Context(), id, event, false, recorder) {
+				continue
+			}
+			if r.Context().Err() != nil {
+				fail()
+				requestDone = nil
+				continue
+			}
+			if !writeEvent(event) {
+				fail()
+			}
+		}
+	}
+}
 
 // prompt handles POST /v1/sessions/{id}/prompt, streaming the run's events as
 // Server-Sent Events. It starts a run on the shared engine and relays each
@@ -727,12 +1048,12 @@ func (h *HTTPHandler) prompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	run, err := h.svc.StartRunContent(r.Context(), id, body.Text, parts)
+	run, err := h.svc.StartInteractiveRunContent(r.Context(), id, body.Text, parts)
 	if err != nil {
 		writeServiceError(w, err)
 		return
 	}
-	h.relayRunSSE(w, r, id, run, flusher, h.svc.RecoverNotice(id), false)
+	h.relayRunSSE(w, r, id, run, flusher, h.svc.RecoverNotice(id))
 }
 
 // retry handles POST /v1/sessions/{id}/retry. It has no request body and streams
@@ -749,7 +1070,7 @@ func (h *HTTPHandler) retry(w http.ResponseWriter, r *http.Request) {
 		writeServiceError(w, err)
 		return
 	}
-	h.relayRunSSE(w, r, id, run, flusher, "", true)
+	h.relayRunSSE(w, r, id, run, flusher, "")
 }
 
 // relayRunSSE streams run's Events to w as Server-Sent Events until the channel
@@ -763,12 +1084,9 @@ func (h *HTTPHandler) retry(w http.ResponseWriter, r *http.Request) {
 // notice, when non-empty, is a pre-flight EvRecoverNotice message emitted BEFORE
 // the main event loop — the prompt run-entry path passes it; the approve handler
 // path passes "".
-func (h *HTTPHandler) relayRunSSE(w http.ResponseWriter, r *http.Request, id session.SessionID, run *agent.Run, flusher http.Flusher, notice string, persistAtEnd bool) {
+func (h *HTTPHandler) relayRunSSE(w http.ResponseWriter, r *http.Request, id session.SessionID, run *agent.Run, flusher http.Flusher, notice string) {
 	defer func() {
-		if persistAtEnd {
-			h.svc.Persist(context.WithoutCancel(r.Context()), id)
-		}
-		h.svc.deregister(id, run)
+		h.svc.finishRelayRun(context.WithoutCancel(r.Context()), id, run)
 	}()
 
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -836,16 +1154,12 @@ func (h *HTTPHandler) relayRunSSE(w http.ResponseWriter, r *http.Request, id ses
 		if !h.svc.relayEvent(r.Context(), id, ev, true, recorder) {
 			continue // log-only event: consumed by the durable log, not relayed to the client wire
 		}
-		p := toProto(ev)
-		// The EvSteer drain-echo message_id stamp + its correlation diagnostics
-		// live in the ONE shared Service.stampSteerEcho (the gRPC Converse relay
-		// calls the same helper) — a non-steer event is a no-op inside it.
-		h.svc.stampSteerEcho(logCtx, id, ev, p)
 		if _, err := w.Write([]byte("data: ")); err != nil {
 			fail()
 			continue
 		}
-		if err := enc.Encode(p); err != nil { // Encode appends a newline
+		proto := toProto(ev)
+		if err := enc.Encode(proto); err != nil { // Encode appends a newline
 			fail()
 			continue
 		}
@@ -903,12 +1217,12 @@ func (h *HTTPHandler) approve(w http.ResponseWriter, r *http.Request) {
 			for ev := range run.Events() {
 				recorder.Observe(ev)
 			}
-			h.svc.deregister(id, run)
+			h.svc.finishRelayRun(context.WithoutCancel(r.Context()), id, run)
 		}()
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	h.relayRunSSE(w, r, id, run, flusher, "", false)
+	h.relayRunSSE(w, r, id, run, flusher, "")
 }
 
 // verdictFromHTTP maps the HTTP approve body's string verdict to the domain
@@ -1160,126 +1474,140 @@ func (h *HTTPHandler) cancelChild(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// steerBody is the JSON body of POST /v1/sessions/{id}/steer (ADR 0252):
-// the same contract as the gRPC steer frame, parts included.
+// steerBody is the JSON body of POST /v1/sessions/{id}/steer. It mirrors the
+// gRPC Steer frame, including multimodal content and strict run targeting.
 type steerBody struct {
-	// Text is the operator instruction to inject into the in-flight run, drained
-	// at the next turn boundary. Optional when Parts is non-empty (a media-only
-	// steer is legal, ADR 0251).
-	Text string `json:"text"`
-	// Parts carries the same multimodal content the prompt body accepts,
-	// decoded and validated through the ONE wire→domain choke point
-	// (toContentParts) — never a second validation path.
-	Parts []promptContentBody `json:"parts,omitempty"`
-	// MessageID is the CLIENT-MINTED correlation id for THIS send ("" =
-	// uncorrelated). It is echoed verbatim on the response and, when the steer
-	// lands, on the EvSteer drain echo's message_id (a WATERMARK — the latest
-	// contributing send's id of the bundle that drained), so the client splits
-	// its ordered pending queue positionally, never by text-match.
-	MessageID string `json:"message_id,omitempty"`
-	// ExpectedRunID pins the steer to a specific run (ADR 0249 strict steer).
-	// A mismatch — or a named run that has already gone terminal — is a 409
-	// problem (code stale_run_control), never a promotion: the caller asked to
-	// say something to run X, not to start a new run.
+	Text          string              `json:"text"`
+	Parts         []promptContentBody `json:"parts,omitempty"`
+	MessageID     string              `json:"message_id,omitempty"`
+	ExpectedRunID string              `json:"expected_run_id,omitempty"`
+}
+
+// cancelSteerBody is optional: an empty body is the unqualified, uncorrelated
+// idempotent operation, while a supplied body is decoded strictly.
+type cancelSteerBody struct {
+	MessageID     string `json:"message_id,omitempty"`
 	ExpectedRunID string `json:"expected_run_id,omitempty"`
 }
 
-// steerResp is the JSON response of POST /v1/sessions/{id}/steer and
-// /steer-cancel: the agent.SteerOutcome string verbatim (steer: accepted |
-// appended | too_late; steer-cancel: retracted | none_pending), plus the
-// request's own message_id echoed back (steer only — the ACK-side echo; the
-// drain-side echo rides the EvSteer event on the prompt SSE stream).
-type steerResp struct {
+type steerResponse struct {
 	Outcome   string `json:"outcome"`
 	MessageID string `json:"message_id,omitempty"`
-	// Promoted is true when an unqualified too_late steer was promoted to a
-	// follow-up run that could not be relayed on this response (the
-	// non-streaming fallback) — the run drains into the durable event log.
-	Promoted bool `json:"promoted,omitempty"`
+	Promoted  bool   `json:"promoted,omitempty"`
+	RunID     string `json:"run_id,omitempty"`
 }
 
-// steer handles POST /v1/sessions/{id}/steer (ADR 0252) — the unary HTTP tier
-// of steer-while-running, on the same terms as the gRPC frame: text and/or
-// multimodal parts enqueue into the session's IN-FLIGHT run (drained at the
-// next turn boundary), answered 200 {"outcome": "accepted"|"appended",
-// "message_id": <echoed>}. An UNQUALIFIED steer that loses the terminal race
-// is PROMOTED to a follow-up run (Service.Steer's ADR 0232 contract) and the
-// promoted run is relayed as SSE on this same response — or, without a
-// flusher, background-drained into the durable event log with a
-// {"outcome":"too_late","promoted":true} ack — never handed back bare. A
-// STRICT steer (expected_run_id set) never promotes: a mismatch or a named
-// run already terminal is a 409 problem (stale_run_control). Unknown/foreign
-// session → 404; oversized body → 413.
+// decodeSteerControlJSON applies one strict, bounded request contract to both
+// steer controls. Unknown fields and trailing JSON are rejected: silently
+// dropping a misspelled expected_run_id would turn a safe strict control into
+// an unqualified operation.
+func decodeSteerControlJSON(w http.ResponseWriter, r *http.Request, dst any, allowEmpty bool) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxPromptBodyBytes)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		if allowEmpty && errors.Is(err, io.EOF) {
+			return true
+		}
+		writeSteerControlDecodeError(w, err)
+		return false
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+		writeSteerControlDecodeError(w, err)
+		return false
+	}
+	return true
+}
+
+func decodeOptionalSteerControlJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	if r.ContentLength == 0 {
+		return true
+	}
+	return decodeSteerControlJSON(w, r, dst, true)
+}
+
+func writeSteerControlDecodeError(w http.ResponseWriter, err error) {
+	var maxErr *http.MaxBytesError
+	if errors.As(err, &maxErr) {
+		writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+		return
+	}
+	writeError(w, http.StatusBadRequest, "invalid JSON body")
+}
+
+// steer handles the unary HTTP peer of the gRPC steer frame. A live run
+// returns accepted/appended. An unqualified terminal-race steer retains the
+// existing promotion contract, but the HTTP response stays deterministically
+// unary: the promoted run is drained into durable state in the background and
+// its identity is returned in the JSON acknowledgement.
 func (h *HTTPHandler) steer(w http.ResponseWriter, r *http.Request) {
 	id := session.SessionID(r.PathValue("id"))
-	// Bound the body read exactly like /prompt (CWE-770): an oversized payload
-	// is a 413, never buffered into memory.
-	r.Body = http.MaxBytesReader(w, r.Body, maxPromptBodyBytes)
 	var body steerBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		var maxErr *http.MaxBytesError
-		if errors.As(err, &maxErr) {
-			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
-			return
-		}
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	if !decodeSteerControlJSON(w, r, &body, false) {
 		return
 	}
 	if body.Text == "" && len(body.Parts) == 0 {
 		writeError(w, http.StatusBadRequest, "text or parts is required")
 		return
 	}
-	parts, perr := toContentParts(body.Parts)
-	if perr != nil {
-		writeError(w, http.StatusBadRequest, perr.Error())
+	parts, err := toContentParts(body.Parts)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	outcome, promoted, run, err := h.svc.Steer(r.Context(), id, body.Text, parts, body.MessageID, body.ExpectedRunID)
+	// Promotion outlives this unary request by design. Detach cancellation while
+	// preserving caller identity; the registered run remains cancellable through
+	// the Service lifecycle and explicit run controls.
+	controlCtx := context.WithoutCancel(r.Context())
+	outcome, promoted, run, err := h.svc.Steer(controlCtx, id, body.Text, parts, body.MessageID, body.ExpectedRunID)
 	if err != nil {
 		writeServiceError(w, err)
 		return
 	}
-	if !promoted || run == nil {
-		writeJSON(w, http.StatusOK, steerResp{Outcome: string(outcome), MessageID: body.MessageID})
-		return
-	}
-	// Promoted follow-up: the run is registered and this caller owns the drain
-	// (Service.Steer's contract). Mirror approve's REHYDRATE precedent: relay
-	// as SSE when the writer can stream, else background-drain into the
-	// durable log and ack — the run must never be left with nothing draining.
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		logCtx := context.WithoutCancel(r.Context())
+	response := steerResponse{Outcome: string(outcome), MessageID: body.MessageID}
+	if promoted {
+		if run == nil {
+			writeServiceError(w, fmt.Errorf("%w: promoted steer returned no run", ErrInternal))
+			return
+		}
+		response.Promoted = true
+		response.RunID = run.RunID()
+		logCtx := controlCtx
 		recorder := NewRunEventRecorder(logCtx, h.svc, id)
 		go func() {
 			defer recorder.Close()
 			for ev := range run.Events() {
-				recorder.Observe(ev)
+				// No client stream receives this event, but the shared relay
+				// lifecycle still owns durable logging, awaiting-state persistence,
+				// and optional plan auto-approval.
+				h.svc.relayEvent(logCtx, id, ev, true, recorder)
 			}
-			h.svc.deregister(id, run)
+			h.svc.finishRelayRun(logCtx, id, run)
 		}()
-		writeJSON(w, http.StatusOK, steerResp{Outcome: string(outcome), MessageID: body.MessageID, Promoted: true})
-		return
 	}
-	h.relayRunSSE(w, r, id, run, flusher, "", false)
+	writeJSON(w, http.StatusOK, response)
 }
 
-// steerCancel handles POST /v1/sessions/{id}/cancel-steer (ADR 0252,
-// mirroring the cancel-child naming; steer-cancel is a deprecated alias),
-// retracting the session's live run's PENDING
-// (un-drained) steer via Service.CancelSteer: 200 {"outcome": "retracted"}
-// (the pending bundle is gone, its message-id correlation dropped) or
-// {"outcome": "none_pending"} (nothing parked — already drained at a boundary,
-// or no live run). No body is required; any body is ignored. Unknown/foreign
-// session → 404.
-func (h *HTTPHandler) steerCancel(w http.ResponseWriter, r *http.Request) {
+// cancelSteer retracts only the pending, un-drained steer bundle. With an
+// expected_run_id it fails stale when that exact run is absent or replaced;
+// without one it remains idempotent and reports none_pending.
+func (h *HTTPHandler) cancelSteer(w http.ResponseWriter, r *http.Request) {
 	id := session.SessionID(r.PathValue("id"))
-	outcome, err := h.svc.CancelSteer(r.Context(), id)
+	var body cancelSteerBody
+	if !decodeOptionalSteerControlJSON(w, r, &body) {
+		return
+	}
+	if err := validateSteerMessageID(body.MessageID); err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	outcome, err := h.svc.CancelSteer(r.Context(), id, body.ExpectedRunID)
 	if err != nil {
 		writeServiceError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, steerResp{Outcome: string(outcome)})
+	writeJSON(w, http.StatusOK, steerResponse{Outcome: string(outcome), MessageID: body.MessageID})
 }
 
 // --- team request bodies -----------------------------------------------------
@@ -1307,7 +1635,7 @@ func (b teammateSpecBody) toMemberSpec() agent.MemberSpec {
 }
 
 type createTeamBody struct {
-	Workspace string             `json:"workspace"`
+	SessionID string             `json:"session_id"`
 	Name      string             `json:"name,omitempty"`
 	Goal      string             `json:"goal,omitempty"`
 	Members   []teammateSpecBody `json:"members,omitempty"`
@@ -1336,8 +1664,17 @@ type cancelTeammateBody struct {
 // surfaces share one shape.
 func (h *HTTPHandler) createTeam(w http.ResponseWriter, r *http.Request) {
 	var body createTeamBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid JSON body: multiple JSON values")
+		return
+	}
+	if !requireSessionAffinityValue(w, r, body.SessionID) {
 		return
 	}
 	var specs []agent.MemberSpec
@@ -1347,7 +1684,7 @@ func (h *HTTPHandler) createTeam(w http.ResponseWriter, r *http.Request) {
 			specs = append(specs, m.toMemberSpec())
 		}
 	}
-	id, enrolled, err := h.svc.CreateTeam(r.Context(), body.Workspace, body.Name, body.Goal, int(body.MaxTeamTokens), specs)
+	id, enrolled, err := h.svc.CreateTeamForSession(r.Context(), session.SessionID(body.SessionID), body.Name, body.Goal, int(body.MaxTeamTokens), specs)
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -1773,6 +2110,16 @@ func (h *HTTPHandler) getCompatibilityInfo(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, http.StatusOK, h.svc.CompatibilityInfo(r.Context()))
 }
 
+func (h *HTTPHandler) listSessionMcpConnectors(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	result, err := h.svc.ListSessionMcpConnectors(r.Context(), session.SessionID(r.PathValue("id")))
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toProtoConnectorInventory(result))
+}
+
 // listMcpSources handles GET /v1/mcp/sources.
 func (h *HTTPHandler) listMcpSources(w http.ResponseWriter, r *http.Request) {
 	infos := h.svc.ListMcpSources(r.Context())
@@ -2058,6 +2405,53 @@ func (h *HTTPHandler) decideDreamPlan(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, &mecatlv1.DecideDreamPlanResponse{Receipt: toProtoDreamReceipt(receipt)})
 }
 
+func (h *HTTPHandler) listLearningAttempts(w http.ResponseWriter, r *http.Request) {
+	limit, err := strconv.Atoi(r.URL.Query().Get("limit"))
+	if err != nil && r.URL.Query().Get("limit") != "" {
+		writeError(w, http.StatusBadRequest, "invalid attempt limit")
+		return
+	}
+	response, err := h.svc.ListLearningAttempts(r.Context(), r.URL.Query().Get("state"), r.URL.Query().Get("cursor"), limit)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+func (h *HTTPHandler) getLearningAttempt(w http.ResponseWriter, r *http.Request) {
+	attempt, err := h.svc.GetLearningAttempt(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, &mecatlv1.GetLearningAttemptResponse{Attempt: attempt})
+}
+
+func (h *HTTPHandler) retryLearningAttempt(w http.ResponseWriter, r *http.Request) {
+	mutateLearningAttempt(w, r, h.svc.RetryLearningAttempt)
+}
+
+func (h *HTTPHandler) abandonLearningAttempt(w http.ResponseWriter, r *http.Request) {
+	mutateLearningAttempt(w, r, h.svc.AbandonLearningAttempt)
+}
+
+func mutateLearningAttempt(w http.ResponseWriter, r *http.Request, mutate func(context.Context, string, string) (*mecatlv1.LearningAttempt, error)) {
+	var body struct {
+		ExpectedVersion string `json:"expected_version"`
+	}
+	if err := decodeLearningJSON(r, 2<<10, &body, false); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid attempt control")
+		return
+	}
+	attempt, err := mutate(r.Context(), r.PathValue("id"), body.ExpectedVersion)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, &mecatlv1.MutateLearningAttemptResponse{Attempt: attempt})
+}
+
 func (h *HTTPHandler) listLearningProposals(w http.ResponseWriter, r *http.Request) {
 	limit, err := strconv.Atoi(r.URL.Query().Get("limit"))
 	if err != nil && r.URL.Query().Get("limit") != "" {
@@ -2117,9 +2511,17 @@ func (h *HTTPHandler) undoLearningPromotion(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, &mecatlv1.UndoLearningPromotionResponse{Proposal: proposal})
 }
 
-// listCommands handles GET /v1/commands?workspace=.
+// listCommands handles GET /v1/commands?session_id=.
 func (h *HTTPHandler) listCommands(w http.ResponseWriter, r *http.Request) {
-	cmds, err := h.svc.ListCommands(r.Context(), r.URL.Query().Get("workspace"))
+	id := r.URL.Query().Get("session_id")
+	if !requireSessionAffinityValue(w, r, id) {
+		return
+	}
+	if id == "" {
+		writeServiceError(w, fmt.Errorf("%w: session_id is required", ErrInvalidArgument))
+		return
+	}
+	cmds, err := h.svc.ListCommandsForSession(r.Context(), session.SessionID(id))
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -2127,14 +2529,22 @@ func (h *HTTPHandler) listCommands(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, &mecatlv1.ListCommandsResponse{Commands: toProtoCommands(cmds)})
 }
 
-// listWorktrees handles GET /v1/worktrees?workspace= (issue #102).
+// listWorktrees handles GET /v1/worktrees?session_id=.
 func (h *HTTPHandler) listWorktrees(w http.ResponseWriter, r *http.Request) {
-	wts, err := h.svc.ListWorktrees(r.Context(), r.URL.Query().Get("workspace"))
+	id := r.URL.Query().Get("session_id")
+	if !requireSessionAffinityValue(w, r, id) {
+		return
+	}
+	if id == "" {
+		writeServiceError(w, fmt.Errorf("%w: session_id is required", ErrInvalidArgument))
+		return
+	}
+	wts, err := h.svc.ListWorktreesForSession(r.Context(), session.SessionID(id))
 	if err != nil {
 		writeServiceError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, &mecatlv1.ListWorktreesResponse{Worktrees: toProtoWorktrees(wts)})
+	writeJSON(w, http.StatusOK, &mecatlv1.ListWorktreesResponse{Worktrees: toProtoScopedWorktrees(wts)})
 }
 
 // listSessions handles GET /v1/sessions — the stored-session inventory picker

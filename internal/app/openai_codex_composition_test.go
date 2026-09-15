@@ -109,7 +109,7 @@ func TestOpenAICodexCompositionScenario(t *testing.T) {
 		t.Fatal(err)
 	}
 	transport := &codexCompositionTransport{}
-	built, err := Build(ctx, Config{
+	built, err := buildIsolated(t, ctx, Config{
 		Workspace:             workspace,
 		NoSoul:                true,
 		DefaultProvider:       providerOpenAICodex,
@@ -139,7 +139,7 @@ func TestOpenAICodexCompositionScenario(t *testing.T) {
 		t.Fatalf("ListModels provider inventory = Codex:%t API-OpenAI:%t, want both independently selectable", sawCodex, sawAPI)
 	}
 
-	codexSession, err := built.Service.CreateSessionWithProvider(ctx, workspace, session.ModeDefault, defaultLimits(),
+	codexSession, err := built.Service.CreateSessionWithProvider(ctx, session.ModeDefault, defaultLimits(),
 		server.ProviderSelector{ProviderID: providerOpenAICodex, ModelID: "gpt-5"})
 	if err != nil {
 		t.Fatalf("create Codex session: %v", err)
@@ -159,7 +159,7 @@ func TestOpenAICodexCompositionScenario(t *testing.T) {
 		t.Fatalf("continuation request omitted the real Read result: %s", bodies[1])
 	}
 
-	apiSession, err := built.Service.CreateSessionWithProvider(ctx, workspace, session.ModeDefault, defaultLimits(),
+	apiSession, err := built.Service.CreateSessionWithProvider(ctx, session.ModeDefault, defaultLimits(),
 		server.ProviderSelector{ProviderID: providerOpenAI, ModelID: "gpt-5"})
 	if err != nil {
 		t.Fatalf("create API OpenAI session: %v", err)
@@ -244,7 +244,7 @@ func TestOpenAICodexRemintAndInheritance(t *testing.T) {
 	}
 	mu.Unlock()
 
-	sess := session.New("codex-inherit", session.ModeDefault, "/ws", session.Limits{MaxTurns: 8}, time.Unix(0, 0))
+	sess := session.New("codex-inherit", session.ModeDefault, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/ws", Revision: "in-tree-v1"}, session.Limits{MaxTurns: 8}, time.Unix(0, 0))
 	if got := drainRun(result.Engine.Run(ctx, sess, memEnvironment("/ws"), agent.RunRequest{Text: "delegate"})); got != "CODEX-PARENT" {
 		t.Fatalf("parent final = %q, want CODEX-PARENT (child must inherit selected Codex provider)", got)
 	}
@@ -284,8 +284,9 @@ func TestOpenAICodexRemintAndInheritance(t *testing.T) {
 			t.Fatalf("no-FS factory: %v", err)
 		}
 		defer func() { _ = res.Close() }()
-		noFSSess := session.New("codex-nofs", session.ModePlan, "", session.Limits{MaxTurns: 3}, time.Unix(0, 0))
-		if got := drainRun(res.Engine.Run(ctx, noFSSess, testEnvironment(nofs.New(), nil), agent.RunRequest{Text: "answer without files"})); got != "NOFS-CODEX" {
+		noFSEnv := testEnvironment(nofs.New(), nil)
+		noFSSess := session.New("codex-nofs", session.ModePlan, noFSEnv.Ref(), session.Limits{MaxTurns: 3}, time.Unix(0, 0))
+		if got := drainRun(res.Engine.Run(ctx, noFSSess, noFSEnv, agent.RunRequest{Text: "answer without files"})); got != "NOFS-CODEX" {
 			t.Fatalf("no-FS result = %q", got)
 		}
 		sort.Strings(offered)
@@ -334,11 +335,11 @@ func TestOpenAICodexExplicitSelectorRehydrates(t *testing.T) {
 	cfg1 := codexPersistenceConfig(t, workspace, storeDir, providerOpenAI, map[string]string{
 		providerOpenAI: "API-BEFORE", providerOpenAICodex: "CODEX-BEFORE",
 	})
-	built1, err := Build(ctx, cfg1)
+	built1, err := buildIsolated(t, ctx, cfg1)
 	if err != nil {
 		t.Fatalf("Build #1: %v", err)
 	}
-	sess, err := built1.Service.CreateSessionWithProvider(ctx, workspace, session.ModeDefault, defaultLimits(),
+	sess, err := built1.Service.CreateSessionWithProvider(ctx, session.ModeDefault, defaultLimits(),
 		server.ProviderSelector{ProviderID: providerOpenAICodex, ModelID: "gpt-5", ReasoningEffort: "high"})
 	if err != nil {
 		built1.Close()
@@ -353,7 +354,7 @@ func TestOpenAICodexExplicitSelectorRehydrates(t *testing.T) {
 	cfg2 := codexPersistenceConfig(t, workspace, storeDir, providerOpenAI, map[string]string{
 		providerOpenAI: "API-AFTER", providerOpenAICodex: "CODEX-AFTER",
 	})
-	built2, err := Build(ctx, cfg2)
+	built2, err := buildIsolated(t, ctx, cfg2)
 	if err != nil {
 		t.Fatalf("Build #2: %v", err)
 	}
@@ -377,13 +378,13 @@ func TestOpenAICodexExplicitSelectorRehydrates(t *testing.T) {
 func TestZeroSelectorStillFollowsDeploymentDefault(t *testing.T) {
 	ctx := context.Background()
 	workspace, storeDir := t.TempDir(), t.TempDir()
-	built1, err := Build(ctx, codexPersistenceConfig(t, workspace, storeDir, providerOpenAI, map[string]string{
+	built1, err := buildIsolated(t, ctx, codexPersistenceConfig(t, workspace, storeDir, providerOpenAI, map[string]string{
 		providerOpenAI: "API-BEFORE", providerOpenAICodex: "CODEX-BEFORE",
 	}))
 	if err != nil {
 		t.Fatalf("Build #1: %v", err)
 	}
-	sess, err := built1.Service.CreateSession(ctx, workspace, session.ModeDefault, defaultLimits())
+	sess, err := built1.Service.CreateSession(ctx, session.ModeDefault, defaultLimits())
 	if err != nil {
 		built1.Close()
 		t.Fatalf("CreateSession: %v", err)
@@ -394,7 +395,7 @@ func TestZeroSelectorStillFollowsDeploymentDefault(t *testing.T) {
 	}
 	built1.Close()
 
-	built2, err := Build(ctx, codexPersistenceConfig(t, workspace, storeDir, providerOpenAICodex, map[string]string{
+	built2, err := buildIsolated(t, ctx, codexPersistenceConfig(t, workspace, storeDir, providerOpenAICodex, map[string]string{
 		providerOpenAI: "API-AFTER", providerOpenAICodex: "CODEX-NEW-DEFAULT",
 	}))
 	if err != nil {
@@ -441,7 +442,7 @@ func TestADR_0104_OpenAICodexSecretSentinels(t *testing.T) {
 		liveModelRefreshSync:  true,
 		hookRunner:            hooks,
 	}
-	built, err := Build(ctx, cfg)
+	built, err := buildIsolated(t, ctx, cfg)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
@@ -464,7 +465,7 @@ func TestADR_0104_OpenAICodexSecretSentinels(t *testing.T) {
 	}
 	addArtifact("provider status", statusJSON)
 
-	sess, err := built.Service.CreateSessionWithProvider(ctx, workspace, session.ModeDefault, defaultLimits(),
+	sess, err := built.Service.CreateSessionWithProvider(ctx, session.ModeDefault, defaultLimits(),
 		server.ProviderSelector{ProviderID: providerOpenAICodex, ModelID: "gpt-5"})
 	if err != nil {
 		built.Close()

@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -44,10 +46,10 @@ type modelSwapper interface {
 // whole-map replace caused when this call interleaved with the other
 // refresh path). The whole sequence runs under reg.publishMu so the two
 // refresh paths cannot interleave their merge-then-swap.
-func publishSnapshot(d port.Diagnostics, reg *providerRegistry, swap modelSwapper, fresh map[string][]modelEntry) {
+func publishSnapshot(d port.Diagnostics, reg *providerRegistry, swap modelSwapper, fresh map[string][]modelEntry, evidence ...map[string]bool) {
 	reg.publishMu.Lock()
 	defer reg.publishMu.Unlock()
-	merged := reg.meta.mergeSwap(fresh)
+	merged := reg.meta.mergeSwap(fresh, evidence...)
 	swap.SetModels(projectAll(reg, merged))
 	// Issue #262 §1 deviation: heals a still-empty intent-driven default model
 	// (toolhive sole+probe-down at Build) the moment a live snapshot lands —
@@ -108,8 +110,8 @@ func startLiveModelRefresh(d port.Diagnostics, reg *providerRegistry, swap model
 	if runSync {
 		ctx, cancel := context.WithTimeout(rootCtx, liveModelRefreshTimeout)
 		defer cancel()
-		byProvider := liveModelSnapshot(ctx, d, reg)
-		publishSnapshot(d, reg, swap, byProvider)
+		byProvider, evidence := liveModelSnapshotForPublish(ctx, d, reg)
+		publishSnapshot(d, reg, swap, byProvider, evidence)
 		reg.meta.markRefreshCompleted() // sync path SETTLES after the swap.
 		return func() {}
 	}
@@ -131,7 +133,7 @@ func startLiveModelRefresh(d port.Diagnostics, reg *providerRegistry, swap model
 		}
 		fetchCtx, fetchCancel := context.WithTimeout(ctx, liveModelRefreshTimeout)
 		defer fetchCancel()
-		byProvider := liveModelSnapshot(fetchCtx, d, reg)
+		byProvider, evidence := liveModelSnapshotForPublish(fetchCtx, d, reg)
 		// If the refresh ctx was cancelled (the closer ran — a shutdown — before the
 		// fetch finished), the fetch was interrupted and its result is untrustworthy
 		// (the embedded floor at best), so DO NOT overwrite the seed. Only swap when the
@@ -142,7 +144,7 @@ func startLiveModelRefresh(d port.Diagnostics, reg *providerRegistry, swap model
 		}
 		// Both sinks are fed from the ONE modelEntry list per provider, so the picker
 		// proto slice and the resolver-feeding meta store cannot drift.
-		publishSnapshot(d, reg, swap, byProvider)
+		publishSnapshot(d, reg, swap, byProvider, evidence)
 		// SETTLED: the live answer is in (success OR a fetch-fail/empty that fell back
 		// to the embedded floor inside resolveProviderModels — either way the Swap above
 		// is the authoritative result). Flip the flag so the echo resolver stops
@@ -176,7 +178,7 @@ func liveRefreshDelay(cfg Config) time.Duration {
 // live lister — the gate that decides whether the background refresh runs at all.
 func anyProviderHasLister(reg *providerRegistry) bool {
 	for _, pid := range reg.Available() {
-		if entry, ok := reg.Lookup(pid); ok && entry.lister != nil {
+		if entry, ok := reg.Lookup(pid); ok && entry.lister != nil && !entry.nativeEndpoint {
 			return true
 		}
 	}
@@ -194,9 +196,8 @@ var _ modelSwapper = (*server.Service)(nil)
 // intersection consume: nothing provider-private, no key, no URL. It NEVER leaves
 // internal/app (the server adapter receives only []*mecatlv1.ModelInfo).
 //
-// InputModalities is the authoritative modality list for THIS model — the single
-// source the image capability is derived from (via hasImageModality), so a live
-// model and an embedded model are tested by the SAME predicate.
+// InputModalities is nil when the source omitted modality metadata. A non-nil
+// slice is authoritative, including an explicitly empty/text-only declaration.
 type modelEntry struct {
 	ID              string
 	DisplayName     string
@@ -266,12 +267,14 @@ func (l openAICodexLister) ListModels(ctx context.Context) ([]modelEntry, error)
 	out := make([]modelEntry, 0, len(raw))
 	for _, m := range raw {
 		entry := modelEntry{
-			ID:              m.ID,
-			DisplayName:     m.DisplayName,
-			ContextLimit:    m.ContextLimit,
-			InputModalities: append([]string(nil), m.InputModalities...),
-			Reasoning:       m.Reasoning,
-			ToolCall:        m.ToolCall,
+			ID:           m.ID,
+			DisplayName:  m.DisplayName,
+			ContextLimit: m.ContextLimit,
+			Reasoning:    m.Reasoning,
+			ToolCall:     m.ToolCall,
+		}
+		if m.InputModalitiesKnown {
+			entry.InputModalities = append([]string{}, m.InputModalities...)
 		}
 		catalog, catalogued := metadata[m.ID]
 		if entry.DisplayName == "" && catalogued {
@@ -347,9 +350,9 @@ func (l anthropicLister) ListModels(ctx context.Context) ([]modelEntry, error) {
 	}
 	out := make([]modelEntry, 0, len(raw))
 	for _, m := range raw {
-		var mods []string
+		mods := []string{"text"}
 		if m.Image {
-			mods = []string{"image"} // feed the SHARED hasImageModality predicate
+			mods = append(mods, "image") // feed the SHARED hasImageModality predicate
 		}
 		out = append(out, modelEntry{
 			ID:              m.ID,
@@ -395,10 +398,11 @@ func (l gatewayLister) ListModels(ctx context.Context) ([]modelEntry, error) {
 			// lesson: an over-permissive local flag fails safe via the
 			// provider's own 4xx, never a silent wrong local guess).
 			ToolCall: true,
-			// Reasoning stays false and InputModalities stays nil (image=false,
-			// conservative): the generic OpenAI-shaped /v1/models envelope
-			// carries no modality/reasoning metadata. An absent context_window
-			// decodes to 0, so the resolver falls back to the catalog then 128k.
+			// The generic OpenAI-shaped /v1/models envelope carries no
+			// modality/reasoning metadata. Keep InputModalities nil: omitted
+			// metadata is unknown, so resolution falls through to the exact
+			// catalog row and then adapter caps. An absent context_window decodes
+			// to 0, so that resolver similarly falls back to catalog then 128k.
 		})
 	}
 	return out, nil
@@ -409,16 +413,11 @@ func (l gatewayLister) ListModels(ctx context.Context) ([]modelEntry, error) {
 // static input modalities (text+image) rather than leaving them nil.
 //
 // Why: OpenCode Go's /models envelope carries no modality metadata, so a raw
-// gatewayLister row has InputModalities==nil. modelCapability treats a PRESENT
-// live row as authoritative, so nil would FLIP an uncatalogued model's Image from
-// the adapter-static default (true) to false the instant a live refresh lands —
-// contradicting the documented "uncatalogued → adapter static caps" fallback and
-// making the picker/session echo diverge before vs after the refresh. Stamping the
-// adapter modalities resolves the unknown-metadata case to that documented
-// fallback STABLY (no flip), and the picker (projectModelEntry) + the session echo
-// (modelCapability) agree for free since both read this same modelEntry. (ToolHive
-// keeps the conservative nil-modality gatewayLister — a separate, deliberate
-// choice, unchanged.)
+// gatewayLister row has InputModalities==nil, which now means unknown and falls
+// through to the exact catalog row then adapter caps. OpenCode still stamps the
+// adapter modalities explicitly so its picker rows report that documented static
+// capability directly; the session echo reaches the same result through fallback.
+// (ToolHive keeps the nil-modality gatewayLister and therefore uses fallback.)
 type openCodeLister struct {
 	inner *openaicompat.Lister
 }
@@ -488,7 +487,7 @@ func embeddedModels(providerID string) []modelEntry {
 			DisplayName:     m.Name(),
 			ContextLimit:    m.ContextLimit(),
 			OutputLimit:     m.OutputLimit(),
-			InputModalities: m.InputModalities(),
+			InputModalities: append([]string{}, m.InputModalities()...),
 			Reasoning:       m.SupportsReasoning(),
 			ToolCall:        m.SupportsToolCall(),
 			// Thinking stays zero (Known=false): the embedded catalog has no thinking-
@@ -503,8 +502,14 @@ func embeddedModels(providerID string) []modelEntry {
 // id, but embeddedModels intentionally does not call this helper: OpenAI's API
 // inventory must never become Codex subscription inventory.
 func metadataCatalogProviderID(providerID string) string {
-	if providerID == providerOpenAICodex {
+	switch providerID {
+	case providerOpenAICodex:
 		return providerOpenAI
+	case providerToolhiveAnthropic:
+		// Metadata only: embeddedModels deliberately does not call this helper,
+		// so Anthropic's public catalog can enrich a gateway-listed ID without
+		// fabricating that ID into the gateway's actual inventory.
+		return providerAnthropic
 	}
 	return providerID
 }
@@ -535,11 +540,15 @@ func projectModelEntry(reg *providerRegistry, providerID string, m modelEntry) *
 			contextLimit = defaultContextWindowTokens
 		}
 	}
+	image := modelCapability(reg, providerID, m.ID).Image
+	if m.InputModalities != nil {
+		image = modelAdapterCaps(reg, providerID).Image && hasImageModality(m.InputModalities)
+	}
 	return &mecatlv1.ModelInfo{
 		Id:           m.ID,
 		ProviderId:   providerID,
 		DisplayName:  name,
-		Image:        modelAdapterCaps(reg, providerID).Image && hasImageModality(m.InputModalities),
+		Image:        image,
 		Reasoning:    m.Reasoning,
 		ContextLimit: int64(contextLimit),
 	}
@@ -570,24 +579,109 @@ func sortModelInfos(out []*mecatlv1.ModelInfo) {
 // listers) and returns the per-provider []modelEntry map (the resolver-feeding
 // meta-store sink AND, via projectAll in publishSnapshot, the picker proto sink) —
 // the ONE modelEntry list per provider both project from, so they cannot drift.
+//
+//nolint:unparam // Test helper preserves the diagnostics-shaped production snapshot seam.
 func liveModelSnapshot(ctx context.Context, d port.Diagnostics, reg *providerRegistry) map[string][]modelEntry {
+	models, _ := liveModelSnapshotForPublish(ctx, d, reg)
+	return models
+}
+
+func liveModelSnapshotForPublish(ctx context.Context, d port.Diagnostics, reg *providerRegistry) (map[string][]modelEntry, map[string]bool) {
 	if reg == nil {
-		return nil
+		return nil, nil
 	}
 	byProvider := make(map[string][]modelEntry)
-	for _, pid := range reg.Available() { // available (keyed) providers ONLY
+	evidence := make(map[string]bool)
+	available := reg.Available()
+	toolhiveProviders := make([]string, 0, 2)
+	for _, pid := range available {
+		if isToolhiveProvider(pid) {
+			toolhiveProviders = append(toolhiveProviders, pid)
+		}
+	}
+	toolhiveResolved := false
+	for _, pid := range available { // available (keyed) providers ONLY
 		if pid == providerMock {
 			continue // the mock never advertises selectable models
+		}
+		if entry, ok := reg.Lookup(pid); ok && entry.nativeEndpoint {
+			byProvider[pid] = providerInventoryFloor(reg, pid)
+			continue // native authenticated listing is on-demand, never during Build
 		}
 		if models, ok := reg.bootstrapModels[pid]; ok {
 			// Default discovery already fetched this exact live entitlement snapshot
 			// synchronously. Publish it without a duplicate back-to-back request.
 			byProvider[pid] = models
+			evidence[pid] = len(models) > 0
 			continue
 		}
-		byProvider[pid] = resolveProviderModels(ctx, d, reg, pid)
+		if isToolhiveProvider(pid) {
+			if !toolhiveResolved {
+				models, discovered := resolveToolhiveModelsForPublish(ctx, d, reg, toolhiveProviders, 0)
+				for familyPID, familyModels := range models {
+					byProvider[familyPID] = familyModels
+					evidence[familyPID] = discovered[familyPID]
+				}
+				toolhiveResolved = true
+			}
+			continue
+		}
+		result := resolveProviderModelResult(ctx, d, reg, pid)
+		byProvider[pid] = result.models
+		evidence[pid] = result.nonEmptyListing
 	}
-	return byProvider
+	return byProvider, evidence
+}
+
+// resolveToolhiveModelsForPublish fetches the two protocol surfaces of one ToolHive
+// gateway concurrently. Concurrency is deliberately scoped to this family;
+// unrelated providers retain the established sequential listing behaviour.
+// A positive perProviderTimeout gives each family member its own bound, as
+// required by the on-demand stale refresh path. The initial snapshot instead
+// passes zero and relies on its existing operation-wide context.
+func resolveToolhiveModelsForPublish(
+	ctx context.Context,
+	d port.Diagnostics,
+	reg *providerRegistry,
+	providerIDs []string,
+	perProviderTimeout time.Duration,
+) (map[string][]modelEntry, map[string]bool) {
+	type result struct {
+		pid    string
+		result providerModelResult
+	}
+
+	resolve := func(pid string) providerModelResult {
+		fetchCtx := ctx
+		cancel := func() {}
+		if perProviderTimeout > 0 {
+			fetchCtx, cancel = context.WithTimeout(ctx, perProviderTimeout)
+		}
+		defer cancel()
+		return resolveProviderModelResult(fetchCtx, d, reg, pid)
+	}
+
+	resolved := make(map[string][]modelEntry, len(providerIDs))
+	evidence := make(map[string]bool, len(providerIDs))
+	if len(providerIDs) == 1 {
+		result := resolve(providerIDs[0])
+		resolved[providerIDs[0]] = result.models
+		evidence[providerIDs[0]] = result.nonEmptyListing
+		return resolved, evidence
+	}
+
+	results := make(chan result, len(providerIDs))
+	for _, pid := range providerIDs {
+		go func(pid string) {
+			results <- result{pid: pid, result: resolve(pid)}
+		}(pid)
+	}
+	for range providerIDs {
+		result := <-results
+		resolved[result.pid] = result.result.models
+		evidence[result.pid] = result.result.nonEmptyListing
+	}
+	return resolved, evidence
 }
 
 // resolveProviderModels returns the per-provider model list applying the merge
@@ -605,39 +699,51 @@ func liveModelSnapshot(ctx context.Context, d port.Diagnostics, reg *providerReg
 // empty-embedded-catalog case: a KEYED provider with a non-empty embedded
 // floor keeps the LEGACY behaviour of falling back to embedded on a live
 // empty response (a transient blip must not blank an otherwise-rich picker).
+type providerModelResult struct {
+	models          []modelEntry
+	nonEmptyListing bool
+}
+
 func resolveProviderModels(ctx context.Context, d port.Diagnostics, reg *providerRegistry, pid string) []modelEntry {
+	return resolveProviderModelResult(ctx, d, reg, pid).models
+}
+
+func resolveProviderModelResult(ctx context.Context, d port.Diagnostics, reg *providerRegistry, pid string) providerModelResult {
 	entry, ok := reg.Lookup(pid)
 	if !ok || entry.lister == nil {
-		return providerInventoryFloor(reg, pid)
+		return providerModelResult{models: providerInventoryFloor(reg, pid)}
 	}
 	embedded := providerInventoryFloor(reg, pid)
 	live, err := entry.lister.ListModels(ctx)
 	if err != nil {
 		state := classifyLiveListError(err)
-		hint := statusHintFor(pid, state)
+		hint := statusHintFor(entry, state)
 		reg.outcomes.recordFailure(pid, state, hint)
 		d.Log(ctx, port.LevelWarn, "live model fetch failed", "provider", pid, "err", err, "state", state)
 		if len(embedded) > 0 {
-			return embedded // byte-identical to pre-#262
+			return providerModelResult{models: embedded} // byte-identical to pre-#262
 		}
 		if lastGood, ok := reg.outcomes.getLastGood(pid); ok {
 			d.Log(ctx, port.LevelInfo, "live model fetch failed, using last-known-good snapshot",
 				"provider", pid, "models", len(lastGood))
-			return lastGood
+			return providerModelResult{models: lastGood, nonEmptyListing: len(lastGood) > 0}
 		}
-		return nil // never listed successfully: an honest empty, not a fabrication
+		return providerModelResult{} // never listed successfully: an honest empty, not a fabrication
 	}
 	// Success: record ALWAYS, even an empty list — an honest empty IS a
 	// successful list (R3.1) and must be available as a future last-known-good
 	// fallback for a provider with no embedded floor.
-	reg.outcomes.recordSuccess(pid, live)
+	reg.outcomes.recordSuccess(entry, live)
 	if len(live) == 0 && len(embedded) > 0 {
 		// Legacy behaviour for a KEYED provider with a non-empty embedded floor: a
 		// transient empty response must not blank an otherwise-rich picker.
 		d.Log(ctx, port.LevelWarn, "live model fetch returned no models, using embedded catalog", "provider", pid)
-		return embedded
+		return providerModelResult{models: embedded}
 	}
-	return mergeCustomProviderFloor(reg, pid, live)
+	return providerModelResult{
+		models:          mergeCustomProviderFloor(reg, pid, live),
+		nonEmptyListing: len(live) > 0,
+	}
 }
 
 func mergeCustomProviderFloor(reg *providerRegistry, providerID string, live []modelEntry) []modelEntry {
@@ -681,22 +787,21 @@ func newLiveOutcomeStore() *liveOutcomeStore {
 }
 
 // recordSuccess records a successful (possibly empty) live listing: the
-// last-known-good snapshot and the derived status. "empty" fires ONLY when
-// live is empty AND the provider's embedded catalog is ALSO empty (a
-// genuinely nothing-to-show provider like toolhive); a keyed provider whose
-// live response is momentarily empty but has a non-empty embedded floor
-// still records "ok" (the caller returns the embedded floor to the picker,
-// but the provider itself is reachable and authorized).
-func (s *liveOutcomeStore) recordSuccess(pid string, live []modelEntry) {
+// last-known-good snapshot and the derived picker status. "empty" fires ONLY
+// when live is empty AND the provider's embedded catalog is ALSO empty; request
+// admission separately consults hasNonEmptyListing so catalog fallback status
+// cannot be mistaken for genuine live discovery evidence.
+func (s *liveOutcomeStore) recordSuccess(entry providerEntry, live []modelEntry) {
 	if s == nil {
 		return
 	}
+	pid := entry.id
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lastGood[pid] = live
 	state, hint := statusOK, ""
 	if len(live) == 0 && len(embeddedModels(pid)) == 0 {
-		state, hint = statusEmpty, statusHintFor(pid, statusEmpty)
+		state, hint = statusEmpty, statusHintFor(entry, statusEmpty)
 	}
 	s.status[pid] = providerStatus{State: state, Hint: hint}
 }
@@ -751,18 +856,27 @@ func (s *liveOutcomeStore) getStatus(pid string) (providerStatus, bool) {
 }
 
 // providerStatusProto projects operator-actionable live-inventory outcomes into
-// the v1 wire message. That includes intent-driven gateways and openai-codex,
-// whose live list is the account entitlement boundary; ordinary OpenRouter and
-// Anthropic listing blips remain unprojected. Sorted by provider id for a
-// deterministic wire shape.
+// the v1 wire message. That includes intent-driven gateways, openai-codex, and
+// operator-defined custom providers (identified by their custom-only configured
+// default model), whose live list is the account entitlement boundary; ordinary
+// OpenRouter and Anthropic listing blips remain unprojected. Sorted by provider
+// id for a deterministic wire shape.
 func providerStatusProto(reg *providerRegistry) []*mecatlv1.ProviderStatus {
 	if reg == nil {
 		return nil
 	}
+	ids := reg.Available()
+	for id := range reg.unavailableNative {
+		if !slices.Contains(ids, id) {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
 	var out []*mecatlv1.ProviderStatus
-	for _, pid := range reg.Available() {
-		entry, ok := reg.Lookup(pid)
-		if !ok || (!entry.intentDriven && pid != providerOpenAICodex) {
+	for _, pid := range ids {
+		entry, available := reg.Lookup(pid)
+		_, unavailableNative := reg.unavailableNative[pid]
+		if !unavailableNative && (!available || (!entry.intentDriven && pid != providerOpenAICodex && entry.defaultModel == "")) {
 			continue
 		}
 		status, ok := reg.outcomes.getStatus(pid)
@@ -778,6 +892,12 @@ func providerStatusProto(reg *providerRegistry) []*mecatlv1.ProviderStatus {
 		// provider is reachable (state == "ok") AND is NOT the active default.
 		// reg.Default() is lock-free and immutable post-Build (see Default()).
 		availableNotDefault := entry.intentDriven && status.State == statusOK && pid != reg.Default()
+		if isToolhiveProvider(pid) && isToolhiveProvider(reg.Default()) {
+			// The two rows are protocol surfaces of one gateway identity. Do not
+			// advertise the inactive sibling as a second gateway when either one is
+			// already the active default.
+			availableNotDefault = false
+		}
 		// model_count is the live listing length (a slice len); a provider
 		// never lists >2B models, so this reuses server.ClampInt32 (the same
 		// overflow-safe int32 narrowing already used 15+ times in that
@@ -816,30 +936,30 @@ const refreshStaleModelsCooldown = 10 * time.Second
 // opens serialize and the cooldown is enforced across calls. Composition
 // constructs exactly one per Build (buildRefreshStaleModels).
 type refreshStaleModelsState struct {
-	mu   sync.Mutex
-	last time.Time
+	mu       sync.Mutex
+	last     time.Time
+	admitted map[string]bool
 }
 
-// refreshStaleModels re-fetches ONLY INTENT-DRIVEN providers (issue #262:
-// v1 scope is the ToolHive LLM gateway) whose last-recorded status is NOT
-// "ok" (R1.4: "proxy started after boot ⇒ models appear on next refresh /
-// /models open, no restart"). It is deliberately scoped to intentDriven
-// entries — a KEY-driven provider (openrouter/anthropic) already has its own
-// async background refresh (startLiveModelRefresh) and no "start it later"
-// story; re-fetching one here on every /models open whose status happens to
-// be unrecorded yet (e.g. immediately after Build, before the background
-// refresh has settled) would add a REQUEST-PATH network call that never
-// existed before #262 — a behaviour change this feature must not cause. A
-// healthy (or non-intent-driven) provider is NEVER re-fetched here, so a
-// deployment with no intent-driven provider costs nothing beyond the map
-// scan. Each stale provider's fetch is bounded to 2s; the whole call is
-// cooldown-gated via st so a burst of /models opens against a persistently-
-// down gateway doesn't hammer it. It builds `fresh` from ONLY the re-fetched
-// stale providers (never a pre-read whole-map snapshot — that was the lost-
-// update race, issue #262 review finding 2) and hands it to publishSnapshot,
-// which MERGES it into the current per-provider meta snapshot, rebuilds the
-// picker proto slice, re-projects provider_status, and heals a still-empty
-// intent-driven default model.
+// retryAdmission reports whether this provider has already had one admission
+// rejected against the settled initial snapshot. The first rejection never
+// doubles the startup request; a later run owns the bounded recovery refresh.
+func (s *refreshStaleModelsState) retryAdmission(providerID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.admitted == nil {
+		s.admitted = make(map[string]bool)
+	}
+	retry := s.admitted[providerID]
+	s.admitted[providerID] = true
+	return retry
+}
+
+// refreshStaleModels re-fetches providers whose listing participates in live
+// context-window admission: intent-driven gateways, native endpoints, and
+// operator-defined custom providers. A provider is healthy only after a genuine
+// non-empty live listing; embedded picker fallback does not suppress recovery.
+// Other keyed providers retain their existing background-refresh-only behavior.
 func refreshStaleModels(ctx context.Context, d port.Diagnostics, reg *providerRegistry, swap modelSwapper, st *refreshStaleModelsState) {
 	if reg == nil || st == nil {
 		return
@@ -855,11 +975,11 @@ func refreshStaleModels(ctx context.Context, d port.Diagnostics, reg *providerRe
 	var stale []string
 	for _, pid := range reg.Available() {
 		entry, ok := reg.Lookup(pid)
-		if !ok || entry.lister == nil || !entry.intentDriven {
+		if !ok || entry.lister == nil || (!entry.intentDriven && !entry.nativeEndpoint && entry.defaultModel == "") {
 			continue
 		}
-		if status, ok := reg.outcomes.getStatus(pid); ok && status.State == statusOK {
-			continue // healthy providers are never re-fetched here
+		if reg.meta.hasPublishedNonEmptyListing(pid) {
+			continue // genuine non-empty discovery is already published and usable
 		}
 		stale = append(stale, pid)
 	}
@@ -868,11 +988,90 @@ func refreshStaleModels(ctx context.Context, d port.Diagnostics, reg *providerRe
 	}
 
 	fresh := make(map[string][]modelEntry, len(stale))
+	evidence := make(map[string]bool, len(stale))
+	toolhiveProviders := make([]string, 0, 2)
 	for _, pid := range stale {
+		if isToolhiveProvider(pid) {
+			toolhiveProviders = append(toolhiveProviders, pid)
+		}
+	}
+	toolhiveResolved := false
+	for _, pid := range stale {
+		if isToolhiveProvider(pid) {
+			if !toolhiveResolved {
+				models, discovered := resolveToolhiveModelsForPublish(ctx, d, reg, toolhiveProviders, 2*time.Second)
+				for familyPID, familyModels := range models {
+					fresh[familyPID] = familyModels
+					evidence[familyPID] = discovered[familyPID]
+				}
+				toolhiveResolved = true
+			}
+			continue
+		}
 		fetchCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		fresh[pid] = resolveProviderModels(fetchCtx, d, reg, pid)
+		result := resolveProviderModelResult(fetchCtx, d, reg, pid)
+		fresh[pid] = result.models
+		evidence[pid] = result.nonEmptyListing
 		cancel()
 	}
 
-	publishSnapshot(d, reg, swap, fresh)
+	publishSnapshot(d, reg, swap, fresh, evidence)
+}
+
+// awaitContextWindow gates inference while an exact live-listable model's context
+// window is still unknown. A successful non-empty listing may legitimately omit
+// the selected passthrough model or its window; only discovery failures and honest
+// empty inventories fail admission after settlement.
+func awaitContextWindow(ctx context.Context, d port.Diagnostics, reg *providerRegistry, swap modelSwapper, st *refreshStaleModelsState, providerID, modelID string) error {
+	return awaitContextWindowWithin(ctx, d, reg, swap, st, providerID, modelID, liveModelRefreshTimeout)
+}
+
+func awaitContextWindowWithin(ctx context.Context, d port.Diagnostics, reg *providerRegistry, swap modelSwapper, st *refreshStaleModelsState, providerID, modelID string, wait time.Duration) error {
+	if reg == nil {
+		return nil
+	}
+	if _, known := reg.resolveWindowCore(Config{ContextWindowOverride: reg.contextWindowOverride, contextWindows: reg.contextWindows}, providerID, modelID); known {
+		return nil
+	}
+	entry, ok := reg.Lookup(providerID)
+	if !ok || entry.lister == nil {
+		return nil
+	}
+
+	admissionCtx, cancelAdmission := context.WithTimeout(ctx, wait)
+	defer cancelAdmission()
+	if !reg.meta.refreshCompleted() {
+		err := reg.meta.awaitRefresh(admissionCtx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return fmt.Errorf("%w: context window discovery for provider %q model %q did not settle; restore model discovery or configure an exact models.context_windows override, then retry", server.ErrContextWindowUnavailable, providerID, modelID)
+		}
+	}
+	if _, known := reg.resolveWindowCore(Config{ContextWindowOverride: reg.contextWindowOverride, contextWindows: reg.contextWindows}, providerID, modelID); known {
+		return nil
+	}
+	usable := reg.meta.hasPublishedNonEmptyListing(providerID)
+	if !usable && (st == nil || !st.retryAdmission(providerID)) {
+		return contextWindowUnavailable(providerID, modelID)
+	}
+	if !usable {
+		refreshStaleModels(admissionCtx, d, reg, swap, st)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if _, known := reg.resolveWindowCore(Config{ContextWindowOverride: reg.contextWindowOverride, contextWindows: reg.contextWindows}, providerID, modelID); known {
+			return nil
+		}
+		usable = reg.meta.hasPublishedNonEmptyListing(providerID)
+	}
+	if usable {
+		return nil
+	}
+	return contextWindowUnavailable(providerID, modelID)
+}
+
+func contextWindowUnavailable(providerID, modelID string) error {
+	return fmt.Errorf("%w: context window discovery unavailable for provider %q model %q; restore model discovery or configure an exact models.context_windows override, then retry", server.ErrContextWindowUnavailable, providerID, modelID)
 }

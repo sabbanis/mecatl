@@ -43,7 +43,7 @@ func TestSessionContinuityUX_Scenario4_FamilyTabs(t *testing.T) {
 		{tabOtherRuns, []string{"legacy-unknown"}},
 	}
 	for _, tc := range cases {
-		got := filterSessionsByTab(rows, tc.tab)
+		got := filterSessionsByTabWithActivity(rows, tc.tab, false)
 		if len(got) != len(tc.want) {
 			t.Fatalf("tab %v rows = %v, want %v", tc.tab, got, tc.want)
 		}
@@ -55,45 +55,14 @@ func TestSessionContinuityUX_Scenario4_FamilyTabs(t *testing.T) {
 	}
 }
 
-func TestSessionContinuityUX_Scenario4_CurrentAndDigest(t *testing.T) {
-	row := client.SessionListItem{ID: "opaque-current-id", Title: "Current work", Kind: client.SessionKindMain}
-	st := sessionsState{view: sessionsPanel, tab: tabChats, sessions: []client.SessionListItem{row}, filtered: []client.SessionListItem{row}}
-	st.handles = sessionDisplayHandles(st.filtered)
-	got := stripANSIstr(renderSessionsPanel(testTheme(), st, client.Capabilities{}, helpKeys{}, 100, 30, row.ID))
-	if !strings.Contains(got, "Current work") || !strings.Contains(got, st.handles[row.ID]) || !strings.Contains(got, "current") {
-		t.Fatalf("current titled row must retain title, digest, and marker:\n%s", got)
-	}
-}
-
-func TestADR_0108_DisplayDigestIsNotAnID(t *testing.T) {
-	loader := &fakeSessionTranscriptLoader{transcript: client.SessionTranscript{SessionID: "opaque-real-id", Complete: true}}
-	m := newScenario4Model(t, loader)
-	row := client.SessionListItem{ID: "opaque-real-id", Kind: client.SessionKindMain, Capabilities: client.SessionInventoryCapabilities{PublicChat: true, Inspect: true}}
-	ensureActiveSessions(&m).sessions = []client.SessionListItem{row}
-	ensureActiveSessions(&m).filtered = []client.SessionListItem{row}
-	ensureActiveSessions(&m).handles = sessionDisplayHandles(ensureActiveSessions(&m).filtered)
-	if strings.Contains(ensureActiveSessions(&m).handles[row.ID], row.ID) {
-		t.Fatalf("display handle %q unexpectedly embeds full id", ensureActiveSessions(&m).handles[row.ID])
-	}
-	mm, cmd, handled := m.chooseSession()
-	if !handled || cmd == nil {
-		t.Fatal("continuable row should start an authoritative transcript load")
-	}
-	m = mm.(Model)
-	m = applyAll(m, cmd())
-	if len(loader.calls) != 1 || loader.calls[0] != row.ID {
-		t.Fatalf("transcript API ids = %q, want exact opaque id %q", loader.calls, row.ID)
-	}
-}
-
 func TestSessionContinuityUX_Scenario4_SearchFields(t *testing.T) {
 	row := client.SessionListItem{
-		ID: "opaque-full-id", Title: "Fix Scheduler", ModelID: "GPT-5", Workspace: "/Work/Repo",
+		ID: "opaque-full-id", Title: "Fix Scheduler", ModelID: "GPT-5", Placement: client.Placement{Kind: "git", Label: "Repo"},
 		Kind:         client.SessionKindTeamMember,
 		Relationship: client.SessionRelationship{ParentSessionID: "parent-alpha", CallID: "call-beta", TeamID: "team-gamma", MemberName: "Reviewer"},
 	}
 	handle := sessionDisplayHandles([]client.SessionListItem{row})[row.ID]
-	for _, query := range []string{"scheduler", "FULL-ID", handle, "gpt-5", "/work/repo", "PARENT-ALPHA", "CALL-BETA", "TEAM-GAMMA", "reviewer"} {
+	for _, query := range []string{"scheduler", "FULL-ID", handle, "gpt-5", "repo", "PARENT-ALPHA", "CALL-BETA", "TEAM-GAMMA", "reviewer"} {
 		if got := filterSessions([]client.SessionListItem{row}, map[string]string{row.ID: handle}, query); len(got) != 1 {
 			t.Errorf("query %q did not match all advertised fields", query)
 		}

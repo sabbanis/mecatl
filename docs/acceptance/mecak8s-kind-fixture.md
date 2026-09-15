@@ -58,7 +58,7 @@ without introducing ToolHive as a dependency ([ADR-0048](../adr/0048-mecak8s.md)
   fixture from the production Helm chart and the `e2e/k8s/` suite, and does not
   claim production network isolation: it has no general NetworkPolicy and uses
   static Kind `extraPortMappings` for host access, all bound to loopback.
-  - verify: `TestMecak8sKindFixture_Scenario1_DocumentationBoundaries`
+  - verify: none — fixture boundary claims in documentation are reviewed by humans; `task docs` checks links and structure
 
 ---
 
@@ -73,7 +73,7 @@ opt-in `e2e:k8s` live variant. The fixture remains an ADR 0048 disposable
 Redis-backed deployment, rather than a new provider runtime
 ([ADR-0048](../adr/0048-mecak8s.md)). The chart's raw `EnvVar` projection is the
 existing deployment seam; credential values are never chart values or command
-arguments ([`docs/usage/mecak8s.md`](../usage/mecak8s.md)).
+arguments ([`user-docs/building/deployment/mecak8s.md`](https://mecatl.dev/docs/building/deployment/mecak8s)).
 
 **Acceptance:**
 - AC2.1: Without `OPENROUTER_API_KEY`, `mecak8s:kind-setup` renders the canned
@@ -96,6 +96,8 @@ arguments ([`docs/usage/mecak8s.md`](../usage/mecak8s.md)).
   side effect; fixture instructions name it as a separate, explicit billable
   operator action.
   - verify: `TestMecak8sKindFixture_Scenario2_LiveSmokeIsExplicit`
+  - note: Human review verifies the fixture-instruction wording and billing
+    rationale; the named test verifies only that setup excludes the action.
 
 ---
 
@@ -156,7 +158,7 @@ and the bounded signing-key availability policy
 - AC3.7: Fixture instructions document authorization-code + PKCE as the normal
   login journey; any fixture password grant is identified as a narrowly scoped
   test helper and is not presented as the normal client flow.
-  - verify: `TestMecak8sKindFixture_Scenario3_LoginDocumentation`
+  - verify: none — login-journey documentation is reviewed by humans; `task docs` checks links and structure
 
 ## Out of scope
 
@@ -175,9 +177,9 @@ and the bounded signing-key availability policy
   delegation report under their existing names.
 - Remove the old `mecak8s:vmcp-*` ownership of baseline lifecycle targets: this
   is a clean break, with no compatibility aliases.
-- Update `docs/usage/mecak8s.md`, `deploy/README.md`, and
+- Update `user-docs/building/deployment/mecak8s.md`, `deploy/README.md`, and
   `user-docs/building/deployment/mecak8s.md` with links and scope distinctions;
-  regenerate `llms.txt` through `task docs`.
+  regenerate the configuration reference through `task docs`.
 - Keep all new code/configuration tests offline. A Kind journey is an opt-in
   deployment check, not part of `task test`.
 
@@ -194,12 +196,11 @@ part of this accumulator.
 
 - `TestMecak8sKindFixture_Scenario1_ToolHiveFreeSetup`
 - `TestMecak8sKindFixture_Scenario1_DedicatedKubeconfig`
-- `TestMecak8sKindFixture_Scenario1_DocumentationBoundaries`
 - `TestMecak8sKindFixture_Scenario2_MockDefault`
+- `TestMecak8sKindFixture_Scenario2_LiveSmokeIsExplicit`
 - `TestMecak8sHelmChart_KindFixtureRealProviderDisablesMock`
 - `TestInvariant_credential_not_process_argument`
 - `TestMecak8sKindFixture_Scenario2_ResetToMock`
-- `TestMecak8sKindFixture_Scenario2_LiveSmokeIsExplicit`
 - `TestMecak8sKindFixture_Scenario3_KeycloakIsOptIn`
 - `TestMecak8sKindFixture_Scenario3_KeycloakOIDCOverlay`
 - `TestMecak8sKindFixture_Scenario3_ResourceAudience`
@@ -207,12 +208,11 @@ part of this accumulator.
 - `TestMecak8sKindFixture_Scenario3_AuthenticatedRequest`
 - `TestADR_0205_InitialJWKSOutagePreventsValidatorStartup`
 - `TestCallerIdentity_Scenario1_JWKSDownIsTransientNotUnauthorized`
-- `TestMecak8sKindFixture_Scenario3_LoginDocumentation`
 
 ## Definition of done
 
 1. `task lint` and `task test` pass (both modules, `-race`).
-2. `task docs` regenerates `llms.txt` and passes the matlatl strict link gate;
+2. `task docs` regenerates the configuration reference and passes the matlatl strict link gate;
    `task site:build` validates the required user-facing deployment documentation.
 3. `task api:check` passes without an API update; this plan changes no engine
    exported surface.

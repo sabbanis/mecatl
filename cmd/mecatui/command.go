@@ -7,8 +7,8 @@
 // Final grammar (ADR 0089): bare `mecatui [flags]` is the canonical default — it
 // ALWAYS hosts an embedded server and NEVER probes loopback. `mecatui connect
 // ADDRESS` ALWAYS dials ADDRESS and NEVER probes/embeds. `sessions` opens the
-// embedded session browser. ToolHive LLM login is `mecatui llm login`; the
-// top-level `login ADDRESS` is reserved for remote login. There is no
+// embedded session browser. Local provider enrollment is under `mecatui providers`;
+// the top-level `login ADDRESS` is reserved for remote login. There is no
 // compatibility path: `mecatui local` is an unknown command (fail-closed, the
 // error names `connect`) and `--server` is an unknown flag.
 //
@@ -31,15 +31,33 @@ import (
 type transportMode string
 
 const (
-	modeLocal   transportMode = "local"
-	modeConnect transportMode = "connect"
-	// modeLogin is the CLI-only `mecatui llm login` subcommand.
-	modeLogin transportMode = "llm-login"
+	modeLocal                transportMode = "local"
+	modeConnect              transportMode = "connect"
+	providerActionLogin                    = "login"
+	providerActionStatus                   = "status"
+	providerActionLogout                   = "logout"
+	providerActionSetup                    = "setup"
+	providerActionAdd                      = "add"
+	providerActionSetDefault               = "set-default"
+	providerActionRemove                   = "remove"
+	toolHiveEndpointID                     = "toolhive"
+	// modeProviderSetup guides a newcomer through an existing provider setup flow.
+	modeProviderSetup transportMode = "provider-setup"
+	// modeProviderStatus is the passive local provider inventory. It deliberately
+	// does not construct an embedded server or a credential-store runtime.
+	modeProviderStatus transportMode = "provider-status"
+	// modeProviderCredential manages locally stored custom API-key and OIDC credentials.
+	modeProviderCredential transportMode = "provider-credential"
+	// modeProviderAdd interactively creates one custom provider definition.
+	modeProviderAdd transportMode = "provider-add"
+	// modeProviderRemove removes one custom provider definition and its locally managed credential.
+	modeProviderRemove transportMode = "provider-remove"
+	// modeProviderSetDefault updates the embedded server's operator deployment default.
+	modeProviderSetDefault transportMode = "provider-set-default"
 	// modeRemoteLogout removes one saved remote enrolment without starting a transport.
 	modeRemoteLogout transportMode = "remote-logout"
-	// modeRemoteLogin is the reserved remote-login route. It must remain
-	// distinct from modeLogin so an address can never accidentally invoke the
-	// ToolHive browser flow.
+	// modeRemoteLogin is the reserved remote-login route. It stays distinct from
+	// provider login so an address can never invoke local provider enrollment.
 	modeRemoteLogin transportMode = "remote-login"
 )
 
@@ -64,15 +82,15 @@ var topLevelCommands = []topLevelCommand{
 	},
 	{
 		name:     "debug",
-		synopsis: "debug SESSION_ID [flags]",
-		purpose:  "diagnose a stored session by full ID or its 12-character header ID in a separate no-filesystem analysis session; ambiguous header IDs require the full ID",
+		synopsis: "debug TARGET [flags]",
+		purpose:  "diagnose by an exact session ID or displayed 12-column short handle; exact identity wins, a unique handle resolves automatically, and ambiguity asks for the full exact ID",
 		resolve: func(args []string) invocationResolution {
 			return resolveDebugCommand(modeLocal, "", args)
 		},
 	},
 	{
 		name:     "connect",
-		synopsis: "connect ADDRESS [sessions | debug SESSION_ID] [flags]",
+		synopsis: "connect ADDRESS [sessions | debug TARGET] [flags]",
 		purpose:  "dial a running mecated at ADDRESS (host:port), optionally browsing or debugging a stored session",
 		resolve:  resolveConnectCommand,
 	},
@@ -89,10 +107,10 @@ var topLevelCommands = []topLevelCommand{
 		resolve:  resolveRemoteLogoutCommand,
 	},
 	{
-		name:     "llm",
-		synopsis: "llm login [--skip-browser]",
-		purpose:  "run the ToolHive LLM gateway OIDC browser flow (no session)",
-		resolve:  resolveLLMCommand,
+		name:     "providers",
+		synopsis: "providers [command]",
+		purpose:  "inspect and manage embedded provider configuration and locally managed credentials",
+		resolve:  resolveProvidersCommand,
 	},
 }
 
@@ -106,8 +124,11 @@ type invocationResolution struct {
 	address        string // connect or remote-login target; empty for local/login help
 	browseSessions bool   // launch directly into the shared stored-session inventory
 	debugTarget    string // immutable target for a dedicated no-filesystem debug session
+	debugHelp      bool   // render dedicated debug help instead of transport flag help
 	helpIndex      bool   // render the top-level command index
 	remaining      []string
+	providerAction string
+	providerName   string
 	err            error
 }
 
@@ -203,7 +224,7 @@ func hasUnexpectedHelpOperands(command string, args []string) bool {
 	if command == "connect" && len(args) > 2 && isHelpMetaFlag(args[1]) {
 		return true
 	}
-	if command == "llm" && len(args) == 2 && args[0] == "login" && isHelpMetaFlag(args[1]) {
+	if command == "providers" && len(args) == 2 && args[0] == providerActionLogin && isHelpMetaFlag(args[1]) {
 		return false
 	}
 	return len(args) > 1 && isHelpMetaFlag(args[0])
@@ -235,14 +256,106 @@ func resolveRemoteLogoutCommand(args []string) invocationResolution {
 	return invocationResolution{mode: modeRemoteLogout, address: args[0], remaining: args[1:]}
 }
 
-func resolveLLMCommand(args []string) invocationResolution {
+func resolveProvidersCommand(args []string) invocationResolution {
+	const usage = "providers: usage: mecatui providers [status [PROVIDER] | setup [PROVIDER] | add PROVIDER [--no-login] | login PROVIDER [--no-browser] | logout PROVIDER | set-default PROVIDER [MODEL] | remove PROVIDER]"
 	if len(args) == 1 && isHelpMetaFlag(args[0]) {
-		return invocationResolution{mode: modeLogin, remaining: args}
+		return invocationResolution{mode: modeProviderStatus, remaining: args}
 	}
-	if len(args) == 0 || args[0] != "login" {
-		return invocationResolution{err: errors.New("llm: usage: mecatui llm login [--skip-browser]")}
+	if len(args) == 0 {
+		return invocationResolution{mode: modeProviderStatus, providerAction: providerActionStatus}
 	}
-	return invocationResolution{mode: modeLogin, remaining: args[1:]}
+	if len(args) == 2 && args[0] == providerActionStatus && isHelpMetaFlag(args[1]) {
+		return invocationResolution{mode: modeProviderStatus, providerAction: providerActionStatus, remaining: args[1:]}
+	}
+	if args[0] == providerActionStatus && len(args) <= 2 && (len(args) == 1 || !strings.HasPrefix(args[1], "-")) {
+		endpoint := ""
+		if len(args) == 2 {
+			endpoint = args[1]
+		}
+		return invocationResolution{mode: modeProviderStatus, providerAction: providerActionStatus, providerName: endpoint}
+	}
+	if res, ok := resolveProviderSetupCommand(args); ok {
+		return res
+	}
+	if res, ok := resolveProviderAddCommand(args); ok {
+		return res
+	}
+	if res, ok := resolveProviderRemoveCommand(args); ok {
+		return res
+	}
+	if res, ok := resolveProviderSetDefaultCommand(args); ok {
+		return res
+	}
+	if res, ok := resolveProviderCredentialCommand(args); ok {
+		return res
+	}
+	return invocationResolution{err: errors.New(usage)}
+}
+
+func resolveProviderSetupCommand(args []string) (invocationResolution, bool) {
+	if len(args) == 1 && args[0] == providerActionSetup {
+		return invocationResolution{mode: modeProviderSetup, providerAction: providerActionSetup}, true
+	}
+	if len(args) == 2 && args[0] == providerActionSetup && !strings.HasPrefix(args[1], "-") {
+		return invocationResolution{mode: modeProviderSetup, providerAction: providerActionSetup, providerName: args[1]}, true
+	}
+	if len(args) == 2 && args[0] == providerActionSetup && isHelpMetaFlag(args[1]) {
+		return invocationResolution{mode: modeProviderSetup, providerAction: providerActionSetup, remaining: args[1:]}, true
+	}
+	return invocationResolution{}, false
+}
+
+func resolveProviderAddCommand(args []string) (invocationResolution, bool) {
+	if len(args) == 2 && args[0] == providerActionAdd && isHelpMetaFlag(args[1]) {
+		return invocationResolution{mode: modeProviderAdd, providerAction: providerActionAdd, remaining: args[1:]}, true
+	}
+	if len(args) < 2 || args[0] != providerActionAdd || strings.HasPrefix(args[1], "-") {
+		return invocationResolution{}, false
+	}
+	if len(args) == 2 || (len(args) == 3 && args[2] == "--no-login") {
+		return invocationResolution{mode: modeProviderAdd, providerAction: providerActionAdd, providerName: args[1], remaining: args[2:]}, true
+	}
+	return invocationResolution{}, false
+}
+
+func resolveProviderRemoveCommand(args []string) (invocationResolution, bool) {
+	if len(args) == 2 && args[0] == providerActionRemove && isHelpMetaFlag(args[1]) {
+		return invocationResolution{mode: modeProviderRemove, providerAction: providerActionRemove, remaining: args[1:]}, true
+	}
+	if len(args) != 2 || args[0] != providerActionRemove || strings.HasPrefix(args[1], "-") {
+		return invocationResolution{}, false
+	}
+	return invocationResolution{mode: modeProviderRemove, providerAction: providerActionRemove, providerName: args[1]}, true
+}
+
+func resolveProviderSetDefaultCommand(args []string) (invocationResolution, bool) {
+	if len(args) == 2 && args[0] == providerActionSetDefault && isHelpMetaFlag(args[1]) {
+		return invocationResolution{mode: modeProviderSetDefault, providerAction: providerActionSetDefault, remaining: args[1:]}, true
+	}
+	if len(args) < 2 || len(args) > 3 || args[0] != providerActionSetDefault || strings.HasPrefix(args[1], "-") {
+		return invocationResolution{}, false
+	}
+	return invocationResolution{mode: modeProviderSetDefault, providerAction: providerActionSetDefault, providerName: args[1], remaining: args[2:]}, true
+}
+
+func resolveProviderCredentialCommand(args []string) (invocationResolution, bool) {
+	if len(args) == 2 && (args[0] == providerActionLogin || args[0] == providerActionLogout) && isHelpMetaFlag(args[1]) {
+		return invocationResolution{mode: modeProviderCredential, providerAction: args[0], remaining: args[1:]}, true
+	}
+	if len(args) < 2 || strings.HasPrefix(args[1], "-") {
+		return invocationResolution{}, false
+	}
+	switch args[0] {
+	case providerActionLogin:
+		if len(args) == 2 || (len(args) == 3 && args[2] == "--no-browser") {
+			return invocationResolution{mode: modeProviderCredential, providerAction: args[0], providerName: args[1], remaining: args[2:]}, true
+		}
+	case providerActionLogout:
+		if len(args) == 2 {
+			return invocationResolution{mode: modeProviderCredential, providerAction: args[0], providerName: args[1]}, true
+		}
+	}
+	return invocationResolution{}, false
 }
 
 // resolveConnectCommand preserves connect's special grammar: ADDRESS must
@@ -276,10 +389,10 @@ func resolveConnectCommand(args []string) invocationResolution {
 
 func resolveDebugCommand(mode transportMode, address string, args []string) invocationResolution {
 	if len(args) == 1 && isHelpMetaFlag(args[0]) {
-		return invocationResolution{mode: mode, address: address, remaining: args}
+		return invocationResolution{mode: mode, address: address, debugHelp: true}
 	}
-	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		return invocationResolution{err: helpUsageError("debug requires SESSION_ID before flags")}
+	if len(args) == 0 || args[0] == "" {
+		return invocationResolution{err: helpUsageError("debug requires TARGET")}
 	}
 	return invocationResolution{mode: mode, address: address, debugTarget: args[0], remaining: args[1:]}
 }
@@ -333,24 +446,39 @@ func writeSoftWrapped(out io.Writer, indent, text string, width int) {
 // spellings and after a leading-word usage error.
 func writeTopLevelHelp(out io.Writer) {
 	_, _ = fmt.Fprintln(out, "Usage: mecatui [flags]")
-	_, _ = fmt.Fprintln(out, "       mecatui debug SESSION_ID [flags]")
-	_, _ = fmt.Fprintln(out, "       mecatui connect ADDRESS debug SESSION_ID [flags]")
+	_, _ = fmt.Fprintln(out, "       mecatui debug TARGET [flags]")
+	_, _ = fmt.Fprintln(out, "       mecatui connect ADDRESS debug TARGET [flags]")
 	_, _ = fmt.Fprintln(out, "       mecatui <command> [flags]")
 	_, _ = fmt.Fprintln(out)
 	_, _ = fmt.Fprintln(out, "Bare 'mecatui [flags]' hosts an embedded mecated server in-process (no loopback probe).")
 	_, _ = fmt.Fprintln(out)
 	writeCommandSummary(out)
+	_, _ = fmt.Fprintln(out, "Provider configuration and lifecycle: mecatui providers [status [PROVIDER] | setup [PROVIDER] | add PROVIDER [--no-login] | login PROVIDER [--no-browser] | logout PROVIDER | set-default PROVIDER [MODEL] | remove PROVIDER]")
+	_, _ = fmt.Fprintln(out, "Remote mecatui uses `mecatui login ADDRESS`; ToolHive MCP discovery and manual openai-codex authentication are separate.")
 	_, _ = fmt.Fprintln(out, "\nHelp: mecatui --help, mecatui -h, or mecatui help")
 	_, _ = fmt.Fprintln(out, "      mecatui help <command> aliases mecatui <command> --help")
 	_, _ = fmt.Fprintln(out, "      mecatui --version prints the build version and exits")
 	_, _ = fmt.Fprintln(out, "\nRun 'mecatui --help-flags' for common embedded-mode flags or '--help-all' for the exhaustive bare reference.")
 }
 
-// unknownCommandError builds the error message for an unknown leading bare word.
+// writeDebugHelp renders the debug command contract without falling through to
+// the generic transport flag reference.
+func writeDebugHelp(out io.Writer, connect bool) {
+	usage := "mecatui debug TARGET [flags]"
+	if connect {
+		usage = "mecatui connect ADDRESS debug TARGET [flags]"
+	}
+	_, _ = fmt.Fprintf(out, "Usage: %s\n\n", usage)
+	_, _ = fmt.Fprintln(out, "TARGET is either the exact session ID (including the ID printed on exit) or the displayed 12-column short handle.")
+	_, _ = fmt.Fprintln(out, "Exact identity wins automatically. A unique short handle resolves from the caller-visible session inventory.")
+	_, _ = fmt.Fprintln(out, "If a handle is ambiguous, open /session, copy the full exact ID, and pass it as TARGET to the same command.")
+	_, _ = fmt.Fprintln(out, "If inventory is unavailable or no handle matches, TARGET is sent unchanged for the server to authorize or reject as an exact ID.")
+}
+
+// unknownCommandError builds the concise error message for an unknown leading bare word.
+// main appends the command summary once for usageErrorTrailer errors.
 func unknownCommandError(arg string) error {
-	var commands strings.Builder
-	writeCommandSummary(&commands)
-	return fmt.Errorf("unknown command %q\n\nAvailable commands:\n%s\nBare 'mecatui [flags]' hosts an embedded mecated server in-process (no loopback probe).\nRun 'mecatui --help-flags' for bare-mode common flags", arg, strings.TrimPrefix(commands.String(), "Commands:\n"))
+	return fmt.Errorf("unknown command %q", arg)
 }
 
 // connectUsageError builds the error message for a bare/flag-first `connect`

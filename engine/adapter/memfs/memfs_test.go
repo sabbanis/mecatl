@@ -3,6 +3,7 @@ package memfs_test
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"strings"
 	"testing"
 
@@ -18,7 +19,55 @@ func TestConformance(t *testing.T) {
 	})
 }
 
+// TestNamespaceConformance runs the shared WorkspaceNamespace conformance
+// table (ReadDir/Remove/Rename/CopyFile) against memfs.
+func TestNamespaceConformance(t *testing.T) {
+	fsconformance.RunNamespace(t, func(_ *testing.T) tool.Workspace {
+		return memfs.NewWorkspace("/ws")
+	})
+}
+
 // --- memfs-specific tests ---
+
+func TestAuthorityResourcePathRootDot(t *testing.T) {
+	ws := memfs.NewWorkspace("/ws")
+	target, workspace, err := ws.AuthorityResourcePath(".")
+	if err != nil {
+		t.Fatalf("AuthorityResourcePath(\".\"): %v", err)
+	}
+	if target != "/ws" || workspace != "/ws" {
+		t.Fatalf("AuthorityResourcePath(\".\") = (%q, %q), want (/ws, /ws)", target, workspace)
+	}
+	for _, p := range []string{"", "/abs", "../escape", "a/../../escape"} {
+		if _, _, err := ws.AuthorityResourcePath(p); err == nil {
+			t.Fatalf("AuthorityResourcePath(%q) succeeded, want an escape error", p)
+		}
+	}
+}
+
+// TestDerivedDirectoryVanishesOnceEmpty pins memfs's derived-directory
+// contract (the tool.WorkspaceNamespace doc-comment): a directory has no
+// record of its own, so once its last file is removed the directory itself
+// is indistinguishable from one that never existed — ReadDir and Remove both
+// report fs.ErrNotExist, never success and never ErrDirectoryNotEmpty. osfs
+// diverges here (a real, now-empty physical directory survives); each
+// adapter pins its own version of this case.
+func TestDerivedDirectoryVanishesOnceEmpty(t *testing.T) {
+	ctx := context.Background()
+	ws := memfs.NewWorkspace("/ws")
+	if err := ws.Write(ctx, "sub/only.txt", []byte("x")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := ws.Remove(ctx, "sub/only.txt"); err != nil {
+		t.Fatalf("Remove(sub/only.txt): %v", err)
+	}
+	if _, err := ws.ReadDir(ctx, "sub"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("ReadDir(now-empty derived dir) err = %v, want errors.Is(_, fs.ErrNotExist)", err)
+	}
+	if err := ws.Remove(ctx, "sub"); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("Remove(now-empty derived dir) err = %v, want errors.Is(_, fs.ErrNotExist)", err)
+	}
+}
 
 func TestGrepDeterministic(t *testing.T) {
 	ctx := context.Background()

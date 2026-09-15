@@ -49,9 +49,6 @@ func TestResolveLocalWordIsUnknownCommand(t *testing.T) {
 	if !strings.Contains(res.err.Error(), "local") {
 		t.Errorf("error %q does not name the unknown command", res.err)
 	}
-	if !strings.Contains(res.err.Error(), "connect") {
-		t.Errorf("error %q does not name the available 'connect' command", res.err)
-	}
 }
 
 func TestResolveConnectStripsCommandWordAndAddress(t *testing.T) {
@@ -106,12 +103,11 @@ func (f *sessionsLaunchCreator) CreateSession(context.Context, client.ModelSelec
 	return "", client.Capabilities{}, client.ResolvedModel{}, errors.New("CreateSession must not be called")
 }
 
-func (f *sessionsLaunchCreator) CreateSessionInWorkspace(context.Context, string, client.ModelSelection, string) (string, client.Capabilities, client.ResolvedModel, error) {
-	f.createCalls++
-	return "", client.Capabilities{}, client.ResolvedModel{}, errors.New("CreateSessionInWorkspace must not be called")
+func (*sessionsLaunchCreator) ClearSession(context.Context, string, *client.WorktreeSelector) (string, client.SessionSnapshot, error) {
+	return "", client.SessionSnapshot{}, errors.New("ClearSession must not be called")
 }
 
-func (f *sessionsLaunchCreator) CreateSessionWithCarryover(context.Context, string, client.ModelSelection, string) (string, client.Capabilities, client.ResolvedModel, error) {
+func (f *sessionsLaunchCreator) CreateSessionWithCarryover(context.Context, string, client.ModelSelection) (string, client.Capabilities, client.ResolvedModel, error) {
 	f.createCalls++
 	return "", client.Capabilities{}, client.ResolvedModel{}, errors.New("CreateSessionWithCarryover must not be called")
 }
@@ -318,9 +314,6 @@ func TestResolveUnknownCommandFailsClosed(t *testing.T) {
 	if !strings.Contains(res.err.Error(), "loal") {
 		t.Errorf("error %q does not name the unknown command", res.err)
 	}
-	if !strings.Contains(res.err.Error(), "Available commands:") {
-		t.Errorf("error %q does not list available commands", res.err)
-	}
 }
 
 // TestResolveLoginCommands pins the split login grammar: the top-level login is
@@ -344,12 +337,18 @@ func TestResolveLoginCommands(t *testing.T) {
 	if got := resolveInvocation([]string{"mecatui", "logout", "--issuer=x"}); got.err == nil {
 		t.Fatal("logout with a flag-first address must fail closed")
 	}
-	llm := resolveInvocation([]string{"mecatui", "llm", "login", "--skip-browser"})
-	if llm.err != nil || llm.mode != modeLogin || len(llm.remaining) != 1 || llm.remaining[0] != "--skip-browser" {
-		t.Fatalf("llm login resolution = %+v", llm)
+	providers := resolveInvocation([]string{"mecatui", "providers", "login", "toolhive"})
+	if providers.err != nil || providers.mode != modeProviderCredential {
+		t.Fatalf("provider API-key lifecycle command did not resolve, got %+v", providers)
 	}
-	if got := resolveInvocation([]string{"mecatui", "llm"}); got.err == nil || !strings.Contains(got.err.Error(), "llm login") {
-		t.Fatalf("bare llm must fail with llm-login usage, got %+v", got)
+	if got := resolveInvocation([]string{"mecatui", "providers", "login", "custom", "--no-browser"}); got.err != nil || got.mode != modeProviderCredential || got.providerName != "custom" || len(got.remaining) != 1 || got.remaining[0] != "--no-browser" {
+		t.Fatalf("provider OIDC login resolution = %+v", got)
+	}
+	if got := resolveInvocation([]string{"mecatui", "providers", "login", "custom", "--skip-browser"}); got.err == nil {
+		t.Fatal("provider login must reject non-provider --no-browser aliases")
+	}
+	if got := resolveInvocation([]string{"mecatui", "llm"}); got.err == nil {
+		t.Fatalf("legacy llm command must fail, got %+v", got)
 	}
 	if got := resolveInvocation([]string{"mecatui", "mcp", "login"}); got.err == nil {
 		t.Fatal("mcp login must remain unknown")
@@ -429,14 +428,14 @@ func TestMecatuiAuthFileOnlyParse(t *testing.T) {
 		t.Fatalf("parse: %v", err)
 	}
 	if cfg.anthropicKey != "sk-ant-file-only" {
-		t.Errorf("anthropic key = %q, want auth-file credential", cfg.anthropicKey)
+		t.Errorf("anthropic key = %q, want api-key-file credential", cfg.anthropicKey)
 	}
 	if err := cfg.validate(); err != nil {
-		t.Fatalf("validate auth-file credential: %v", err)
+		t.Fatalf("validate api-key-file credential: %v", err)
 	}
 	embedded := embeddedConfig(cfg, nil)
 	if embedded.AnthropicKey != cfg.anthropicKey {
-		t.Errorf("embedded AnthropicKey = %q, want resolved auth-file credential", embedded.AnthropicKey)
+		t.Errorf("embedded AnthropicKey = %q, want resolved api-key-file credential", embedded.AnthropicKey)
 	}
 	if cfg.providerKeys.AuthFileWarning != "" {
 		t.Errorf("valid auth file warning = %q", cfg.providerKeys.AuthFileWarning)
@@ -450,7 +449,7 @@ func TestMecatuiExplicitAuthFileWarningSurvivesValidation(t *testing.T) {
 	t.Setenv("OPENCODE_API_KEY", "")
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	missing := filepath.Join(t.TempDir(), "missing-auth.yaml")
-	_, cfg, err := parseTransportFlags(modeLocal, io.Discard, []string{"--workspace", "/abs", "--auth-file", missing, "--toolhive-llm=false"})
+	_, cfg, err := parseTransportFlags(modeLocal, io.Discard, []string{"--workspace", "/abs", "--api-key-file", missing, "--toolhive-llm=false"})
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -468,7 +467,7 @@ func TestRunPrintsExplicitAuthFileWarningBeforeProviderValidation(t *testing.T) 
 	}
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	missing := filepath.Join(t.TempDir(), "missing-auth.yaml")
-	args := []string{"mecatui", "--workspace", t.TempDir(), "--auth-file", missing, "--toolhive-llm=false"}
+	args := []string{"mecatui", "--workspace", t.TempDir(), "--api-key-file", missing, "--toolhive-llm=false"}
 
 	_, cfg, err := parseTransportFlags(modeLocal, io.Discard, args[1:])
 	if err != nil {
@@ -521,7 +520,7 @@ func TestMecatuiInvalidAuthFileWarningSurvivesValidation(t *testing.T) {
 	if err := os.WriteFile(path, []byte("providers:\n  openai:\n    wrong: not-a-key\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, cfg, err := parseTransportFlags(modeLocal, io.Discard, []string{"--workspace", "/abs", "--auth-file", path})
+	_, cfg, err := parseTransportFlags(modeLocal, io.Discard, []string{"--workspace", "/abs", "--api-key-file", path})
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -540,7 +539,7 @@ func TestMecatuiUnreadableAuthFileWarningSurvivesValidation(t *testing.T) {
 	if err := os.Mkdir(path, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	_, cfg, err := parseTransportFlags(modeLocal, io.Discard, []string{"--workspace", "/abs", "--auth-file", path})
+	_, cfg, err := parseTransportFlags(modeLocal, io.Discard, []string{"--workspace", "/abs", "--api-key-file", path})
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -597,8 +596,8 @@ func TestMecatuiConventionalMissingAuthFileWarnsWithoutProvider(t *testing.T) {
 // embedded-only flags rejected in connect mode.
 func TestRejectEmbeddedOnlyFlagsInConnect(t *testing.T) {
 	embeddedOnly := []string{
-		"mock", "no-bash", "trust-project", "yolo", "posture",
-		"openai-base-url", "openrouter-base-url", "anthropic-base-url", "opencode-base-url", "auth-file",
+		"mock", "no-shell", "trust-project", "yolo", "posture",
+		"openai-base-url", "openrouter-base-url", "anthropic-base-url", "opencode-base-url", "api-key-file",
 		"toolhive-llm", "toolhive-llm-base-url",
 		"model", "default-provider", "default-model", "subagent-model",
 		"model-alias", "model-slot", "subagent-model-router",
@@ -663,9 +662,9 @@ func TestSharedFlagsValidInBothModes(t *testing.T) {
 // harness. Booleans take no value; the others take a placeholder.
 func flagValueForTest(name string) string {
 	switch name {
-	case "mock", "no-bash", "trust-project", "yolo", "no-memory", "no-store",
+	case "mock", "no-shell", "trust-project", "yolo", "no-memory", "no-store",
 		"no-soul", "approve-soul", "soul-strict", "no-user-model", "user-model-review",
-		"no-commands", "no-skills", "perf", "perf-mcp", "tls", "insecure",
+		"no-commands", "no-skills", "perf", "perf-mcp", "tls", "insecure", "anonymous",
 		"no-alt-screen", "inline", "no-mouse", "no-banner", "list-themes",
 		"subagent-model-router", "help-all", "quiet", "no-prompt-cache":
 		return "" // bool: no value consumed
@@ -746,6 +745,13 @@ func TestAskReviewerFlagsAreUnknownFlagErrors(t *testing.T) {
 				t.Errorf("removed flag --%s should surface as a stdlib unknown-flag error, got: %v", name, err)
 			}
 		})
+	}
+}
+
+func TestNoSavedAuthFlagIsUnknownFlagError(t *testing.T) {
+	_, _, err := parseTransportFlagsTest(t, modeConnect, []string{"--no-saved-auth"})
+	if err == nil || !strings.Contains(err.Error(), "not defined") {
+		t.Fatalf("removed --no-saved-auth error = %v, want unknown flag", err)
 	}
 }
 
@@ -844,12 +850,16 @@ func helpRenderOutForLaunch(t *testing.T, mode transportMode, browseSessions boo
 }
 
 // hasFlagHeader reports whether the rendered help output contains the flag's
-// own header line ("  -<name>" at the start of a line) — distinguishing the
-// flag's own entry from a bare mention of "-<name>" inside prose (e.g. "--mock"
-// appears in the connect help description naming the rejected embedded flags).
+// own header line — distinguishing the flag's own entry from a bare mention in
+// prose. Multi-character names use the conventional -- spelling while aliases
+// retain the single-dash form.
 func hasFlagHeader(out, name string) bool {
+	prefix := "  --"
+	if len(name) == 1 {
+		prefix = "  -"
+	}
 	for _, line := range strings.Split(out, "\n") {
-		rest := strings.TrimPrefix(line, "  -"+name)
+		rest := strings.TrimPrefix(line, prefix+name)
 		if rest == line {
 			continue
 		}
@@ -898,9 +908,12 @@ func TestBareHelpFlagsRealRendererShowsCommonFlags(t *testing.T) {
 		t.Errorf("bare help missing the no-probe note:\n%s", out)
 	}
 	assertCatalogCommandsRendered(t, out)
-	// Embedded flags appear in the bare common help (--mock is common+local).
-	if !hasFlagHeader(out, "mock") {
-		t.Errorf("bare help missing the embedded --mock common flag header:\n%s", out)
+	// Embedded flags appear in the bare common help (--mock is common+local), and
+	// the client-side debug switch is shared by local and connect modes.
+	for _, name := range []string{"mock", "debug"} {
+		if !hasFlagHeader(out, name) {
+			t.Errorf("bare help missing --%s common flag header:\n%s", name, out)
+		}
 	}
 	// Remote-only flags do NOT appear in the bare common help.
 	if hasFlagHeader(out, "auth-token") {
@@ -941,8 +954,11 @@ func TestConnectHelpRealRendererShowsCommonFlags(t *testing.T) {
 	}
 	// Remote flags appear in connect common help (--server is NOT applicable in
 	// connect — connect takes ADDRESS — so it must NOT appear; --auth-token IS).
-	if !hasFlagHeader(out, "auth-token") {
-		t.Errorf("connect help missing remote --auth-token flag header:\n%s", out)
+	// The shared client-side --debug flag appears here too.
+	for _, name := range []string{"auth-token", "anonymous", "debug"} {
+		if !hasFlagHeader(out, name) {
+			t.Errorf("connect help missing remote --%s flag header:\n%s", name, out)
+		}
 	}
 	if hasFlagHeader(out, "mock") {
 		t.Errorf("connect help leaked embedded-only --mock as a flag header:\n%s", out)
@@ -1005,10 +1021,10 @@ func TestCommandSummaryUsesIndentedWrappedDescriptions(t *testing.T) {
 
 	for _, want := range []string{
 		"  sessions\n    browse stored sessions before creating or continuing a chat\n",
-		"  debug SESSION_ID [flags]\n    diagnose a stored session by full ID or its 12-character header ID in a\n    separate no-filesystem analysis session; ambiguous header IDs require the\n    full ID\n",
-		"  connect ADDRESS [sessions | debug SESSION_ID] [flags]\n    dial a running mecated at ADDRESS (host:port), optionally browsing or\n    debugging a stored session\n",
+		"  debug TARGET [flags]\n    diagnose by an exact session ID or displayed 12-column short handle; exact\n    identity wins, a unique handle resolves automatically, and ambiguity asks\n    for the full exact ID\n",
+		"  connect ADDRESS [sessions | debug TARGET] [flags]\n    dial a running mecated at ADDRESS (host:port), optionally browsing or\n    debugging a stored session\n",
 		"  login ADDRESS\n    log in to a remote mecated at ADDRESS using OIDC\n",
-		"  llm login [--skip-browser]\n    run the ToolHive LLM gateway OIDC browser flow (no session)\n",
+		"  providers [command]\n    inspect and manage embedded provider configuration and locally managed\n    credentials\n",
 	} {
 		if !strings.Contains(summary, want) {
 			t.Errorf("command summary missing indented, wrapped description %q:\n%s", want, summary)
@@ -1018,8 +1034,8 @@ func TestCommandSummaryUsesIndentedWrappedDescriptions(t *testing.T) {
 		t.Errorf("command summary put the connect description on its synopsis line:\n%s", summary)
 	}
 	unknown := unknownCommandError("unknown").Error()
-	if !strings.Contains(unknown, "  connect ADDRESS [sessions | debug SESSION_ID] [flags]\n    dial a running mecated at ADDRESS (host:port), optionally browsing or\n    debugging a stored session\n") {
-		t.Errorf("unknown-command output did not reuse the indented, wrapped command summary:\n%s", unknown)
+	if unknown != `unknown command "unknown"` {
+		t.Errorf("unknown-command error = %q, want concise command name only", unknown)
 	}
 	for _, line := range strings.Split(strings.TrimSuffix(summary, "\n"), "\n") {
 		if len(line) > 80 {
@@ -1325,13 +1341,10 @@ func TestUsageErrorTrailerMarkers(t *testing.T) {
 	}
 }
 
-// TestUnknownCommandErrorListsCatalogHelpRoutes ensures unknown-command guidance
-// stays derived from the same catalog as resolution and top-level help.
-func TestUnknownCommandErrorListsCatalogHelpRoutes(t *testing.T) {
-	err := unknownCommandError("local")
-	for _, command := range topLevelCommands {
-		if !strings.Contains(err.Error(), "mecatui "+command.name+" --help") {
-			t.Errorf("unknown-command error missing %q help route: %v", command.name, err)
-		}
+// TestUnknownCommandErrorIsConcise keeps the resolver error separate from the one
+// top-level help trailer rendered by main.
+func TestUnknownCommandErrorIsConcise(t *testing.T) {
+	if got, want := unknownCommandError("local").Error(), `unknown command "local"`; got != want {
+		t.Errorf("unknown-command error = %q, want %q", got, want)
 	}
 }

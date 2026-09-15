@@ -184,12 +184,12 @@ func Build(cfg Config) Layered {
 		suffix += "\n\nPlan mode is active: this is a read-only planning phase — " +
 			"do not modify files, run mutating commands, or make outward-facing " +
 			"changes; produce a plan instead." +
-			"\nWhen your plan is complete, present it in your message text and then call the PresentPlan tool EXACTLY ONCE, " +
+			"\nWhen your plan is complete, present it in your message text and then call the PresentPlan tool EXACTLY ONCE PER CURRENT PRESENTATION, " +
 			"and STOP — do not continue working after calling it. Pass the FULL plan text in the PresentPlan `plan` argument " +
-			"so the operator can read it in the approval modal. The plan is NOT approved until the operator approves it " +
-			"THROUGH the PresentPlan gate: an inline 'acceptable', 'looks good', 'approved', or 'go ahead' in chat is NOT " +
-			"approval and must NOT trigger execution. Only the harness proceed message that follows an approved PresentPlan " +
-			"starts execution."
+			"so the operator can read it in the approval modal. If this presentation is denied for iteration, or its pending run is cancelled, " +
+			"wait for new user input; do not automatically loop. In response, present the revised or unchanged plan via a NEW PresentPlan call, " +
+			"then stop and wait again. Later chat assent requests a fresh gated review and is never execution approval. " +
+			"Only the harness proceed message that follows approval through the current PresentPlan gate starts execution."
 	}
 
 	return Layered{
@@ -224,7 +224,7 @@ func toolInventory(tools []tool.ToolSpec) string {
 // tools actually registered for the turn, so the model is steered toward the
 // dedicated tool only when it exists. It is GENERATED from the live catalog (a
 // membership set over ToolSpec.Name) rather than a static block, so a build with
-// Bash disabled does not tell the model to "reserve Bash", etc. The prompt
+// Shell disabled does not tell the model to "reserve Shell", etc. The prompt
 // package stays adapter-agnostic: tool names are matched as plain string
 // literals here (it must not import adapter/tools — that would invert layering).
 //
@@ -264,8 +264,8 @@ func toolDisciplineHints(tools []tool.ToolSpec) string {
 		b.WriteString(strings.Join(clauses, "; "))
 		b.WriteString(".")
 	}
-	if present["Bash"] {
-		writeSentence(&b, "Reserve Bash for real system/terminal commands.")
+	if present["Shell"] {
+		writeSentence(&b, "Reserve Shell for real system/terminal commands.")
 	}
 	if present["Subagent"] {
 		writeSentence(&b, "Use Subagent for focused delegation. For multiple independent read-only tasks, issue one Subagent call per task in the same assistant turn so eligible calls run concurrently; wait between calls only when a later task depends on an earlier result.")

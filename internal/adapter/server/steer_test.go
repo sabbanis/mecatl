@@ -17,7 +17,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stacklok/mecatl/engine/adapter/memfs"
 	"github.com/stacklok/mecatl/engine/adapter/memstore"
 	"github.com/stacklok/mecatl/engine/adapter/mockllm"
 	"github.com/stacklok/mecatl/engine/adapter/permpolicy"
@@ -55,9 +54,10 @@ var _ tool.Tool = (*blockingTextTool)(nil)
 
 // newSteerService builds a Service whose engine arms the steer inbox
 // (Deps.EnableSteer) and persists in-loop via Deps.Store, over the given mockllm
-// script + tools + policy rules. memstore is shared between the Service and the
-// engine so an in-loop Cancelled/Failed/Fail lands in the same store the
-// run-entry funnel reads.
+// script + tools + policy rules. The engine is interactive because these are
+// wire-facing controls and may need to keep an approval ask parked. memstore is
+// shared between the Service and the engine so an in-loop
+// Cancelled/Failed/Fail lands in the same store the run-entry funnel reads.
 func newSteerService(t *testing.T, llm *mockllm.Provider, rules []governance.Rule, tools ...tool.Tool) *server.Service {
 	t.Helper()
 	cat := tool.NewCatalog()
@@ -73,14 +73,15 @@ func newSteerService(t *testing.T, llm *mockllm.Provider, rules []governance.Rul
 		Catalog:     cat,
 		Policy:      permpolicy.NewPolicy(rules, nil),
 		Model:       "test-model",
+		Interactive: true,
 		Store:       store,
 		EnableSteer: true,
 	})
-	svc, err := server.NewService(server.Config{
-		Engine:     engine,
-		Store:      store,
-		Workspaces: func(root string) tool.Workspace { return memfs.NewWorkspace(root) },
-		Now:        func() time.Time { return time.Unix(0, 0) },
+	svc, err := newPlacementTestService(server.Config{
+		Engine: engine,
+		Store:  store,
+
+		Now: func() time.Time { return time.Unix(0, 0) },
 	})
 	if err != nil {
 		t.Fatalf("new steer service: %v", err)
@@ -139,7 +140,7 @@ func TestSteer_LiveRunEnqueues(t *testing.T) {
 	svc := newSteerService(t, llm, nil, block)
 	ctx := context.Background()
 
-	sess, err := svc.CreateSession(ctx, "/ws", session.ModeDefault, session.Limits{})
+	sess, err := svc.CreateSession(ctx, session.ModeDefault, session.Limits{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -212,7 +213,7 @@ func TestSteer_TerminalRacePromotes(t *testing.T) {
 	svc := newSteerService(t, llm, nil)
 	ctx := context.Background()
 
-	sess, err := svc.CreateSession(ctx, "/ws", session.ModeDefault, session.Limits{})
+	sess, err := svc.CreateSession(ctx, session.ModeDefault, session.Limits{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -282,7 +283,7 @@ func TestSteer_PromotionUsesRunEntryFunnel(t *testing.T) {
 		t.Helper()
 		llm := mockllm.New(turns...)
 		svc := newSteerService(t, llm, nil, tools...)
-		sess, err := svc.CreateSession(context.Background(), "/ws", session.ModeDefault, session.Limits{})
+		sess, err := svc.CreateSession(context.Background(), session.ModeDefault, session.Limits{})
 		if err != nil {
 			t.Fatalf("CreateSession: %v", err)
 		}

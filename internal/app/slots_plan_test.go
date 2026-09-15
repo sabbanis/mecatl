@@ -219,11 +219,14 @@ func TestApplyPlanModePostureAppendsNote(t *testing.T) {
 	}
 	for _, clause := range []string{
 		"PLAN MODE",
-		"call the PresentPlan tool EXACTLY ONCE",
+		"call the PresentPlan tool EXACTLY ONCE PER CURRENT PRESENTATION",
 		"and STOP",
-		"inline",
-		"is NOT approval",
-		"PresentPlan gate",
+		"denied for iteration",
+		"pending run is cancelled",
+		"wait for new user input",
+		"revised or unchanged plan",
+		"NEW PresentPlan call",
+		"Later chat assent requests a fresh gated review and is never execution approval. Only the harness proceed message that follows approval through the current PresentPlan gate starts execution.",
 		"Pass the FULL plan text in the PresentPlan `plan` argument",
 	} {
 		if !strings.Contains(pc.Role, clause) {
@@ -288,7 +291,7 @@ func TestPlanModeEngineSystemPromptContainsPlanApprovalContract(t *testing.T) {
 	defer func() { _ = plan.Close() }()
 
 	// Drive a one-turn run to trigger buildRequest → prompt.Build → captured system.
-	sess := session.New("s1", session.ModePlan, "/ws", session.Limits{MaxTurns: 1}, time.Now())
+	sess := session.New("s1", session.ModePlan, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/ws", Revision: "in-tree-v1"}, session.Limits{MaxTurns: 1}, time.Now())
 	run := plan.Engine.Run(ctx, sess, memEnvironment("/ws"), agent.RunRequest{Text: "plan a task", Parts: nil})
 	for range run.Events() {
 	}
@@ -302,11 +305,14 @@ func TestPlanModeEngineSystemPromptContainsPlanApprovalContract(t *testing.T) {
 	// combined Render() oracle is vacuous against the wiring removal.
 	for _, clause := range []string{
 		"PLAN MODE",
-		"call the PresentPlan tool EXACTLY ONCE",
+		"call the PresentPlan tool EXACTLY ONCE PER CURRENT PRESENTATION",
 		"and STOP",
-		"inline",
-		"is NOT approval",
-		"PresentPlan gate",
+		"denied for iteration",
+		"pending run is cancelled",
+		"wait for new user input",
+		"revised or unchanged plan",
+		"NEW PresentPlan call",
+		"Later chat assent requests a fresh gated review and is never execution approval. Only the harness proceed message that follows approval through the current PresentPlan gate starts execution.",
 		"Pass the FULL plan text in the PresentPlan `plan` argument",
 	} {
 		if !strings.Contains(captured.StablePrefix, clause) {
@@ -341,7 +347,7 @@ func TestDefaultModeEngineSystemPromptLacksPlanApprovalContract(t *testing.T) {
 	}
 	defer func() { _ = defEng.Close() }()
 
-	sess := session.New("s2", session.ModeDefault, "/ws", session.Limits{MaxTurns: 1}, time.Now())
+	sess := session.New("s2", session.ModeDefault, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/ws", Revision: "in-tree-v1"}, session.Limits{MaxTurns: 1}, time.Now())
 	run := defEng.Engine.Run(ctx, sess, memEnvironment("/ws"), agent.RunRequest{Text: "do something", Parts: nil})
 	for range run.Events() {
 	}

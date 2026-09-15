@@ -131,11 +131,11 @@ func TestSessionDebuggerCrossBoundaryAcceptance(t *testing.T) {
 		mockllm.ToolCallTurn(session.NewToolCall("glob-1", "Glob", json.RawMessage(`{"pattern":"*.go"}`))),
 		mockllm.TextTurn("target complete"),
 	)
-	built1, err := Build(ctx, Config{Workspace: workspace, StoreDir: storeDir, NoSoul: true, MockProvider: targetProvider})
+	built1, err := buildIsolated(t, ctx, Config{Workspace: workspace, StoreDir: storeDir, NoSoul: true, MockProvider: targetProvider})
 	if err != nil {
 		t.Fatalf("target Build: %v", err)
 	}
-	target, err := built1.Service.CreateSession(ctx, workspace, session.ModeDefault, session.Limits{})
+	target, err := built1.Service.CreateSession(ctx, session.ModeDefault, session.Limits{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,26 +148,26 @@ func TestSessionDebuggerCrossBoundaryAcceptance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	retained, err := session.NewSubagent("subagent-retained", session.ModeDefault, workspace, session.Limits{}, time.Unix(2, 0), target.ID, target.Incarnation(), "sub-call")
+	retained, err := session.NewSubagent("subagent-retained", session.ModeDefault, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: workspace, Revision: "in-tree-v1"}, session.Limits{}, time.Unix(2, 0), target.ID, target.Incarnation(), "sub-call")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := retained.SeedHistory([]session.Message{{Role: session.RoleUser, Text: "investigate failure"}, {Role: session.RoleAssistant, Text: "retained child finding"}}); err != nil {
 		t.Fatal(err)
 	}
-	pruned, err := session.NewParallelBranch("parallel-pruned", session.ModeDefault, workspace, session.Limits{}, time.Unix(3, 0), target.ID, target.Incarnation(), "parallel-call", 0)
+	pruned, err := session.NewParallelBranch("parallel-pruned", session.ModeDefault, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: workspace, Revision: "in-tree-v1"}, session.Limits{}, time.Unix(3, 0), target.ID, target.Incarnation(), "parallel-call", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	scheduled, err := session.NewScheduled("sched--related", session.ModeDefault, workspace, session.Limits{}, time.Unix(4, 0), "nightly", target.ID, target.Incarnation())
+	scheduled, err := session.NewScheduled("sched--related", session.ModeDefault, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: workspace, Revision: "in-tree-v1"}, session.Limits{}, time.Unix(4, 0), "nightly", target.ID, target.Incarnation())
 	if err != nil {
 		t.Fatal(err)
 	}
-	team, err := session.NewTeamMember("team-related-member", session.ModeDefault, workspace, session.Limits{}, time.Unix(5, 0), "team-1", "reviewer", target.ID, target.Incarnation())
+	team, err := session.NewTeamMember("team-related-member", session.ModeDefault, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: workspace, Revision: "in-tree-v1"}, session.Limits{}, time.Unix(5, 0), "team-1", "reviewer", target.ID, target.Incarnation())
 	if err != nil {
 		t.Fatal(err)
 	}
-	unrelated := session.New("unrelated-secret", session.ModeDefault, workspace, session.Limits{}, time.Unix(6, 0))
+	unrelated := session.New("unrelated-secret", session.ModeDefault, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: workspace, Revision: "in-tree-v1"}, session.Limits{}, time.Unix(6, 0))
 	for _, s := range []*session.Session{retained, pruned, scheduled, team, unrelated} {
 		if err := store.Save(ctx, s); err != nil {
 			t.Fatal(err)
@@ -183,9 +183,9 @@ func TestSessionDebuggerCrossBoundaryAcceptance(t *testing.T) {
 		{Type: session.EvCompactionArchive, CompactionArchive: &session.CompactionArchivePayload{Replaced: archive}},
 		{Type: session.EvRequestManifest, RunID: "target-run", Turn: 1, RequestManifest: &manifest},
 		{Type: session.EvNetworkAttempt, RunID: "target-run", Turn: 1, NetworkAttempt: &network},
-		{Type: session.EvSubagentStart, Subagent: &session.SubagentPayload{ParentCallID: "sub-call", ChildID: string(retained.ID)}},
-		{Type: session.EvParallelBranch, Parallel: &session.ParallelPayload{ParentCallID: "parallel-call", ChildID: string(pruned.ID), BranchIndex: 0}},
-		{Type: session.EvTeamMember, Team: &session.TeamPayload{ParentCallID: "team-call", TeamID: "team-1", Member: "reviewer", MemberSessionID: string(team.ID)}},
+		{Type: session.EvSubagentStart, Subagent: &session.SubagentPayload{ParentCallID: "sub-call", ChildID: string(retained.ID), ChildIncarnation: retained.Incarnation()}},
+		{Type: session.EvParallelBranch, Parallel: &session.ParallelPayload{ParentCallID: "parallel-call", ChildID: string(pruned.ID), ChildIncarnation: pruned.Incarnation(), BranchIndex: 0}},
+		{Type: session.EvTeamMember, Team: &session.TeamPayload{ParentCallID: "team-call", TeamID: "team-1", Member: "reviewer", MemberSessionID: string(team.ID), MemberIncarnation: team.Incarnation()}},
 		{Type: session.EvScheduleFired, Schedule: &session.SchedulePayload{Kind: "fired", ScheduleName: "nightly", SessionID: scheduled.ID}},
 	}
 	for _, ev := range events {
@@ -212,7 +212,7 @@ func TestSessionDebuggerCrossBoundaryAcceptance(t *testing.T) {
 		),
 		mockllm.TextTurn("diagnosis and issue draft ready"),
 	)
-	built2, err := Build(ctx, Config{Workspace: workspace, StoreDir: storeDir, NoSoul: true, MockProvider: debugProvider, MCPServers: []mcp.ServerConfig{{Name: "github", URL: mcpURL}}, Posture: PostureYolo, PostureFlagSet: true, Interactive: true})
+	built2, err := buildIsolated(t, ctx, Config{Workspace: workspace, StoreDir: storeDir, NoSoul: true, MockProvider: debugProvider, MCPServers: []mcp.ServerConfig{{Name: "github", URL: mcpURL}}, Posture: PostureYolo, PostureFlagSet: true, Interactive: true})
 	if err != nil {
 		t.Fatalf("restart Build: %v", err)
 	}
@@ -226,9 +226,13 @@ func TestSessionDebuggerCrossBoundaryAcceptance(t *testing.T) {
 	debugID := created.GetSessionId()
 	root, _ := converseDebugAcceptance(t, client, debugID, "Diagnose and draft a GitHub issue; do not publish it.", mecatlv1.ApprovalVerdict_APPROVAL_VERDICT_UNSPECIFIED)
 	for call, wants := range map[string][]string{
-		"status":     {`"latest_run_counters"`, `"lifetime_event_log"`},
-		"related":    {`"subagent"`, `"parallel"`, `"team"`, `"schedule"`, `"pruned"`},
-		"delegation": {`"type":"subagent"`, `"type":"parallel"`, `"type":"team"`, `"type":"schedule"`},
+		"status":  {`"latest_run_counters"`, `"lifetime_event_log"`},
+		"related": {`"subagent"`, `"parallel"`, `"team"`, `"schedule"`, `"pruned"`},
+		// delegation rows are proof-gated to currently-RETAINED direct lineage
+		// (ADR 0299): the pruned parallel branch and the schedule kind (not yet
+		// wired to a lineage-provable join) are correctly absent here, unlike
+		// "related" above, which reports every direct edge including pruned ones.
+		"delegation": {`"type":"subagent"`, `"type":"team"`},
 		"history":    {`"compaction_archive"`, `"history_handle"`},
 		"manifest":   {`"provider":"mock"`, `"model":"acceptance"`, `"message_count":2`, `"message_bytes":42`, `"Glob"`},
 		"network":    {`"failure_class":"timeout"`, `"successful_attempts_timed":false`},
@@ -256,7 +260,7 @@ func TestSessionDebuggerCrossBoundaryAcceptance(t *testing.T) {
 		mockllm.TextTurn("child evidence checked"),
 	)
 	scoped, _ := converseDebugAcceptance(t, client, debugID, "Inspect the retained child and verify isolation.", mecatlv1.ApprovalVerdict_APPROVAL_VERDICT_UNSPECIFIED)
-	if !strings.Contains(scoped["child"], "retained child finding") || !strings.Contains(scoped["history-page"], `"view":"transcript"`) || !strings.Contains(scoped["probe"], "invalid, stale, or inaccessible") {
+	if !strings.Contains(scoped["child"], "retained child finding") || !strings.Contains(scoped["history-page"], `"view":"transcript"`) || !strings.Contains(scoped["probe"], "scope handle is unsupported, malformed, or stale") {
 		t.Fatalf("scoped evidence/isolation failed: %+v", scoped)
 	}
 

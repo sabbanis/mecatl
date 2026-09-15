@@ -38,7 +38,7 @@ func TestBuildOperatorContextWindowsFeedEchoListAndPerSessionFactory(t *testing.
 			}
 			operator := writeOperatorSettingsFile(t, "models:\n  aliases:\n    routed: gpt-5\n  default: routed\n  allowlist: [gpt-5]\n  context_windows:\n    openai:\n      gpt-5: 321000\n")
 
-			built, err := Build(context.Background(), Config{
+			built, err := buildIsolated(t, context.Background(), Config{
 				Workspace:               workspace,
 				NoSoul:                  true,
 				TrustProject:            true,
@@ -57,7 +57,7 @@ func TestBuildOperatorContextWindowsFeedEchoListAndPerSessionFactory(t *testing.
 			}
 			defer built.Close()
 
-			shared, err := built.Service.CreateSession(context.Background(), workspace, session.ModeDefault, defaultLimits())
+			shared, err := built.Service.CreateSession(context.Background(), session.ModeDefault, defaultLimits())
 			if err != nil {
 				t.Fatalf("CreateSession: %v", err)
 			}
@@ -77,7 +77,7 @@ func TestBuildOperatorContextWindowsFeedEchoListAndPerSessionFactory(t *testing.
 				t.Fatalf("model-list context_limit = %d, want %d", listed, tc.want)
 			}
 
-			selected, err := built.Service.CreateSessionWithProvider(context.Background(), workspace, session.ModeDefault, defaultLimits(),
+			selected, err := built.Service.CreateSessionWithProvider(context.Background(), session.ModeDefault, defaultLimits(),
 				server.ProviderSelector{ProviderID: providerOpenAI, ModelID: model})
 			if err != nil {
 				t.Fatalf("CreateSessionWithProvider: %v", err)

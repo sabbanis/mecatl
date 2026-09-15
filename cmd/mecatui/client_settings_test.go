@@ -158,6 +158,45 @@ func TestReadClientKeymapRejectsUnknownTopLevelKey(t *testing.T) {
 	}
 }
 
+func TestReadClientSettingsDecodeErrorIsSafeAndExplainsSettingsOwnership(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	const secret = "SUPER-SECRET-TITLE-MODEL"
+	path := writeSettings(t, "mecatui", "models:\n  slots:\n    title: "+secret+"\n")
+
+	_, err := readClientSettings()
+	if err == nil {
+		t.Fatal("server models in the strict client file must be rejected")
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("client settings error leaked YAML value %q: %v", secret, err)
+	}
+	for _, want := range []string{
+		path,
+		"client-owned settings file",
+		"models:",
+		"~/.config/mecatl/settings.yaml",
+		"line ",
+		"column ",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want %q", err, want)
+		}
+	}
+}
+
+func TestReadClientSettingsIgnoresServerModelsWithoutTitleSlot(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	writeSettings(t, "mecatl", "models:\n  slots:\n    cheap: cheap-model\n")
+
+	got, err := readClientSettings()
+	if err != nil {
+		t.Fatalf("server settings without models.slots.title must not affect client settings: %v", err)
+	}
+	if !reflect.DeepEqual(got, clientSettings{}) {
+		t.Fatalf("client settings = %#v, want zero settings when the client file is absent", got)
+	}
+}
+
 func TestReadClientKeymapRejectsMultiDocument(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	writeSettings(t, "mecatui", "keymap:\n  Agents: ctrl+f12\n---\nkeymap:\n  Effort: ctrl+f5\n")
@@ -172,7 +211,7 @@ func TestReadClientKeymapRejectsMultiDocument(t *testing.T) {
 
 func TestReadLegacyKeymapToleratesServerSiblingKeys(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	writeSettings(t, "mecatl", "permissions:\n  allow:\n    - Bash(git status)\nguardrails:\n  defaultMode: advisory\nkeymap:\n  Agents: ctrl+f12\n")
+	writeSettings(t, "mecatl", "permissions:\n  allow:\n    - Shell(git status)\nguardrails:\n  defaultMode: advisory\nkeymap:\n  Agents: ctrl+f12\n")
 	got, set, err := readLegacyKeymap()
 	if err != nil {
 		t.Fatalf("legacy file with server sibling keys must parse: %v", err)
@@ -305,10 +344,25 @@ func TestKeymapDeprecationWarnFiresOnceOnLegacyKeymap(t *testing.T) {
 	}
 }
 
+func TestCanonicalDebugPrintsKeymapDiagnostics(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var deps ui.Deps
+	out := captureStderr(t, func() {
+		if err := applyKeyOverridesToDeps(config{debugKeymap: true}, &deps); err != nil {
+			t.Fatalf("apply: %v", err)
+		}
+	})
+	for _, layer := range []string{"legacy YAML", "client YAML", "CLI", "merged"} {
+		if !strings.Contains(out, "mecatui keymap ("+layer+")") {
+			t.Errorf("canonical debug output missing %s layer: %q", layer, out)
+		}
+	}
+}
+
 func TestKeymapDeprecationWarnSilentWithoutLegacyKeymap(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	// A legacy file with server keys but NO keymap: contributes nothing.
-	writeSettings(t, "mecatl", "permissions:\n  allow:\n    - Bash(git status)\n")
+	writeSettings(t, "mecatl", "permissions:\n  allow:\n    - Shell(git status)\n")
 	writeSettings(t, "mecatui", "keymap:\n  Agents: ctrl+f3\n")
 	var deps ui.Deps
 	out := captureStderr(t, func() {
@@ -368,14 +422,20 @@ func TestStatusCustomization_Scenario1_UserSettingsOwnCustomization(t *testing.T
 
 func TestReadStatusCustomizationRejectsInvalidConfigurationWithoutEchoingValues(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		body string
+		name      string
+		body      string
+		wantError string
+		forbidden []string
 	}{
-		{"both sources", "status_customization:\n  templates:\n    wide: status\n  command:\n    executable: /usr/local/bin/status\n"},
-		{"interval too short", "status_customization:\n  templates:\n    wide: status\n  interval: 500ms\n"},
-		{"unsafe command path", "status_customization:\n  command:\n    executable: ' bad-command '\n"},
-		{"removed shell fields", "status_customization:\n  command:\n    shell: /bin/sh\n    source: 'printf status'\n"},
-		{"unknown nested key", "status_customization:\n  templates:\n    tablet: status\n"},
+		{"both sources", "status_customization:\n  templates:\n    wide: status\n  command:\n    executable: /usr/local/bin/status\n", "", nil},
+		{"interval too short", "status_customization:\n  templates:\n    wide: status\n  interval: 500ms\n", "", nil},
+		{"unsafe command path", "status_customization:\n  command:\n    executable: ' bad-command '\n", "", []string{"bad-command"}},
+		{"invalid passthrough environment name", "status_customization:\n  command:\n    executable: /usr/local/bin/status\n    passthrough_env: [INVALID-PASSTHROUGH]\n", "Invalid passthrough_env value. Values must match [A-Za-z_][A-Za-z0-9_]*.", []string{"INVALID-PASSTHROUGH"}},
+		{"passthrough name starts with digit", "status_customization:\n  command:\n    executable: /usr/local/bin/status\n    passthrough_env: [1LEADING]\n", "Invalid passthrough_env value. Values must match [A-Za-z_][A-Za-z0-9_]*.", []string{"1LEADING"}},
+		{"non-ASCII passthrough name", "status_customization:\n  command:\n    executable: /usr/local/bin/status\n    passthrough_env: [NÁME]\n", "Invalid passthrough_env value. Values must match [A-Za-z_][A-Za-z0-9_]*.", []string{"NÁME"}},
+		{"reserved passthrough name", "status_customization:\n  command:\n    executable: /usr/local/bin/status\n    passthrough_env: [COLUMNS]\n", "Invalid passthrough_env value. You cannot override reserved variable name COLUMNS.", nil},
+		{"removed shell fields", "status_customization:\n  command:\n    shell: /bin/sh\n    source: 'printf status'\n", "", nil},
+		{"unknown nested key", "status_customization:\n  templates:\n    tablet: status\n", "", nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
@@ -384,8 +444,13 @@ func TestReadStatusCustomizationRejectsInvalidConfigurationWithoutEchoingValues(
 			if err == nil {
 				t.Fatal("invalid status customization must fail")
 			}
-			if strings.Contains(err.Error(), "bad-command") {
-				t.Errorf("error must not echo configuration values: %v", err)
+			if tc.wantError != "" && !strings.Contains(err.Error(), tc.wantError) {
+				t.Errorf("error = %q, want %q", err, tc.wantError)
+			}
+			for _, forbidden := range tc.forbidden {
+				if strings.Contains(err.Error(), forbidden) {
+					t.Errorf("error must not echo configuration value %q: %v", forbidden, err)
+				}
 			}
 		})
 	}
@@ -393,13 +458,34 @@ func TestReadStatusCustomizationRejectsInvalidConfigurationWithoutEchoingValues(
 
 func TestReadStatusCustomizationAcceptsValidatedDirectExecutable(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	writeSettings(t, "mecatui", "status_customization:\n  command:\n    executable: /usr/local/bin/status\n    args: [--format, statusml]\n")
+	writeSettings(t, "mecatui", "status_customization:\n  command:\n    executable: /usr/local/bin/status\n    args: [--format, statusml]\n    passthrough_env: [TMUX, STATUS_EMPTY, _NAME1, STATUS_SECRET]\n")
 	got, err := readStatusCustomization()
 	if err != nil {
 		t.Fatalf("read command customization: %v", err)
 	}
-	if got.Command == nil || got.Command.Path != "/usr/local/bin/status" || !reflect.DeepEqual(got.Command.Args, []string{"--format", "statusml"}) {
-		t.Fatalf("command = %#v, want direct executable with literal args", got.Command)
+	if got.Command == nil || got.Command.Path != "/usr/local/bin/status" || !reflect.DeepEqual(got.Command.Args, []string{"--format", "statusml"}) || !reflect.DeepEqual(got.Command.PassthroughEnv, []string{"TMUX", "STATUS_EMPTY", "_NAME1", "STATUS_SECRET"}) {
+		t.Fatalf("command = %#v, want direct executable with literal args and validated passthrough environment", got.Command)
+	}
+}
+
+func TestStatusCustomizationCommandPassthroughEnvReachesExecution(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("TMUX", "configured-tmux")
+	writeSettings(t, "mecatui", "status_customization:\n  command:\n    executable: /bin/sh\n    args: [-c, 'read input; test \"$TMUX\" = \"$1\" && printf \"<footer><text>tmux available</text></footer>\"', --, configured-tmux]\n    passthrough_env: [TMUX]\n")
+	customization, err := readStatusCustomization()
+	if err != nil {
+		t.Fatalf("read status customization: %v", err)
+	}
+	source := newSource(customization)
+	t.Cleanup(func() { _ = source.Close(context.Background()) })
+	source.Submit(statusline.Input{Terminal: statusline.Terminal{FooterAvailCols: 80}})
+	select {
+	case <-source.Changed():
+	case <-time.After(time.Second):
+		t.Fatal("configured command did not publish")
+	}
+	if got, want := source.Latest().Footer.Spans[0].Text, "tmux available"; got != want {
+		t.Fatalf("configured command footer = %q, want %q", got, want)
 	}
 }
 

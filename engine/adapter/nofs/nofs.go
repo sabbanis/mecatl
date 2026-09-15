@@ -35,6 +35,7 @@ func New() Workspace { return Workspace{} }
 
 // Compile-time assertion that Workspace satisfies the frozen seam.
 var _ tool.Workspace = Workspace{}
+var _ tool.WorkspaceNamespace = Workspace{}
 
 // Root returns "" — a no-FS session has no session root.
 func (Workspace) Root() string { return "" }
@@ -69,20 +70,24 @@ func (Workspace) ReplaceFile(context.Context, string, tool.FileVersion, []byte) 
 	return tool.FileVersion{}, ErrNoFilesystem
 }
 
+// ReadDir returns no entries: there is no directory tree.
+func (Workspace) ReadDir(context.Context, string) ([]tool.FileInfo, error) { return nil, nil }
+
+// Remove fails loudly because there is no filesystem namespace to mutate.
+func (Workspace) Remove(context.Context, string) error { return ErrNoFilesystem }
+
+// Rename fails loudly because there is no filesystem namespace to mutate.
+func (Workspace) Rename(context.Context, string, string) error { return ErrNoFilesystem }
+
+// CopyFile fails loudly because there is no filesystem namespace to mutate.
+func (Workspace) CopyFile(context.Context, string, string) (tool.FileVersion, error) {
+	return tool.FileVersion{}, ErrNoFilesystem
+}
+
 // Glob returns no matches: there is nothing to match against.
 func (Workspace) Glob(context.Context, string) ([]string, error) { return nil, nil }
 
 // Grep returns no matches: there is nothing to search.
 func (Workspace) Grep(context.Context, string, string) ([]tool.GrepMatch, error) {
 	return nil, nil
-}
-
-// RecordRead is a no-op: with no files, the read-ledger has nothing to record
-// (and no Edit tool is registered in a no-FS session anyway).
-func (Workspace) RecordRead(string, tool.FileVersion) {}
-
-// RecordedVersion reports (zero, false): no file was ever readable, so no
-// read-before-mutate precondition can hold.
-func (Workspace) RecordedVersion(string) (tool.FileVersion, bool) {
-	return tool.FileVersion{}, false
 }

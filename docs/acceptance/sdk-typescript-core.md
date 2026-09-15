@@ -1,10 +1,11 @@
 # TypeScript SDK core (M1) — acceptance plan
 
 **Phase:** capability — `@stacklok/mecatl-sdk` M1: foundation, codegen, and core runs
-**Status:** in-progress, 2026-09-01. Synthesised from the settled #821 design contract plus the transport decision recorded in ADR 0279.
+**Status:** landed, 2026-09-02. Synthesised from the settled #821 design contract plus the transport decision recorded in ADR 0279.
 **Issue:** [stacklok/mecatl#821](https://github.com/stacklok/mecatl/issues/821) (parent: [#761](https://github.com/stacklok/mecatl/issues/761)).
 **ADR:** [ADR-0279](../adr/0279-typescript-sdk-architecture.md) — Connect-ES v2 + protobuf-es v2, the injected-Transport seam, the in-repo pnpm/biome/vitest toolchain, and the in-part supersession of [ADR-0253](../adr/0253-sdk-mocking-testkit.md).
-**Accumulator / stack:** `sdk/10-architecture-adr` is the stack trunk (PR #908). Subsequent layers are `sdk/11`…`sdk/19` via `gh stack` (linear, one PR per scenario — the plan's 4–8 parallelism is serialised because a stack cannot fork).
+**Accumulator / stack:** `sdk/10-architecture-adr` was the stack trunk (PR #908). Subsequent layers were `sdk/11`…`sdk/19` via `gh stack` (linear, one PR per scenario — the plan's 4–8 parallelism was serialised because a stack cannot fork).
+**Landed as:** ten squash-merges to `main` — [#908](https://github.com/stacklok/mecatl/pull/908) (ADR 0279, 2026-09-01), then [#924](https://github.com/stacklok/mecatl/pull/924) (Scenario 1), [#925](https://github.com/stacklok/mecatl/pull/925) (2), [#927](https://github.com/stacklok/mecatl/pull/927) (3), [#929](https://github.com/stacklok/mecatl/pull/929) (4), [#930](https://github.com/stacklok/mecatl/pull/930) (5), [#931](https://github.com/stacklok/mecatl/pull/931) (6), [#932](https://github.com/stacklok/mecatl/pull/932) (7), [#933](https://github.com/stacklok/mecatl/pull/933) (8), and [#934](https://github.com/stacklok/mecatl/pull/934) (9) on 2026-09-02. [#821](https://github.com/stacklok/mecatl/issues/821) stays open for M2–M4.
 
 The smallest set of work that makes `@stacklok/mecatl-sdk` real: a scaffolded,
 CI-gated `sdk/typescript/` tree; committed protobuf-es generation for
@@ -59,10 +60,13 @@ not which packages exist on disk.
   Go. `sdk/typescript/` is a new tree with no such contention; scenarios
   parallelize per the sequencing note instead.
 - **Verify names are scenario-numbered, not ADR-numbered** — the enabler
-  plan's `TestADR_0244_*`/`TestADR_0245_*` names now point at unrelated
-  ADRs after a renumber; this plan uses `TestSDKTypescriptCore_ScenarioN_*`
-  for Go proofs and `path :: "title"` vitest references for TypeScript
-  proofs throughout.
+  plan's pins were authored as `TestADR_0244_*`/`TestADR_0245_*` and a
+  later ADR renumber left them pointing at a missing ADR (0244) and an
+  unrelated one (0245 — safe build diagnostics). The M1 close-out
+  repointed them at their real ADRs, `TestADR_0248_*` and
+  `TestADR_0249_*`; this plan avoids the failure mode entirely by using
+  `TestSDKTypescriptCore_ScenarioN_*` for Go proofs and
+  `path :: "title"` vitest references for TypeScript proofs throughout.
 
 ## Out of scope
 
@@ -118,7 +122,7 @@ npm untouched) and into `ci.yml` as one job.
   lines.
 
 **Acceptance:**
-- AC1.1: A clean checkout with only pnpm 11 and Node 22 runs install
+- AC1.1: A clean checkout with only pnpm 11 and Node 24 runs install
   (frozen lockfile), lint, typecheck, test, build, and pack through the root
   `task sdk:*` targets; no root-level package.json appears and `website/`
   is untouched.
@@ -127,12 +131,12 @@ npm untouched) and into `ci.yml` as one job.
 - AC1.2: The built package is ESM-only with declarations and source maps,
   and its exports map exposes exactly `.`, `./node`, and `./gen` — a CJS
   `require()` of the package fails, and no other subpath resolves.
-  - verify: `sdk/typescript/test/package.test.ts :: "exports map exposes exactly ., ./node, ./gen"`
+  - verify: vitest:sdk/typescript/test/package.test.ts#ZXhwb3J0cyBtYXAgZXhwb3NlcyBleGFjdGx5IC4sIC4vbm9kZSwgLi9nZW4 — `sdk/typescript/test/package.test.ts :: "exports map exposes exactly ., ./node, ./gen"`
 - AC1.3: `pnpm pack` produces a tarball containing the built output, license,
   and package metadata — and no test files, config, or generated-source
   duplicates outside the intended layout; the license field and file are
   Apache-2.0.
-  - verify: `sdk/typescript/test/package.test.ts :: "packed tarball carries dist and license only"`
+  - verify: vitest:sdk/typescript/test/package.test.ts#cGFja2VkIHRhcmJhbGwgY2FycmllcyBkaXN0IGFuZCBsaWNlbnNlIG9ubHk — `sdk/typescript/test/package.test.ts :: "packed tarball carries dist and license only"`
 - AC1.4: The committed API Extractor reports — one for `.`, one for `./node`
   (API Extractor is single-entry-point, so one report per subpath; `./gen`
   is deliberately not report-governed, its surface being machine-generated
@@ -261,7 +265,7 @@ the first call enforces the compatibility floor — both per
   error when the feature is absent; steer over gRPC succeeds. Because the
   gate reads the feature set, the error clears without SDK changes once
   [#873](https://github.com/stacklok/mecatl/issues/873) lands server-side.
-  - verify: `sdk/typescript/test/steer.test.ts :: "HTTP steer is a typed unsupported-feature error"`
+  - verify: vitest:sdk/typescript/test/steer.test.ts#SFRUUCBzdGVlciBpcyBhIHR5cGVkIHVuc3VwcG9ydGVkLWZlYXR1cmUgZXJyb3I — `sdk/typescript/test/steer.test.ts :: "HTTP steer is a typed unsupported-feature error"`
 - AC3.8: Unknown fields and unknown enum-like string values arriving from a
   newer server pass through the raw seam undamaged — the SDK never strips
   what it does not understand.
@@ -334,20 +338,20 @@ for the HTTP route to come).
 - AC5.1: `session.run(prompt)` resolves only after the server accepted the
   run and the first run-ID-bearing event arrived; the returned `Run` exposes
   that non-empty run ID.
-  - verify: `sdk/typescript/test/run.test.ts :: "run resolves on acceptance with the first run ID"`
+  - verify: vitest:sdk/typescript/test/run.test.ts#cnVuIHJlc29sdmVzIG9uIGFjY2VwdGFuY2Ugd2l0aCB0aGUgZmlyc3QgcnVuIElE — `sdk/typescript/test/run.test.ts :: "run resolves on acceptance with the first run ID"`
 - AC5.2: A `Run` is consumed exactly once: iterating it yields the event
   stream; `run.result()` drains and returns `RunResult`; doing both, or
   either twice, fails with a typed invalid-state error.
-  - verify: `sdk/typescript/test/run.test.ts :: "a run has exactly one consumption mode"`
+  - verify: vitest:sdk/typescript/test/run.test.ts#YSBydW4gaGFzIGV4YWN0bHkgb25lIGNvbnN1bXB0aW9uIG1vZGU — `sdk/typescript/test/run.test.ts :: "a run has exactly one consumption mode"`
 - AC5.3: `RunResult` carries stop reason, final text/content, usage, session
   ID, run ID, and the raw terminal event; server terminals — `StopError`,
   cancellation, limits, budget — resolve normally with the typed outcome,
   while a transport/protocol failure rejects.
-  - verify: `sdk/typescript/test/run.test.ts :: "server terminals resolve typed, transport failures throw"`
+  - verify: vitest:sdk/typescript/test/run.test.ts#c2VydmVyIHRlcm1pbmFscyByZXNvbHZlIHR5cGVkLCB0cmFuc3BvcnQgZmFpbHVyZXMgdGhyb3c — `sdk/typescript/test/run.test.ts :: "server terminals resolve typed, transport failures throw"`
 - AC5.4: A second local `run()` on a busy `Session` rejects with
   `SessionBusyError` without sending a prompt; the daemon stays
   authoritative for cross-client contention.
-  - verify: `sdk/typescript/test/run.test.ts :: "a second local run is SessionBusyError"`
+  - verify: vitest:sdk/typescript/test/run.test.ts#YSBzZWNvbmQgbG9jYWwgcnVuIGlzIFNlc3Npb25CdXN5RXJyb3I — `sdk/typescript/test/run.test.ts :: "a second local run is SessionBusyError"`
 - AC5.5: Every approve/cancel/steer sent through the ergonomic
   `Run`/`Session` surface carries the active run's `expected_run_id`; a
   control racing a terminal (the run it named is gone) surfaces the
@@ -355,16 +359,16 @@ for the HTTP route to come).
   untouched. The raw operation seam leaves `expected_run_id`
   caller-controlled — omitting it is how a raw caller opts into the
   server's legacy behaviour, including steer promotion.
-  - verify: `sdk/typescript/test/controls.test.ts :: "ergonomic controls always carry expected_run_id and stale controls fail typed"`
+  - verify: vitest:sdk/typescript/test/controls.test.ts#ZXJnb25vbWljIGNvbnRyb2xzIGFsd2F5cyBjYXJyeSBleHBlY3RlZF9ydW5faWQgYW5kIHN0YWxlIGNvbnRyb2xzIGZhaWwgdHlwZWQ — `sdk/typescript/test/controls.test.ts :: "ergonomic controls always carry expected_run_id and stale controls fail typed"`
 - AC5.6: `run.steer()` is strict — because it always names its run
   (AC5.5), a steer that loses the terminal race is refused, never promoted
   into a new run; the raw seam retains the documented promotion behaviour
   for callers that deliberately omit `expected_run_id`.
-  - verify: `sdk/typescript/test/steer.test.ts :: "run.steer never promotes; the raw seam may"`
+  - verify: vitest:sdk/typescript/test/steer.test.ts#cnVuLnN0ZWVyIG5ldmVyIHByb21vdGVzOyB0aGUgcmF3IHNlYW0gbWF5 — `sdk/typescript/test/steer.test.ts :: "run.steer never promotes; the raw seam may"`
 - AC5.7: `run.cancel()` resolves the run with the cancelled terminal outcome
   through the normal consumption path — cancellation is an outcome, not an
   exception.
-  - verify: `sdk/typescript/test/run.test.ts :: "cancel is a typed outcome"`
+  - verify: vitest:sdk/typescript/test/run.test.ts#Y2FuY2VsIGlzIGEgdHlwZWQgb3V0Y29tZQ — `sdk/typescript/test/run.test.ts :: "cancel is a typed outcome"`
 
 ---
 
@@ -393,12 +397,12 @@ fine — the no-touch constraint is about edits, not reads.
 **Acceptance:**
 - AC6.1: Every known agent and team event kind narrows by literal `kind` to
   a payload type whose fields match the proto payload for that kind.
-  - verify: `sdk/typescript/test/events.test.ts :: "known kinds narrow by literal kind"`
+  - verify: vitest:sdk/typescript/test/events.test.ts#a25vd24ga2luZHMgbmFycm93IGJ5IGxpdGVyYWwga2luZA — `sdk/typescript/test/events.test.ts :: "known kinds narrow by literal kind"`
 - AC6.2: An event of an unknown kind decodes to
   `{ kind: "unknown", wireKind, ... }` carrying the decoded common fields
   plus the transport-native raw data — raw JSON over HTTP, unknown protobuf
   bytes over gRPC — and iteration continues.
-  - verify: `sdk/typescript/test/events.test.ts :: "unknown kinds preserve transport-native raw data"`
+  - verify: vitest:sdk/typescript/test/events.test.ts#dW5rbm93biBraW5kcyBwcmVzZXJ2ZSB0cmFuc3BvcnQtbmF0aXZlIHJhdyBkYXRh — `sdk/typescript/test/events.test.ts :: "unknown kinds preserve transport-native raw data"`
 - AC6.3: A Go-side parity guard enumerates the wire event kinds the server
   can emit and fails when the TS union misses one or types one the server
   no longer emits — a new `session.Event` kind fails CI until it is typed.
@@ -504,18 +508,18 @@ live model). One CI job runs the unit suites and this e2e for every PR.
   and UDS), passes the compatibility floor, creates a session, runs a
   prompt, iterates events to the typed terminal result, and deletes the
   session — no network beyond loopback.
-  - verify: `sdk/typescript/e2e/grpc.e2e.test.ts :: "full run lifecycle over gRPC"`
+  - verify: vitest:sdk/typescript/e2e/grpc.e2e.test.ts#ZnVsbCBydW4gbGlmZWN5Y2xlIG92ZXIgZ1JQQw — `sdk/typescript/e2e/grpc.e2e.test.ts :: "full run lifecycle over gRPC"`
 - AC9.2: The same flow over the HTTP/SSE transport (steer excepted per
   AC3.7) yields the same normalized events and terminal outcome.
-  - verify: `sdk/typescript/e2e/http.e2e.test.ts :: "full run lifecycle over HTTP/SSE"`
+  - verify: vitest:sdk/typescript/e2e/http.e2e.test.ts#ZnVsbCBydW4gbGlmZWN5Y2xlIG92ZXIgSFRUUC9TU0U — `sdk/typescript/e2e/http.e2e.test.ts :: "full run lifecycle over HTTP/SSE"`
 - AC9.3: A permission ask surfaces end to end: the mock run hits an
   ask-worthy tool, `onPermissionAsk` approves, and the run completes; a
   second e2e denies and the run observably continues past the denial.
-  - verify: `sdk/typescript/e2e/permissions.e2e.test.ts :: "asks resolve through the responder end to end"`
+  - verify: vitest:sdk/typescript/e2e/permissions.e2e.test.ts#YXNrcyByZXNvbHZlIHRocm91Z2ggdGhlIHJlc3BvbmRlciBlbmQgdG8gZW5k — `sdk/typescript/e2e/permissions.e2e.test.ts :: "asks resolve through the responder end to end"`
 - AC9.4: Cancellation and stale controls hold on the real wire: cancelling
   an in-flight run resolves the cancelled outcome, and a control carrying a
   finished run's ID fails typed while the session's next run is untouched.
-  - verify: `sdk/typescript/e2e/controls.e2e.test.ts :: "cancel and stale controls on the real wire"`
+  - verify: vitest:sdk/typescript/e2e/controls.e2e.test.ts#Y2FuY2VsIGFuZCBzdGFsZSBjb250cm9scyBvbiB0aGUgcmVhbCB3aXJl — `sdk/typescript/e2e/controls.e2e.test.ts :: "cancel and stale controls on the real wire"`
 - AC9.5: The CI job runs biome, typecheck, the vitest unit suites, the
   build + API report + pack, the codegen freshness step, and this e2e on
   every PR — a failure in any of them fails the PR.
@@ -531,7 +535,7 @@ live model). One CI job runs the unit suites and this e2e for every PR.
 - `docs/architecture.md`: a short SDK section (what the SDK is, the
   transport split, where the trees live); `docs/design/IMPLEMENTATION-NOTES.md`:
   the dense per-subsystem notes for `sdk/typescript/`.
-- `task docs` regeneration (`llms.txt`) with every Markdown change.
+- `task docs` configuration-reference regeneration with every Markdown change.
 - No `engine/` API change is expected; if one sneaks in, `task api:check` /
   `task api:update` + `engine/CHANGELOG.md` per the standing rule.
 
@@ -560,7 +564,7 @@ proofs are vitest suites under `sdk/typescript/`, cited per AC.
 
 1. `task lint` and `task test` pass (both Go modules, `-race`), plus the new
    `task sdk:*` gates.
-2. `task docs` — `llms.txt` regenerated and the matlatl strict link gate green.
+2. `task docs` — configuration reference regenerated and the matlatl strict link gate green.
 3. `task generate` reproduces both generated trees byte-identically (the CI
    freshness step is green).
 4. `task ac-trace-strict` — every AC's `verify:` proof resolves (this plan is
@@ -572,9 +576,17 @@ proofs are vitest suites under `sdk/typescript/`, cited per AC.
 
 ## Deferred decisions and known risks
 
-- **The `.actrace.yml` vitest resolver may not be expressible** — the
-  resolver mechanism is an internal tool; AC1.5 degrades to a recorded
-  limitation, not a silent vacuous pass. Resolved during Scenario 1.
+- **The `.actrace.yml` Vitest resolver is expressible in ac-trace v0.0.3.**
+  Scenario 1 wires a `vitest:` custom resolver whose token carries the test
+  file plus the exact title encoded as base64url. The repository-owned resolver
+  parses the TypeScript AST and requires exactly one matching Vitest case, so a
+  deleted or renamed title fails instead of degrading to a file-level proof.
+  That parse uses the TypeScript compiler out of `sdk/typescript/node_modules`,
+  so the three `task ac-trace*` targets take `sdk:install` as a real dependency:
+  without it every vitest proof is rejected as unresolvable — merely noisy while
+  a plan is `draft`, and **fatal** under `--strict` once it lands. The install
+  task is fingerprinted on `package.json` + `pnpm-lock.yaml`, so it is a no-op
+  on an already-installed tree.
 - **HTTP steer lands out from under AC3.7** — if
   [#873](https://github.com/stacklok/mecatl/issues/873) merges mid-plan, the
   worker may wire HTTP steer behind the same `http_steer` feature gate and

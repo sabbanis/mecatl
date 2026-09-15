@@ -141,8 +141,8 @@ func TestInlineCardsReflectKeyOverride(t *testing.T) {
 		if !strings.Contains(out, "more · "+wantAgents) {
 			t.Errorf("team roll-up should carry the live agents chord %q, got %q", wantAgents, out)
 		}
-		if strings.Contains(out, "ctrl+a") {
-			t.Errorf("team roll-up still shows the default ctrl+a: %q", out)
+		if strings.Contains(out, "f6") {
+			t.Errorf("team roll-up still shows the default f6: %q", out)
 		}
 	})
 
@@ -218,7 +218,7 @@ func TestFooterReflectsKeyOverride(t *testing.T) {
 		if !strings.Contains(got, "ctrl+f32 copy") {
 			t.Errorf("footer help line should carry the overridden CopySelection chord ctrl+f32: %q", got)
 		}
-		if strings.Contains(got, "ctrl+g select all") || strings.Contains(got, "ctrl+shift+c copy") {
+		if strings.Contains(got, "ctrl+g select all") || strings.Contains(got, "ctrl+y copy") {
 			t.Errorf("footer help line still shows a default selection chord: %q", got)
 		}
 		if !strings.Contains(got, "ctrl+f12 help") {
@@ -335,8 +335,8 @@ func TestFooterReflectsKeyOverride(t *testing.T) {
 		if !strings.Contains(got, "ctrl+f9") {
 			t.Errorf("footer agents prefix should carry the overridden agents chord ctrl+f9: %q", got)
 		}
-		if strings.Contains(got, "ctrl+a") {
-			t.Errorf("footer agents prefix still shows the default ctrl+a: %q", got)
+		if strings.Contains(got, "f6") {
+			t.Errorf("footer agents prefix still shows the default f6: %q", got)
 		}
 	})
 }
@@ -541,7 +541,7 @@ func TestDefaultFooterHelp(t *testing.T) {
 	)
 	m.phase = phaseIdle
 	got := stripANSIstr(m.renderFooter())
-	if !strings.Contains(got, "? help · / commands · ctrl+g select all · ctrl+shift+c copy · ctrl+u clear · ctrl+c quit") {
+	if !strings.Contains(got, "? help · / commands · ctrl+g select all · ctrl+y copy · ctrl+u clear · ctrl+c quit") {
 		t.Errorf("default footer help line = %q", got)
 	}
 
@@ -560,15 +560,15 @@ func TestDefaultFooterHelp(t *testing.T) {
 	m.conv.addTeamMember(member("lead", "tool.call", client.TeamMsg{ToolName: "Edit"}))
 	m.refreshView()
 	got = stripANSIstr(m.fitFooter("ready", 160))
-	if !strings.Contains(got, "ctrl+a agents") {
-		t.Errorf("default team footer should carry the historical ctrl+a literal, got %q", got)
+	if !strings.Contains(got, "f6 agents") {
+		t.Errorf("default team footer should carry the historical f6 literal, got %q", got)
 	}
 }
 
 // TestDefaultInlineCardsBytesUnchanged is the byte-identical guard for the default
 // keymap on the inline-card affordances: with NO overrides the reasoning header,
 // subagent live line, team header, roll-up, and collapse/arg-rollup markers must
-// render EXACTLY the historical "ctrl+t" / "ctrl+a" literals.
+// render EXACTLY the historical "ctrl+t" / "f6" literals.
 func TestDefaultInlineCardsBytesUnchanged(t *testing.T) {
 	r := newTestRenderer()
 	// Reasoning header.
@@ -599,7 +599,7 @@ func TestDefaultInlineCardsBytesUnchanged(t *testing.T) {
 	if got := r.argRollupMarker(0); !strings.Contains(got, "ctrl+t expand") {
 		t.Errorf("default argRollupMarker should carry ctrl+t expand, got %q", got)
 	}
-	// Team roll-up advertises ctrl+a.
+	// Team roll-up advertises f6.
 	c := &conversation{}
 	c.addTool("t1", "Team", `{"goal":"ship"}`)
 	var big []client.TeamMemberSpec
@@ -608,8 +608,8 @@ func TestDefaultInlineCardsBytesUnchanged(t *testing.T) {
 		big = append(big, client.TeamMemberSpec{Name: "m" + string(rune('a'+i))})
 	}
 	c.setTeamStart("t1", "", big)
-	if got := stripANSIstr(r.renderBlock(0, &c.blocks[0], false)); !strings.Contains(got, "more · ctrl+a") {
-		t.Errorf("default team roll-up should carry ctrl+a, got %q", got)
+	if got := stripANSIstr(r.renderBlock(0, &c.blocks[0], false)); !strings.Contains(got, "more · f6") {
+		t.Errorf("default team roll-up should carry f6, got %q", got)
 	}
 }
 
@@ -854,7 +854,7 @@ func TestWorktreesOverlayHintsReflectKeyOverride(t *testing.T) {
 	hk := liveHK()
 	th := theme.New("aztec", theme.AztecPalette())
 	t.Run("panel", func(t *testing.T) {
-		st := worktreesState{view: worktreesPanel, filtered: []client.Worktree{{Path: "/p", Branch: "b"}}}
+		st := worktreesState{view: worktreesPanel, filtered: []client.Worktree{{Selector: testWorktreeSelector("opaque"), Label: "p", Branch: "b"}}}
 		got := stripANSIstr(renderWorktreesOverlay(th, st, client.Capabilities{}, hk, 100, 30))
 		if !strings.Contains(got, "ctrl+f17: select  ctrl+f16: close") {
 			t.Errorf("worktrees panel hint should carry live select/close: %q", got)
