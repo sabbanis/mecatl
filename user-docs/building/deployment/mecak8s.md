@@ -271,6 +271,70 @@ security postures:
 The chart reserves its security-posture annotations; `podAnnotations` cannot
 override them.
 
+### Lease domains
+
+The chart uses the Helm release name as the Kubernetes Lease domain. Session
+leases and the scheduler leader Lease share that domain, so two releases in one
+namespace coordinate independently. Restarting or upgrading one release keeps
+its domain and fencing history.
+
+Use a separate Redis state domain for each Helm release. Multiple replicas in
+one release share Redis and one Lease domain. If two releases intentionally need
+the same state, deploy them as one Helm release instead.
+
+Lease domains prevent correctly configured releases from addressing the same
+Lease objects. They do not prevent one compromised ServiceAccount from updating
+another release's Leases because the namespace-scoped Role grants dynamic Lease
+creation. Put mutually untrusted releases in separate namespaces or enforce a
+stronger admission boundary.
+
+The Role grants `get`, `create`, and `update` for Kubernetes Leases. The adapter
+retains released Lease objects as tombstones to preserve fencing history, so it
+does not need `delete`, `list`, or `watch`.
+
+:::warning[First upgrade from a chart without Lease domains]
+
+The first domain-aware upgrade changes the Lease object identity. Complete a
+quiescent in-place upgrade so old and new pods cannot hold separate objects for
+the same session.
+
+Set these values for the release. Use the old release's effective
+`--session-lease-ttl`; it is 30 seconds unless `extraArgs` overrides it.
+
+```sh
+RELEASE=mecak8s
+NAMESPACE=mecatl
+DEPLOYMENT=mecak8s-mecak8s
+OLD_LEASE_TTL_SECONDS=30
+```
+
+Scale the Deployment to zero and wait for every agent pod in this release to
+terminate. The component selector excludes a local Redis fixture pod.
+
+```sh
+kubectl scale deployment/$DEPLOYMENT --namespace "$NAMESPACE" --replicas=0
+kubectl wait pod --namespace "$NAMESPACE" \
+  --selector="app.kubernetes.io/instance=$RELEASE,app.kubernetes.io/component=agent" \
+  --for=delete --timeout=5m
+sleep "$OLD_LEASE_TTL_SECONDS"
+```
+
+Run an in-place upgrade of the same Helm release. The chart's configured
+`replicaCount` restores the agent pods.
+
+```sh
+helm upgrade "$RELEASE" oci://ghcr.io/stacklok/mecatl/charts/mecak8s \
+  --version <VERSION> --namespace "$NAMESPACE" --reuse-values
+kubectl rollout status deployment/$DEPLOYMENT --namespace "$NAMESPACE"
+```
+
+Mixed pods from before and after the domain change are unsupported. Downgrade to
+a pre-domain binary is also unsupported; recover by moving forward to a
+domain-aware version. Uninstalling and reinstalling under a different release
+name creates a different Lease domain.
+
+:::
+
 ### Installation telemetry identity
 
 The chart stores a non-secret installation UUID in a ConfigMap. Live Helm

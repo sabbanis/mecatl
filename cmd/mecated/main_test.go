@@ -168,6 +168,28 @@ func TestLegacyUserModelReviewFlagsMapToAppConfig(t *testing.T) {
 	}
 }
 
+func TestSessionLeaseK8sDomainFlagMapsToAppConfig(t *testing.T) {
+	def, err := parseFlags(nil)
+	if err != nil {
+		t.Fatalf("parseFlags(nil): %v", err)
+	}
+	if def.sessionLeaseK8sDomain != "" {
+		t.Fatalf("sessionLeaseK8sDomain default = %q, want empty legacy mode", def.sessionLeaseK8sDomain)
+	}
+
+	parsed, err := parseFlags([]string{
+		"--session-lease-k8s-namespace", "agents",
+		"--session-lease-k8s-domain", "release.one",
+	})
+	if err != nil {
+		t.Fatalf("parseFlags: %v", err)
+	}
+	got := appConfig(parsed, nil, nil, nil, nil, nil)
+	if got.SessionLeaseK8sNamespace != "agents" || got.SessionLeaseK8sDomain != "release.one" {
+		t.Fatalf("Kubernetes lease config = namespace %q, domain %q, want agents/release.one", got.SessionLeaseK8sNamespace, got.SessionLeaseK8sDomain)
+	}
+}
+
 func TestParseFlagsSchedulerMinIntervalDefault(t *testing.T) {
 	def, err := parseFlags(nil)
 	if err != nil {

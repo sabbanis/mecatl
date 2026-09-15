@@ -337,6 +337,49 @@ func productionArgs() []string {
 	return []string{"template", "production", ".", "--set", "image.tag=v0.0.0", "--set", "redis.endpoint=redis.example.internal:6380", "--set", "redis.credentialsSecret=redis-credentials", "--set", "security.allowUnsafeRealProvider=true"}
 }
 
+func TestMecak8sHelmChart_LeaseDomainUsesReleaseName(t *testing.T) {
+	for _, tc := range []struct {
+		name, release string
+		overrides     []string
+	}{
+		{name: "ordinary release", release: "alpha"},
+		{name: "dotted release with workload overrides", release: "edge.blue", overrides: []string{"--set", "nameOverride=renamed", "--set", "fullnameOverride=fixed-workload"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := []string{"template", tc.release, ".", "--set", "image.tag=v0.0.0", "--set", "redis.endpoint=redis.example.internal:6380", "--set", "redis.credentialsSecret=redis-credentials", "--set", "security.allowUnsafeRealProvider=true"}
+			args = append(args, tc.overrides...)
+			rendered, err := helm(t, args...)
+			if err != nil {
+				t.Fatalf("render release %q: %v\n%s", tc.release, err, rendered)
+			}
+
+			containerArgs := deploymentFromRender(t, rendered).Spec.Template.Spec.Containers[0].Args
+			want := "--session-lease-k8s-domain=" + tc.release
+			if got := strings.Count(strings.Join(containerArgs, "\n"), want); got != 1 {
+				t.Fatalf("release %q Lease domain count = %d, want exactly one %q in %v", tc.release, got, want, containerArgs)
+			}
+		})
+	}
+}
+
+func TestMecak8sHelmChart_LeaseDomainExtraArgIsRejected(t *testing.T) {
+	for _, extraArg := range []string{
+		"extraArgs[0]=--session-lease-k8s-domain=shared",
+		"extraArgs[0]=--session-lease-k8s-domain,extraArgs[1]=shared",
+		"extraArgs[0]=-session-lease-k8s-domain=shared",
+		"extraArgs[0]=-session-lease-k8s-domain,extraArgs[1]=shared",
+	} {
+		args := append(productionArgs(), "--set", extraArg)
+		rendered, err := helm(t, args...)
+		if err == nil {
+			t.Fatalf("chart accepted reserved Lease-domain argument %q:\n%s", extraArg, rendered)
+		}
+		if !strings.Contains(rendered, "extraArgs cannot set --session-lease-k8s-domain") {
+			t.Fatalf("reserved Lease-domain argument %q failed without the chart-owned-argument error: %v\n%s", extraArg, err, rendered)
+		}
+	}
+}
+
 func secureProductionArgs() []string {
 	return []string{"template", "production", ".", "--set", "image.tag=v0.0.0", "--set", "redis.endpoint=redis.example.internal:6380", "--set", "redis.credentialsSecret=redis-credentials", "--set", "tls.enabled=true,tls.secretName=mecak8s-tls", "--set", "oidc.enabled=true,oidc.issuer=https://idp.example.com,oidc.audience=mecatl"}
 }
@@ -876,6 +919,7 @@ func TestMecak8sHelmChart_DeployCheckProductionFixtureRuntimeAndSpread(t *testin
 		"--redis-follow-pool-size=32",
 		"--redis-max-followers=32",
 		"--session-lease-k8s-namespace=default",
+		"--session-lease-k8s-domain=release-name",
 		"--headless=true",
 		"--posture=auto",
 		"--default-provider=openrouter",
@@ -1388,14 +1432,14 @@ func TestMecak8sHelmChart_Scenario1_LeastPrivilegeLease(t *testing.T) {
 		t.Fatalf("render production values: %v", err)
 	}
 	for _, want := range []string{
-		"kind: Role", "apiGroups: [\"coordination.k8s.io\"]", "resources: [\"leases\"]", "verbs: [\"get\", \"create\", \"update\", \"delete\"]",
+		"kind: Role", "apiGroups: [\"coordination.k8s.io\"]", "resources: [\"leases\"]", "verbs: [\"get\", \"create\", \"update\"]",
 		"kind: RoleBinding",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("least-privilege render missing %q", want)
 		}
 	}
-	for _, forbidden := range []string{"\"list\"", "\"watch\"", "kind: ClusterRole"} {
+	for _, forbidden := range []string{"\"delete\"", "\"list\"", "\"watch\"", "kind: ClusterRole"} {
 		if strings.Contains(rendered, forbidden) {
 			t.Fatalf("least-privilege render includes %q", forbidden)
 		}

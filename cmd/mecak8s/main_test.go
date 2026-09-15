@@ -114,6 +114,9 @@ func TestParseFlagsK8sDefaults(t *testing.T) {
 	if def.sessionLeaseK8sNamespace != defaultK8sLeaseNamespace {
 		t.Errorf("sessionLeaseK8sNamespace default = %q, want %q", def.sessionLeaseK8sNamespace, defaultK8sLeaseNamespace)
 	}
+	if def.sessionLeaseK8sDomain != "" {
+		t.Errorf("sessionLeaseK8sDomain default = %q, want empty legacy mode", def.sessionLeaseK8sDomain)
+	}
 	if def.grpcAddr != defaultGRPCAddr {
 		t.Errorf("grpcAddr default = %q, want %q (a pod binds 0.0.0.0)", def.grpcAddr, defaultGRPCAddr)
 	}
@@ -175,6 +178,7 @@ func TestAppConfigMapsK8sFields(t *testing.T) {
 		"--redis-tls-ca", "/var/run/redis/ca.pem",
 		"--redis-tls",
 		"--session-lease-k8s-namespace", "myns",
+		"--session-lease-k8s-domain", "release.one",
 		"--headless=false",
 		"--posture", "trusted",
 		"--reasoning-effort", "high",
@@ -200,6 +204,9 @@ func TestAppConfigMapsK8sFields(t *testing.T) {
 	}
 	if ac.SessionLeaseK8sNamespace != "myns" {
 		t.Errorf("app.Config SessionLeaseK8sNamespace = %q, want myns", ac.SessionLeaseK8sNamespace)
+	}
+	if ac.SessionLeaseK8sDomain != "release.one" {
+		t.Errorf("app.Config SessionLeaseK8sDomain = %q, want release.one", ac.SessionLeaseK8sDomain)
 	}
 	if !ac.Interactive {
 		t.Error("app.Config Interactive = false with --headless=false, want true (Interactive=!headless)")

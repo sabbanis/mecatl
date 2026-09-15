@@ -41,11 +41,13 @@ type Lease struct {
 	// "<hostname>-<pid>-<build-nonce>"). Composition builds it once per Build so
 	// two Builds in one process get distinct owners.
 	Owner string
-	// Token is the monotonic fencing epoch for this session id: it advances only
-	// on a TAKEOVER Acquire (a free/expired/other-owner lease being granted to a
-	// new holder) and is STABLE across a successful Renew. A future CAS-Save can
-	// reject a writer holding a stale token; V1 plumbs the token but does not
-	// consult it (the enforcement is the lease grant itself).
+	// Token is the monotonic fencing epoch for this session id within one
+	// configured logical backend and its retained state. It advances only on a
+	// TAKEOVER Acquire (a free/expired/other-owner lease being granted to a new
+	// holder) and is STABLE across a successful Renew. A future CAS-Save can
+	// reject a writer holding a stale token, but must bind the token to that
+	// backend identity; V1 plumbs the token but does not consult it (the
+	// enforcement is the lease grant itself).
 	Token uint64
 	// Expiry is the wall-clock instant the lease lapses if not renewed before it.
 	Expiry time.Time
@@ -70,10 +72,11 @@ type SessionLease interface {
 	// Acquire grants the lease for id to owner. It SUCCEEDS (returning the
 	// granted Lease) when the lease is free, expired, or already held by owner;
 	// a takeover (free/expired/other-owner→owner) returns a STRICTLY GREATER
-	// Token than any prior grant for that id, while a same-owner re-acquire need
-	// not advance the token. It returns ErrLeaseHeld (wrapped) when the lease is
-	// held by a DIFFERENT, still-live owner, and ErrLeaseUnsupported (wrapped)
-	// when the backend cannot lease at all.
+	// Token than any prior grant for that id within this configured logical
+	// backend and its retained state, while a same-owner re-acquire need not
+	// advance the token. It returns ErrLeaseHeld (wrapped) when the lease is held
+	// by a DIFFERENT, still-live owner, and ErrLeaseUnsupported (wrapped) when
+	// the backend cannot lease at all.
 	Acquire(ctx context.Context, id session.SessionID, owner string) (Lease, error)
 
 	// Renew extends a lease the caller still holds, returning a REFRESHED Lease

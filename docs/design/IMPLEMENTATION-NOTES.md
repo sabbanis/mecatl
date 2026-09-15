@@ -3361,6 +3361,43 @@ new cascade tier knob does not.
 
 ## Adapters — `internal/adapter/`
 
+### Kubernetes Lease domains
+
+The Kubernetes lease adapter scopes every Lease object to one configured logical
+backend identity: the Kubernetes namespace and an optional lease domain. The
+domain applies to ordinary session IDs and the scheduler's `__scheduler__` ID, so
+independent `mecak8s` releases do not compete for session ownership or scheduler
+leadership. `internal/adapter/k8slease/k8slease.go` (`Lease`) owns the encoding and
+keeps the engine and scheduler unaware of deployment identity.
+
+A nonempty domain is a DNS-1123 subdomain. The object name contains the first 40
+hexadecimal characters of SHA-256 over `v1`, NUL, the domain, NUL, and the session
+ID. Domain objects carry the unhashed domain and session ID as annotations. Every
+mutation verifies both annotations so a hash collision or corrupted object fails
+closed. The annotation check detects identity mismatch; Kubernetes RBAC remains the
+authorization boundary.
+
+An empty domain retains the existing session-only name and annotation behavior for
+non-chart callers. Fencing-token monotonicity belongs to one configured logical
+backend and its retained Lease state. A future store that enforces fencing tokens
+must persist the backend identity with each token and must not compare tokens from
+different backend configurations.
+
+The Helm chart passes its release name as the domain. The release name is stable
+across restart and in-place upgrade, while different releases in one namespace use
+different Lease objects. Separate releases must use separate Redis state domains.
+The domain prevents accidental client collisions but does not isolate compromised
+ServiceAccounts in one namespace. Mutually untrusted releases require separate
+namespaces or a stronger admission boundary.
+
+Legacy and domain-qualified objects are separate backend identities. The adapter
+does not read, seed, or update a corresponding legacy object. A release moving from
+legacy names must stop all of its old agent pods and wait one full old Lease TTL
+before starting domain-aware pods. Kubernetes cannot atomically bridge the two
+objects, so mixed legacy and domain-aware pods for one release are unsupported.
+Downgrading that release to a pre-domain binary is also unsupported. Release writes
+a tombstone instead of deleting the Lease because deletion resets fencing history.
+
 ### `anthropic` (multi-provider P1)
 
 The native Anthropic **Messages**-API `port.LLMProvider` on the official MIT `anthropic-sdk-go`;

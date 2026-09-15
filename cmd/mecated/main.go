@@ -252,6 +252,7 @@ type config struct {
 	sessionLeaseURL           string
 	sessionLeaseDir           string
 	sessionLeaseK8sNamespace  string
+	sessionLeaseK8sDomain     string
 	sessionLeaseTTL           time.Duration
 	sessionLeaseRenewInterval time.Duration
 
@@ -1213,6 +1214,7 @@ func appConfig(cfg config, sink port.EventSink, recorder port.ToolCallRecorder, 
 		SessionLeaseURL:               cfg.sessionLeaseURL,
 		SessionLeaseDir:               cfg.sessionLeaseDir,
 		SessionLeaseK8sNamespace:      cfg.sessionLeaseK8sNamespace,
+		SessionLeaseK8sDomain:         cfg.sessionLeaseK8sDomain,
 		SessionLeaseTTL:               cfg.sessionLeaseTTL,
 		SessionLeaseRenewInterval:     cfg.sessionLeaseRenewInterval,
 		SchedulerEnabled:              !cfg.noScheduler,
@@ -1746,7 +1748,8 @@ func parseFlagsModeOut(mode commandMode, argv []string, out io.Writer) (*flag.Fl
 	fs.StringVar(&cfg.learningStoreURL, "learning-store-url", "", "host:port of one distributed learning gRPC driver providing AttemptRepositoryService, ProposalRepositoryService, and SkillRepositoryService. The complete set must be explicitly advertised at startup; a partial or legacy driver fails closed with no local-repository fallback. Repository partitions are opaque on this transport. Same auth/TLS posture as --session-store-url (equal URLs share one connection)")
 	fs.StringVar(&cfg.sessionLeaseURL, "session-lease-url", "", "host:port of a remote session-lease gRPC driver (mecatl.driver.v1.SessionLeaseService) for cross-process single-writer enforcement (cloud-native Phase 4, multi-replica). Empty = NO leasing (the byte-identical single-writer-by-affinity default: route every session to one replica). Mutually exclusive with --session-lease-dir / --session-lease-k8s-namespace. Same auth/TLS posture as --session-store-url (equal URLs share one connection)")
 	fs.StringVar(&cfg.sessionLeaseDir, "session-lease-dir", "", "directory for a SINGLE-HOST flock session lease (cross-process single-writer enforcement among processes on ONE machine; flock auto-releases on crash). NOT safe across hosts — use --session-lease-k8s-namespace or --session-lease-url for multi-host/multi-replica. Empty = no leasing")
-	fs.StringVar(&cfg.sessionLeaseK8sNamespace, "session-lease-k8s-namespace", "", "Kubernetes namespace for coordination.k8s.io Lease-backed session leasing (the in-cluster multi-replica path). Uses in-cluster config (or the default kubeconfig out-of-cluster); the ServiceAccount needs get,create,update,delete on leases in coordination.k8s.io for this namespace (never list/watch — see https://mecatl.dev/docs/building/deployment/mecated). Empty = no leasing")
+	fs.StringVar(&cfg.sessionLeaseK8sNamespace, "session-lease-k8s-namespace", "", "Kubernetes namespace for coordination.k8s.io Lease-backed session leasing (the in-cluster multi-replica path). Uses in-cluster config (or the default kubeconfig out-of-cluster); the ServiceAccount needs get,create,update on leases in coordination.k8s.io for this namespace (never list/watch/delete — see https://mecatl.dev/docs/building/deployment/mecated). Empty = no leasing")
+	fs.StringVar(&cfg.sessionLeaseK8sDomain, "session-lease-k8s-domain", "", "stable DNS-1123 domain qualifying Kubernetes Lease object names within --session-lease-k8s-namespace. Empty preserves legacy session-only names; a non-empty value requires the Kubernetes lease backend")
 	fs.DurationVar(&cfg.sessionLeaseTTL, "session-lease-ttl", 30*time.Second, "session-lease lifetime: a crashed/killed holder's lease becomes claimable after this long. Only meaningful when a lease backend is selected")
 	fs.DurationVar(&cfg.sessionLeaseRenewInterval, "session-lease-renew-interval", 0, "how often the per-session renewer refreshes a held lease; 0 = --session-lease-ttl / 3. Keep it well below the TTL so a slow store does not lose the lease and cancel the run. Only meaningful when a lease backend is selected")
 	// Scheduled tasks (issue #189, Phase 1f; ADR 0073). The scheduler is ON by

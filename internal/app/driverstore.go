@@ -8,6 +8,7 @@ import (
 	"google.golang.org/grpc"
 
 	"github.com/stacklok/mecatl/internal/adapter/grpcdriver"
+	"github.com/stacklok/mecatl/internal/adapter/k8slease"
 )
 
 // Remote store drivers (Phase B): the composition seam that swaps the local
@@ -24,6 +25,9 @@ import (
 // a misconfig, not a default). It is fatal at the top of Build, the
 // validateSkillDraftConfig precedent.
 func validateDriverConfig(cfg Config) error {
+	if err := validateSessionLeaseK8sConfig(cfg); err != nil {
+		return err
+	}
 	if cfg.StoreDir != "" && cfg.SessionStoreURL != "" {
 		return fmt.Errorf("--store-dir %q and --session-store-url %q are mutually exclusive: the session store is either the local JSONL dir or the remote driver, never both", cfg.StoreDir, cfg.SessionStoreURL)
 	}
@@ -51,6 +55,32 @@ func validateDriverConfig(cfg Config) error {
 		return err
 	}
 	return validateDriverTLSConfig(cfg)
+}
+
+// validateSessionLeaseK8sConfig keeps Kubernetes-domain validation ahead of
+// client construction. A domain has no meaning without the namespace that
+// selects the Kubernetes lease backend; empty remains the legacy naming mode.
+func validateSessionLeaseK8sConfig(cfg Config) error {
+	selectedBackends := 0
+	for _, configured := range []bool{
+		cfg.SessionLeaseURL != "",
+		cfg.SessionLeaseDir != "",
+		cfg.SessionLeaseK8sNamespace != "",
+	} {
+		if configured {
+			selectedBackends++
+		}
+	}
+	if selectedBackends > 1 {
+		return fmt.Errorf("--session-lease-url, --session-lease-dir, and --session-lease-k8s-namespace are mutually exclusive")
+	}
+	if cfg.SessionLeaseK8sDomain != "" && cfg.SessionLeaseK8sNamespace == "" {
+		return fmt.Errorf("--session-lease-k8s-domain %q requires --session-lease-k8s-namespace", cfg.SessionLeaseK8sDomain)
+	}
+	if err := k8slease.ValidateDomain(cfg.SessionLeaseK8sDomain); err != nil {
+		return fmt.Errorf("invalid --session-lease-k8s-domain %q: %w", cfg.SessionLeaseK8sDomain, err)
+	}
+	return nil
 }
 
 func validateDriverSourceConfig(cfg Config) error {

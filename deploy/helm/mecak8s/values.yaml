@@ -36,7 +36,9 @@ logging:
 
 # extraArgs appends command-line arguments to the mecak8s agent container. It remains
 # the escape hatch for flags not modeled by the chart; when it contains --log-level,
-# it is appended after logging.level and therefore takes precedence.
+# it is appended after logging.level and therefore takes precedence. The chart
+# owns --session-lease-k8s-domain from the Helm release name and rejects that
+# flag here so an escape-hatch argument cannot replace the exclusion domain.
 extraArgs: []
 
 # First-class remote Streamable HTTP MCP connections. Authentication is an

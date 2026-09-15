@@ -113,6 +113,96 @@ func TestValidateDriverConfigExclusivity(t *testing.T) {
 	}
 }
 
+func TestValidateSessionLeaseK8sDomain(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     Config
+		wantErr string
+	}{
+		{name: "legacy mode", cfg: Config{}},
+		{name: "legacy Kubernetes backend", cfg: Config{SessionLeaseK8sNamespace: "agents"}},
+		{name: "release domain", cfg: Config{SessionLeaseK8sNamespace: "agents", SessionLeaseK8sDomain: "release.one"}},
+		{
+			name: "gRPC and Kubernetes backends",
+			cfg: Config{
+				SessionLeaseURL:          "lease.example:8443",
+				SessionLeaseK8sNamespace: "agents",
+				SessionLeaseK8sDomain:    "release.one",
+			},
+			wantErr: "mutually exclusive",
+		},
+		{
+			name:    "gRPC and flock backends",
+			cfg:     Config{SessionLeaseURL: "lease.example:8443", SessionLeaseDir: "/tmp/leases"},
+			wantErr: "mutually exclusive",
+		},
+		{
+			name:    "Kubernetes and flock backends",
+			cfg:     Config{SessionLeaseK8sNamespace: "agents", SessionLeaseDir: "/tmp/leases"},
+			wantErr: "mutually exclusive",
+		},
+		{
+			name:    "domain without Kubernetes backend",
+			cfg:     Config{SessionLeaseK8sDomain: "release-one"},
+			wantErr: "requires --session-lease-k8s-namespace",
+		},
+		{
+			name:    "invalid domain",
+			cfg:     Config{SessionLeaseK8sNamespace: "agents", SessionLeaseK8sDomain: "Release_One"},
+			wantErr: "invalid --session-lease-k8s-domain",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateDriverConfig(tt.cfg)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validateDriverConfig() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("validateDriverConfig() = %v, want error containing %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestBuildRejectsInvalidSessionLeaseK8sDomainBeforeClientConstruction(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     Config
+		wantErr string
+	}{
+		{
+			name:    "missing namespace",
+			cfg:     Config{SessionLeaseK8sDomain: "release-one"},
+			wantErr: "requires --session-lease-k8s-namespace",
+		},
+		{
+			name: "invalid domain",
+			cfg: Config{
+				SessionLeaseK8sNamespace: "agents",
+				SessionLeaseK8sDomain:    "Release_One",
+			},
+			wantErr: "invalid --session-lease-k8s-domain",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Build(context.Background(), tt.cfg)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Build() = %v, want configuration error containing %q", err, tt.wantErr)
+			}
+			if strings.Contains(err.Error(), "kubeconfig") || strings.Contains(err.Error(), "clientset") {
+				t.Fatalf("Build() reached Kubernetes client construction before domain validation: %v", err)
+			}
+		})
+	}
+}
+
 func startSessionStoreDriver(t *testing.T, store port.SessionStore) string {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")

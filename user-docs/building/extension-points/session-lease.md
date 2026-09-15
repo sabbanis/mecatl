@@ -35,12 +35,14 @@ type SessionLease interface {
 |-|-|
 |`SessionID`|Session protected by the lease|
 |`Owner`|Identity of the holding process|
-|`Token`|Monotonic fencing epoch for the session|
+|`Token`|Monotonic fencing epoch within one configured logical backend|
 |`Expiry`|Time at which the lease can lapse|
 
 `Acquire` succeeds when the lease is free, expired, or already held by the same
-owner. A takeover must return a token greater than every previous token for that
-session. A same-owner reacquisition can retain the token.
+owner. Within one configured logical backend and its retained state, a takeover
+must return a token greater than every previous token for that session. A
+same-owner reacquisition can retain the token. Persist the backend identity with
+the token if another store uses it for conditional writes.
 
 `Renew` returns a new value with the same token and a later expiry. Store the
 returned value. Return `port.ErrLeaseHeld` when the caller has lost ownership;
@@ -108,8 +110,7 @@ still holds.
 processes. It is limited to one host.
 
 `k8slease` uses `coordination.k8s.io` Lease objects. The service account needs
-`get`, `create`, `update`, and `delete` access to leases in the configured
-namespace.
+`get`, `create`, and `update` access to leases in the configured namespace.
 
 ## Configure the shipped service
 
@@ -119,6 +120,7 @@ namespace.
 |-|-|
 |`--session-lease-dir <PATH>`|Single-host file locks|
 |`--session-lease-k8s-namespace <NAMESPACE>`|Kubernetes Lease objects|
+|`--session-lease-k8s-domain <DOMAIN>`|Logical Kubernetes Lease domain; requires a namespace|
 |`--session-lease-url <HOST:PORT>`|gRPC lease driver|
 
 A local JSONL `--store-dir` automatically uses file locks under
@@ -127,6 +129,10 @@ Otherwise, the deployment remains unleased and destructive maintenance is
 unavailable unless the deployment proves single-process ownership.
 
 `mecak8s` configures the Kubernetes lease backend with Redis session storage.
+Its Helm chart uses the release name as the domain, which isolates session and
+scheduler Leases for independent releases in one namespace. An empty domain
+retains the legacy session-only object identity for custom `mecated`
+deployments.
 
 ## Implement a backend
 

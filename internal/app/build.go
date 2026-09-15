@@ -555,6 +555,8 @@ type Config struct {
 	//     cache).
 	//   - SessionLeaseK8sNamespace: a coordination.k8s.io Lease per session in that
 	//     namespace (the in-cluster multi-replica path; needs RBAC; see the mecated deployment guide).
+	//     SessionLeaseK8sDomain optionally qualifies every object name within that
+	//     namespace; empty preserves the legacy session-only names.
 	//   - SessionLeaseDir: a single-host flock lease under that directory (one
 	//     machine, several processes; flock auto-releases on crash).
 	// All empty = no explicit override → local StoreDir gets an automatic flock
@@ -562,6 +564,7 @@ type Config struct {
 	SessionLeaseURL          string
 	SessionLeaseDir          string
 	SessionLeaseK8sNamespace string
+	SessionLeaseK8sDomain    string
 	// SessionLeaseTTL is the lease lifetime (default 30s when a lease is wired);
 	// SessionLeaseRenewInterval is the renewer tick (default TTL/3).
 	SessionLeaseTTL           time.Duration
@@ -3444,7 +3447,7 @@ func buildStoreAndLease(cfg Config) (port.SessionStore, port.EventLog, port.Sess
 	if err != nil {
 		return nil, nil, nil, "", nil, err
 	}
-	sessionLease, leaseOwner, leaseClose, err := buildSessionLease(cfg, store)
+	sessionLease, leaseOwner, leaseClose, err := buildSessionLease(cfg, store, newK8sClientset)
 	if err != nil {
 		storeClose()
 		return nil, nil, nil, "", nil, err
@@ -3482,7 +3485,7 @@ func localStorageMaintenanceSingleWriter(store port.SessionStore) bool {
 // The lease close is meaningful only for the driver backend (its dialled conn);
 // flock/k8s/type-assert hold no Build-scoped resource of their own, so their close
 // is a no-op.
-func buildSessionLease(cfg Config, store port.SessionStore) (port.SessionLease, string, func(), error) {
+func buildSessionLease(cfg Config, store port.SessionStore, k8sClient func() (kubernetes.Interface, error)) (port.SessionLease, string, func(), error) {
 	noop := func() {}
 	owner := leaseOwnerIdentity()
 	ttl := cfg.SessionLeaseTTL
@@ -3500,12 +3503,16 @@ func buildSessionLease(cfg Config, store port.SessionStore) (port.SessionLease, 
 		return grpcdriver.NewSessionLease(conn), owner, closeConn, nil
 
 	case cfg.SessionLeaseK8sNamespace != "":
-		clientset, err := newK8sClientset()
+		clientset, err := k8sClient()
 		if err != nil {
 			return nil, "", nil, fmt.Errorf("build k8s clientset for session lease: %w", err)
 		}
-		cfg.diag().Log(context.Background(), port.LevelInfo, "session lease: kubernetes", "namespace", cfg.SessionLeaseK8sNamespace, "owner", owner)
-		return k8slease.New(clientset, cfg.SessionLeaseK8sNamespace, ttl, wallclock.Clock{}), owner, noop, nil
+		lease, err := k8slease.New(clientset, cfg.SessionLeaseK8sNamespace, cfg.SessionLeaseK8sDomain, ttl, wallclock.Clock{})
+		if err != nil {
+			return nil, "", nil, fmt.Errorf("build kubernetes session lease: %w", err)
+		}
+		cfg.diag().Log(context.Background(), port.LevelInfo, "session lease: kubernetes", "namespace", cfg.SessionLeaseK8sNamespace, "domain", cfg.SessionLeaseK8sDomain, "owner", owner)
+		return lease, owner, noop, nil
 
 	case cfg.SessionLeaseDir != "":
 		l, err := flocklease.New(cfg.SessionLeaseDir, ttl, wallclock.Clock{})

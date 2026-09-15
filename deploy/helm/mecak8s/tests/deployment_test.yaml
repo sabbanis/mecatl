@@ -112,6 +112,10 @@ tests:
       - contains:
           path: spec.template.spec.containers[0].args
           content: --mock
+      - contains:
+          path: spec.template.spec.containers[0].args
+          content: --session-lease-k8s-domain=unit
+          count: 1
 
   - it: preserves scheduling controls at one replica
     set:

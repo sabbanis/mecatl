@@ -179,6 +179,7 @@ type config struct {
 	// Session leasing: a coordination.k8s.io Lease per session in this
 	// namespace (the in-cluster multi-replica path). Defaults to "mecatl".
 	sessionLeaseK8sNamespace  string
+	sessionLeaseK8sDomain     string
 	sessionLeaseTTL           time.Duration
 	sessionLeaseRenewInterval time.Duration
 
@@ -331,7 +332,8 @@ func (l *stringList) Set(v string) error {
 // mirrors cmd/mecated's parseFlags shape (ContinueOnError FlagSet, env keys for
 // secrets, an fs.Visit pass for the posture-set bit) but for mecak8s's k8s-
 // native surface: --redis-url, --session-lease-k8s-namespace default "mecatl",
-// --headless default true, --posture default "auto".
+// an optional --session-lease-k8s-domain, --headless default true, and
+// --posture default "auto".
 //
 //nolint:gocyclo // one parser owns validation for the complete mecak8s flag surface.
 func parseFlags(argv []string) (config, error) {
@@ -397,7 +399,8 @@ func parseFlags(argv []string) (config, error) {
 
 	// Session leasing: coordination.k8s.io Lease per session. DEFAULT "mecatl".
 	fs.StringVar(&cfg.sessionLeaseK8sNamespace, "session-lease-k8s-namespace", defaultK8sLeaseNamespace,
-		"Kubernetes namespace for coordination.k8s.io Lease-backed session leasing (the in-cluster multi-replica single-writer path). Uses in-cluster config (or the default kubeconfig out-of-cluster); the ServiceAccount needs get,create,update,delete on leases in coordination.k8s.io for this namespace. Empty = no leasing")
+		"Kubernetes namespace for coordination.k8s.io Lease-backed session leasing (the in-cluster multi-replica single-writer path). Uses in-cluster config (or the default kubeconfig out-of-cluster); the ServiceAccount needs get,create,update on leases in coordination.k8s.io for this namespace (never list/watch/delete). Empty = no leasing")
+	fs.StringVar(&cfg.sessionLeaseK8sDomain, "session-lease-k8s-domain", "", "stable DNS-1123 domain qualifying Kubernetes Lease object names within --session-lease-k8s-namespace. Empty preserves legacy session-only names; a non-empty value requires the Kubernetes lease backend")
 	fs.DurationVar(&cfg.sessionLeaseTTL, "session-lease-ttl", 30*time.Second, "session-lease lifetime: a crashed/killed holder's lease becomes claimable after this long")
 	fs.DurationVar(&cfg.sessionLeaseRenewInterval, "session-lease-renew-interval", 0, "how often the per-session renewer refreshes a held lease; 0 = --session-lease-ttl / 3")
 
@@ -686,6 +689,7 @@ func appConfig(cfg config, diag port.Diagnostics, obs observability) app.Config 
 		// isolation claim does not hold for this binary.
 		OwnershipEnforced:             cfg.oidc.Enabled(),
 		SessionLeaseK8sNamespace:      cfg.sessionLeaseK8sNamespace,
+		SessionLeaseK8sDomain:         cfg.sessionLeaseK8sDomain,
 		SessionLeaseTTL:               cfg.sessionLeaseTTL,
 		SessionLeaseRenewInterval:     cfg.sessionLeaseRenewInterval,
 		SchedulerEnabled:              !cfg.noScheduler,

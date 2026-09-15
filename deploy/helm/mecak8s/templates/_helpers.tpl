@@ -23,6 +23,18 @@ app.kubernetes.io/component: agent
 {{- fail "set at most one of image.digest or image.tag" -}}
 {{- end -}}
 {{- end -}}
+
+{{/* The Lease domain is release identity, not an operator escape hatch. An
+extraArgs copy would be parsed after the chart-owned argument and could replace
+the exclusion domain selected by the chart. Go's flag parser accepts one or two
+leading dashes and both --flag=value and --flag value forms, so reject all four. */}}
+{{- define "mecak8s.validateExtraArgs" -}}
+{{- range $arg := .Values.extraArgs -}}
+{{- if or (eq $arg "--session-lease-k8s-domain") (hasPrefix "--session-lease-k8s-domain=" $arg) (eq $arg "-session-lease-k8s-domain") (hasPrefix "-session-lease-k8s-domain=" $arg) -}}
+{{- fail "extraArgs cannot set --session-lease-k8s-domain; the chart owns the Lease domain from the Helm release name" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
 {{- define "mecak8s.redisPort" -}}
 {{- $match := regexFind ":[0-9]+$" .Values.redis.endpoint -}}
 {{- if eq $match "" -}}

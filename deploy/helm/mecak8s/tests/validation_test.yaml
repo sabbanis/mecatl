@@ -61,6 +61,40 @@ tests:
       - failedTemplate:
           errorPattern: extraEnv name.*MECATL_INSTALLATION_ID.*collides
 
+  - it: rejects a Lease domain assignment in extra arguments
+    set:
+      extraArgs:
+        - --session-lease-k8s-domain=shared
+    asserts:
+      - failedTemplate:
+          errorPattern: extraArgs cannot set --session-lease-k8s-domain
+
+  - it: rejects a split Lease domain flag in extra arguments
+    set:
+      extraArgs:
+        - --session-lease-k8s-domain
+        - shared
+    asserts:
+      - failedTemplate:
+          errorPattern: extraArgs cannot set --session-lease-k8s-domain
+
+  - it: rejects a single-dash Lease domain assignment in extra arguments
+    set:
+      extraArgs:
+        - -session-lease-k8s-domain=shared
+    asserts:
+      - failedTemplate:
+          errorPattern: extraArgs cannot set --session-lease-k8s-domain
+
+  - it: rejects a split single-dash Lease domain flag in extra arguments
+    set:
+      extraArgs:
+        - -session-lease-k8s-domain
+        - shared
+    asserts:
+      - failedTemplate:
+          errorPattern: extraArgs cannot set --session-lease-k8s-domain
+
   - it: rejects a Redis filesystem combined with a mounted workspace
     set:
       redis.filesystem.enabled: true

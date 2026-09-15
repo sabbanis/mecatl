@@ -240,6 +240,7 @@ secrets nor file contents.
 |`--store-dir`|`""` (in-memory)|Directory for the JSONL session store. Empty = in-memory, no persistence across restart|
 |`--session-lease-dir`|`""`|Single-host flock lease backend; see [multi-replica](#multi-replica)|
 |`--session-lease-k8s-namespace`|`""`|k8s `coordination.k8s.io` Lease backend; see [multi-replica](#multi-replica)|
+|`--session-lease-k8s-domain`|`""`|Logical domain within the Kubernetes namespace; requires `--session-lease-k8s-namespace`|
 |`--session-lease-ttl`|`30s`|Lease lifetime; a crashed holder's lease becomes claimable after this long|
 |`--session-store-url`|`""`|gRPC driver endpoint replacing the local JSONL store (mutually exclusive with `--store-dir`)|
 
@@ -532,9 +533,14 @@ Three lease backends are available:
 |k8s Lease|`--session-lease-k8s-namespace <ns>`|Multi-replica in Kubernetes; uses `coordination.k8s.io` Leases|
 |gRPC driver|`--session-lease-url <host:port>`|Custom or managed lease backend via the driver protocol|
 
-The ServiceAccount for the k8s backend needs `get,create,update,delete` on
+The ServiceAccount for the k8s backend needs `get`, `create`, and `update` on
 `leases.coordination.k8s.io` in the configured namespace. It does not need
-`list` or `watch`.
+`delete`, `list`, or `watch`.
+
+Set `--session-lease-k8s-domain` when independent deployments share a Kubernetes
+namespace. The domain scopes session and scheduler Lease objects. Deployments
+that share one session store must also share one Lease domain. An empty domain
+retains the legacy session-only object names.
 
 :::warning[Remote shared stores still need an explicit lease]
 

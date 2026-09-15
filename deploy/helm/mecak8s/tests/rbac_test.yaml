@@ -1,0 +1,26 @@
+suite: Lease RBAC
+templates:
+  - templates/rbac.yaml
+release:
+  name: unit
+  namespace: shared
+set:
+  mockProvider: true
+tests:
+  - it: grants only the verbs used by the Lease adapter
+    documentIndex: 1
+    asserts:
+      - equal:
+          path: rules[0].apiGroups
+          value:
+            - coordination.k8s.io
+      - equal:
+          path: rules[0].resources
+          value:
+            - leases
+      - equal:
+          path: rules[0].verbs
+          value:
+            - get
+            - create
+            - update

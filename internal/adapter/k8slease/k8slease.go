@@ -12,10 +12,12 @@
 // disable.
 //
 // Object naming: a session id is arbitrary text (a team/subagent id, a UUID, a
-// user string) and need not be a valid RFC-1123 object name, so the Lease object
-// is named "mecatl-lease-" + hex(sha256(id))[:40] — always ≤253 chars, always
-// RFC-1123-valid, and collision-free (one-way hash). The raw id is preserved in
-// an annotation for operators eyeballing `kubectl get leases`.
+// user string) and need not be a valid RFC-1123 object name. Legacy empty-domain
+// construction therefore retains the exact "mecatl-lease-" +
+// hex(sha256(id))[:40] name. A non-empty domain hashes the unambiguous versioned
+// tuple (domain, id), so independent installations in one namespace address
+// different objects. The raw id and domain are preserved in annotations for
+// operators eyeballing `kubectl get leases`.
 //
 // Fencing: spec.leaseTransitions is the canonical fencing counter — it advances
 // on every takeover and is the port's Token. spec.renewTime +
@@ -23,8 +25,8 @@
 // resourceVersion gives optimistic-concurrency CAS, so a lost race surfaces as a
 // 409 Conflict → ErrLeaseHeld.
 //
-// RBAC: this adapter only ever calls Get/Create/Update/Delete (never List or
-// Watch), so it needs get,create,update,delete on `leases` in the
+// RBAC: this adapter only ever calls Get/Create/Update (never List, Watch, or
+// Delete), so it needs get,create,update on `leases` in the
 // `coordination.k8s.io` API group, namespace-scoped (a Role + RoleBinding on the
 // configured namespace). See user-docs/building/deployment/mecated.md.
 package k8slease
@@ -35,11 +37,13 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes"
 
 	"github.com/stacklok/mecatl/engine/port"
@@ -52,11 +56,17 @@ const objectNamePrefix = "mecatl-lease-"
 // rawIDAnnotation preserves the un-hashed session id for operator visibility.
 const rawIDAnnotation = "mecatl.stacklok.com/session-id"
 
+// rawDomainAnnotation preserves the un-hashed lease domain for operator
+// visibility and lets the adapter fail closed if a digest collision or manual
+// object corruption addresses an object belonging to another domain.
+const rawDomainAnnotation = "mecatl.stacklok.com/lease-domain"
+
 // Lease is a port.SessionLease over coordination.k8s.io Lease objects in one
 // namespace.
 type Lease struct {
 	clientset kubernetes.Interface
 	namespace string
+	domain    string
 	ttl       time.Duration
 	clock     port.Clock
 }
@@ -64,13 +74,30 @@ type Lease struct {
 // compile-time assertion that *Lease satisfies the port.
 var _ port.SessionLease = (*Lease)(nil)
 
-// New constructs a k8s-backed lease over clientset in namespace, with the given
-// TTL and clock. A non-positive ttl defaults to 30s.
-func New(clientset kubernetes.Interface, namespace string, ttl time.Duration, clock port.Clock) *Lease {
+// ValidateDomain validates the optional Kubernetes Lease domain without doing
+// any I/O. Empty selects the exact legacy object-name and annotation behavior;
+// a non-empty domain must be a DNS-1123 subdomain.
+func ValidateDomain(domain string) error {
+	if domain == "" {
+		return nil
+	}
+	if problems := validation.IsDNS1123Subdomain(domain); len(problems) != 0 {
+		return fmt.Errorf("k8slease: invalid lease domain %q: %s", domain, strings.Join(problems, "; "))
+	}
+	return nil
+}
+
+// New constructs a k8s-backed lease over clientset in namespace and domain,
+// with the given TTL and clock. Empty domain selects exact legacy behavior. A
+// non-positive ttl defaults to 30s.
+func New(clientset kubernetes.Interface, namespace, domain string, ttl time.Duration, clock port.Clock) (*Lease, error) {
+	if err := ValidateDomain(domain); err != nil {
+		return nil, err
+	}
 	if ttl <= 0 {
 		ttl = 30 * time.Second
 	}
-	return &Lease{clientset: clientset, namespace: namespace, ttl: ttl, clock: clock}
+	return &Lease{clientset: clientset, namespace: namespace, domain: domain, ttl: ttl, clock: clock}, nil
 }
 
 // Acquire grants the lease when the object is absent, expired, or already held by
@@ -81,12 +108,15 @@ func (l *Lease) Acquire(ctx context.Context, id session.SessionID, owner string)
 	now := l.clock.Now()
 	leases := l.clientset.CoordinationV1().Leases(l.namespace)
 
-	cur, err := leases.Get(ctx, objectName(id), metav1.GetOptions{})
+	cur, err := leases.Get(ctx, objectName(l.domain, id), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return l.createLease(ctx, id, owner, now)
 	}
 	if err != nil {
 		return port.Lease{}, fmt.Errorf("k8slease: get lease %q: %w", id, err)
+	}
+	if err := l.validateObjectIdentity(cur, id); err != nil {
+		return port.Lease{}, err
 	}
 
 	holder := derefStr(cur.Spec.HolderIdentity)
@@ -109,12 +139,15 @@ func (l *Lease) Renew(ctx context.Context, in port.Lease) (port.Lease, error) {
 	now := l.clock.Now()
 	leases := l.clientset.CoordinationV1().Leases(l.namespace)
 
-	cur, err := leases.Get(ctx, objectName(in.SessionID), metav1.GetOptions{})
+	cur, err := leases.Get(ctx, objectName(l.domain, in.SessionID), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return port.Lease{}, port.ErrLeaseHeld // gone → we no longer hold it.
 	}
 	if err != nil {
 		return port.Lease{}, fmt.Errorf("k8slease: get lease %q: %w", in.SessionID, err)
+	}
+	if err := l.validateObjectIdentity(cur, in.SessionID); err != nil {
+		return port.Lease{}, err
 	}
 	holder := derefStr(cur.Spec.HolderIdentity)
 	token := derefInt32(cur.Spec.LeaseTransitions)
@@ -135,12 +168,15 @@ func (l *Lease) Renew(ctx context.Context, in port.Lease) (port.Lease, error) {
 // concurrent change is a no-op success — Release only drops the caller's OWN hold.
 func (l *Lease) Release(ctx context.Context, in port.Lease) error {
 	leases := l.clientset.CoordinationV1().Leases(l.namespace)
-	cur, err := leases.Get(ctx, objectName(in.SessionID), metav1.GetOptions{})
+	cur, err := leases.Get(ctx, objectName(l.domain, in.SessionID), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
 		return nil
 	}
 	if err != nil {
 		return fmt.Errorf("k8slease: get lease %q: %w", in.SessionID, err)
+	}
+	if err := l.validateObjectIdentity(cur, in.SessionID); err != nil {
+		return err
 	}
 	if derefStr(cur.Spec.HolderIdentity) != in.Owner || tokenToUint(derefInt32(cur.Spec.LeaseTransitions)) != in.Token {
 		return nil // not our hold; idempotent no-op.
@@ -152,10 +188,7 @@ func (l *Lease) Release(ctx context.Context, in port.Lease) error {
 	now := l.clock.Now()
 	token := derefInt32(cur.Spec.LeaseTransitions)
 	tomb := cur.DeepCopy()
-	if tomb.Annotations == nil {
-		tomb.Annotations = map[string]string{}
-	}
-	tomb.Annotations[rawIDAnnotation] = string(in.SessionID)
+	tomb.Annotations = l.objectAnnotations(tomb.Annotations, in.SessionID)
 	emptyHolder := ""
 	tomb.Spec.HolderIdentity = &emptyHolder
 	past := metav1.NewMicroTime(now.Add(-l.ttl - time.Second))
@@ -178,9 +211,9 @@ func (l *Lease) createLease(ctx context.Context, id session.SessionID, owner str
 	transitions := int32(1)
 	obj := &coordinationv1.Lease{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:        objectName(id),
+			Name:        objectName(l.domain, id),
 			Namespace:   l.namespace,
-			Annotations: map[string]string{rawIDAnnotation: string(id)},
+			Annotations: l.objectAnnotations(nil, id),
 		},
 		Spec: coordinationv1.LeaseSpec{
 			HolderIdentity:       &owner,
@@ -206,10 +239,7 @@ func (l *Lease) updateLease(ctx context.Context, id session.SessionID, cur *coor
 	micro := metav1.NewMicroTime(now)
 	dur := l.durationSeconds()
 	next := cur.DeepCopy()
-	if next.Annotations == nil {
-		next.Annotations = map[string]string{}
-	}
-	next.Annotations[rawIDAnnotation] = string(id)
+	next.Annotations = l.objectAnnotations(next.Annotations, id)
 	next.Spec.HolderIdentity = &owner
 	next.Spec.LeaseDurationSeconds = &dur
 	next.Spec.RenewTime = &micro
@@ -253,10 +283,50 @@ func toPort(id session.SessionID, obj *coordinationv1.Lease) port.Lease {
 	}
 }
 
-// objectName encodes a session id into a collision-free RFC-1123 Lease name.
-func objectName(id session.SessionID) string {
-	sum := sha256.Sum256([]byte(id))
+// objectName encodes the configured logical backend identity into a stable
+// RFC-1123 Lease name. Empty domain preserves the exact legacy encoding. A
+// non-empty domain hashes the versioned tuple `v1 NUL domain NUL session-id`;
+// DNS-1123 validation excludes NUL from domain and session-id consumes the
+// unambiguous remainder.
+func objectName(domain string, id session.SessionID) string {
+	if domain == "" {
+		sum := sha256.Sum256([]byte(id))
+		return objectNamePrefix + hex.EncodeToString(sum[:])[:40]
+	}
+	h := sha256.New()
+	_, _ = h.Write([]byte("v1\x00"))
+	_, _ = h.Write([]byte(domain))
+	_, _ = h.Write([]byte{'\x00'})
+	_, _ = h.Write([]byte(id))
+	sum := h.Sum(nil)
 	return objectNamePrefix + hex.EncodeToString(sum[:])[:40]
+}
+
+func (l *Lease) objectAnnotations(annotations map[string]string, id session.SessionID) map[string]string {
+	if annotations == nil {
+		annotations = make(map[string]string, 2)
+	}
+	annotations[rawIDAnnotation] = string(id)
+	if l.domain != "" {
+		annotations[rawDomainAnnotation] = l.domain
+	}
+	return annotations
+}
+
+// validateObjectIdentity verifies the unhashed tuple before a domain-qualified
+// object is mutated. Empty domain deliberately retains legacy behavior: older
+// objects may lack or contain a repaired raw-id annotation, and updates restore
+// that annotation exactly as they did before domains existed.
+func (l *Lease) validateObjectIdentity(obj *coordinationv1.Lease, id session.SessionID) error {
+	if l.domain == "" {
+		return nil
+	}
+	rawID, idOK := obj.Annotations[rawIDAnnotation]
+	rawDomain, domainOK := obj.Annotations[rawDomainAnnotation]
+	if !idOK || rawID != string(id) || !domainOK || rawDomain != l.domain {
+		return fmt.Errorf("k8slease: lease object %q has missing or mismatched identity annotations", obj.Name)
+	}
+	return nil
 }
 
 // expiryOf computes a Lease's expiry: renewTime + leaseDurationSeconds. A Lease

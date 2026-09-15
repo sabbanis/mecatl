@@ -129,6 +129,7 @@ var flagMetaByFlag = map[string]flagMeta{
 	"session-lease-url":            {group: groupDriver, common: false, acp: acpExclude},
 	"session-lease-dir":            {group: groupDriver, common: false, acp: acpExclude},
 	"session-lease-k8s-namespace":  {group: groupDriver, common: false, acp: acpExclude},
+	"session-lease-k8s-domain":     {group: groupDriver, common: false, acp: acpExclude},
 	"session-lease-ttl":            {group: groupDriver, common: false, acp: acpExclude},
 	"session-lease-renew-interval": {group: groupDriver, common: false, acp: acpExclude},
 

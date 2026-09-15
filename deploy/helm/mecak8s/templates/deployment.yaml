@@ -4,6 +4,7 @@
 {{- include "mecak8s.validateTLS" . -}}
 {{- include "mecak8s.validateLearningStore" . -}}
 {{- include "mecak8s.validateProviderSecurity" . -}}
+{{- include "mecak8s.validateExtraArgs" . -}}
 {{- $learningStoreEnabled := ne .Values.learning.store.endpoint "" -}}
 {{- $learningStoreTokenConfigured := and .Values.learning.store.tokenSecret .Values.learning.store.tokenKey -}}
 {{- include "mecak8s.validateMCP" . -}}
@@ -110,6 +111,7 @@ spec:
             - --redis-read-ledger
             {{- end }}
             - {{ printf "--session-lease-k8s-namespace=%s" .Release.Namespace | quote }}
+            - {{ printf "--session-lease-k8s-domain=%s" .Release.Name | quote }}
             - --headless=true
             - --posture=auto
             {{- if .Values.logging.level }}

@@ -1063,6 +1063,14 @@ shared assembly with **k8s-native defaults** — a **Redis** session store + dur
 `/readyz` (drain-gated + Redis-pinged), and a bounded `GracefulStop`. The agent pods are
 **storage-free**: no PVC, no `--store-dir`, no local state — every piece of state is a
 managed service the pod talks to over the network (Redis + the k8s API server). An
+optional Lease domain scopes both session ownership and the scheduler leader key within
+the Kubernetes namespace. The Helm chart supplies its release name, which gives each
+release an independent coordination domain across restart and in-place upgrade. Empty
+domain configuration retains the session-only object identity for compatibility. The
+domain prevents accidental cross-release collisions; Kubernetes RBAC and namespace
+boundaries remain responsible for authorization. The adapter does not bridge legacy and
+domain-qualified Lease objects, so an existing release uses the documented quiescent
+upgrade procedure before it starts domain-aware pods. An
 optional principal-scoped Redis virtual workspace provides shell-less
 Read/ListDir/Edit/Write/Copy/Move/Remove/Grep/Glob persistence without a volume: exact issuer/subject pairs select
 opaque namespaces, ownerless sessions share an anonymous namespace, and private placement
