@@ -22,7 +22,6 @@ function makeRow(overrides: Partial<ScheduleRow>): ScheduleRow {
     cron: "0 9 * * *",
     oneShotAt: null,
     timezone: "",
-    workspace: "",
     profile: "",
     mode: 2,
     mutating: false,

@@ -8,6 +8,7 @@ export type { Transport } from "@connectrpc/connect";
 export type {
   ClearSessionOptions,
   Client,
+  CompatibilityInfo,
   ConnectionStatus,
   ConnectionStatusListener,
   ConnectionStatusStore,
@@ -15,12 +16,22 @@ export type {
   CreateSessionOptions,
   ForkSessionOptions,
   InjectedTransportOptions,
+  ServerInfo,
+  ServerInfoOptions,
   Session,
   SessionLimits,
   SessionMcpServer,
   Sessions,
 } from "./client.js";
 export { connect } from "./client.js";
+export type {
+  RunControls,
+  SteerAck,
+  SteerCancelAck,
+  SteerCancelOutcome,
+  SteerControlOptions,
+  SteerOutcome,
+} from "./controls.js";
 export type { CredentialOptions, CredentialProvider } from "./credentials.js";
 export type {
   ClientDiagnosticsOptions,

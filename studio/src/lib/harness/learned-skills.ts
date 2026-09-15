@@ -1,27 +1,25 @@
 /**
  * Learned-skill lifecycle (ADR 0110) — the human half of the daemon's
- * self-improvement loop.
+ * self-improvement loop, over the SDK's `client.learnedSkills` namespace.
  *
  * Wire: `GET /v1/skills/learned` (+ `/changes`, `/{id}`, `/{id}/diff`) and
  * `POST /v1/skills/learned/{id}/{activate|reject|archive|rollback}`. Gated by
  * `capabilities.learned_skills` on GET /v1/compatibility.
  *
- * Responses are stdlib JSON over the proto structs (snake_case keys, absent =
- * zero value). Every mutation carries the version being acted on plus
- * `expected_revision` — the optimistic-concurrency token off the listed row.
- * The `project` query is deliberately never sent: Studio reads the
- * operator-scope partition (the browser never knows the workspace path).
+ * Every mutation carries the version being acted on plus `expected_revision`
+ * — the optimistic-concurrency token off the listed row. The `project` field
+ * is deliberately never set: Studio reads the operator-scope partition (the
+ * browser never knows the workspace path).
  */
 
-import { apiError, HARNESS_API } from "./client";
-import {
-  asArray,
-  asBool,
-  asNumber,
-  asRecord,
-  asString,
-  timestampUnix,
-} from "./wire";
+import type {
+  MutateLearnedSkillResponse,
+  LearnedSkillVersion as ProtoLearnedSkillVersion,
+  SkillChangeReceipt,
+} from "@stacklok-oss/mecatl-sdk/gen";
+
+import { getHarnessClient, harness } from "./sdk";
+import { timestampUnix } from "./time";
 
 /**
  * One immutable agent-owned skill version. `state` is the daemon's closed
@@ -47,23 +45,24 @@ export interface LearnedSkillVersion {
   undoAvailable: boolean;
 }
 
-export function decodeLearnedSkillVersion(raw: unknown): LearnedSkillVersion {
-  const record = asRecord(raw);
+function decodeLearnedSkillVersion(
+  skill: ProtoLearnedSkillVersion | undefined,
+): LearnedSkillVersion {
   return {
-    id: asString(record.id),
-    name: asString(record.name),
-    version: asString(record.version),
-    revision: asString(record.revision),
-    state: asString(record.state),
-    ownerAgent: asString(record.owner_agent),
-    description: asString(record.description),
-    body: asString(record.body),
-    supersedes: asString(record.supersedes),
-    evidenceCount: asNumber(record.evidence_count),
-    createdAtUnix: timestampUnix(record.created_at),
-    updatedAtUnix: timestampUnix(record.updated_at),
-    inspectAvailable: asBool(record.inspect_available),
-    undoAvailable: asBool(record.undo_available),
+    id: skill?.id ?? "",
+    name: skill?.name ?? "",
+    version: skill?.version ?? "",
+    revision: skill?.revision ?? "",
+    state: skill?.state ?? "",
+    ownerAgent: skill?.ownerAgent ?? "",
+    description: skill?.description ?? "",
+    body: skill?.body ?? "",
+    supersedes: skill?.supersedes ?? "",
+    evidenceCount: skill?.evidenceCount ?? 0,
+    createdAtUnix: timestampUnix(skill?.createdAt),
+    updatedAtUnix: timestampUnix(skill?.updatedAt),
+    inspectAvailable: skill?.inspectAvailable ?? false,
+    undoAvailable: skill?.undoAvailable ?? false,
   };
 }
 
@@ -81,19 +80,20 @@ export interface LearnedSkillChange {
   atUnix: number;
 }
 
-export function decodeLearnedSkillChange(raw: unknown): LearnedSkillChange {
-  const record = asRecord(raw);
+function decodeLearnedSkillChange(
+  change: SkillChangeReceipt,
+): LearnedSkillChange {
   return {
-    id: asString(record.id),
-    skillId: asString(record.skill_id),
-    name: asString(record.name),
-    version: asString(record.version),
-    operation: asString(record.operation),
-    fromState: asString(record.from_state),
-    toState: asString(record.to_state),
-    evidenceCount: asNumber(record.evidence_count),
-    verdict: asString(record.verdict),
-    atUnix: timestampUnix(record.at),
+    id: change.id,
+    skillId: change.skillId,
+    name: change.name,
+    version: change.version,
+    operation: change.operation,
+    fromState: change.fromState,
+    toState: change.toState,
+    evidenceCount: change.evidenceCount,
+    verdict: change.verdict,
+    atUnix: timestampUnix(change.at),
   };
 }
 
@@ -106,20 +106,22 @@ export async function listLearnedSkills(
   options: { state?: string; cursor?: string; limit?: number } = {},
   signal?: AbortSignal,
 ): Promise<LearnedSkillPage> {
-  const query = new URLSearchParams();
-  if (options.state) query.set("state", options.state);
-  if (options.cursor) query.set("cursor", options.cursor);
-  if (options.limit) query.set("limit", String(options.limit));
-  const suffix = query.size > 0 ? `?${query}` : "";
-  const response = await fetch(`${HARNESS_API}/skills/learned${suffix}`, {
-    signal,
-    cache: "no-store",
-  });
-  if (!response.ok) throw await apiError(response);
-  const body = asRecord(await response.json());
+  const response = await harness(() =>
+    getHarnessClient().learnedSkills.list(
+      {
+        $typeName: "mecatl.v1.ListLearnedSkillsRequest",
+        state: options.state ?? "",
+        cursor: options.cursor ?? "",
+        limit: options.limit ?? 0,
+        ownerAgent: "",
+        project: "", // operator scope — never the workspace (rule 2)
+      },
+      { signal },
+    ),
+  );
   return {
-    skills: asArray(body.skills).map(decodeLearnedSkillVersion),
-    nextCursor: asString(body.next_cursor),
+    skills: response.skills.map(decodeLearnedSkillVersion),
+    nextCursor: response.nextCursor,
   };
 }
 
@@ -127,19 +129,20 @@ export async function listLearnedSkillChanges(
   options: { cursor?: string; limit?: number } = {},
   signal?: AbortSignal,
 ): Promise<{ changes: LearnedSkillChange[]; nextCursor: string }> {
-  const query = new URLSearchParams();
-  if (options.cursor) query.set("cursor", options.cursor);
-  if (options.limit) query.set("limit", String(options.limit));
-  const suffix = query.size > 0 ? `?${query}` : "";
-  const response = await fetch(
-    `${HARNESS_API}/skills/learned/changes${suffix}`,
-    { signal, cache: "no-store" },
+  const response = await harness(() =>
+    getHarnessClient().learnedSkills.listChanges(
+      {
+        $typeName: "mecatl.v1.ListSkillChangesRequest",
+        cursor: options.cursor ?? "",
+        limit: options.limit ?? 0,
+        project: "",
+      },
+      { signal },
+    ),
   );
-  if (!response.ok) throw await apiError(response);
-  const body = asRecord(await response.json());
   return {
-    changes: asArray(body.changes).map(decodeLearnedSkillChange),
-    nextCursor: asString(body.next_cursor),
+    changes: response.changes.map(decodeLearnedSkillChange),
+    nextCursor: response.nextCursor,
   };
 }
 
@@ -150,14 +153,19 @@ export async function fetchLearnedSkill(
   version?: string,
   signal?: AbortSignal,
 ): Promise<LearnedSkillVersion> {
-  const query = new URLSearchParams({ owner_agent: ownerAgent });
-  if (version) query.set("version", version);
-  const response = await fetch(
-    `${HARNESS_API}/skills/learned/${encodeURIComponent(id)}?${query}`,
-    { signal, cache: "no-store" },
+  const response = await harness(() =>
+    getHarnessClient().learnedSkills.get(
+      {
+        $typeName: "mecatl.v1.GetLearnedSkillRequest",
+        id,
+        ownerAgent,
+        version: version ?? "",
+        project: "",
+      },
+      { signal },
+    ),
   );
-  if (!response.ok) throw await apiError(response);
-  return decodeLearnedSkillVersion(asRecord(await response.json()).skill);
+  return decodeLearnedSkillVersion(response.skill);
 }
 
 /** Unified diff between two versions of one learned skill. */
@@ -168,17 +176,20 @@ export async function diffLearnedSkillVersions(
   toVersion: string,
   signal?: AbortSignal,
 ): Promise<string> {
-  const query = new URLSearchParams({
-    owner_agent: ownerAgent,
-    from: fromVersion,
-    to: toVersion,
-  });
-  const response = await fetch(
-    `${HARNESS_API}/skills/learned/${encodeURIComponent(id)}/diff?${query}`,
-    { signal, cache: "no-store" },
+  const response = await harness(() =>
+    getHarnessClient().learnedSkills.diffVersions(
+      {
+        $typeName: "mecatl.v1.DiffLearnedSkillVersionsRequest",
+        id,
+        ownerAgent,
+        fromVersion,
+        toVersion,
+        project: "",
+      },
+      { signal },
+    ),
   );
-  if (!response.ok) throw await apiError(response);
-  return asString(asRecord(await response.json()).diff);
+  return response.diff;
 }
 
 export type LearnedSkillAction = "activate" | "reject" | "archive";
@@ -190,25 +201,13 @@ export interface LearnedSkillMutationResult {
   publicationError: string;
 }
 
-async function learnedSkillMutation(
-  id: string,
-  action: string,
-  body: Record<string, string>,
-): Promise<LearnedSkillMutationResult> {
-  const response = await fetch(
-    `${HARNESS_API}/skills/learned/${encodeURIComponent(id)}/${action}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    },
-  );
-  if (!response.ok) throw await apiError(response);
-  const decoded = asRecord(await response.json());
+function decodeMutation(
+  response: MutateLearnedSkillResponse,
+): LearnedSkillMutationResult {
   return {
-    skill: decodeLearnedSkillVersion(decoded.skill),
-    publicationStatus: asString(decoded.publication_status),
-    publicationError: asString(decoded.publication_error),
+    skill: decodeLearnedSkillVersion(response.skill),
+    publicationStatus: response.publicationStatus,
+    publicationError: response.publicationError,
   };
 }
 
@@ -222,11 +221,17 @@ export async function mutateLearnedSkill(
     expectedRevision: string;
   },
 ): Promise<LearnedSkillMutationResult> {
-  return learnedSkillMutation(target.id, action, {
-    owner_agent: target.ownerAgent,
+  const request = {
+    $typeName: "mecatl.v1.MutateLearnedSkillRequest" as const,
+    project: "",
+    id: target.id,
+    ownerAgent: target.ownerAgent,
     version: target.version,
-    expected_revision: target.expectedRevision,
-  });
+    expectedRevision: target.expectedRevision,
+  };
+  const skills = getHarnessClient().learnedSkills;
+  const response = await harness(() => skills[action](request));
+  return decodeMutation(response);
 }
 
 /** Rolls the skill back to a prior version (usually `supersedes`). */
@@ -236,9 +241,15 @@ export async function rollbackLearnedSkill(target: {
   targetVersion: string;
   expectedRevision: string;
 }): Promise<LearnedSkillMutationResult> {
-  return learnedSkillMutation(target.id, "rollback", {
-    owner_agent: target.ownerAgent,
-    target_version: target.targetVersion,
-    expected_revision: target.expectedRevision,
-  });
+  const response = await harness(() =>
+    getHarnessClient().learnedSkills.rollback({
+      $typeName: "mecatl.v1.RollbackLearnedSkillRequest",
+      project: "",
+      id: target.id,
+      ownerAgent: target.ownerAgent,
+      targetVersion: target.targetVersion,
+      expectedRevision: target.expectedRevision,
+    }),
+  );
+  return decodeMutation(response);
 }

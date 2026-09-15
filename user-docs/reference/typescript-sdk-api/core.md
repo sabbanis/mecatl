@@ -33,6 +33,7 @@ This reference describes the declarations exported by `@stacklok-oss/mecatl-sdk`
 | [`ClientDiagnosticsOptions`](#api-clientdiagnosticsoptions-interface) | Interface |
 | [`Commands`](#api-commands-interface) | Interface |
 | [`CompactionArchiveEventPayload`](#api-compactionarchiveeventpayload-interface) | Interface |
+| [`CompatibilityInfo`](#api-compatibilityinfo-interface) | Interface |
 | [`connect`](#api-connect-function) | Function |
 | [`ConnectionStatus`](#api-connectionstatus-typealias) | Type alias |
 | [`ConnectionStatusListener`](#api-connectionstatuslistener-typealias) | Type alias |
@@ -116,6 +117,7 @@ This reference describes the declarations exported by `@stacklok-oss/mecatl-sdk`
 | [`ResultEventPayload`](#api-resulteventpayload-interface) | Interface |
 | [`RetryDisposition`](#api-retrydisposition-typealias) | Type alias |
 | [`Run`](#api-run-interface) | Interface |
+| [`RunControls`](#api-runcontrols-interface) | Interface |
 | [`RunOptions`](#api-runoptions-interface) | Interface |
 | [`RunResult`](#api-runresult-interface) | Interface |
 | [`ScheduleEventPayload`](#api-scheduleeventpayload-interface) | Interface |
@@ -125,6 +127,8 @@ This reference describes the declarations exported by `@stacklok-oss/mecatl-sdk`
 | [`ServerCapabilities`](#api-servercapabilities-interface) | Interface |
 | [`ServerError`](#api-servererror-class) | Class |
 | [`ServerErrorCode`](#api-servererrorcode-typealias) | Type alias |
+| [`ServerInfo`](#api-serverinfo-interface) | Interface |
+| [`ServerInfoOptions`](#api-serverinfooptions-interface) | Interface |
 | [`Session`](#api-session-interface) | Interface |
 | [`SESSION_ID_HEADER_NAME`](#api-session-id-header-name-variable) | Variable |
 | [`SessionActivity`](#api-sessionactivity-interface) | Interface |
@@ -149,7 +153,12 @@ This reference describes the declarations exported by `@stacklok-oss/mecatl-sdk`
 | [`SessionTranscriptMessage`](#api-sessiontranscriptmessage-interface) | Interface |
 | [`Skills`](#api-skills-interface) | Interface |
 | [`Soul`](#api-soul-interface) | Interface |
+| [`SteerAck`](#api-steerack-interface) | Interface |
+| [`SteerCancelAck`](#api-steercancelack-interface) | Interface |
+| [`SteerCancelOutcome`](#api-steercanceloutcome-typealias) | Type alias |
+| [`SteerControlOptions`](#api-steercontroloptions-interface) | Interface |
 | [`SteerEventPayload`](#api-steereventpayload-interface) | Interface |
+| [`SteerOutcome`](#api-steeroutcome-typealias) | Type alias |
 | [`SteerOutcomeEventPayload`](#api-steeroutcomeeventpayload-interface) | Interface |
 | [`Storage`](#api-storage-interface) | Interface |
 | [`StreamProgress`](#api-streamprogress-typealias) | Type alias |
@@ -1089,7 +1098,7 @@ The high-level Mecatl client.
 export interface Client
 ```
 
-Callable members: [`[Symbol.asyncDispose]()`](#api-client-symbol-asyncdispose-methodsignature), [`close()`](#api-client-close-methodsignature)
+Callable members: [`[Symbol.asyncDispose]()`](#api-client-symbol-asyncdispose-methodsignature), [`close()`](#api-client-close-methodsignature), [`compatibility()`](#api-client-compatibility-methodsignature), [`serverInfo()`](#api-client-serverinfo-methodsignature)
 
 <Heading as="h4" id="api-client-symbol-asyncdispose-methodsignature"><code>Client[Symbol.asyncDispose]</code></Heading>
 
@@ -1122,6 +1131,22 @@ Returns: `Promise<void>`
 ```ts
 readonly commands: Commands;
 ```
+
+<Heading as="h4" id="api-client-compatibility-methodsignature"><code>Client.compatibility</code></Heading>
+
+Reads the server's compatibility document.
+
+```ts
+compatibility(options?: RequestOptions): Promise<CompatibilityInfo>;
+```
+
+Parameters:
+
+- `options` (`RequestOptions`, optional): Request headers, cancellation signal, and deadline.
+
+Returns: `Promise<CompatibilityInfo>`: The API major, server capabilities, and feature registry.
+
+Throws: `IncompatibleServerError` when the API major is unsupported.
 
 <Heading as="h4" id="api-client-dreamplans-propertysignature"><code>Client.dreamPlans</code></Heading>
 
@@ -1170,6 +1195,20 @@ readonly reflection: Reflection;
 ```ts
 readonly schedules: Schedules;
 ```
+
+<Heading as="h4" id="api-client-serverinfo-methodsignature"><code>Client.serverInfo</code></Heading>
+
+Reads the safe server identity probe.
+
+```ts
+serverInfo(options?: ServerInfoOptions): Promise<ServerInfo>;
+```
+
+Parameters:
+
+- `options` (`ServerInfoOptions`, optional): Optional provider selector plus request options.
+
+Returns: `Promise<ServerInfo>`: The build id, composition family, and provider endpoint projection.
 
 <Heading as="h4" id="api-client-sessions-propertysignature"><code>Client.sessions</code></Heading>
 
@@ -1272,6 +1311,38 @@ export interface CompactionArchiveEventPayload
 
 ```ts
 readonly replaced: readonly ArchivedConversationMessage[];
+```
+
+<Heading as="h3" id="api-compatibilityinfo-interface"><code>CompatibilityInfo</code></Heading>
+
+The server's compatibility document: API floor, capabilities, and feature registry.
+
+```ts
+export interface CompatibilityInfo
+```
+
+<Heading as="h4" id="api-compatibilityinfo-apimajor-propertysignature"><code>CompatibilityInfo.apiMajor</code></Heading>
+
+The server's API major version.
+
+```ts
+readonly apiMajor: number;
+```
+
+<Heading as="h4" id="api-compatibilityinfo-capabilities-propertysignature"><code>CompatibilityInfo.capabilities</code></Heading>
+
+Operator-enabled server capabilities; absent when the server omitted them.
+
+```ts
+readonly capabilities?: ServerCapabilities;
+```
+
+<Heading as="h4" id="api-compatibilityinfo-features-propertysignature"><code>CompatibilityInfo.features</code></Heading>
+
+The open feature registry clients gate optional routes on.
+
+```ts
+readonly features: readonly string[];
 ```
 
 <Heading as="h3" id="api-connectionstatusstore-interface"><code>ConnectionStatusStore</code></Heading>
@@ -3190,6 +3261,97 @@ Parameters:
 
 Returns: `Promise<void>`: A promise that resolves after the steering request is sent.
 
+<Heading as="h3" id="api-runcontrols-interface"><code>RunControls</code></Heading>
+
+Prompt-free controls for one run, addressed by run id. Every control is STRICT: it names the run through `expected_run_id`, so a control that outlives its run is refused by the server as `stale_run_control` rather than acting on the session's next run. Unlike the controls on a `Run`, these do not require the run's own event stream, so they also serve a run this client re-attached to or observes through a durable watch. HTTP transport only.
+
+```ts
+export interface RunControls
+```
+
+Callable members: [`cancel()`](#api-runcontrols-cancel-methodsignature), [`cancelSteer()`](#api-runcontrols-cancelsteer-methodsignature), [`resolveAsk()`](#api-runcontrols-resolveask-methodsignature), [`steer()`](#api-runcontrols-steer-methodsignature)
+
+<Heading as="h4" id="api-runcontrols-cancel-methodsignature"><code>RunControls.cancel</code></Heading>
+
+Requests cancellation of this run.
+
+```ts
+cancel(options?: RequestOptions): Promise<void>;
+```
+
+Parameters:
+
+- `options` (`RequestOptions`, optional): Request headers, cancellation signal, and deadline.
+
+Returns: `Promise<void>`
+
+Throws: `ServerError` with code `stale_run_control` when the run already ended.
+
+<Heading as="h4" id="api-runcontrols-cancelsteer-methodsignature"><code>RunControls.cancelSteer</code></Heading>
+
+Retracts this run's pending, un-drained steer bundle.
+
+```ts
+cancelSteer(options?: SteerControlOptions): Promise<SteerCancelAck>;
+```
+
+Parameters:
+
+- `options` (`SteerControlOptions`, optional): Correlation id plus request headers, signal, and deadline.
+
+Returns: `Promise<SteerCancelAck>`: `retracted`, or `none_pending` when nothing was waiting.
+
+Throws: `UnsupportedFeatureError` when the server lacks `http_steer`.
+
+<Heading as="h4" id="api-runcontrols-resolveask-methodsignature"><code>RunControls.resolveAsk</code></Heading>
+
+Resolves one pending permission ask on this run.
+
+```ts
+resolveAsk(askId: string, verdict: PermissionVerdict, options?: RequestOptions): Promise<void>;
+```
+
+Parameters:
+
+- `askId` (`string`): ID carried by the permission ask.
+- `verdict` (`PermissionVerdict`): Decision to apply to the pending ask.
+- `options` (`RequestOptions`, optional): Request headers, cancellation signal, and deadline.
+
+Returns: `Promise<void>`
+
+Throws: `ServerError` with code `stale_run_control` when the run already ended.
+
+<Heading as="h4" id="api-runcontrols-runid-propertysignature"><code>RunControls.runId</code></Heading>
+
+```ts
+readonly runId: string;
+```
+
+<Heading as="h4" id="api-runcontrols-sessionid-propertysignature"><code>RunControls.sessionId</code></Heading>
+
+```ts
+readonly sessionId: string;
+```
+
+<Heading as="h4" id="api-runcontrols-steer-methodsignature"><code>RunControls.steer</code></Heading>
+
+Strictly steers this run with text or ordered text and media parts.
+
+```ts
+steer(prompt: PromptInput, options?: SteerControlOptions): Promise<SteerAck>;
+```
+
+Parameters:
+
+- `prompt` (`PromptInput`): Instruction to inject at the run's next turn boundary.
+- `options` (`SteerControlOptions`, optional): Correlation id plus request headers, signal, and deadline.
+
+Returns: `Promise<SteerAck>`: The server's outcome; the caller keeps the text on `too_late`.
+
+Throws: `UnsupportedFeatureError` when the server lacks `http_steer`.
+
+Throws: `ServerError` with code `stale_run_control` when the run already ended.
+
 <Heading as="h3" id="api-runoptions-interface"><code>RunOptions</code></Heading>
 
 Options applied to one run.
@@ -3648,6 +3810,54 @@ readonly workspaceEnrollment: boolean;
 readonly worktrees: boolean;
 ```
 
+<Heading as="h3" id="api-serverinfo-interface"><code>ServerInfo</code></Heading>
+
+The safe, state-free server identity probe.
+
+```ts
+export interface ServerInfo
+```
+
+<Heading as="h4" id="api-serverinfo-buildid-propertysignature"><code>ServerInfo.buildId</code></Heading>
+
+Opaque linker-stamped build identity (`dev` in an unstamped build).
+
+```ts
+readonly buildId: string;
+```
+
+<Heading as="h4" id="api-serverinfo-llmproviderdisplayendpoint-propertysignature"><code>ServerInfo.llmProviderDisplayEndpoint</code></Heading>
+
+A sanitized display projection of the named provider's endpoint, "" when unavailable.
+
+```ts
+readonly llmProviderDisplayEndpoint: string;
+```
+
+<Heading as="h4" id="api-serverinfo-serverimplementation-propertysignature"><code>ServerInfo.serverImplementation</code></Heading>
+
+The stable composition family (`mecated`, `mecak8s`, `mecatui`), or `unknown`.
+
+```ts
+readonly serverImplementation: string;
+```
+
+<Heading as="h3" id="api-serverinfooptions-interface"><code>ServerInfoOptions</code></Heading>
+
+Options accepted by Client.serverInfo().
+
+```ts
+export interface ServerInfoOptions extends RequestOptions
+```
+
+<Heading as="h4" id="api-serverinfooptions-providerid-propertysignature"><code>ServerInfoOptions.providerId</code></Heading>
+
+The caller's already-known active provider, for the endpoint projection.
+
+```ts
+providerId?: string;
+```
+
 <Heading as="h3" id="api-session-interface"><code>Session</code></Heading>
 
 A durable Mecatl session handle.
@@ -3656,7 +3866,7 @@ A durable Mecatl session handle.
 export interface Session
 ```
 
-Callable members: [`activity()`](#api-session-activity-methodsignature), [`attach()`](#api-session-attach-methodsignature), [`clear()`](#api-session-clear-methodsignature), [`close()`](#api-session-close-methodsignature), [`compact()`](#api-session-compact-methodsignature), [`delete()`](#api-session-delete-methodsignature), [`rename()`](#api-session-rename-methodsignature), [`resolvePlan()`](#api-session-resolveplan-methodsignature), [`retry()`](#api-session-retry-methodsignature), [`run()`](#api-session-run-methodsignature), [`setMode()`](#api-session-setmode-methodsignature), [`snapshot()`](#api-session-snapshot-methodsignature), [`transcript()`](#api-session-transcript-methodsignature)
+Callable members: [`activity()`](#api-session-activity-methodsignature), [`attach()`](#api-session-attach-methodsignature), [`clear()`](#api-session-clear-methodsignature), [`close()`](#api-session-close-methodsignature), [`compact()`](#api-session-compact-methodsignature), [`controls()`](#api-session-controls-methodsignature), [`delete()`](#api-session-delete-methodsignature), [`rename()`](#api-session-rename-methodsignature), [`resolvePlan()`](#api-session-resolveplan-methodsignature), [`retry()`](#api-session-retry-methodsignature), [`run()`](#api-session-run-methodsignature), [`setMode()`](#api-session-setmode-methodsignature), [`snapshot()`](#api-session-snapshot-methodsignature), [`transcript()`](#api-session-transcript-methodsignature)
 
 <Heading as="h4" id="api-session-activity-methodsignature"><code>Session.activity</code></Heading>
 
@@ -3735,6 +3945,20 @@ Parameters:
 - `options` (`RequestOptions`, optional): Request headers, cancellation signal, and deadline.
 
 Returns: `Promise<boolean>`: Whether the server reduced the model-visible history.
+
+<Heading as="h4" id="api-session-controls-methodsignature"><code>Session.controls</code></Heading>
+
+Returns strict, run-id-addressed controls for one run of this session. The handle needs no event stream, so it also serves a run this client did not start (a durable watch, a re-attached page). HTTP transport only.
+
+```ts
+controls(runId: string): RunControls;
+```
+
+Parameters:
+
+- `runId` (`string`): The run every control names through `expected_run_id`.
+
+Returns: `RunControls`: Controls that resolve asks, cancel, steer, and retract a steer.
 
 <Heading as="h4" id="api-session-delete-methodsignature"><code>Session.delete</code></Heading>
 
@@ -4597,6 +4821,80 @@ Parameters:
 - `options` (`RequestOptions`, optional)
 
 Returns: `Promise<GetSoulResponse>`
+
+<Heading as="h3" id="api-steerack-interface"><code>SteerAck</code></Heading>
+
+The acknowledgement of a steer control.
+
+```ts
+export interface SteerAck
+```
+
+<Heading as="h4" id="api-steerack-messageid-propertysignature"><code>SteerAck.messageId</code></Heading>
+
+The request's own message id, echoed by the server ("" when none).
+
+```ts
+readonly messageId: string;
+```
+
+<Heading as="h4" id="api-steerack-outcome-propertysignature"><code>SteerAck.outcome</code></Heading>
+
+```ts
+readonly outcome: SteerOutcome;
+```
+
+<Heading as="h4" id="api-steerack-promoted-propertysignature"><code>SteerAck.promoted</code></Heading>
+
+True when a too-late unqualified steer was promoted into a follow-up run.
+
+```ts
+readonly promoted: boolean;
+```
+
+<Heading as="h4" id="api-steerack-runid-propertysignature"><code>SteerAck.runId</code></Heading>
+
+The promoted follow-up run's id, "" when nothing was promoted.
+
+```ts
+readonly runId: string;
+```
+
+<Heading as="h3" id="api-steercancelack-interface"><code>SteerCancelAck</code></Heading>
+
+The acknowledgement of a cancel-steer control.
+
+```ts
+export interface SteerCancelAck
+```
+
+<Heading as="h4" id="api-steercancelack-messageid-propertysignature"><code>SteerCancelAck.messageId</code></Heading>
+
+```ts
+readonly messageId: string;
+```
+
+<Heading as="h4" id="api-steercancelack-outcome-propertysignature"><code>SteerCancelAck.outcome</code></Heading>
+
+```ts
+readonly outcome: SteerCancelOutcome;
+```
+
+<Heading as="h3" id="api-steercontroloptions-interface"><code>SteerControlOptions</code></Heading>
+
+Options accepted by the steer and cancel-steer run controls.
+
+```ts
+export interface SteerControlOptions extends RequestOptions
+```
+
+<Heading as="h4" id="api-steercontroloptions-messageid-propertysignature"><code>SteerControlOptions.messageId</code></Heading>
+
+Client-minted correlation id. The acknowledgement echoes it, and the run's later `steer` drain echo names the id of the LAST message merged into the drained bundle (the watermark a client splits its queue on).
+
+```ts
+messageId?: string;
+```
 
 <Heading as="h3" id="api-steereventpayload-interface"><code>SteerEventPayload</code></Heading>
 
@@ -6059,6 +6357,22 @@ One SDK permission-mode value.
 
 ```ts
 export type SessionMode = (typeof SessionMode)[keyof typeof SessionMode];
+```
+
+<Heading as="h3" id="api-steercanceloutcome-typealias"><code>SteerCancelOutcome</code></Heading>
+
+The server's answer to a cancel-steer control.
+
+```ts
+export type SteerCancelOutcome = "retracted" | "none_pending";
+```
+
+<Heading as="h3" id="api-steeroutcome-typealias"><code>SteerOutcome</code></Heading>
+
+The server's answer to a steer control.
+
+```ts
+export type SteerOutcome = "accepted" | "appended" | "too_late";
 ```
 
 <Heading as="h3" id="api-streamprogress-typealias"><code>StreamProgress</code></Heading>

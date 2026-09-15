@@ -1,23 +1,26 @@
 /**
- * Decoders and encoders for the daemon's schedule registry.
+ * Mappers between the SDK's generated schedule messages and the UI shapes.
  *
- * The sharp edge this module encodes: request bodies are decoded with
- * PROTOJSON; responses are encoded with stdlib `encoding/json`. The two
- * disagree on every well-known type — a Timestamp reads back as
- * `{seconds,nanos}` but must be sent as RFC 3339, a Duration reads back as
- * `{seconds}` but must be sent as `"5s"` — so a response body can never be
- * echoed back as a request body.
+ * The daemon's schedule registry crosses the wire as the protobuf messages in
+ * `@stacklok-oss/mecatl-sdk/gen` (`ScheduleSpec`, `ScheduleState`,
+ * `ScheduleFire`). The SDK owns the JSON encoding — Timestamps, Durations and
+ * enums are its concern — so this module only reshapes typed messages into
+ * the rows the pages render and the drafts the form edits back into a spec.
  */
 
-import {
-  asRecord,
-  enumNumber,
-  numeric,
-  optionalString,
-  protoMillis,
-  protoSeconds,
-  type UnknownRecord,
-} from "./internal";
+import type {
+  Content,
+  ListFiresResponse,
+  ListSchedulesResponse,
+  ScheduleFire,
+  ScheduleSpec,
+  ScheduleState,
+} from "@stacklok-oss/mecatl-sdk/gen";
+
+/** The well-known-type messages the spec carries, named off the spec itself so
+ *  no protobuf runtime import is needed here. */
+type Timestamp = NonNullable<ScheduleSpec["createdAt"]>;
+type Duration = NonNullable<ScheduleSpec["fireTimeout"]>;
 
 /**
  * Per-fire budgets (proto Limits). Zero DISABLES a limit rather than meaning
@@ -42,8 +45,7 @@ type ScheduleLimits = {
  * from the CLI.
  *
  * `parts` stays opaque on purpose. It is multimodal Content this client never
- * renders, and decoding it into a typed shape only to re-encode it would be a
- * second mapping of a message we need only hand back unchanged.
+ * renders; the decoded messages are handed back unchanged.
  */
 export type ScheduleCarriedSpec = {
   selectorProvider: string;
@@ -53,7 +55,7 @@ export type ScheduleCarriedSpec = {
   carryContext: boolean;
   /** A proto Duration in seconds, fractions allowed. 0 = the deployment default. */
   fireTimeoutSeconds: number;
-  parts: unknown[];
+  parts: Content[];
 };
 
 export type ScheduleRow = {
@@ -62,7 +64,6 @@ export type ScheduleRow = {
   cron: string;
   oneShotAt: number | null;
   timezone: string;
-  workspace: string;
   profile: string;
   mode: number;
   mutating: boolean;
@@ -125,7 +126,6 @@ export type ScheduleSpecDraft = {
   prompt: string;
   trigger: ScheduleTriggerDraft;
   profile: "" | "no-fs";
-  workspace: string;
   mode: number;
   mutating: boolean;
   maxFires: number;
@@ -141,18 +141,46 @@ export const PERMISSION_MODES: Record<string, number> = {
   PERMISSION_MODE_ACCEPT_EDITS: 3,
 };
 
-const MISFIRE_POLICIES: Record<string, number> = {
-  MISFIRE_POLICY_UNSPECIFIED: 0,
-  MISFIRE_FIRE_ONCE_NOW: 1,
-  MISFIRE_SKIP: 2,
-};
+// A Timestamp's zero value has no meaning on this surface — "no next fire" is
+// a real state (a one-shot that fired, a cron past max_fires) and must not
+// read as 1970 — so absent and zero both collapse to null.
+function timestampMillis(value: Timestamp | undefined): number | null {
+  if (!value) return null;
+  const seconds = Number(value.seconds);
+  if (!Number.isFinite(seconds) || seconds === 0) return null;
+  return seconds * 1000 + Math.floor(value.nanos / 1e6);
+}
 
-function decodeLimits(value: unknown): ScheduleLimits {
-  const limits = asRecord(value) ?? {};
+function millisTimestamp(millis: number): Timestamp {
+  const seconds = Math.floor(millis / 1000);
   return {
-    maxTurns: numeric(limits.max_turns),
-    maxToolCalls: numeric(limits.max_tool_calls),
-    maxConsecutiveFailures: numeric(limits.max_consecutive_failures),
+    $typeName: "google.protobuf.Timestamp",
+    seconds: BigInt(seconds),
+    nanos: (millis - seconds * 1000) * 1e6,
+  };
+}
+
+// Returned in seconds because that is the unit the proto field is documented
+// in and the unit the carried spec hands back.
+function durationSeconds(value: Duration | undefined): number {
+  if (!value) return 0;
+  return Number(value.seconds) + value.nanos / 1e9;
+}
+
+function secondsDuration(seconds: number): Duration {
+  const whole = Math.floor(seconds);
+  return {
+    $typeName: "google.protobuf.Duration",
+    seconds: BigInt(whole),
+    nanos: Math.round((seconds - whole) * 1e9),
+  };
+}
+
+function decodeLimits(value: ScheduleSpec["limits"]): ScheduleLimits {
+  return {
+    maxTurns: value?.maxTurns ?? 0,
+    maxToolCalls: value?.maxToolCalls ?? 0,
+    maxConsecutiveFailures: value?.maxConsecutiveFailures ?? 0,
   };
 }
 
@@ -160,79 +188,77 @@ function decodeLimits(value: unknown): ScheduleLimits {
 // identity, so the label prefers the name and falls back to the id rather than
 // inventing a friendly string. An absent owner stays empty: an ownerless
 // schedule is never rendered as an anonymous somebody.
-function decodeOwner(value: unknown): string {
-  const owner = asRecord(value);
+function decodeOwner(owner: ScheduleSpec["owner"]): string {
   if (!owner) return "";
-  return optionalString(owner.name) || optionalString(owner.subject) || "";
+  return owner.name || owner.subject || "";
 }
 
-export function decodeScheduleRows(value: unknown): ScheduleRow[] {
-  const body = asRecord(value);
-  if (!Array.isArray(body?.schedules)) return [];
-  return body.schedules.map((entryValue) => {
-    const entry = asRecord(entryValue) ?? {};
-    const spec = asRecord(entry.spec) ?? {};
-    const state = asRecord(entry.state) ?? {};
-    const trigger = asRecord(spec.trigger) ?? {};
-    const selector = asRecord(spec.selector) ?? {};
-    const lastFireSessionId = String(state.last_fire_session_id ?? "");
-    return {
-      name: String(spec.name ?? ""),
-      prompt: String(spec.prompt ?? ""),
-      cron: String(trigger.cron ?? ""),
-      oneShotAt: protoMillis(trigger.one_shot),
-      timezone: String(spec.timezone ?? ""),
-      workspace: String(spec.workspace ?? ""),
-      profile: String(spec.profile ?? ""),
-      mode: enumNumber(spec.mode, PERMISSION_MODES),
-      mutating: Boolean(spec.mutating),
-      maxFires: numeric(spec.max_fires),
-      limits: decodeLimits(spec.limits),
-      oneShotRetry: Boolean(spec.one_shot_retry),
-      oneShotMaxRetries: numeric(spec.one_shot_max_retries),
-      enabled: Boolean(state.enabled),
-      fireCount: numeric(state.fire_count),
-      nextFireAt: protoMillis(state.next_fire_at),
-      lastFireAt: protoMillis(state.last_fire_at),
-      fireStage:
-        protoMillis(state.last_fire_started_at) !== null
-          ? "running"
-          : lastFireSessionId === "pending"
-            ? "claimed"
-            : "idle",
-      lastFireSessionId:
-        lastFireSessionId === "pending" ? "" : lastFireSessionId,
-      owner: decodeOwner(spec.owner),
-      carried: {
-        selectorProvider: String(selector.provider_id ?? ""),
-        selectorModel: String(selector.model_id ?? ""),
-        misfire: enumNumber(spec.misfire, MISFIRE_POLICIES),
-        singleton: Boolean(spec.singleton),
-        carryContext: Boolean(spec.carry_context),
-        fireTimeoutSeconds: protoSeconds(spec.fire_timeout),
-        parts: Array.isArray(spec.parts) ? spec.parts : [],
-      },
-    };
-  });
+function decodeRow(
+  spec: ScheduleSpec | undefined,
+  state: ScheduleState | undefined,
+): ScheduleRow {
+  const lastFireSessionId = state?.lastFireSessionId ?? "";
+  return {
+    name: spec?.name ?? "",
+    prompt: spec?.prompt ?? "",
+    cron: spec?.trigger?.cron ?? "",
+    oneShotAt: timestampMillis(spec?.trigger?.oneShot),
+    timezone: spec?.timezone ?? "",
+    profile: spec?.profile ?? "",
+    mode: spec?.mode ?? 0,
+    mutating: spec?.mutating ?? false,
+    maxFires: spec?.maxFires ?? 0,
+    limits: decodeLimits(spec?.limits),
+    oneShotRetry: spec?.oneShotRetry ?? false,
+    oneShotMaxRetries: spec?.oneShotMaxRetries ?? 0,
+    enabled: state?.enabled ?? false,
+    fireCount: state?.fireCount ?? 0,
+    nextFireAt: timestampMillis(state?.nextFireAt),
+    lastFireAt: timestampMillis(state?.lastFireAt),
+    fireStage:
+      timestampMillis(state?.lastFireStartedAt) !== null
+        ? "running"
+        : lastFireSessionId === "pending"
+          ? "claimed"
+          : "idle",
+    lastFireSessionId: lastFireSessionId === "pending" ? "" : lastFireSessionId,
+    owner: decodeOwner(spec?.owner),
+    carried: {
+      selectorProvider: spec?.selector?.providerId ?? "",
+      selectorModel: spec?.selector?.modelId ?? "",
+      misfire: spec?.misfire ?? 0,
+      singleton: spec?.singleton ?? false,
+      carryContext: spec?.carryContext ?? false,
+      fireTimeoutSeconds: durationSeconds(spec?.fireTimeout),
+      parts: spec?.parts ?? [],
+    },
+  };
 }
 
-function decodeFire(value: unknown): ScheduleFireRow | undefined {
-  const fire = asRecord(value);
-  const id = optionalString(fire?.id) ?? "";
+/** `GET /v1/schedules`: every registry entry as a display row. */
+export function decodeScheduleRows(
+  response: ListSchedulesResponse,
+): ScheduleRow[] {
+  return (response.schedules ?? []).map((entry) =>
+    decodeRow(entry.spec, entry.state),
+  );
+}
+
+function decodeFire(fire: ScheduleFire): ScheduleFireRow | undefined {
   // A record with no id cannot be refreshed or correlated to a session; it is a
   // corrupt envelope rather than a fire, so it is dropped instead of rendered.
-  if (!fire || !id) return undefined;
-  const stop = optionalString(fire.stop) ?? "";
+  if (!fire.id) return undefined;
+  const stop = fire.stop ?? "";
   return {
-    id,
-    scheduleName: optionalString(fire.schedule_name) ?? "",
-    sessionId: optionalString(fire.session_id) ?? "",
-    firedAt: protoMillis(fire.fired_at),
-    startedAt: protoMillis(fire.started_at),
-    progressAt: protoMillis(fire.progress_at),
-    deadline: protoMillis(fire.deadline),
+    id: fire.id,
+    scheduleName: fire.scheduleName ?? "",
+    sessionId: fire.sessionId ?? "",
+    firedAt: timestampMillis(fire.firedAt),
+    startedAt: timestampMillis(fire.startedAt),
+    progressAt: timestampMillis(fire.progressAt),
+    deadline: timestampMillis(fire.deadline),
     stop,
-    err: optionalString(fire.err) ?? "",
+    err: fire.err ?? "",
     inFlight: stop === "",
   };
 }
@@ -245,10 +271,10 @@ function decodeFire(value: unknown): ScheduleFireRow | undefined {
  * first is worse than useless. A record with no `fired_at` sorts last rather
  * than first, which is where an un-clocked claim belongs.
  */
-export function decodeScheduleFires(value: unknown): ScheduleFireRow[] {
-  const body = asRecord(value);
-  const rows = Array.isArray(body?.fires) ? body.fires : [];
-  return rows
+export function decodeScheduleFires(
+  response: ListFiresResponse,
+): ScheduleFireRow[] {
+  return (response.fires ?? [])
     .map(decodeFire)
     .filter((fire): fire is ScheduleFireRow => fire !== undefined)
     .sort((left, right) => (right.firedAt ?? 0) - (left.firedAt ?? 0));
@@ -264,7 +290,6 @@ export function scheduleDraftFromRow(row: ScheduleRow): ScheduleSpecDraft {
         ? { kind: "one-shot", at: row.oneShotAt }
         : { kind: "cron", cron: row.cron, timezone: row.timezone },
     profile: row.profile === "no-fs" ? "no-fs" : "",
-    workspace: row.workspace,
     mode: row.mode,
     mutating: row.mutating,
     maxFires: row.maxFires,
@@ -275,55 +300,66 @@ export function scheduleDraftFromRow(row: ScheduleRow): ScheduleSpecDraft {
 }
 
 /**
- * The body for `POST /v1/schedules` and `PUT /v1/schedules/{name}`.
+ * The `spec` for `client.schedules.create` / `client.schedules.update`: a
+ * complete `ScheduleSpec` message value the SDK serialises (proto3 omits
+ * zero-valued fields, so an unset knob is simply absent on the wire).
+ *
+ * Trigger-conditional fields ride only the trigger they belong to: `maxFires`
+ * bounds a cron's total fires and the daemon ignores it on a one-shot, while
+ * the create-seam REJECTS a cron carrying `oneShotRetry` — so each stays at
+ * its zero value on the other trigger.
  *
  * `carried` is omitted on a create (there is nothing to preserve yet) and
  * passed on an edit, where leaving it out would delete the fields this form
- * cannot edit. Server-owned fields — `created_at` and `owner` — are
- * deliberately never sent.
+ * cannot edit. Server-owned fields — `createdAt` and `owner` — are
+ * deliberately never set.
  */
 export function encodeScheduleSpec(
   draft: ScheduleSpecDraft,
   carried?: ScheduleCarriedSpec,
-): UnknownRecord {
-  const spec: UnknownRecord = {
+): ScheduleSpec {
+  const cron = draft.trigger.kind === "cron" ? draft.trigger : undefined;
+  const oneShot = draft.trigger.kind === "one-shot" ? draft.trigger : undefined;
+  return {
+    $typeName: "mecatl.v1.ScheduleSpec",
     name: draft.name,
     prompt: draft.prompt,
-    profile: draft.profile,
-    workspace: draft.workspace,
-    mode: draft.mode,
-    mutating: draft.mutating,
-    limits: {
-      max_turns: draft.limits.maxTurns,
-      max_tool_calls: draft.limits.maxToolCalls,
-      max_consecutive_failures: draft.limits.maxConsecutiveFailures,
+    parts: carried?.parts ?? [],
+    trigger: {
+      $typeName: "mecatl.v1.TriggerSpec",
+      cron: cron?.cron ?? "",
+      oneShot: oneShot ? millisTimestamp(oneShot.at) : undefined,
     },
+    selector:
+      carried && (carried.selectorProvider || carried.selectorModel)
+        ? {
+            $typeName: "mecatl.v1.ScheduleProviderSelector",
+            providerId: carried.selectorProvider,
+            modelId: carried.selectorModel,
+          }
+        : undefined,
+    profile: draft.profile,
+    mode: draft.mode,
+    limits: {
+      $typeName: "mecatl.v1.Limits",
+      maxTurns: draft.limits.maxTurns,
+      maxToolCalls: draft.limits.maxToolCalls,
+      maxConsecutiveFailures: draft.limits.maxConsecutiveFailures,
+    },
+    mutating: draft.mutating,
+    maxFires: cron ? draft.maxFires : 0,
+    misfire: carried?.misfire ?? 0,
+    singleton: carried?.singleton ?? false,
+    timezone: cron?.timezone ?? "",
+    createdAt: undefined,
+    oneShotRetry: oneShot ? draft.oneShotRetry : false,
+    oneShotMaxRetries:
+      oneShot && draft.oneShotRetry ? draft.oneShotMaxRetries : 0,
+    carryContext: carried?.carryContext ?? false,
+    fireTimeout:
+      carried && carried.fireTimeoutSeconds > 0
+        ? secondsDuration(carried.fireTimeoutSeconds)
+        : undefined,
+    owner: undefined,
   };
-  if (draft.trigger.kind === "cron") {
-    // max_fires bounds a cron's total fires; a one-shot fires once by
-    // definition and the daemon ignores it there. one_shot_retry is the mirror
-    // image — the create-seam REJECTS a cron that carries it, so neither field
-    // is sent on the trigger it does not belong to.
-    spec.trigger = { cron: draft.trigger.cron };
-    spec.timezone = draft.trigger.timezone;
-    spec.max_fires = draft.maxFires;
-  } else {
-    spec.trigger = { one_shot: new Date(draft.trigger.at).toISOString() };
-    spec.one_shot_retry = draft.oneShotRetry;
-    if (draft.oneShotRetry) spec.one_shot_max_retries = draft.oneShotMaxRetries;
-  }
-  if (!carried) return spec;
-  spec.singleton = carried.singleton;
-  spec.misfire = carried.misfire;
-  spec.carry_context = carried.carryContext;
-  if (carried.selectorProvider || carried.selectorModel) {
-    spec.selector = {
-      provider_id: carried.selectorProvider,
-      model_id: carried.selectorModel,
-    };
-  }
-  if (carried.fireTimeoutSeconds > 0)
-    spec.fire_timeout = `${carried.fireTimeoutSeconds}s`;
-  if (carried.parts.length) spec.parts = carried.parts;
-  return spec;
 }

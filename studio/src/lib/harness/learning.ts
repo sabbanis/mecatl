@@ -1,28 +1,26 @@
 /**
- * Learning review queue + explicit reflection (ADR 0109).
+ * Learning review queue + explicit reflection (ADR 0109), over the SDK's
+ * `client.learningProposals` / `client.reflection` namespaces.
  *
  * Wire: `GET /v1/learning/proposals` (status/cursor/limit filters),
  * `GET /v1/learning/proposals/{id}`, `POST .../decision` (approve/reject with
  * `expected_version` — a stale version answers 409 `proposal_conflict`),
  * `POST .../undo`, and `POST /v1/sessions/{id}/reflect`.
  *
- * Responses are stdlib JSON over the proto structs (snake_case keys, absent =
- * zero value); gated by `capabilities.learning_proposals` /
- * `capabilities.reflection` on GET /v1/compatibility. The `project` query is
- * deliberately never sent: Studio reads the operator-scope partition — the
- * browser never knows the workspace path (rule 2).
+ * Gated by `capabilities.learning_proposals` / `capabilities.reflection` on
+ * GET /v1/compatibility. The `project` field is deliberately never set:
+ * Studio reads the operator-scope partition — the browser never knows the
+ * workspace path (rule 2).
  */
 
-import { apiError, HARNESS_API, HarnessApiError } from "./client";
-import {
-  asArray,
-  asBool,
-  asNumber,
-  asRecord,
-  asString,
-  asStringArray,
-  timestampUnix,
-} from "./wire";
+import type {
+  LearningProposal as ProtoLearningProposal,
+  ReflectionReceipt as ProtoReflectionReceipt,
+} from "@stacklok-oss/mecatl-sdk/gen";
+
+import { HarnessApiError } from "./errors";
+import { getHarnessClient, harness } from "./sdk";
+import { timestampUnix } from "./time";
 
 /** One human decision recorded on a proposal. */
 interface LearningDecision {
@@ -33,7 +31,7 @@ interface LearningDecision {
 }
 
 /**
- * One learning proposal, decoded from the daemon's bounded digest projection.
+ * One learning proposal, projected from the daemon's bounded digest.
  * `status` is the daemon's vocabulary: staged (pending review), promoting,
  * promoted, rejected, deferred_unsupported, conflicted, undone,
  * skill_materialized.
@@ -62,35 +60,33 @@ export interface LearningProposal {
   learnedSkillId: string;
 }
 
-export function decodeLearningProposal(raw: unknown): LearningProposal {
-  const record = asRecord(raw);
+function decodeLearningProposal(
+  proposal: ProtoLearningProposal | undefined,
+): LearningProposal {
   return {
-    id: asString(record.id),
-    version: asString(record.version),
-    status: asString(record.status),
-    kind: asString(record.kind),
-    key: asString(record.key),
-    value: asString(record.value),
-    description: asString(record.description),
-    title: asString(record.title),
-    body: asString(record.body),
-    triggers: asStringArray(record.triggers),
-    evidenceCount: asArray(record.evidence).length,
-    decisions: asArray(record.decisions).map((decision) => {
-      const entry = asRecord(decision);
-      return {
-        kind: asString(entry.kind),
-        actor: asString(entry.actor),
-        reason: asString(entry.reason),
-        atUnix: timestampUnix(entry.at),
-      };
-    }),
-    createdAtUnix: timestampUnix(record.created_at),
-    updatedAtUnix: timestampUnix(record.updated_at),
-    projectScoped: asBool(record.project_scoped),
-    promotionAvailable: asBool(record.promotion_available),
-    promotionUnavailableReason: asString(record.promotion_unavailable_reason),
-    learnedSkillId: asString(record.learned_skill_id),
+    id: proposal?.id ?? "",
+    version: proposal?.version ?? "",
+    status: proposal?.status ?? "",
+    kind: proposal?.kind ?? "",
+    key: proposal?.key ?? "",
+    value: proposal?.value ?? "",
+    description: proposal?.description ?? "",
+    title: proposal?.title ?? "",
+    body: proposal?.body ?? "",
+    triggers: [...(proposal?.triggers ?? [])],
+    evidenceCount: proposal?.evidence.length ?? 0,
+    decisions: (proposal?.decisions ?? []).map((decision) => ({
+      kind: decision.kind,
+      actor: decision.actor,
+      reason: decision.reason,
+      atUnix: timestampUnix(decision.at),
+    })),
+    createdAtUnix: timestampUnix(proposal?.createdAt),
+    updatedAtUnix: timestampUnix(proposal?.updatedAt),
+    projectScoped: proposal?.projectScoped ?? false,
+    promotionAvailable: proposal?.promotionAvailable ?? false,
+    promotionUnavailableReason: proposal?.promotionUnavailableReason ?? "",
+    learnedSkillId: proposal?.learnedSkillId ?? "",
   };
 }
 
@@ -103,20 +99,21 @@ export async function listLearningProposals(
   options: { status?: string; cursor?: string; limit?: number } = {},
   signal?: AbortSignal,
 ): Promise<LearningProposalPage> {
-  const query = new URLSearchParams();
-  if (options.status) query.set("status", options.status);
-  if (options.cursor) query.set("cursor", options.cursor);
-  if (options.limit) query.set("limit", String(options.limit));
-  const suffix = query.size > 0 ? `?${query}` : "";
-  const response = await fetch(`${HARNESS_API}/learning/proposals${suffix}`, {
-    signal,
-    cache: "no-store",
-  });
-  if (!response.ok) throw await apiError(response);
-  const body = asRecord(await response.json());
+  const response = await harness(() =>
+    getHarnessClient().learningProposals.list(
+      {
+        $typeName: "mecatl.v1.ListLearningProposalsRequest",
+        status: options.status ?? "",
+        cursor: options.cursor ?? "",
+        limit: options.limit ?? 0,
+        project: "", // operator scope — never the workspace (rule 2)
+      },
+      { signal },
+    ),
+  );
   return {
-    proposals: asArray(body.proposals).map(decodeLearningProposal),
-    nextCursor: asString(body.next_cursor),
+    proposals: response.proposals.map(decodeLearningProposal),
+    nextCursor: response.nextCursor,
   };
 }
 
@@ -132,20 +129,17 @@ export async function decideLearningProposal(
   expectedVersion: string,
   reason?: string,
 ): Promise<LearningProposal> {
-  const response = await fetch(
-    `${HARNESS_API}/learning/proposals/${encodeURIComponent(id)}/decision`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        decision,
-        expected_version: expectedVersion,
-        ...(reason ? { reason } : {}),
-      }),
-    },
+  const response = await harness(() =>
+    getHarnessClient().learningProposals.decide({
+      $typeName: "mecatl.v1.DecideLearningProposalRequest",
+      id,
+      decision,
+      expectedVersion,
+      reason: reason ?? "",
+      project: "",
+    }),
   );
-  if (!response.ok) throw await apiError(response);
-  return decodeLearningProposal(asRecord(await response.json()).proposal);
+  return decodeLearningProposal(response.proposal);
 }
 
 /** Reverts a promoted proposal's memory write (same conflict contract). */
@@ -153,16 +147,15 @@ export async function undoLearningPromotion(
   id: string,
   expectedVersion: string,
 ): Promise<LearningProposal> {
-  const response = await fetch(
-    `${HARNESS_API}/learning/proposals/${encodeURIComponent(id)}/undo`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ expected_version: expectedVersion }),
-    },
+  const response = await harness(() =>
+    getHarnessClient().learningProposals.undoPromotion({
+      $typeName: "mecatl.v1.UndoLearningPromotionRequest",
+      id,
+      expectedVersion,
+      project: "",
+    }),
   );
-  if (!response.ok) throw await apiError(response);
-  return decodeLearningProposal(asRecord(await response.json()).proposal);
+  return decodeLearningProposal(response.proposal);
 }
 
 /** True when a decision/undo lost the optimistic-concurrency race. */
@@ -185,6 +178,20 @@ export interface ReflectionReceipt {
   conflicted: number;
 }
 
+function decodeReflectionReceipt(
+  receipt: ProtoReflectionReceipt | undefined,
+): ReflectionReceipt {
+  return {
+    reflectionId: receipt?.reflectionId ?? "",
+    disposition: receipt?.disposition ?? "",
+    queued: receipt?.queued ?? 0,
+    abstained: receipt?.abstained ?? false,
+    staged: receipt?.staged ?? 0,
+    promoted: receipt?.promoted ?? 0,
+    conflicted: receipt?.conflicted ?? 0,
+  };
+}
+
 /**
  * Runs an explicit reflection pass over one completed session
  * (`POST /v1/sessions/{id}/reflect`). Synchronous: the request lasts the
@@ -194,24 +201,11 @@ export async function reflectHarnessSession(
   sessionId: string,
   signal?: AbortSignal,
 ): Promise<ReflectionReceipt> {
-  const response = await fetch(
-    `${HARNESS_API}/sessions/${encodeURIComponent(sessionId)}/reflect`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: "{}",
-      signal,
-    },
+  const response = await harness(() =>
+    getHarnessClient().reflection.reflect(
+      { $typeName: "mecatl.v1.ReflectSessionRequest", sessionId },
+      { signal },
+    ),
   );
-  if (!response.ok) throw await apiError(response);
-  const receipt = asRecord(asRecord(await response.json()).receipt);
-  return {
-    reflectionId: asString(receipt.reflection_id),
-    disposition: asString(receipt.disposition),
-    queued: asNumber(receipt.queued),
-    abstained: asBool(receipt.abstained),
-    staged: asNumber(receipt.staged),
-    promoted: asNumber(receipt.promoted),
-    conflicted: asNumber(receipt.conflicted),
-  };
+  return decodeReflectionReceipt(response.receipt);
 }

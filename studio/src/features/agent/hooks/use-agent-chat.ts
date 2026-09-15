@@ -24,6 +24,7 @@ import {
   type SessionPermissionMode,
   type SessionTranscript,
 } from "@/lib/protocol";
+import { refreshSlashCommands } from "../composer-capabilities";
 import { useRuntimeStatus } from "../runtime-status";
 import type {
   AgentMessage,
@@ -543,6 +544,10 @@ export function useAgentChat(
   // watch delivered. Approve/cancel send it as expected_run_id so a stale
   // control can never act on the session's NEXT run. "" = unknown.
   const runIdRef = useRef("");
+  /** The daemon named the run this tab drives (ADR 0249): scope controls to it. */
+  const adoptRunId = useCallback((runId: string) => {
+    if (runId && !runIdRef.current) runIdRef.current = runId;
+  }, []);
   // The session id whose run THIS hook's prompt stream is driving right now —
   // the durable watch must not attach on top of it (the prompt path owns the
   // view). An id, not a boolean: a stream can outlive a chat switch.
@@ -616,6 +621,9 @@ export function useAgentChat(
   // biome-ignore lint/correctness/useExhaustiveDependencies: see above
   useEffect(() => {
     daemonIdRef.current = sessionId;
+    // Slash commands are per-session (GET /v1/commands?session_id=): refresh
+    // the composer's list for the chat being opened.
+    if (sessionId) void refreshSlashCommands(sessionId);
     runIdRef.current = "";
     watchCursorRef.current = "";
     lastDispositionRef.current = undefined;
@@ -1143,6 +1151,7 @@ export function useAgentChat(
               : {},
           );
           daemonIdRef.current = daemonId;
+          void refreshSlashCommands(daemonId);
           // The pre-mint record above keyed nothing; re-key it now.
           if (attachments) {
             const log = sentAttachmentsRef.current.get(daemonId) ?? [];
@@ -1172,6 +1181,7 @@ export function useAgentChat(
           parts,
           makeStreamHandler(daemonId, ids),
           controller.signal,
+          { onRunStarted: adoptRunId },
         );
         // A parked approval keeps its own status: the stream ends while the
         // run is still waiting on the operator, and flipping to idle here
@@ -1207,7 +1217,7 @@ export function useAgentChat(
         }
       }
     },
-    [status, connected, queueMessage, makeStreamHandler],
+    [status, connected, queueMessage, makeStreamHandler, adoptRunId],
   );
 
   /**
@@ -1221,6 +1231,7 @@ export function useAgentChat(
    */
   const adoptSession = useCallback((id: string) => {
     daemonIdRef.current = id;
+    void refreshSlashCommands(id);
   }, []);
 
   /** Re-sends the last prompt after a failure — the legacy Retry path, kept
@@ -1304,6 +1315,7 @@ export function useAgentChat(
         daemonId,
         makeStreamHandler(daemonId, ids),
         controller.signal,
+        { onRunStarted: adoptRunId },
       );
       setStatus((current) =>
         current === "waiting_approval" || current === "error"
@@ -1334,7 +1346,7 @@ export function useAgentChat(
       if (drivingRef.current === daemonId) drivingRef.current = null;
     }
     if (ineligible) await resendLast();
-  }, [status, connected, resendLast, makeStreamHandler]);
+  }, [status, connected, resendLast, makeStreamHandler, adoptRunId]);
 
   /** A message typed while a run was active, held client-side: the daemon is
    *  strictly one-run-at-a-time (a mid-run prompt answers 412), so the queue
@@ -1362,10 +1374,7 @@ export function useAgentChat(
       // Scoped to the run this hook knows about (ADR 0249): if that run
       // already ended, the daemon answers 409 stale_run_control and the
       // session's NEXT run is left untouched — exactly what "cancel" meant.
-      await cancelHarnessRun(
-        daemonIdRef.current,
-        runIdRef.current || undefined,
-      );
+      await cancelHarnessRun(daemonIdRef.current, runIdRef.current);
     }
     setStatus("idle");
   }, []);
@@ -1498,7 +1507,7 @@ export function useAgentChat(
       return;
     }
     try {
-      await cancelHarnessSteer(daemonId);
+      await cancelHarnessSteer(daemonId, runIdRef.current);
       setPendingSteers([]);
     } catch (caught) {
       // Unknown daemon state: keep the list rather than pretend it retracted.
@@ -1580,7 +1589,7 @@ export function useAgentChat(
             : choice === "once"
               ? "allow_once"
               : "allow_always",
-          runIdRef.current || undefined,
+          runIdRef.current,
         );
       } catch (caught) {
         if (

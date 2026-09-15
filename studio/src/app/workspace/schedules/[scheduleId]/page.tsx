@@ -326,13 +326,6 @@ export default function ScheduleDetailPage() {
               <FactRow label="Write access">
                 {row.mutating ? "Writes allowed" : "Read-only"}
               </FactRow>
-              {row.workspace && (
-                <FactRow label="Workspace">
-                  <span className="break-all font-mono text-xs">
-                    {row.workspace}
-                  </span>
-                </FactRow>
-              )}
               {row.owner && <FactRow label="Owner">{row.owner}</FactRow>}
             </FactGroup>
 

@@ -111,7 +111,7 @@ export function formFromDraft(draft: ScheduleSpecDraft): ScheduleFormValue {
 
 /**
  * Build the wire draft. `base` is the stored draft on an edit — it supplies
- * the spec fields this form has no controls for (profile, workspace, limits)
+ * the spec fields this form has no controls for (profile, limits)
  * so they survive the PUT-replaces-everything contract.
  */
 export function draftFromForm(
@@ -135,7 +135,6 @@ export function draftFromForm(
           }
         : { kind: "one-shot", at: new Date(value.oneShotAt).getTime() },
     profile: base?.profile ?? "",
-    workspace: base?.workspace ?? "",
     mode,
     mutating: value.allowWrites,
     maxFires: Math.max(0, Number(value.maxFires) || 0),

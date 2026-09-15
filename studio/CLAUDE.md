@@ -26,15 +26,16 @@ the usual reason it fails mysteriously.
 
 ## Module shape
 
-- `src/lib/protocol/` — the ONLY reader of raw daemon JSON: event decode +
-  StreamEvent translation, session inventory/transcript decoders, schedule
-  decode/encode. Generated TS proto bindings are deferred; this seam plus its
-  vitest suite is the stopgap.
-- `src/lib/harness/client.ts` — browser transport: fetch + SSE buffering +
-  stream robustness (120s idle timeout, saw-result guard).
+- `@stacklok-oss/mecatl-sdk` (source `../sdk/typescript`, a `file:` dependency
+  — `task studio:install` and CI build it before `npm ci`) — the ONLY reader
+  of the daemon wire. Studio consumes the daemon exclusively through the SDK's
+  HTTP transport pointed at the same-origin `/api/mecatl` proxy; the SDK owns
+  generated proto bindings, SSE run/watch decoding, and unknown-event forward
+  compatibility. `src/lib/harness/` adapts SDK values to Studio's view models
+  (`sdk.ts` builds the client). Controller calls are NOT in the SDK.
 - `src/lib/server-proxy.ts` + `src/app/api/mecatl{,-control}/[...path]` — the
-  server tier: origin trust, header allowlists, bearer + workspace injection,
-  external-mode 409 policy.
+  server tier: origin trust, header allowlists, bearer injection (auth ONLY —
+  daemon bodies and queries are forwarded verbatim), external-mode 409 policy.
 - `scripts/local-controller.mjs` — managed-mode sidecar (supervises `mecated`,
   owns model-router/MCP-gateway config + OAuth); policy helpers in
   `src/lib/controller-security.mjs`.
@@ -52,14 +53,14 @@ Each rule is backed by a test; break the rule and its test names you.
    — an opt-in demo the user turns on, never a fallback for an unreachable
    daemon.
    (`tests/rendered-html.test.mjs`: unreachable daemon → friendly 503.)
-2. **The workspace is resolved, never hardcoded and never browser-supplied.**
-   Managed: controller `/status`; external: `MECATL_WORKSPACE`; injected
-   server-side into session/team/schedule creation. SERVER-ASSIGNED remote
-   deployments (ADR 0237 — any network-facing listener) refuse a client
-   workspace outright: leave `MECATL_WORKSPACE` unset there, and the proxy
-   deliberately injects nothing (the correct empty-workspace create); a
-   refused injection is rewritten with the unset-the-variable fix.
-   (hermetic: session creation carries the deployment workspace.)
+2. **Session placement is server-owned; Studio never sends a workspace.**
+   The daemon binds every session to its deployment's environment (ADR 0291)
+   and decodes `POST /v1/sessions` with unknown fields disallowed, so the
+   proxy forwards create bodies verbatim — no `workspace` injection into
+   session/team/schedule creation, no `?workspace=` on `/v1/commands` (it is
+   keyed by `session_id`). `MECATL_WORKSPACE` (external) and the controller's
+   `/status` `workspace` are display-only labels.
+   (hermetic: session creation is forwarded verbatim.)
 3. **Credentials never cross the browser/controller boundary.** No key-paste
    UI anywhere; `mecated` reads `~/.config/mecatl/auth.yaml`. The proxy's
    header allowlist excludes `authorization` from the browser.
@@ -70,10 +71,11 @@ Each rule is backed by a test; break the rule and its test names you.
 5. **External mode owns nothing locally.** Every control write answers 409.
    (hermetic: control writes 409.)
 6. **A failed turn renders as failed.** `result.stop === "error"` with no text
-   must never become a quiet success — the run_result event always reaches the
-   UI. (`src/lib/protocol/events.test.ts`.)
-7. **Unknown event kinds are surfaced, never dropped.** A new daemon
-   capability shows up as "not rendered yet". (`events.test.ts`.)
+   must never become a quiet success — the SDK's terminal `result` event
+   always reaches the UI.
+7. **Unknown event kinds are surfaced, never dropped.** The SDK decodes a new
+   daemon event kind as a typed unknown; Studio shows it as "not rendered
+   yet".
 8. **The memory panel is read-only.** A value typed into the UI would land in
    turn-0 context bypassing injection scanning; the daemon has no write API by
    design. Do not add an editor.
@@ -105,9 +107,10 @@ Each rule is backed by a test; break the rule and its test names you.
   (`GET /v1/sessions/{id}/watch`, ADR 0250; gate on the
   `watch_session_events` feature): SSE `{event, cursor, phase}` envelopes —
   replay from the cursor (empty = the beginning), one event-less
-  `phase: "live"` boundary frame, then live follow. The client is
-  `src/lib/harness/watch.ts`; `use-agent-chat` attaches it when the
-  inventory reads running/awaiting and Studio is not itself driving the run.
+  `phase: "live"` boundary frame, then live follow. The SDK's
+  `session.attach()`/`activity()` own the envelope decoding; `use-agent-chat`
+  attaches when the inventory reads running/awaiting and Studio is not itself
+  driving the run.
   Residual: `POST /prompt` still cancels its run on client disconnect, so a
   reload of the DRIVING tab still ends the run — the watch covers runs
   driven elsewhere (schedules, other tabs/clients) and parked approvals.

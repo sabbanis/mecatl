@@ -1,92 +1,62 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HarnessApiError } from "./client";
+import { HarnessApiError } from "./errors";
+import { resetHarnessClient } from "./sdk";
 import {
-  parseSSEFrame,
+  dataFrame,
+  jsonResponse,
+  problemResponse,
+  sessionSnapshot,
+  sseResponse,
+  stubHarnessFetch,
+} from "./sdk-test-stub";
+import {
   type WatchDelivery,
   WatchStreamError,
   watchSessionEvents,
 } from "./watch";
 
 /**
- * Pins the ADR-0250 watch client: the `event:`-aware SSE frame grammar (the
- * prompt-stream parser drops tagged frames — this one must not), envelope
- * delivery with cursor tracking, the typed terminal faults, and the
- * reconnect-from-cursor path on a resumable `watch_lagging`.
+ * Pins the ADR-0250 watch client over the SDK's `session.activity()`:
+ * envelope delivery with cursor tracking and the replay→live boundary, the
+ * typed terminal faults (`activity_gap`, `cursor_expired`, and a pre-stream
+ * refusal as HarnessApiError), and the cursor round-trip on resume.
  */
 
-describe("parseSSEFrame", () => {
-  it("reads the data line of a plain frame, with no event tag", () => {
-    expect(parseSSEFrame('data: {"phase":"live"}')).toEqual({
-      event: "",
-      data: '{"phase":"live"}',
-    });
-  });
-
-  it("reads an event:-tagged frame — the kind the prompt parser drops", () => {
-    expect(
-      parseSSEFrame('event: error\ndata: {"code":"watch_lagging"}'),
-    ).toEqual({ event: "error", data: '{"code":"watch_lagging"}' });
-  });
-
-  it("joins multi-line data with newlines, per the EventSource grammar", () => {
-    expect(parseSSEFrame("data: line one\ndata: line two")).toEqual({
-      event: "",
-      data: "line one\nline two",
-    });
-  });
-
-  it("strips one leading space, tolerates CRLF, and skips comment lines", () => {
-    expect(parseSSEFrame(": keepalive\r\ndata:  padded\r")).toEqual({
-      event: "",
-      data: " padded",
-    });
-  });
-
-  it("returns null for a frame with no data lines (a bare event tag)", () => {
-    expect(parseSSEFrame("event: error")).toBeNull();
-    expect(parseSSEFrame(": comment only")).toBeNull();
-  });
+afterEach(async () => {
+  vi.unstubAllGlobals();
+  await resetHarnessClient();
 });
 
-// ── watchSessionEvents ───────────────────────────────────────────────────────
-
-const originalFetch = globalThis.fetch;
-afterEach(() => {
-  globalThis.fetch = originalFetch;
-});
-
-function sseResponse(frames: string[]): Response {
-  return new Response(frames.map((frame) => `${frame}\n\n`).join(""), {
-    status: 200,
-    headers: { "Content-Type": "text/event-stream" },
-  });
-}
-
-const envelope = (body: unknown) => `data: ${JSON.stringify(body)}`;
+const faultFrame = (code: string, error: string) =>
+  `event: error\n${dataFrame({ code, error })}`;
 
 describe("watchSessionEvents", () => {
   it("delivers replay frames, the live boundary, and tracks the cursor", async () => {
-    globalThis.fetch = vi.fn(async () =>
-      sseResponse([
-        envelope({
-          event: { type: "user_prompt", user_prompt: { text: "hello" } },
-          cursor: "c-1",
-          phase: "replay",
-        }),
-        envelope({
-          event: { type: "message.delta", text: "hi", run_id: "run-1" },
-          cursor: "c-2",
-          phase: "replay",
-        }),
-        // The silent lifecycle kind still advances the cursor (null event).
-        envelope({
-          event: { type: "turn.end" },
-          cursor: "c-3",
-          phase: "replay",
-        }),
-        envelope({ cursor: "c-3", phase: "live" }),
-      ]),
-    );
+    const { requests } = stubHarnessFetch((request) => {
+      if (request.path === "/v1/sessions/s-1")
+        return jsonResponse(200, sessionSnapshot("s-1"));
+      if (request.path.startsWith("/v1/sessions/s-1/watch"))
+        return sseResponse([
+          dataFrame({
+            event: { type: "user_prompt", user_prompt: { text: "hello" } },
+            cursor: "c-1",
+            phase: "replay",
+          }),
+          dataFrame({
+            event: { type: "message.delta", text: "hi", run_id: "run-1" },
+            cursor: "c-2",
+            phase: "replay",
+          }),
+          // The silent lifecycle kind still advances the cursor (null event).
+          dataFrame({
+            event: { type: "turn.start" },
+            cursor: "c-3",
+            phase: "replay",
+          }),
+          dataFrame({ cursor: "c-3", phase: "live" }),
+        ]);
+      return undefined;
+    });
     const controller = new AbortController();
     const deliveries: WatchDelivery[] = [];
     await watchSessionEvents(
@@ -98,99 +68,147 @@ describe("watchSessionEvents", () => {
       },
       { signal: controller.signal },
     );
-    expect(deliveries).toEqual([
-      {
-        phase: "replay",
-        cursor: "c-1",
-        event: { type: "user_prompt", text: "hello" },
-      },
-      {
-        phase: "replay",
-        cursor: "c-2",
-        event: { type: "token", text: "hi", runId: "run-1" },
-      },
-      { phase: "replay", cursor: "c-3", event: null },
-      { phase: "live", cursor: "c-3", event: null },
+    expect(deliveries.map(({ phase, event }) => ({ phase, event }))).toEqual([
+      { phase: "replay", event: { type: "user_prompt", text: "hello" } },
+      { phase: "replay", event: { type: "token", text: "hi", runId: "run-1" } },
+      { phase: "replay", event: null },
+      { phase: "live", event: null },
     ]);
-    const url = (globalThis.fetch as ReturnType<typeof vi.fn>).mock
-      .calls[0][0] as string;
-    expect(url).toBe("/api/mecatl/v1/sessions/s-1/watch");
+    // Cursors are opaque SDK resume tokens: present, and stable across the
+    // event-less frame that shares the server cursor with the boundary.
+    expect(deliveries.every((d) => d.cursor.length > 0)).toBe(true);
+    expect(deliveries[2].cursor).toBe(deliveries[3].cursor);
+    expect(deliveries[0].cursor).not.toBe(deliveries[1].cursor);
+    const watch = requests.find((r) =>
+      r.path.startsWith("/v1/sessions/s-1/watch"),
+    );
+    expect(watch?.url).toBe("/api/mecatl/v1/sessions/s-1/watch");
   });
 
-  it("reconnects from the last cursor on watch_lagging, bounded", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(
-        sseResponse([
-          envelope({
-            event: { type: "message.delta", text: "a" },
-            cursor: "c-7",
+  it("resumes from a delivered cursor, handing the server its own token back", async () => {
+    let watches = 0;
+    const { requests } = stubHarnessFetch((request) => {
+      if (request.path === "/v1/sessions/s-2")
+        return jsonResponse(200, sessionSnapshot("s-2"));
+      if (request.path.startsWith("/v1/sessions/s-2/watch")) {
+        watches += 1;
+        return watches === 1
+          ? sseResponse([
+              dataFrame({
+                event: { type: "message.delta", text: "a", run_id: "run-1" },
+                cursor: "c-7",
+                phase: "replay",
+              }),
+              dataFrame({ cursor: "c-7", phase: "live" }),
+            ])
+          : sseResponse([dataFrame({ cursor: "c-7", phase: "live" })]);
+      }
+      return undefined;
+    });
+    const first = new AbortController();
+    let resumeCursor = "";
+    await watchSessionEvents(
+      "s-2",
+      (delivery) => {
+        resumeCursor = delivery.cursor;
+        if (delivery.phase === "live") first.abort();
+      },
+      { signal: first.signal },
+    );
+    expect(resumeCursor).not.toBe("");
+    const second = new AbortController();
+    await watchSessionEvents("s-2", () => second.abort(), {
+      cursor: resumeCursor,
+      signal: second.signal,
+    });
+    const resumed = requests.filter((r) =>
+      r.path.startsWith("/v1/sessions/s-2/watch"),
+    )[1];
+    expect(resumed.url).toContain("cursor=c-7");
+  });
+
+  it("throws a typed WatchStreamError on activity_gap — the transcript-refetch signal", async () => {
+    stubHarnessFetch((request) => {
+      if (request.path === "/v1/sessions/s-3")
+        return jsonResponse(200, sessionSnapshot("s-3"));
+      if (request.path.startsWith("/v1/sessions/s-3/watch"))
+        return sseResponse([
+          dataFrame({
+            event: { type: "message.delta", text: "a", run_id: "run-1" },
+            cursor: "c-1",
             phase: "replay",
           }),
-          'event: error\ndata: {"code":"watch_lagging","error":"fell behind"}',
-        ]),
-      )
-      .mockResolvedValueOnce(
-        sseResponse([
-          'event: error\ndata: {"code":"activity_gap","error":"append failed"}',
-        ]),
-      );
-    globalThis.fetch = fetchMock;
+          faultFrame("activity_gap", "append failed"),
+        ]);
+      return undefined;
+    });
     const deliveries: WatchDelivery[] = [];
     await expect(
-      watchSessionEvents("s-2", (delivery) => deliveries.push(delivery), {
-        runId: "run-9",
-      }),
-    ).rejects.toMatchObject({
-      name: "WatchStreamError",
-      code: "activity_gap",
-    });
+      watchSessionEvents("s-3", (delivery) => deliveries.push(delivery)),
+    ).rejects.toMatchObject({ name: "WatchStreamError", code: "activity_gap" });
     expect(deliveries).toHaveLength(1);
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    // The reconnect resumes from the last processed cursor, same run filter.
-    const retryUrl = fetchMock.mock.calls[1][0] as string;
-    expect(retryUrl).toContain("cursor=c-7");
-    expect(retryUrl).toContain("run_id=run-9");
   });
 
-  it("throws a typed WatchStreamError on cursor_expired — the transcript-refetch signal", async () => {
-    globalThis.fetch = vi.fn(async () =>
-      sseResponse([
-        'event: error\ndata: {"code":"cursor_expired","error":"superseded"}',
-      ]),
-    );
-    const fault = await watchSessionEvents("s-3", () => undefined).catch(
+  it("throws a typed WatchStreamError on cursor_expired", async () => {
+    stubHarnessFetch((request) => {
+      if (request.path === "/v1/sessions/s-4")
+        return jsonResponse(200, sessionSnapshot("s-4"));
+      if (request.path.startsWith("/v1/sessions/s-4/watch"))
+        return sseResponse([faultFrame("cursor_expired", "superseded")]);
+      return undefined;
+    });
+    const fault = await watchSessionEvents("s-4", () => undefined).catch(
       (caught) => caught,
     );
     expect(fault).toBeInstanceOf(WatchStreamError);
     expect((fault as WatchStreamError).code).toBe("cursor_expired");
   });
 
-  it("gives up after the reconnect budget when the stream keeps dropping", async () => {
-    const fetchMock = vi.fn(async () => sseResponse([]));
-    globalThis.fetch = fetchMock;
-    await expect(
-      watchSessionEvents("s-4", () => undefined, { maxReconnects: 2 }),
-    ).rejects.toBeInstanceOf(WatchStreamError);
-    // The first attempt plus two reconnects.
-    expect(fetchMock).toHaveBeenCalledTimes(3);
+  it("rejects a cursor this SDK never issued as cursor_malformed, before any request", async () => {
+    const { requests } = stubHarnessFetch((request) => {
+      if (request.path === "/v1/sessions/s-5")
+        return jsonResponse(200, sessionSnapshot("s-5"));
+      return undefined;
+    });
+    const fault = await watchSessionEvents("s-5", () => undefined, {
+      cursor: "not-an-sdk-cursor!",
+    }).catch((caught) => caught);
+    expect(fault).toBeInstanceOf(WatchStreamError);
+    expect((fault as WatchStreamError).code).toBe("cursor_malformed");
+    expect(requests.some((r) => r.path.includes("/watch"))).toBe(false);
   });
 
   it("surfaces a pre-stream refusal as the typed HarnessApiError", async () => {
-    globalThis.fetch = vi.fn(
-      async () =>
-        new Response(
-          JSON.stringify({
-            code: "no_event_log",
-            error: "no durable event log configured",
-          }),
-          { status: 501 },
-        ),
-    );
-    const fault = await watchSessionEvents("s-5", () => undefined).catch(
+    stubHarnessFetch((request) => {
+      if (request.path === "/v1/sessions/s-6")
+        return jsonResponse(200, sessionSnapshot("s-6"));
+      if (request.path.startsWith("/v1/sessions/s-6/watch"))
+        return problemResponse(
+          501,
+          "no_event_log",
+          "no durable event log configured",
+        );
+      return undefined;
+    });
+    const fault = await watchSessionEvents("s-6", () => undefined).catch(
       (caught) => caught,
     );
     expect(fault).toBeInstanceOf(HarnessApiError);
     expect((fault as HarnessApiError).code).toBe("no_event_log");
+  });
+
+  it("refuses to attach when the daemon lacks the watch feature", async () => {
+    stubHarnessFetch(
+      (request) =>
+        request.path === "/v1/sessions/s-7"
+          ? jsonResponse(200, sessionSnapshot("s-7"))
+          : undefined,
+      { features: ["http_steer"] },
+    );
+    const fault = await watchSessionEvents("s-7", () => undefined).catch(
+      (caught) => caught,
+    );
+    expect(fault).toBeInstanceOf(HarnessApiError);
+    expect((fault as HarnessApiError).code).toBe("unsupported_feature");
   });
 });

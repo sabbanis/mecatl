@@ -97,6 +97,26 @@ The costs, stated plainly:
 - The same-PR rule now binds a much larger client: a daemon wire change costs
   a Studio change in the same PR, every time.
 
+## Status / amendments
+
+- **2026-09-15 — the wire seam is the TypeScript SDK.** The "One typed wire
+  seam" decision above described `src/lib/protocol/` — hand-written structural
+  decoders, with generated TypeScript bindings deferred. That stopgap is
+  superseded: Studio now consumes the daemon exclusively through the
+  TypeScript SDK (`@stacklok-oss/mecatl-sdk`, source `sdk/typescript`,
+  installed into `studio/` as a `file:../sdk/typescript` dependency that CI
+  and `task studio:install` build first). The SDK carries the generated
+  `contracts/proto` bindings, the request/response asymmetry, the SSE run and
+  durable-watch decoding, and the unknown-event-kind forward compatibility.
+  The SDK's HTTP transport is pointed at Studio's same-origin `/api/mecatl`
+  proxy, which keeps the inherited security posture unchanged: it pins
+  Host/Origin, holds and injects the credential, and forwards every daemon
+  request otherwise verbatim — the former server-side workspace injection is
+  gone because session placement is server-owned (ADR 0291). Controller calls
+  (`/api/mecatl-control/*`) remain Studio-owned and are not part of the SDK.
+  The same-PR rule stands, re-targeted: a breaking wire change lands in the
+  SDK first and Studio moves with it.
+
 ## See also
 
 - [ADR 0281](./0344-studio-server-backed-chats.md) — the chat list is the

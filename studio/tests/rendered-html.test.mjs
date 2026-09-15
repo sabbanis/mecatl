@@ -13,9 +13,9 @@ import {
 // Hermetic server-tier suite: a real `next start` of the production build in
 // EXTERNAL mode, against a fake in-process daemon that records every request.
 // This is the only layer that proves the proxy tier's behavior (bearer
-// injection, CSRF 403, external-mode 409, workspace injection, offline 503)
-// end to end. Wire decoders are covered by the vitest suite in
-// src/lib/protocol. Requires `npm run build` first (npm test does that).
+// injection, CSRF 403, external-mode 409, verbatim body forwarding, offline
+// 503) end to end. Wire decoding is the TypeScript SDK's (`@stacklok-oss/mecatl-sdk`)
+// responsibility and is tested there. Requires `npm run build` first (npm test does that).
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const nextBin = resolve(root, "node_modules/.bin/next");
@@ -186,7 +186,7 @@ test("external mode injects daemon auth server-side and disables local controls"
   assert.equal(csrf.status, 403);
 });
 
-test("session creation carries the deployment workspace, injected server-side", async () => {
+test("session creation is forwarded verbatim — placement is server-owned", async () => {
   const created = await fetch(`${studioBaseURL}/api/mecatl/v1/sessions`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -196,12 +196,18 @@ test("session creation carries the deployment workspace, injected server-side", 
   const recorded = upstreamRequests.at(-1);
   assert.equal(recorded.url, "/v1/sessions");
   assert.equal(recorded.authorization, "Bearer test-secret");
-  // The browser sent no workspace; the proxy resolved it from the deployment
-  // env, so a machine path never reaches (or comes from) the client.
-  assert.deepEqual(JSON.parse(recorded.body), {
-    mode: "default",
-    workspace: "/workspace/from-deployment",
-  });
+  // The daemon decodes this body with unknown fields DISALLOWED and assigns
+  // the workspace itself (ADR 0291): the proxy must add nothing — no
+  // `workspace`, no rewrite — only the bearer credential.
+  assert.deepEqual(JSON.parse(recorded.body), { mode: "default" });
+
+  // Slash-command discovery is keyed by session, never by a workspace path:
+  // the query string passes through untouched.
+  const commands = await fetch(
+    `${studioBaseURL}/api/mecatl/v1/commands?session_id=sess-1`,
+  );
+  assert.equal(commands.status, 200);
+  assert.equal(upstreamRequests.at(-1).url, "/v1/commands?session_id=sess-1");
 });
 
 test("an unreachable daemon is a friendly 503, never demo content", async () => {

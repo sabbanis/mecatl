@@ -105,7 +105,6 @@ export function useAgentCron() {
         prompt: opts.instruction,
         trigger: { kind: "cron", cron: opts.schedule, timezone: "" },
         profile: "",
-        workspace: "",
         mode: PERMISSION_MODES.PERMISSION_MODE_PLAN,
         mutating: false,
         maxFires: 0,
@@ -214,7 +213,7 @@ export function useAgentCron() {
 
   return {
     jobs: rows.map(toCronJob),
-    /** Full decoded rows: mode/mutating/workspace badges, carried spec for edits. */
+    /** Full decoded rows: mode/mutating badges, carried spec for edits. */
     rows,
     isLoading: isLoading && connected,
     isSupported: notWired === null,

@@ -117,6 +117,7 @@ function fakeClient(create: () => Promise<Session>, close: () => Promise<void>):
     agents: undefined as never,
     close,
     commands: undefined as never,
+    compatibility: vi.fn(),
     dreamPlans: undefined as never,
     learnedSkills: undefined as never,
     learningAttempts: undefined as never,
@@ -125,6 +126,7 @@ function fakeClient(create: () => Promise<Session>, close: () => Promise<void>):
     models: undefined as never,
     reflection: undefined as never,
     schedules: undefined as never,
+    serverInfo: vi.fn(),
     sessions: {
       create,
       fork: vi.fn(),

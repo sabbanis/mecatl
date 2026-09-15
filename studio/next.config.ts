@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import type { NextConfig } from "next";
 
 const isDev = process.env.NODE_ENV !== "production";
@@ -45,6 +46,10 @@ const allowedDevOrigins = (process.env.MECATL_STUDIO_PUBLIC_ORIGIN || "")
 const nextConfig: NextConfig = {
   reactCompiler: true,
   poweredByHeader: false,
+  // The TypeScript SDK is a `file:../sdk/typescript` dependency — npm links it
+  // as a symlink pointing OUTSIDE studio/. Turbopack resolves modules only
+  // under its root, so the root is the monorepo checkout, not studio/.
+  turbopack: { root: resolve(import.meta.dirname, "..") },
   ...(allowedDevOrigins.length > 0 ? { allowedDevOrigins } : {}),
   async headers() {
     return [

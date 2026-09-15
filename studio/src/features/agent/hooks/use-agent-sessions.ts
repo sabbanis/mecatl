@@ -33,7 +33,6 @@ function toAgentSession(summary: SessionSummary): AgentSession {
     lastPromptTokens: null,
     thresholdTokens: null,
     state: summary.state,
-    workspace: summary.workspace,
     canRename: summary.canRename,
     canDelete: summary.canDelete,
     renameReason: summary.renameReason,

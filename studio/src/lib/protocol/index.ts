@@ -1,8 +1,4 @@
-export {
-  parseMecatlEvent,
-  parseWatchEnvelope,
-  translateEvent,
-} from "./events";
+export { translateEvent } from "./events";
 export {
   decodeScheduleFires,
   decodeScheduleRows,
@@ -15,12 +11,13 @@ export {
   scheduleDraftFromRow,
 } from "./schedules";
 export {
-  decodeSessionInventory,
-  decodeSessionPermissionMode,
-  decodeSessionTranscript,
   encodeSessionPermissionMode,
   type SessionInventoryPage,
   type SessionPermissionMode,
   type SessionSummary,
   type SessionTranscript,
+  sessionInventoryFromResponse,
+  sessionPermissionModeFromSdk,
+  sessionPermissionModeToSdk,
+  sessionTranscriptFromSdk,
 } from "./sessions";

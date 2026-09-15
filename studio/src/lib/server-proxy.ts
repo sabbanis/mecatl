@@ -45,20 +45,13 @@ function copyResponse(upstream: Response) {
   return new Response(upstream.body, { status: upstream.status, headers });
 }
 
-async function forward(
-  request: Request,
-  target: URL,
-  headers: Headers,
-  bodyOverride?: BodyInit,
-) {
+async function forward(request: Request, target: URL, headers: Headers) {
   const hasBody = request.method !== "GET" && request.method !== "HEAD";
   try {
     const upstream = await fetch(target, {
       method: request.method,
       headers,
-      body: hasBody
-        ? (bodyOverride ?? (await request.arrayBuffer()))
-        : undefined,
+      body: hasBody ? await request.arrayBuffer() : undefined,
       cache: "no-store",
       redirect: "manual",
     });
@@ -71,72 +64,14 @@ async function forward(
   }
 }
 
-// Session and team creation require a workspace — the directory every file and
-// shell tool is rooted at. It is resolved server-side (managed: from the
-// controller's /status; external: from MECATL_WORKSPACE) so a machine-specific
-// absolute path never reaches the client bundle, and so the browser can never
-// choose it.
-//
-// SERVER-ASSIGNED deployments (ADR 0237): a daemon with a network-facing
-// listener assigns the workspace itself and REJECTS any non-empty client
-// workspace with 400 "deployment assigns the workspace". Against such a
-// daemon, leave MECATL_WORKSPACE unset in external mode — an unset value
-// deliberately injects nothing, which is the correct empty-workspace create.
-const workspaceInjectionPaths = new Set([
-  "v1/sessions",
-  "v1/teams",
-  "v1/schedules",
-]);
-
-async function resolveWorkspace(external: string): Promise<string> {
-  if (external) return process.env.MECATL_WORKSPACE?.trim() || "";
-  try {
-    const response = await fetch(`${controllerBaseURL}/status`, {
-      cache: "no-store",
-      signal: AbortSignal.timeout(3_000),
-    });
-    if (!response.ok) return "";
-    const status = (await response.json()) as { workspace?: unknown };
-    return typeof status.workspace === "string" ? status.workspace : "";
-  } catch {
-    return "";
-  }
-}
-
-/**
- * True for a create body the daemon REQUIRES to arrive workspace-free: the
- * no-fs profile has no file tools to root anywhere ("no-fs requires an EMPTY
- * workspace"), and a debug session (ADR 0254) is no-fs by contract — the
- * daemon rejects either with a non-empty workspace. Injecting one here would
- * turn every such create into a guaranteed 400, so injection skips them.
- * (These bodies may still carry an explicit `workspace: ""`, which the
- * `!body.workspace` check below would otherwise treat as "absent".)
- */
-function requiresEmptyWorkspace(body: Record<string, unknown>): boolean {
-  return body.profile === "no-fs" || Boolean(body.debug_target_session_id);
-}
-
-async function withWorkspace(
-  request: Request,
-  external: string,
-): Promise<BodyInit | undefined> {
-  try {
-    const raw = await request.text();
-    const body = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
-    if (typeof body !== "object" || body === null || Array.isArray(body)) {
-      return raw;
-    }
-    if (!body.workspace && !requiresEmptyWorkspace(body)) {
-      const workspace = await resolveWorkspace(external);
-      if (workspace) body.workspace = workspace;
-    }
-    return JSON.stringify(body);
-  } catch {
-    // Not JSON: forward untouched and let the daemon reject it.
-    return undefined;
-  }
-}
-
+// Session placement is SERVER-OWNED (ADR 0291): the daemon binds every session
+// it creates to its deployment's own environment, `POST /v1/sessions` rejects
+// unknown body fields, the schedule contract reserves the old `workspace`
+// field, and `GET /v1/commands` is keyed by `session_id`. The proxy therefore
+// forwards every daemon request body and query string VERBATIM — it injects
+// authentication only. Studio reaches the daemon exclusively through the
+// TypeScript SDK (`@stacklok-oss/mecatl-sdk`) pointed at this same-origin
+// route, so the credential never leaves the server tier.
 export async function proxyMecatl(request: Request, path: string[]) {
   if (!requestIsTrusted(request)) return forbidden();
   const external = externalBaseURL();
@@ -165,51 +100,7 @@ export async function proxyMecatl(request: Request, path: string[]) {
     headers.set("x-mecatl-studio-request", "1");
   }
 
-  let bodyOverride: BodyInit | undefined;
-  let injectedWorkspace = false;
-  if (
-    request.method === "POST" &&
-    workspaceInjectionPaths.has(path.join("/"))
-  ) {
-    bodyOverride = await withWorkspace(request, external);
-    if (typeof bodyOverride === "string") {
-      headers.set("content-type", "application/json");
-      injectedWorkspace = bodyOverride.includes('"workspace"');
-    }
-  }
-  // Slash-command discovery scans the workspace's command directories; the
-  // workspace is a query parameter there, injected here for the same reason
-  // it is injected into session bodies.
-  if (
-    request.method === "GET" &&
-    path.join("/") === "v1/commands" &&
-    !target.searchParams.get("workspace")
-  ) {
-    const workspace = await resolveWorkspace(external);
-    if (workspace) target.searchParams.set("workspace", workspace);
-  }
-  const response = await forward(request, target, headers, bodyOverride);
-  // A server-assigned deployment refusing OUR injected workspace is a
-  // configuration problem this tier created — name the fix instead of
-  // relaying a bare 400 the user cannot act on (ADR 0237).
-  if (injectedWorkspace && response.status === 400) {
-    try {
-      const clone = response.clone();
-      const body = (await clone.json()) as { error?: string };
-      if (body.error?.includes("deployment assigns the workspace")) {
-        return Response.json(
-          {
-            ...body,
-            error: `${body.error} — this deployment assigns its own workspace: unset MECATL_WORKSPACE in Studio's environment so creates are sent workspace-free.`,
-          },
-          { status: 400 },
-        );
-      }
-    } catch {
-      // Not JSON — relay untouched.
-    }
-  }
-  return response;
+  return forward(request, target, headers);
 }
 
 export async function proxyControl(request: Request, path: string[]) {

@@ -38,6 +38,10 @@ MCP-gateway settings show as owned by the deployment.
 Studio is **daemon-only**. If the daemon is unreachable you get an offline
 banner naming the fix — never simulated content.
 
+Studio talks to the daemon through the [TypeScript SDK](../../reference/typescript-sdk-api/core.md)
+(`@stacklok-oss/mecatl-sdk`) over a same-origin proxy that holds the bearer
+token on the server; the browser never sees a daemon address or credential.
+
 ## What each surface does
 
 - **Chats** — the daemon's session store, live. The sidebar is the session
@@ -67,7 +71,7 @@ banner naming the fix — never simulated content.
 | --- | --- |
 | `MECATL_BASE_URL` | External daemon base URL; presence selects external mode |
 | `MECATL_AUTH_TOKEN` | Bearer for the external daemon (server-side only) |
-| `MECATL_WORKSPACE` | Workspace path in external mode (server-side only) |
+| `MECATL_WORKSPACE` | Display-only label of the deployment's workspace in external mode; the daemon assigns session placement itself |
 | `MECATL_STUDIO_PUBLIC_ORIGIN` | Comma-separated origins Studio is served from (CSRF gate) |
 | `MECATL_STUDIO_ORIGINS` | Controller's Origin allowlist (managed mode) |
 | `MECATL_STUDIO_PROVIDER` | Managed provider: `mock`, `openrouter`, or `toolhive` |

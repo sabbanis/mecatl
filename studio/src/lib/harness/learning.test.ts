@@ -1,62 +1,68 @@
-import { afterEach, describe, expect, it } from "vitest";
-import { HarnessApiError } from "./client";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { HarnessApiError } from "./errors";
 import {
   decideLearningProposal,
-  decodeLearningProposal,
   isProposalConflict,
   listLearningProposals,
   reflectHarnessSession,
+  undoLearningPromotion,
 } from "./learning";
+import { resetHarnessClient } from "./sdk";
+import { jsonResponse, stubHarnessFetch } from "./sdk-test-stub";
 
 /**
- * Pins the learning-review wire contract (ADR 0109): stdlib-JSON proto shapes
- * (snake_case keys, `{seconds}` timestamps, absent = zero value), the
- * expected_version concurrency token on decisions, and the 409
- * proposal_conflict classification.
+ * Pins the learning-review contract (ADR 0109) over the SDK: the routes and
+ * query/body the SDK produces (snake_case, no `project`), the decode of the
+ * daemon's stdlib-JSON digest (`{seconds}` timestamps), the expected_version
+ * concurrency token, and the 409 proposal_conflict classification.
  */
 
-const originalFetch = globalThis.fetch;
-afterEach(() => {
-  globalThis.fetch = originalFetch;
+afterEach(async () => {
+  vi.unstubAllGlobals();
+  await resetHarnessClient();
 });
 
-function respond(
-  status: number,
-  body: unknown,
-  capture?: { url?: string; init?: RequestInit },
-) {
-  globalThis.fetch = async (input, init) => {
-    if (capture) {
-      capture.url = String(input);
-      capture.init = init;
-    }
-    return new Response(JSON.stringify(body), {
-      status,
-      headers: { "Content-Type": "application/json" },
-    });
-  };
-}
-
-describe("decodeLearningProposal", () => {
-  it("decodes the daemon's snake_case digest, tolerating absent fields", () => {
-    const proposal = decodeLearningProposal({
-      id: "p1",
-      version: "v3",
-      status: "staged",
-      kind: "fact",
-      key: "deploy/steps",
-      title: "Deploy steps",
-      description: "How this repo deploys",
-      evidence: [{ session_id: "s1" }, { session_id: "s2" }],
-      triggers: ["deploy", 7],
-      decisions: [
-        { kind: "approve", actor: "operator", at: { seconds: 1788000000 } },
+describe("listLearningProposals", () => {
+  it("builds the status/cursor/limit query — never `project` — and decodes the page", async () => {
+    const stub = stubHarnessFetch(() => ({
+      proposals: [
+        {
+          id: "p1",
+          version: "v3",
+          status: "staged",
+          kind: "fact",
+          key: "deploy/steps",
+          title: "Deploy steps",
+          description: "How this repo deploys",
+          evidence: [{ session_id: "s1" }, { session_id: "s2" }],
+          triggers: ["deploy"],
+          decisions: [
+            {
+              kind: "approve",
+              actor: "operator",
+              at: { seconds: 1788000000, nanos: 0 },
+            },
+          ],
+          created_at: { seconds: 1787000000, nanos: 5 },
+          promotion_available: true,
+          learned_skill_id: "sk1",
+        },
       ],
-      created_at: { seconds: 1787000000, nanos: 5 },
-      promotion_available: true,
-      learned_skill_id: "sk1",
+      next_cursor: "c2",
+    }));
+    const page = await listLearningProposals({
+      status: "staged",
+      cursor: "c1",
+      limit: 25,
     });
-    expect(proposal).toMatchObject({
+    const request = stub.last();
+    expect(request.method).toBe("GET");
+    expect(request.url).toBe(
+      "/api/mecatl/v1/learning/proposals?status=staged&cursor=c1&limit=25",
+    );
+    expect(request.url).not.toContain("project");
+    expect(page.nextCursor).toBe("c2");
+    expect(page.proposals[0]).toMatchObject({
       id: "p1",
       version: "v3",
       status: "staged",
@@ -69,46 +75,25 @@ describe("decodeLearningProposal", () => {
       promotionUnavailableReason: "",
       learnedSkillId: "sk1",
     });
-    expect(proposal.decisions).toEqual([
+    expect(page.proposals[0]?.decisions).toEqual([
       { kind: "approve", actor: "operator", reason: "", atUnix: 1788000000 },
     ]);
   });
 
-  it("degrades a completely foreign shape to zero values, never throws", () => {
-    expect(decodeLearningProposal(null).id).toBe("");
-    expect(decodeLearningProposal("nope").triggers).toEqual([]);
-    expect(decodeLearningProposal({ decisions: "x" }).decisions).toEqual([]);
-  });
-});
-
-describe("listLearningProposals", () => {
-  it("builds the status/cursor/limit query and decodes the page", async () => {
-    const capture: { url?: string } = {};
-    respond(200, { proposals: [{ id: "p1" }], next_cursor: "c2" }, capture);
-    const page = await listLearningProposals({
-      status: "staged",
-      cursor: "c1",
-      limit: 25,
-    });
-    expect(capture.url).toContain("/learning/proposals?");
-    expect(capture.url).toContain("status=staged");
-    expect(capture.url).toContain("cursor=c1");
-    expect(capture.url).toContain("limit=25");
-    expect(page.proposals.map((p) => p.id)).toEqual(["p1"]);
-    expect(page.nextCursor).toBe("c2");
-  });
-
-  it("treats the daemon's empty `{}` answer as an empty queue", async () => {
-    respond(200, {});
+  it("omits empty filters and treats the daemon's `{}` answer as an empty queue", async () => {
+    const stub = stubHarnessFetch(() => ({}));
     const page = await listLearningProposals();
+    expect(stub.last().url).toBe("/api/mecatl/v1/learning/proposals");
     expect(page).toEqual({ proposals: [], nextCursor: "" });
   });
 
   it("throws the typed error on a problem response", async () => {
-    respond(501, {
-      code: "learning_unavailable",
-      error: "learning proposals are not configured",
-    });
+    stubHarnessFetch(() =>
+      jsonResponse(501, {
+        code: "learning_unavailable",
+        error: "learning proposals are not configured",
+      }),
+    );
     await expect(listLearningProposals()).rejects.toMatchObject({
       name: "HarnessApiError",
       code: "learning_unavailable",
@@ -118,23 +103,36 @@ describe("listLearningProposals", () => {
 });
 
 describe("decideLearningProposal", () => {
-  it("posts the decision with expected_version", async () => {
-    const capture: { url?: string; init?: RequestInit } = {};
-    respond(200, { proposal: { id: "p1", status: "promoted" } }, capture);
+  it("POSTs {decision, expected_version} to /decision, id only in the path", async () => {
+    const stub = stubHarnessFetch(() => ({
+      proposal: { id: "p1", status: "promoted" },
+    }));
     const updated = await decideLearningProposal("p1", "approve", "v3");
-    expect(capture.url).toContain("/learning/proposals/p1/decision");
-    expect(JSON.parse(String(capture.init?.body))).toEqual({
-      decision: "approve",
-      expected_version: "v3",
+    expect(stub.last()).toMatchObject({
+      method: "POST",
+      url: "/api/mecatl/v1/learning/proposals/p1/decision",
+      body: { decision: "approve", expected_version: "v3" },
     });
     expect(updated.status).toBe("promoted");
   });
 
-  it("surfaces a stale-version 409 as a proposal conflict", async () => {
-    respond(409, {
-      code: "proposal_conflict",
-      error: "proposal changed",
+  it("carries a reason only when one is given", async () => {
+    const stub = stubHarnessFetch(() => ({ proposal: { id: "p1" } }));
+    await decideLearningProposal("p1", "reject", "v3", "stale");
+    expect(stub.last().body).toEqual({
+      decision: "reject",
+      expected_version: "v3",
+      reason: "stale",
     });
+  });
+
+  it("surfaces a stale-version 409 as a proposal conflict", async () => {
+    stubHarnessFetch(() =>
+      jsonResponse(409, {
+        code: "proposal_conflict",
+        error: "proposal changed",
+      }),
+    );
     const error = await decideLearningProposal("p1", "reject", "v1").catch(
       (caught) => caught,
     );
@@ -149,25 +147,38 @@ describe("decideLearningProposal", () => {
   });
 });
 
+describe("undoLearningPromotion", () => {
+  it("POSTs {expected_version} to /undo", async () => {
+    const stub = stubHarnessFetch(() => ({
+      proposal: { id: "p1", status: "undone" },
+    }));
+    const updated = await undoLearningPromotion("p1", "v4");
+    expect(stub.last()).toMatchObject({
+      method: "POST",
+      url: "/api/mecatl/v1/learning/proposals/p1/undo",
+      body: { expected_version: "v4" },
+    });
+    expect(updated.status).toBe("undone");
+  });
+});
+
 describe("reflectHarnessSession", () => {
-  it("decodes the receipt counts", async () => {
-    const capture: { url?: string } = {};
-    respond(
-      200,
-      {
-        receipt: {
-          reflection_id: "r1",
-          disposition: "completed",
-          staged: 2,
-          promoted: 1,
-          conflicted: 0,
-          abstained: false,
-        },
+  it("POSTs /sessions/{id}/reflect and decodes the receipt counts", async () => {
+    const stub = stubHarnessFetch(() => ({
+      receipt: {
+        reflection_id: "r1",
+        disposition: "completed",
+        staged: 2,
+        promoted: 1,
+        conflicted: 0,
+        abstained: false,
       },
-      capture,
-    );
+    }));
     const receipt = await reflectHarnessSession("sess-1");
-    expect(capture.url).toContain("/sessions/sess-1/reflect");
+    expect(stub.last()).toMatchObject({
+      method: "POST",
+      url: "/api/mecatl/v1/sessions/sess-1/reflect",
+    });
     expect(receipt).toEqual({
       reflectionId: "r1",
       disposition: "completed",
@@ -180,7 +191,9 @@ describe("reflectHarnessSession", () => {
   });
 
   it("propagates a reflection failure as the typed error", async () => {
-    respond(500, { code: "internal", error: "explicit reflection failed" });
+    stubHarnessFetch(() =>
+      jsonResponse(500, { code: "internal", error: "reflection failed" }),
+    );
     await expect(reflectHarnessSession("sess-1")).rejects.toMatchObject({
       name: "HarnessApiError",
       code: "internal",

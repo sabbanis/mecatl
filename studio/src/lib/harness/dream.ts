@@ -1,5 +1,6 @@
 /**
- * Manual memory consolidation ("dream") review — ADR 0227.
+ * Manual memory consolidation ("dream") review — ADR 0227, over the SDK's
+ * `client.dreamPlans` namespace.
  *
  * Wire: `POST /v1/dream/plans {target}` generates a bounded, daemon-curated
  * consolidation plan; `POST /v1/dream/plans/{plan_id}/decision {decision}`
@@ -12,15 +13,15 @@
  * on GET /v1/compatibility.
  */
 
-import { apiError, HARNESS_API, HarnessApiError } from "./client";
-import {
-  asArray,
-  asBool,
-  asNumber,
-  asRecord,
-  asString,
-  timestampUnix,
-} from "./wire";
+import type {
+  DreamReviewPlan,
+  DreamParticipant as ProtoDreamParticipant,
+  DreamReceipt as ProtoDreamReceipt,
+} from "@stacklok-oss/mecatl-sdk/gen";
+
+import { HarnessApiError } from "./errors";
+import { getHarnessClient, harness } from "./sdk";
+import { timestampUnix } from "./time";
 
 export type DreamTarget = "project_memory" | "user_model";
 export type DreamDecision = "apply" | "dismiss";
@@ -60,52 +61,49 @@ export interface DreamReceipt {
   failed: number;
 }
 
-function decodeParticipant(raw: unknown): DreamParticipant {
-  const record = asRecord(raw);
+function decodeParticipant(
+  participant: ProtoDreamParticipant | undefined,
+): DreamParticipant {
   return {
-    key: asString(record.key),
-    value: asString(record.value),
-    description: asString(record.description),
+    key: participant?.key ?? "",
+    value: participant?.value ?? "",
+    description: participant?.description ?? "",
   };
 }
 
-export function decodeDreamPlan(raw: unknown): DreamPlan {
-  const record = asRecord(raw);
+function decodeDreamPlan(plan: DreamReviewPlan | undefined): DreamPlan {
   return {
-    id: asString(record.id),
-    target: asString(record.target),
-    expiresAtUnix: timestampUnix(record.expires_at),
-    plannedOperationCount: asNumber(record.planned_operation_count),
-    plannedSourceCount: asNumber(record.planned_source_count),
-    operations: asArray(record.operations).map((operation) => {
-      const entry = asRecord(operation);
-      const replacement = asRecord(entry.replacement);
-      return {
-        kind: asString(entry.kind),
-        survivor: decodeParticipant(entry.survivor),
-        sources: asArray(entry.sources).map(decodeParticipant),
-        replacement: {
-          value: asString(replacement.value),
-          description: asString(replacement.description),
-        },
-        reason: asString(entry.reason),
-        exactDuplicateEligible: asBool(entry.exact_duplicate_eligible),
-      };
-    }),
+    id: plan?.id ?? "",
+    target: plan?.target ?? "",
+    expiresAtUnix: timestampUnix(plan?.expiresAt),
+    plannedOperationCount: plan?.plannedOperationCount ?? 0,
+    plannedSourceCount: plan?.plannedSourceCount ?? 0,
+    operations: (plan?.operations ?? []).map((operation) => ({
+      kind: operation.kind,
+      survivor: decodeParticipant(operation.survivor),
+      sources: operation.sources.map(decodeParticipant),
+      replacement: {
+        value: operation.replacement?.value ?? "",
+        description: operation.replacement?.description ?? "",
+      },
+      reason: operation.reason,
+      exactDuplicateEligible: operation.exactDuplicateEligible,
+    })),
   };
 }
 
-function decodeDreamReceipt(raw: unknown): DreamReceipt {
-  const record = asRecord(raw);
+function decodeDreamReceipt(
+  receipt: ProtoDreamReceipt | undefined,
+): DreamReceipt {
   return {
-    id: asString(record.id),
-    target: asString(record.target),
-    disposition: asString(record.disposition),
-    planned: asNumber(record.planned_source_count),
-    applied: asNumber(record.applied_source_count),
-    conflicted: asNumber(record.conflicted_source_count),
-    skipped: asNumber(record.skipped_source_count),
-    failed: asNumber(record.failed_source_count),
+    id: receipt?.id ?? "",
+    target: receipt?.target ?? "",
+    disposition: receipt?.disposition ?? "",
+    planned: receipt?.plannedSourceCount ?? 0,
+    applied: receipt?.appliedSourceCount ?? 0,
+    conflicted: receipt?.conflictedSourceCount ?? 0,
+    skipped: receipt?.skippedSourceCount ?? 0,
+    failed: receipt?.failedSourceCount ?? 0,
   };
 }
 
@@ -114,14 +112,13 @@ export async function generateDreamPlan(
   target: DreamTarget,
   signal?: AbortSignal,
 ): Promise<DreamPlan> {
-  const response = await fetch(`${HARNESS_API}/dream/plans`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ target }),
-    signal,
-  });
-  if (!response.ok) throw await apiError(response);
-  return decodeDreamPlan(asRecord(await response.json()).plan);
+  const response = await harness(() =>
+    getHarnessClient().dreamPlans.generate(
+      { $typeName: "mecatl.v1.GenerateDreamPlanRequest", target },
+      { signal },
+    ),
+  );
+  return decodeDreamPlan(response.plan);
 }
 
 /** Applies or dismisses the whole retained plan. */
@@ -129,16 +126,14 @@ export async function decideDreamPlan(
   planId: string,
   decision: DreamDecision,
 ): Promise<DreamReceipt> {
-  const response = await fetch(
-    `${HARNESS_API}/dream/plans/${encodeURIComponent(planId)}/decision`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ decision }),
-    },
+  const response = await harness(() =>
+    getHarnessClient().dreamPlans.decide({
+      $typeName: "mecatl.v1.DecideDreamPlanRequest",
+      planId,
+      decision,
+    }),
   );
-  if (!response.ok) throw await apiError(response);
-  return decodeDreamReceipt(asRecord(await response.json()).receipt);
+  return decodeDreamReceipt(response.receipt);
 }
 
 /**
@@ -163,7 +158,9 @@ export interface DreamTargetCapability {
 
 /**
  * Reads one target's capability out of the compatibility document's
- * `manual_dream` object (absent daemon/target → all-false).
+ * `manual_dream` object — the wire-keyed projection `fetchHarnessCompatibility`
+ * returns (`{project_memory: {generate, decide, unavailable_reason}, …}`).
+ * Absent daemon/target → all-false.
  */
 export function dreamTargetCapability(
   manualDream: unknown,
@@ -171,8 +168,17 @@ export function dreamTargetCapability(
 ): DreamTargetCapability {
   const entry = asRecord(asRecord(manualDream)[target]);
   return {
-    generate: asBool(entry.generate),
-    decide: asBool(entry.decide),
-    unavailableReason: asString(entry.unavailable_reason),
+    generate: entry.generate === true,
+    decide: entry.decide === true,
+    unavailableReason:
+      typeof entry.unavailable_reason === "string"
+        ? entry.unavailable_reason
+        : "",
   };
+}
+
+function asRecord(raw: unknown): Record<string, unknown> {
+  return typeof raw === "object" && raw !== null && !Array.isArray(raw)
+    ? (raw as Record<string, unknown>)
+    : {};
 }

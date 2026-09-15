@@ -38,6 +38,7 @@
     "@radix-ui/react-toggle": "^1.1.10",
     "@radix-ui/react-toggle-group": "^1.1.11",
     "@radix-ui/react-tooltip": "^1.2.8",
+    "@stacklok-oss/mecatl-sdk": "file:../sdk/typescript",
     "@tiptap/extension-mention": "^3.29.2",
     "@tiptap/extension-placeholder": "^3.29.2",
     "@tiptap/pm": "^3.27.1",

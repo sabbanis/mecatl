@@ -7,6 +7,11 @@ version: '3'
 # Studio drives the mecated in THIS checkout: `task studio:dev` starts a
 # supervisor that spawns ../bin/mecated against the repo root as its workspace,
 # so `task build` must have run first.
+#
+# Studio consumes the daemon through the TypeScript SDK (sdk/typescript), which
+# package.json pins as a `file:../sdk/typescript` dependency. npm links the
+# SDK's checkout in place — it does NOT build it — so `install` builds the SDK
+# first (`task sdk:build`, which runs the frozen pnpm install itself).
 
 vars:
   PORT: 3000
@@ -18,9 +23,14 @@ tasks:
     sources:
       - package.json
       - package-lock.json
+      - ../sdk/typescript/package.json
+      - ../sdk/typescript/src/**/*.ts
     generates:
       - node_modules/.package-lock.json
+      - ../sdk/typescript/dist/index.js
     cmds:
+      # The SDK is a file: dependency — build it before npm links it in.
+      - task --taskfile ../Taskfile.yml sdk:build
       # Pinned via npx: a system npm 11 rewrites the lockfile in a shape
       # npm 10 (what CI's Node 22 ships) rejects, breaking npm ci.
       - npx -y npm@10.9.4 install

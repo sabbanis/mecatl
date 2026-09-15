@@ -121,6 +121,7 @@ export interface Client {
     close(): Promise<void>;
     // (undocumented)
     readonly commands: Commands;
+    compatibility(options?: RequestOptions): Promise<CompatibilityInfo>;
     // (undocumented)
     readonly dreamPlans: DreamPlans;
     // (undocumented)
@@ -137,6 +138,7 @@ export interface Client {
     readonly reflection: Reflection;
     // (undocumented)
     readonly schedules: Schedules;
+    serverInfo(options?: ServerInfoOptions): Promise<ServerInfo>;
     // (undocumented)
     readonly sessions: Sessions;
     // (undocumented)
@@ -171,6 +173,13 @@ export interface Commands {
 export interface CompactionArchiveEventPayload {
     // (undocumented)
     readonly replaced: readonly ArchivedConversationMessage[];
+}
+
+// @public
+export interface CompatibilityInfo {
+    readonly apiMajor: number;
+    readonly capabilities?: ServerCapabilities;
+    readonly features: readonly string[];
 }
 
 // @public
@@ -873,6 +882,18 @@ export interface Run extends AsyncIterable<Event_2> {
 }
 
 // @public
+export interface RunControls {
+    cancel(options?: RequestOptions): Promise<void>;
+    cancelSteer(options?: SteerControlOptions): Promise<SteerCancelAck>;
+    resolveAsk(askId: string, verdict: PermissionVerdict, options?: RequestOptions): Promise<void>;
+    // (undocumented)
+    readonly runId: string;
+    // (undocumented)
+    readonly sessionId: string;
+    steer(prompt: PromptInput, options?: SteerControlOptions): Promise<SteerAck>;
+}
+
+// @public
 export interface RunOptions {
     onPermissionAsk?: PermissionAskResponder;
     onPlanApproval?: PlanApprovalResponder;
@@ -1023,12 +1044,25 @@ export class ServerError extends MecatlError {
 export type ServerErrorCode = (typeof MECATL_ERROR_CODES)[number] | "unknown";
 
 // @public
+export interface ServerInfo {
+    readonly buildId: string;
+    readonly llmProviderDisplayEndpoint: string;
+    readonly serverImplementation: string;
+}
+
+// @public
+export interface ServerInfoOptions extends RequestOptions {
+    providerId?: string;
+}
+
+// @public
 export interface Session {
     activity(options?: AttachOptions): Promise<SessionActivity>;
     attach(runId?: string, options?: AttachOptions): Promise<AttachedRun>;
     clear(options?: ClearSessionOptions, requestOptions?: RequestOptions): Promise<Session>;
     close(options?: RequestOptions): Promise<void>;
     compact(options?: RequestOptions): Promise<boolean>;
+    controls(runId: string): RunControls;
     delete(options?: RequestOptions): Promise<void>;
     // (undocumented)
     readonly id: string;
@@ -1291,6 +1325,31 @@ export interface Soul {
 }
 
 // @public
+export interface SteerAck {
+    readonly messageId: string;
+    // (undocumented)
+    readonly outcome: SteerOutcome;
+    readonly promoted: boolean;
+    readonly runId: string;
+}
+
+// @public
+export interface SteerCancelAck {
+    // (undocumented)
+    readonly messageId: string;
+    // (undocumented)
+    readonly outcome: SteerCancelOutcome;
+}
+
+// @public
+export type SteerCancelOutcome = "retracted" | "none_pending";
+
+// @public
+export interface SteerControlOptions extends RequestOptions {
+    messageId?: string;
+}
+
+// @public
 export interface SteerEventPayload {
     // (undocumented)
     readonly messageId: string;
@@ -1299,6 +1358,9 @@ export interface SteerEventPayload {
     // (undocumented)
     readonly text: string;
 }
+
+// @public
+export type SteerOutcome = "accepted" | "appended" | "too_late";
 
 // @public
 export interface SteerOutcomeEventPayload {

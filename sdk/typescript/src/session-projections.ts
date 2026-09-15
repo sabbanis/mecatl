@@ -237,6 +237,11 @@ function manualDream(value: ProtoManualDreamCapabilities): ManualDreamCapabiliti
   };
 }
 
+/** Projects the wire ServerCapabilities message onto the SDK-owned shape. */
+export function projectServerCapabilities(value: ProtoServerCapabilities): ServerCapabilities {
+  return serverCapabilities(value);
+}
+
 function serverCapabilities(value: ProtoServerCapabilities): ServerCapabilities {
   return {
     agents: value.agents,
