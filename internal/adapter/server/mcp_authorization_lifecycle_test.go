@@ -21,7 +21,6 @@ import (
 	"github.com/stacklok/mecatl/engine/adapter/memledger"
 	"github.com/stacklok/mecatl/engine/adapter/memstore"
 	"github.com/stacklok/mecatl/engine/adapter/mockllm"
-	"github.com/stacklok/mecatl/engine/adapter/permpolicy"
 	"github.com/stacklok/mecatl/engine/agent"
 	"github.com/stacklok/mecatl/engine/governance"
 	"github.com/stacklok/mecatl/engine/port"
@@ -288,7 +287,7 @@ func newLifecycleFixtureConfigured(t *testing.T, status session.AuthorizationSta
 		for _, one := range tools {
 			catalog.MustRegister(one)
 		}
-		return agent.NewEngine(agent.Deps{LLM: mockllm.New(turns...), Catalog: catalog, Policy: permpolicy.NewPolicy(nil, nil), Store: store, Model: "mock", Interactive: interactive})
+		return agent.NewEngine(agent.Deps{LLM: mockllm.New(turns...), Catalog: catalog, Policy: lifecycleAllowPolicy{}, Store: store, Model: "mock", Interactive: interactive})
 	}
 	shared := buildEngine(nil)
 	var builtTools [][]string
