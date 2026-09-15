@@ -13,6 +13,22 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
 
 ### Added
 
+- **Remote contextual-approval intent validation** — adds `agent.Run.ValidateRemoteApprovalIntent` so transport adapters can require an exact review/purpose acknowledgement before releasing a privately held tool result, without consuming the pending ask. Added (minor).
+
+- **Contextual guardrail foundation** — adds the consumer-local `agent.ToolReviewer`,
+  `ReviewEvidenceSource`, `ReviewEvidencePreparer`, explicit review policy/metadata/grant
+  extension interfaces, and `ReviewDetailSink`, with bounded request, result, evidence,
+  trajectory, preparation, and detail value types. Adds `tool.BoundedWorkspaceReader` so
+  evidence-capable workspaces can reject oversized reads before allocation. Adds
+  session-owned machine projections for guardrail reviews and approval scopes, plus explicit
+  `session.ApprovalOrigin` on pending and durable approval records. Added (minor).
+
+- **Explicit approval origin** — replaces `session.PendingAsk.HookOriginated`,
+  `PlanOriginated`, and the derived `AskOrigin` accessor/type with one serialized
+  `PendingAsk.Origin`. Missing or unrecognized origins now fail closed and cannot
+  execute, learn permission rules, arm hook waivers, or transition plan mode. Changed
+  (breaking, pre-v1 minor).
+
 - **Request-manifest schema-byte evidence** — adds `session.RequestManifestPayload.AdvertisedToolSchemaBytes` and exposes it through the target-bound debugger manifest view. Adds catalog registration-key metadata accessors so manifest enumeration does not refresh live tool specifications. Added (minor).
 
 - **Atomic ordinary permission-ask resolution** — adds `agent.AskResolution`,
@@ -32,18 +48,6 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
 - **Draft-aware session activity classification** — adds `session.ActivityState`, the `ActivityUnknown`/`ActivityDraft`/`ActivityActive` constants, and pure `session.ActivityOf`, using `IsGenuineUserPrompt` so empty and multimodal genuine user history is active while harness compaction summaries remain drafts. `port.SessionDiscoveryMeta.Activity` carries the atomically written, content-free activity projection; unavailable, corrupt, legacy, and unsupported discovery metadata normalizes to unknown. Adds `session.ValidActivity` (the one fail-closed validity clamp for the type, replacing three adapters' independent inline checks) and `port.SupportsActivityProjection` (the one capability-probe rule for `SessionActivityProjectionPager`, replacing three duplicated type-assertion call sites). Added (minor).
 
 - **Authoritative synthetic user-prompt origin** — adds `session.UserPromptPayload.Synthetic` so durable user-prompt events distinguish harness-authored continuations from principal and legacy prompts without changing folded conversation messages. Added (minor).
-
-- **Contextual guardrail foundation** — adds the consumer-local `agent.ToolReviewer`,
-  `ReviewEvidenceSource`, and `ReviewDetailSink` interfaces and their bounded request,
-  result, evidence, trajectory, and detail value types. Adds session-owned machine
-  projections for guardrail reviews and approval scopes, plus explicit
-  `session.ApprovalOrigin` on pending and durable approval records. Added (minor).
-
-- **Explicit approval origin** — replaces `session.PendingAsk.HookOriginated`,
-  `PlanOriginated`, and the derived `AskOrigin` accessor/type with one serialized
-  `PendingAsk.Origin`. Missing or unrecognized origins now fail closed and cannot
-  execute, learn permission rules, arm hook waivers, or transition plan mode. Changed
-  (breaking, pre-v1 minor).
 
 - **Session-load failure classification** — adds `port.SessionLoadFailureClass`,
   `SessionLoadFailureError`, `ErrSessionLoadFailure`, `NewSessionLoadFailure`, and
