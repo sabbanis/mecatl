@@ -1017,8 +1017,8 @@ proxy; the SDK owns wire decoding (generated proto bindings, unknown event kinds
 surfaced as typed unknowns), and only the controller calls remain Studio-owned.
 Live re-attach to a running session rides the SDK's durable watch
 (`GET /v1/sessions/{id}/watch`, ADR 0250). A breaking wire change is absorbed by
-the SDK first; Studio moves with it in the same PR. See ADR 0345 (and its
-amendment) and ADR 0346.
+the SDK first; Studio moves with it in the same PR. See ADR 0347 (and its
+amendment) and ADR 0348.
 
 **mecatequi — the single-shot headless runner (`cmd/mecatequi`).** A fourth composition
 root and a *peer of `mecademo`* over the same `app.Build`: it runs **one** prompt against
