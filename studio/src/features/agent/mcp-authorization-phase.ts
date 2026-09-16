@@ -89,6 +89,17 @@ export const AUTHORIZATION_LINK_COPIED_NOTICE =
 export const AUTHORIZATION_POPUP_BLOCKED_NOTICE =
   "Your browser blocked the pop-up. Use Copy link and open it yourself.";
 
+/** The panel line a manual re-check shows while another check is in flight. */
+export const AUTHORIZATION_CHECK_IN_FLIGHT_NOTICE =
+  "A check is already in progress; its result lands in a moment.";
+
+/**
+ * How often Studio re-checks a pending authorization once the sign-in page
+ * was opened or its link copied — the TUI's cadence
+ * (cmd/mecatui/ui/mcp_authorization.go `mcpAuthorizationPollInterval`).
+ */
+export const AUTHORIZATION_POLL_INTERVAL_MS = 3_000;
+
 /**
  * Opens the sign-in page without tripping pop-up blockers: the blank window
  * is opened SYNCHRONOUSLY inside the click's task (so the browser attributes

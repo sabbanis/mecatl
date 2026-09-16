@@ -10,6 +10,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -28,6 +29,9 @@ import { PERMISSION_MODES, type ScheduleSpecDraft } from "@/lib/protocol";
  * opt-in. The default posture (`allowWrites: false`) is always
  * `mutating: false` + plan mode — the invalid pairing (mutating in plan mode,
  * or writes without the opt-in) cannot be expressed by this state at all.
+ * Both fields are user-editable: `ScheduleFormFields` renders the
+ * "Allow file and shell writes" switch and, under it, the permission-mode
+ * picker (the TUI form's y/n mutating toggle).
  */
 export interface ScheduleFormValue {
   name: string;
@@ -306,9 +310,58 @@ export function ScheduleFormFields({
           </div>
         )}
       </div>
+
+      {/* Write access is the one posture choice the form owns: off is plan
+          mode + mutating:false, on is mutating:true with a write-capable mode.
+          The pairing the daemon rejects (mutating:false outside plan mode)
+          cannot be built here. */}
+      <div className="space-y-3 rounded-lg border px-3 py-2.5">
+        <div className="flex items-center justify-between gap-3">
+          <Label htmlFor="schedule-allow-writes">
+            Allow file and shell writes
+          </Label>
+          <Switch
+            id="schedule-allow-writes"
+            checked={value.allowWrites}
+            onCheckedChange={(checked) => onChange({ allowWrites: checked })}
+          />
+        </div>
+        <p className="text-xs text-muted-foreground">
+          {value.allowWrites ? WRITE_ACCESS_ON_NOTE : WRITE_ACCESS_OFF_NOTE}
+        </p>
+        {value.allowWrites && (
+          <div className="space-y-2">
+            <Label htmlFor="schedule-write-mode">Permission mode</Label>
+            <Select
+              value={value.writeMode}
+              onValueChange={(v) =>
+                onChange({ writeMode: v as ScheduleFormValue["writeMode"] })
+              }
+            >
+              <SelectTrigger id="schedule-write-mode" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="accept_edits">
+                  Accept edits — file edits proceed without approval
+                </SelectItem>
+                <SelectItem value="default">
+                  Default — standard permission rules apply
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
+
+/** The one-line consequence under the write-access switch, per state. */
+export const WRITE_ACCESS_OFF_NOTE =
+  "Read-only: the task runs in plan mode and cannot edit files or run mutating commands.";
+export const WRITE_ACCESS_ON_NOTE =
+  "The task can edit files and run commands unattended; anything that would need a human approval is denied while it runs headless.";
 
 const REPEAT_OPTIONS: { value: CronRepeat; label: string }[] = [
   { value: "daily", label: "Daily" },

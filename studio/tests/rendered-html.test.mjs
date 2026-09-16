@@ -188,6 +188,9 @@ test("external mode injects daemon auth server-side and disables local controls"
     ["providers/openrouter/test", "POST"],
     ["providers/openrouter", "DELETE"],
     ["restart", "POST"],
+    // Starting the ToolHive proxy spawns a process on the MANAGED
+    // controller's machine; the external deployment owns its own gateway.
+    ["toolhive/start", "POST"],
     // Posture / trust / shell-less mode are spawn flags of the MANAGED
     // daemon: the external deployment owns its own, read included.
     ["permissions", "GET"],
@@ -203,6 +206,12 @@ test("external mode injects daemon auth server-side and disables local controls"
     // spawn flags of the MANAGED daemon: external owns them, read included.
     ["daemon-defaults", "GET"],
     ["daemon-defaults", "PUT"],
+    // The diagnostics options (--log-level, the admin/metrics listener,
+    // --perf-mcp, --goroutine-warn-threshold, --product-metrics opt-out,
+    // controller-side quiet) are spawn flags of the MANAGED daemon too:
+    // external owns them, read included.
+    ["diagnostics-options", "GET"],
+    ["diagnostics-options", "POST"],
   ]) {
     const refused = await fetch(`${studioBaseURL}/api/mecatl-control/${path}`, {
       method,
@@ -320,6 +329,9 @@ test("controller policy rejects CSRF and DNS-rebinding requests", () => {
     ["POST", "/providers/openrouter/test"],
     ["DELETE", "/providers/openrouter"],
     ["POST", "/restart"],
+    // Starting the ToolHive proxy spawns a process; another loopback-origin
+    // page must never be able to do that.
+    ["POST", "/toolhive/start"],
     // The permissions document (posture / trust / shell-less) is likewise
     // header-gated on BOTH verbs: another loopback-origin page must not read
     // the daemon's trust flags, let alone raise its posture.

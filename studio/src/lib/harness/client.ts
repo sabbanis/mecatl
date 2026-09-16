@@ -21,6 +21,7 @@ import { type HarnessRetentionState, readRetentionState } from "./retention";
 import { type HarnessStorageState, readStorageState } from "./store-location";
 
 export * from "./daemon-defaults";
+export * from "./diagnostics";
 export { HarnessApiError } from "./errors";
 export * from "./inventory";
 export * from "./mcp-authorization";
@@ -47,6 +48,9 @@ export interface HarnessControlStatus {
     active: boolean;
     /** The loopback proxy URL the controller probes (display only). */
     baseURL?: string;
+    /** ToolHive's `thv` CLI was found on the controller's PATH at boot, so
+     *  Studio can offer to start the proxy. Absent on an older controller. */
+    thvOnPath?: boolean;
   } | null;
   modelRouter: { enabled: boolean; categories: number } | null;
   operatorSettings: boolean;
@@ -152,6 +156,7 @@ export async function fetchHarnessControlStatus(
         available?: boolean;
         active?: boolean;
         baseURL?: string;
+        thvOnPath?: boolean;
       } | null;
       modelRouter?: { enabled?: boolean; categories?: number } | null;
       operatorSettings?: boolean;
@@ -182,6 +187,10 @@ export async function fetchHarnessControlStatus(
             baseURL:
               typeof body.toolhiveGateway.baseURL === "string"
                 ? body.toolhiveGateway.baseURL
+                : undefined,
+            thvOnPath:
+              typeof body.toolhiveGateway.thvOnPath === "boolean"
+                ? body.toolhiveGateway.thvOnPath
                 : undefined,
           }
         : null,
@@ -351,12 +360,41 @@ export async function connectHarnessGateway(
  *  booleans only, never values (Studio rule 3). */
 export interface HarnessProviderInfo {
   name: string;
+  /** False for a built-in kind the inventory lists only so it can be
+   *  described and added (no auth.yaml block, no env var). */
   configured: boolean;
   /** A non-empty api_key / oauth access_token exists in the block. */
   keyPresent: boolean;
   source: string;
   /** The controller can key-test this kind with one cheap keyed call. */
   testable: boolean;
+  // ── `providers status` parity (absent on an older controller) ──────────
+  /** "built-in" | "custom" (settings-defined, ADR 0238) | "external" (the
+   *  ToolHive gateway) | "unknown" (an auth.yaml block naming neither). */
+  class?: string;
+  /** "api_key" | "oauth" (openai-codex's manual token) | "none" | "external". */
+  authMethod?: string;
+  /** The kind's credential env var is set in the controller's environment,
+   *  which the spawned mecated inherits — the variable wins over auth.yaml. */
+  envShadowed?: boolean;
+  /** Plain authentication state: "configured", "not configured",
+   *  "configured (environment shadows auth.yaml)", "not required",
+   *  "manual token", "gateway reachable", … */
+  authState?: string;
+  /** The saved daemon default model for this provider (or a custom
+   *  definition's default_model); "" when none. */
+  defaultModel?: string;
+  /** The next recovery step, e.g. "add an API key to auth.yaml". */
+  nextStep?: string;
+  /** This is the kind the daemon was spawned on. */
+  active?: boolean;
+  /** ToolHive row only: the loopback proxy URL (display only). */
+  baseURL?: string;
+  /** ToolHive row only: the readiness probe answered. */
+  reachable?: boolean;
+  /** ToolHive row only: `thv` is on the controller's PATH, so Studio can
+   *  start the proxy. */
+  thvOnPath?: boolean;
 }
 
 export async function listHarnessProviders(
@@ -374,8 +412,19 @@ export async function listHarnessProviders(
       keyPresent?: boolean;
       source?: string;
       testable?: boolean;
+      class?: string;
+      authMethod?: string;
+      envShadowed?: boolean;
+      authState?: string;
+      defaultModel?: string;
+      nextStep?: string;
+      active?: boolean;
+      baseURL?: string;
+      reachable?: boolean;
+      thvOnPath?: boolean;
     }[];
   };
+  const text = (value: unknown) => (typeof value === "string" ? value : "");
   return (body.providers ?? [])
     .filter((row) => typeof row.name === "string" && row.name !== "")
     .map((row) => ({
@@ -384,6 +433,16 @@ export async function listHarnessProviders(
       keyPresent: row.keyPresent === true,
       source: row.source ?? "auth.yaml",
       testable: row.testable === true,
+      class: text(row.class),
+      authMethod: text(row.authMethod),
+      envShadowed: row.envShadowed === true,
+      authState: text(row.authState),
+      defaultModel: text(row.defaultModel),
+      nextStep: text(row.nextStep),
+      active: row.active === true,
+      baseURL: text(row.baseURL),
+      reachable: row.reachable === true,
+      thvOnPath: row.thvOnPath === true,
     }));
 }
 
@@ -501,6 +560,36 @@ export async function setActiveHarnessProvider(
   return {
     provider: body.provider ?? "",
     selectedProvider: body.selectedProvider ?? null,
+  };
+}
+
+/** The controller's answer to a ToolHive proxy start: whether the gateway
+ *  answered within the bounded poll, and a next-step hint when it did not
+ *  (typically: run `thv llm login` in a terminal first). */
+export interface HarnessToolhiveStart {
+  available: boolean;
+  hint: string;
+}
+
+/**
+ * Asks the controller to start the ToolHive LLM gateway proxy (`thv llm
+ * proxy start`, detached) and to re-probe it — the `providers setup`
+ * delegation to `thv llm`. Does NOT restart the daemon; "Set as active" on
+ * the ToolHive row does. Throws when thv is not installed (409), in external
+ * mode (409), or when the spawn failed.
+ */
+export async function startHarnessToolhiveGateway(): Promise<HarnessToolhiveStart> {
+  const response = await fetch(`${CONTROL_API}/toolhive/start`, {
+    method: "POST",
+  });
+  if (!response.ok) throw await apiError(response);
+  const body = (await response.json()) as {
+    available?: boolean;
+    hint?: string;
+  };
+  return {
+    available: body.available === true,
+    hint: typeof body.hint === "string" ? body.hint : "",
   };
 }
 

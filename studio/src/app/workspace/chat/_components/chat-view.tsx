@@ -2,7 +2,6 @@
 
 import {
   AlertCircle,
-  ArrowDown,
   ArrowLeft,
   CirclePlus,
   Ellipsis,
@@ -11,6 +10,7 @@ import {
   Loader2,
   MessageCircle,
   MessageSquareText,
+  Network,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
@@ -42,10 +42,17 @@ import {
   type Attachment,
   type AuthorizationRequest,
   type ClarificationRequest,
+  type DelegationFleet,
+  type DelegationInfo,
+  fleetCounts,
   type ToolCallInfo,
   useAgentChat,
 } from "@/features/agent";
-import type { StudioBuiltinCommand } from "@/features/agent/composer-capabilities";
+import type {
+  BuiltinGates,
+  BuiltinOutcome,
+  StudioBuiltinCommand,
+} from "@/features/agent/composer-builtins";
 import {
   mergeQueued,
   type PendingSteer,
@@ -94,12 +101,21 @@ import {
 } from "./chat-view-phase";
 import { ClarificationPanel } from "./clarification-panel";
 import { ContextMeter } from "./context-meter";
+import {
+  type DelegationFocus,
+  DelegationPanel,
+  type DelegationTab,
+  focusForDelegationCard,
+  preferredDelegationTab,
+} from "./delegation-panel";
 import { FilePreview } from "./file-preview";
 import { HelpMenuItem, HelpSheetItem } from "./help-menu-item";
 import { MarkdownCanvasPanel } from "./markdown-canvas-panel";
 import { MessageBubble } from "./message-bubble";
 import { MockProviderNotice } from "./mock-provider-notice";
 import { QueuedMessageStrip } from "./queued-message-strip";
+import { PAGE_FRACTION, scrollPositionPercent } from "./scroll-position";
+import { ScrollToBottomPill } from "./scroll-to-bottom-pill";
 import { SidePanel } from "./side-panel";
 import { StatusLine } from "./status-line";
 import { streamingPhaseLabel } from "./streaming-phase";
@@ -114,7 +130,10 @@ type ActivePanel =
   | { kind: "artifact"; artifact: Artifact }
   | { kind: "attachment"; attachment: Attachment }
   | { kind: "thread"; message: AgentMessage }
-  | { kind: "toolcall"; call: ToolCallInfo };
+  | { kind: "toolcall"; call: ToolCallInfo }
+  // The Agents panel reads the live `fleet` prop; it keeps only its tab and
+  // the child/group/view it is drilled into (Esc steps a focus back first).
+  | { kind: "delegation"; tab: DelegationTab; focus: DelegationFocus | null };
 
 /**
  * Bottom-of-transcript activity line while a turn is running: three
@@ -893,6 +912,10 @@ export function ChatView({
   autoModelLabel,
   onSwitchModel,
   onLocalCommand,
+  builtinGates,
+  fleet,
+  teamsSupported,
+  onCancelChild,
 }: {
   session: AgentSession;
   messages: AgentMessage[];
@@ -995,9 +1018,23 @@ export function ChatView({
   autoModelLabel?: string;
   /** Picking a model forks this chat onto it (daemon fixes model at create). */
   onSwitchModel?: (option: ComposerModelOption | null) => void;
-  /** Answers a Studio-local slash command typed in the composer (`/help`
-      opens the shortcuts & features reference) instead of sending it. */
-  onLocalCommand?: (command: StudioBuiltinCommand) => void;
+  /** Answers a Studio built-in slash command typed in the composer (`/clear
+      /help /session /retry /diagnostics /compact`) instead of sending it; a
+      refusal keeps the text and shows its warning. */
+  onLocalCommand?: (
+    command: StudioBuiltinCommand,
+  ) => BuiltinOutcome | undefined;
+  /** Which gated built-ins the daemon enables (`/compact`). */
+  builtinGates?: BuiltinGates;
+  /** Every child this session's runs delegated, across turns: the Agents
+      panel's model and the header button's badge. */
+  fleet?: DelegationFleet;
+  /** The daemon's `teams` capability; false disables the Teams tab when no
+      team has run. */
+  teamsSupported?: boolean;
+  /** Cancels one live delegated child by its session id (the inline cards'
+      and the Agents panel's cancel controls; absent = no controls). */
+  onCancelChild?: (childId: string) => void | Promise<void>;
 }) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   // Whether the transcript is scrolled to (near) the bottom; when it isn't,
@@ -1006,7 +1043,11 @@ export function ChatView({
   // scroll, not the latest render.
   const [atBottom, setAtBottom] = useState(true);
   const atBottomRef = useRef(true);
-  const messagesContainerRef = useRef<HTMLDivElement>(null);
+  const messagesContainerRef = useRef<HTMLElement>(null);
+  // The TUI's `↑ NN%` cue: how far through the conversation the view sits.
+  // Tracked only while unpinned — the floating pill is its sole reader, and
+  // re-rendering on every streaming scroll while pinned would be churn.
+  const [scrollPercent, setScrollPercent] = useState(100);
   // The global Show Tools preference (persisted; shared with thread panels).
   const { showToolCalls: showActivity, setShowToolCalls } = useShowToolCalls();
   // The single right-hand panel — a discriminated union makes "one panel at a
@@ -1097,6 +1138,60 @@ export function ChatView({
     [],
   );
 
+  // The Agents panel (the TUI's f6 overlay): opened from the header button,
+  // the agents.toggle shortcut, or an inline delegation card, which lands on
+  // the child/group/member it names. The default tab is context-sensitive
+  // (a live team, then a live fan-out, then whichever family has history).
+  const openDelegationPanel = useCallback(
+    (tab?: DelegationTab, focus: DelegationFocus | null = null) =>
+      setPanel({
+        kind: "delegation",
+        tab: tab ?? preferredDelegationTab(fleet),
+        focus,
+      }),
+    [fleet],
+  );
+  const handleOpenDelegation = useCallback(
+    (card: DelegationInfo) => {
+      const target = focusForDelegationCard(card);
+      openDelegationPanel(target.tab, target.focus);
+    },
+    [openDelegationPanel],
+  );
+  const handleDelegationTabChange = useCallback(
+    (tab: DelegationTab) => setPanel({ kind: "delegation", tab, focus: null }),
+    [],
+  );
+  const handleDelegationFocus = useCallback(
+    (focus: DelegationFocus | null) =>
+      setPanel((current) =>
+        current?.kind === "delegation" ? { ...current, focus } : current,
+      ),
+    [],
+  );
+  useShortcut("agents.toggle", () => {
+    if (panel?.kind === "delegation") {
+      closeSidePanel();
+      return;
+    }
+    openDelegationPanel();
+  });
+  // The header's Agents button appears once any child has run in this chat;
+  // its badge counts the children still running (team members working).
+  const delegationCounts = useMemo(() => {
+    if (!fleet) return null;
+    const total =
+      fleet.subagents.length + fleet.parallelGroups.length + fleet.teams.length;
+    if (total === 0) return null;
+    const counts = fleetCounts(fleet);
+    return {
+      running:
+        counts.subagents.running +
+        counts.parallel.running +
+        counts.team.working,
+    };
+  }, [fleet]);
+
   // The tool-call panel tracks the LIVE call: the stream replaces call
   // objects as results land, so re-resolve by callId each render — the
   // clicked snapshot would otherwise read "running" forever.
@@ -1137,10 +1232,42 @@ export function ChatView({
   // there.
   useShortcut("close.esc", () => {
     if (panel !== null) {
+      // Inside the Agents panel a drilled-into child/group/view steps back
+      // to its roster first (the TUI's esc layering); the next Esc closes.
+      if (panel.kind === "delegation" && panel.focus !== null) {
+        setPanel({ ...panel, focus: null });
+        return;
+      }
       closeSidePanel();
       return;
     }
     if (isStreaming) onCancelRun?.();
+  });
+
+  // Keyboard paging of the transcript (the TUI's PgUp/PgDn/Home/End). These
+  // fire while the caret sits in the composer too — `comboFiresWhileTyping`
+  // admits PgUp/PgDn, which never insert text. Only one ChatView mounts at a
+  // time, so the dispatcher's id→handler map has a single owner.
+  const scrollTranscriptBy = (direction: -1 | 1) => {
+    const el = messagesContainerRef.current;
+    if (!el) return;
+    el.scrollBy({
+      top: direction * el.clientHeight * PAGE_FRACTION,
+      behavior: "smooth",
+    });
+  };
+  useShortcut("transcript.pageUp", () => scrollTranscriptBy(-1));
+  useShortcut("transcript.pageDown", () => scrollTranscriptBy(1));
+  useShortcut("transcript.top", () => {
+    messagesContainerRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+  });
+  useShortcut("transcript.bottom", () => {
+    // Instant, like the TUI: the view is at the bottom before the next
+    // frame, so re-pinning here can't fight the onScroll pin detector (a
+    // smooth scroll would report "unpinned" until it lands).
+    messagesEndRef.current?.scrollIntoView({ behavior: "instant" });
+    atBottomRef.current = true;
+    setAtBottom(true);
   });
 
   // The right-hand panel only renders on non-mobile layouts; let the parent
@@ -1239,6 +1366,43 @@ export function ChatView({
             {session.title || "Untitled"}
           </h2>
           {sidebarSide === "right" && sidebarToggle}
+          {delegationCounts && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="relative size-8 shrink-0 text-muted-foreground"
+                  aria-label={
+                    delegationCounts.running > 0
+                      ? `Agents (${delegationCounts.running} running)`
+                      : "Agents"
+                  }
+                  aria-pressed={panel?.kind === "delegation"}
+                  onClick={() => {
+                    if (panel?.kind === "delegation") {
+                      closeSidePanel();
+                      return;
+                    }
+                    openDelegationPanel();
+                  }}
+                >
+                  <Network className="size-4" />
+                  {delegationCounts.running > 0 && (
+                    <span
+                      aria-hidden="true"
+                      className="absolute -top-0.5 -right-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-brand px-1 text-[10px] font-medium leading-none text-white"
+                    >
+                      {delegationCounts.running}
+                    </span>
+                  )}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                Agents — subagents, parallel runs, teams
+              </TooltipContent>
+            </Tooltip>
+          )}
           {!isMobile && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -1296,7 +1460,7 @@ export function ChatView({
         </div>
 
         <div className="relative flex-1 min-h-0">
-          <div
+          <section
             ref={messagesContainerRef}
             onScroll={(event) => {
               const el = event.currentTarget;
@@ -1304,7 +1468,23 @@ export function ChatView({
                 el.scrollHeight - el.scrollTop - el.clientHeight < 80;
               atBottomRef.current = pinned;
               setAtBottom(pinned);
+              // Only the unpinned pill reads this; React bails out when the
+              // rounded figure hasn't changed, so no re-render churn.
+              if (!pinned) {
+                setScrollPercent(
+                  scrollPositionPercent(
+                    el.scrollTop,
+                    el.scrollHeight,
+                    el.clientHeight,
+                  ),
+                );
+              }
             }}
+            // Focusable on click (not in the Tab order) so the native
+            // Home/End/PgUp/PgDn work once the transcript itself has focus;
+            // named so that focus target is announced.
+            aria-label="Conversation"
+            tabIndex={-1}
             className="h-full overflow-y-auto px-3 pt-1 pb-48 max-[499px]:pb-24 lg:px-6 lg:pt-2 lg:pb-56"
           >
             <TextSelectionToolbar
@@ -1324,6 +1504,8 @@ export function ChatView({
                     setPanel({ kind: "attachment", attachment })
                   }
                   onOpenToolCall={handleOpenToolCall}
+                  onOpenDelegation={handleOpenDelegation}
+                  onCancelDelegation={onCancelChild}
                   onStartThread={handleStartThread}
                   threadSummary={threadMap[threadKeyForMessage(msg)]}
                   botName={botName}
@@ -1357,22 +1539,18 @@ export function ChatView({
               )}
               <div ref={messagesEndRef} />
             </div>
-          </div>
+          </section>
           <div className="absolute bottom-0 left-0 right-0 px-3 lg:px-4 pb-4 max-[499px]:px-0 max-[499px]:pb-0">
             {!atBottom && (
               <div className="pointer-events-none absolute -top-12 left-0 right-0 flex justify-center">
-                <Button
-                  size="icon"
+                <ScrollToBottomPill
+                  percent={scrollPercent}
                   onClick={() =>
                     messagesEndRef.current?.scrollIntoView({
                       behavior: "smooth",
                     })
                   }
-                  aria-label="Scroll to bottom"
-                  className="pointer-events-auto size-9 rounded-full border border-border bg-background text-muted-foreground shadow-md hover:bg-muted"
-                >
-                  <ArrowDown className="size-4" />
-                </Button>
+                />
               </div>
             )}
             <div className="max-w-[768px] space-y-1.5 max-[499px]:max-w-none">
@@ -1432,6 +1610,7 @@ export function ChatView({
                   onQueue={onQueueMessage}
                   onSteer={onSteerMessage}
                   onLocalCommand={onLocalCommand}
+                  builtinGates={builtinGates}
                   onPreviewAttachment={handlePreviewFile}
                   focusKey={session.id}
                   mobileDocked
@@ -1486,6 +1665,11 @@ export function ChatView({
           onConvertToChat={handleConvertThread}
           maximized={panelMaximized}
           onToggleMaximize={toggleMaximize}
+          fleet={fleet}
+          teamsSupported={teamsSupported}
+          onCancelChild={onCancelChild}
+          onDelegationTabChange={handleDelegationTabChange}
+          onDelegationFocus={handleDelegationFocus}
         />
       )}
       {/* On mobile the same panels render as a full-height bottom sheet: the
@@ -1506,7 +1690,9 @@ export function ChatView({
                   ? activePanel.attachment.name
                   : activePanel.kind === "toolcall"
                     ? activePanel.call.name
-                    : activePanel.artifact.name}
+                    : activePanel.kind === "delegation"
+                      ? "Agents"
+                      : activePanel.artifact.name}
             </SheetTitle>
             <div className="flex min-h-0 flex-1 flex-col">
               <SidePanelForKind
@@ -1518,6 +1704,11 @@ export function ChatView({
                 maximized
                 onToggleMaximize={() => {}}
                 windowControls={false}
+                fleet={fleet}
+                teamsSupported={teamsSupported}
+                onCancelChild={onCancelChild}
+                onDelegationTabChange={handleDelegationTabChange}
+                onDelegationFocus={handleDelegationFocus}
               />
             </div>
           </SheetContent>
@@ -1537,6 +1728,11 @@ function SidePanelForKind({
   maximized,
   onToggleMaximize,
   windowControls,
+  fleet,
+  teamsSupported,
+  onCancelChild,
+  onDelegationTabChange,
+  onDelegationFocus,
 }: {
   panel: ActivePanel;
   parentSessionId: string;
@@ -1546,9 +1742,27 @@ function SidePanelForKind({
   maximized: boolean;
   onToggleMaximize: () => void;
   windowControls?: boolean;
+  fleet?: DelegationFleet;
+  teamsSupported?: boolean;
+  onCancelChild?: (childId: string) => void | Promise<void>;
+  onDelegationTabChange: (tab: DelegationTab) => void;
+  onDelegationFocus: (focus: DelegationFocus | null) => void;
 }) {
   const shared = { onClose, maximized, onToggleMaximize, windowControls };
   switch (panel.kind) {
+    case "delegation":
+      return (
+        <DelegationPanel
+          fleet={fleet}
+          tab={panel.tab}
+          focus={panel.focus}
+          onTabChange={onDelegationTabChange}
+          onFocus={onDelegationFocus}
+          teamsSupported={teamsSupported}
+          onCancelChild={onCancelChild}
+          {...shared}
+        />
+      );
     case "artifact":
       return <MarkdownCanvasPanel artifact={panel.artifact} {...shared} />;
     case "attachment":

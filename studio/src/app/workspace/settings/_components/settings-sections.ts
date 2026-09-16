@@ -1,4 +1,5 @@
 import {
+  Activity,
   Bot,
   Brain,
   Database,
@@ -86,6 +87,11 @@ export const SETTINGS_GROUPS: Array<{
         href: "/workspace/settings/storage",
         label: "Storage",
         icon: Database,
+      },
+      {
+        href: "/workspace/settings/diagnostics",
+        label: "Diagnostics",
+        icon: Activity,
       },
     ],
   },

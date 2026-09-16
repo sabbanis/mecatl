@@ -284,3 +284,38 @@ describe("schedules list text filter", () => {
     expect(filter).toHaveValue("/");
   });
 });
+
+/**
+ * Pins the create dialog's write-access opt-in (the TUI form's y/n mutating
+ * toggle): the switch opens unchecked and the submit stays gated on name and
+ * prompt whichever way it is set.
+ */
+describe("new scheduled task dialog write access", () => {
+  it("opens with the switch off and the submit gated on name and prompt", async () => {
+    const user = userEvent.setup();
+    render(<WorkspaceSchedulesPage />);
+
+    await user.click(
+      screen.getByRole("button", { name: /New scheduled task/ }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    const writes = within(dialog).getByRole("switch", {
+      name: "Allow file and shell writes",
+    });
+    expect(writes).not.toBeChecked();
+    expect(
+      within(dialog).getByRole("button", { name: "Create task" }),
+    ).toBeDisabled();
+
+    // Opting in reveals the mode picker but does not unlock the submit: the
+    // name and prompt gate is independent of the posture choice.
+    await user.click(writes);
+    expect(writes).toBeChecked();
+    expect(
+      within(dialog).getByRole("combobox", { name: "Permission mode" }),
+    ).toBeInTheDocument();
+    expect(
+      within(dialog).getByRole("button", { name: "Create task" }),
+    ).toBeDisabled();
+  });
+});

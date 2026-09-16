@@ -165,6 +165,54 @@ Each rule is backed by a test; break the rule and its test names you.
     `controller-security.test.ts`, `harness/daemon-defaults.test.ts`,
     `use-daemon-defaults.test.ts`, `daemon-defaults-card.test.tsx`,
     `provider-section.test.tsx`, hermetic 409 rows.)
+17. **Diagnostics options are spawn FLAGS with ONE writer per flag, and the
+    posture is not one of them.** Settings → Diagnostics reads the
+    daemon-REPORTED `serverCapabilities.posture` and spells out the four
+    defenses that tier switches on (`src/lib/posture.ts` mirrors mecatui's
+    `/posture` sentence byte-for-byte); changing the tier stays the
+    Permissions page's job (`--posture` has exactly one writer). The
+    controller's DIAGNOSTICS document (`diagnostics-options.json`, `GET|POST
+    /diagnostics-options`, a PARTIAL patch body, both verbs behind the studio
+    header) becomes `--log-level`, an EXPLICIT `--metrics-addr` in both
+    directions (`--metrics-addr=` while the admin listener is off — mecated's
+    default is a fixed loopback port two managed daemons would fight over),
+    `--perf-mcp` only with a real listener address, `--goroutine-warn-
+    threshold`, `--product-metrics=false`/`--product-metrics-dry-run` (never
+    `=true`: the controller's env opt-out — `DO_NOT_TRACK`,
+    `MECATL_PRODUCT_METRICS` — stays the operator's and is reported as
+    `productMetrics.source: "environment"`); `quiet` only gates the
+    controller's stderr mirror and restarts nothing. Names are deliberately
+    distinct from the (separate) daemon-options document:
+    `diagnosticsOptions`, `diagnosticsOptionArgs`. External mode: both verbs
+    409. (`src/lib/controller-diagnostics-options.test.ts`,
+    `src/lib/posture.test.ts`, `harness/diagnostics.test.ts`,
+    `use-diagnostics-options.test.ts`, `posture-card.test.tsx`, hermetic 409
+    rows, the Playwright diagnostics test.)
+18. **Storage maintenance is DAEMON-owned, capability-gated, and the
+    destructive step is typed-confirmed.** Settings → Storage ends in three
+    cards that talk to mecated ONLY through the SDK's `client.storage`
+    namespace (`src/lib/harness/storage.ts` — no controller document, no
+    spawn flag, nothing to roll back): Storage health (`GET
+    /v1/storage/health`, gated on `serverCapabilities.storage_health`, a
+    note when absent), Optimize storage (`/v1/storage/migrations/*`: plan →
+    apply → poll/cancel/resume, gated on `storage_migration`) and Clean up
+    sessions (`/v1/storage/cleanup:plan` → `cleanup:apply` →
+    `/v1/storage/cleanup/jobs/*`, gated on `storage_cleanup`); an ungated
+    card renders nothing. A running job is polled every
+    `JOB_POLL_INTERVAL_MS` (2 s) by `useStorageMaintenance`, stopped on a
+    terminal state and on unmount, and health is re-read when it settles.
+    Clean-up ticks every kind BUT `main` by default, applies with the PLAN's
+    `confirmationToken` (never a client-minted one) behind `useTypedConfirm`,
+    whose confirm enables only when the field equals `CLEAN UP` exactly, and
+    a finished job with `deleted > 0` fires `notifySessionsChanged` so the
+    sidebar re-walks now. Stable codes are framed in ONE place
+    (`storage-maintenance-shared.tsx`): `cleanup_plan_stale` → "plan again"
+    with a Re-plan button, `migration_conflict` → the job already running →
+    Refresh health, `management_unauthorized` → read-only copy in either
+    card; an unknown code shows the daemon's own message.
+    (`harness/storage.test.ts`, `use-storage-maintenance.test.ts`,
+    `use-typed-confirm.test.tsx`, the three `storage-*-card.test.tsx`,
+    `sessions-changed.test.ts`, the Playwright storage test.)
 
 ## Gotchas
 
@@ -196,6 +244,18 @@ Each rule is backed by a test; break the rule and its test names you.
   Residual: `POST /prompt` still cancels its run on client disconnect, so a
   reload of the DRIVING tab still ends the run — the watch covers runs
   driven elsewhere (schedules, other tabs/clients) and parked approvals.
+- A tool call parked on an MCP browser sign-in (`authorization.required`)
+  ENDS the prompt stream without a result; only the authorization controls
+  move the run again (`GET …/mcp-authorizations/{id}/presentation`, and the
+  BODYLESS `POST …/recheck` / `…/cancel` SSE relays — the daemon 400s any
+  body byte; `mcp-authorization-fetch.ts` strips the SDK's `{}`). The
+  takeover card (`authorization-panel.tsx`) fetches the URL only when opened
+  or copied — it never rides an event — and after an open/copy
+  `use-agent-chat` re-checks every 3 s (a 10 s first-event bound per
+  control, one control stream at a time so exactly one adopts the
+  continuation run; polling stops when the request resolves from any
+  stream, on cancel, chat switch, or unmount). Cancel confirms first: it
+  fails the parked tool call.
 
 <!-- BEGIN:nextjs-agent-rules -->
 

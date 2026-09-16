@@ -52,6 +52,12 @@ describe("shortcut registry", () => {
     // Deliberately NOT mod+n: browsers reserve ⌘N/Ctrl+N (new window) and the
     // page can't intercept it, so "New chat" stays on the preventable ⌘⇧O.
     expect(byId.get("chat.new")).toBe("mod+shift+o");
+    // The Agents panel toggle (the TUI's f6): a preventable ⌘⇧ chord, off the
+    // browser-reserved ⌘⇧A/N/T/W.
+    expect(byId.get("agents.toggle")).toBe("mod+shift+l");
+    expect(SHORTCUTS.find((s) => s.id === "agents.toggle")?.group).toBe(
+      "General",
+    );
   });
 
   it("binds the schedules list filter to a bare slash in its own group", () => {
@@ -64,6 +70,39 @@ describe("shortcut registry", () => {
     // `/` never inserts a slash into it.
     expect(comboFiresWhileTyping("/")).toBe(false);
   });
+
+  it("pins the transcript paging keys in their own Conversation group", () => {
+    const byId = new Map(SHORTCUTS.map((s) => [s.id, s]));
+    expect(byId.get("transcript.pageUp")?.combo).toBe("pageup");
+    expect(byId.get("transcript.pageDown")?.combo).toBe("pagedown");
+    expect(byId.get("transcript.top")?.combo).toBe("shift+pageup");
+    expect(byId.get("transcript.bottom")?.combo).toBe("shift+pagedown");
+    for (const id of [
+      "transcript.pageUp",
+      "transcript.pageDown",
+      "transcript.top",
+      "transcript.bottom",
+    ]) {
+      expect(byId.get(id)?.group).toBe("Conversation");
+    }
+    // Rendered between the chat-list keys and the composer keys.
+    const groups = [...SHORTCUT_GROUPS];
+    expect(groups.indexOf("Conversation")).toBe(groups.indexOf("Chats") + 1);
+    expect(groups.indexOf("Composer")).toBe(groups.indexOf("Conversation") + 1);
+  });
+
+  it("dispatches ⇧PgUp / ⇧PgDn to the top/bottom jumps (first match wins)", () => {
+    // The dispatcher fires the FIRST registry entry that matches, so the
+    // bare `pageup` entry must not swallow a shifted press.
+    const firstMatch = (e: KeyboardEvent) =>
+      SHORTCUTS.find((s) => matchCombo(s.combo, e))?.id;
+    expect(firstMatch(ev("PageUp", { shift: true }))).toBe("transcript.top");
+    expect(firstMatch(ev("PageDown", { shift: true }))).toBe(
+      "transcript.bottom",
+    );
+    expect(firstMatch(ev("PageUp"))).toBe("transcript.pageUp");
+    expect(firstMatch(ev("PageDown"))).toBe("transcript.pageDown");
+  });
 });
 
 describe("keycaps", () => {
@@ -73,6 +112,12 @@ describe("keycaps", () => {
     expect(keycaps("down")).toEqual(["↓"]);
     expect(keycaps("?")).toEqual(["?"]);
     expect(keycaps("shift+enter")).toEqual(["⇧", "Enter"]);
+  });
+
+  it("labels the paging keys as PgUp / PgDn", () => {
+    expect(keycaps("pageup")).toEqual(["PgUp"]);
+    expect(keycaps("shift+pageup")).toEqual(["⇧", "PgUp"]);
+    expect(keycaps("shift+pagedown")).toEqual(["⇧", "PgDn"]);
   });
 });
 
@@ -107,6 +152,18 @@ describe("matchCombo", () => {
     expect(matchCombo("mod+shift+n", ev("n", { meta: true }))).toBe(false);
   });
 
+  it("matches the agents panel chord on either modifier, with shift", () => {
+    // Shift+L reports an upper-case key in browsers; the match is case-blind.
+    expect(
+      matchCombo("mod+shift+l", ev("L", { meta: true, shift: true })),
+    ).toBe(true);
+    expect(
+      matchCombo("mod+shift+l", ev("L", { ctrl: true, shift: true })),
+    ).toBe(true);
+    expect(matchCombo("mod+shift+l", ev("l", { meta: true }))).toBe(false);
+    expect(matchCombo("mod+shift+l", ev("l", { shift: true }))).toBe(false);
+  });
+
   it("matches mod + punctuation combos", () => {
     expect(matchCombo("mod+,", ev(",", { meta: true }))).toBe(true);
     expect(matchCombo("mod+,", ev(",", { ctrl: true }))).toBe(true);
@@ -119,16 +176,58 @@ describe("matchCombo", () => {
     expect(matchCombo("esc", ev("Escape"))).toBe(true);
     expect(matchCombo("esc", ev("Escape", { meta: true }))).toBe(false);
   });
+
+  it("matches the paging keys by their DOM key names", () => {
+    expect(matchCombo("pageup", ev("PageUp"))).toBe(true);
+    expect(matchCombo("pagedown", ev("PageDown"))).toBe(true);
+    expect(matchCombo("shift+pageup", ev("PageUp", { shift: true }))).toBe(
+      true,
+    );
+    expect(matchCombo("shift+pagedown", ev("PageDown", { shift: true }))).toBe(
+      true,
+    );
+  });
+
+  it("keeps the bare and shifted paging chords distinct", () => {
+    // An unrequested shift on a NAMED key is a different chord (⇧PgUp must
+    // reach `transcript.top`, never be swallowed by `pageup`)…
+    expect(matchCombo("pageup", ev("PageUp", { shift: true }))).toBe(false);
+    expect(matchCombo("pagedown", ev("PageDown", { shift: true }))).toBe(false);
+    expect(matchCombo("shift+pageup", ev("PageUp"))).toBe(false);
+    // …while single-character keys keep their implicit-shift leniency.
+    expect(matchCombo("j", ev("J", { shift: true }))).toBe(true);
+    expect(matchCombo("?", ev("?", { shift: true }))).toBe(true);
+  });
+
+  it("leaves the browser's Ctrl/⌘+PgUp/PgDn tab-switch chords alone", () => {
+    expect(matchCombo("pageup", ev("PageUp", { ctrl: true }))).toBe(false);
+    expect(matchCombo("pagedown", ev("PageDown", { meta: true }))).toBe(false);
+    expect(
+      matchCombo("shift+pageup", ev("PageUp", { ctrl: true, shift: true })),
+    ).toBe(false);
+  });
 });
 
 describe("comboFiresWhileTyping", () => {
   it("allows mod combos and bare esc, suppresses plain keys", () => {
     expect(comboFiresWhileTyping("mod+k")).toBe(true);
     expect(comboFiresWhileTyping("mod+shift+o")).toBe(true);
+    // The agents panel must toggle from inside the composer too.
+    expect(comboFiresWhileTyping("mod+shift+l")).toBe(true);
     expect(comboFiresWhileTyping("esc")).toBe(true);
     expect(comboFiresWhileTyping("j")).toBe(false);
     expect(comboFiresWhileTyping("?")).toBe(false);
     expect(comboFiresWhileTyping("shift+enter")).toBe(false);
+  });
+
+  it("lets the paging keys scroll the transcript from the composer", () => {
+    expect(comboFiresWhileTyping("pageup")).toBe(true);
+    expect(comboFiresWhileTyping("pagedown")).toBe(true);
+    expect(comboFiresWhileTyping("shift+pageup")).toBe(true);
+    expect(comboFiresWhileTyping("shift+pagedown")).toBe(true);
+    // Home/End move the caret within a line while typing — never claimed.
+    expect(comboFiresWhileTyping("home")).toBe(false);
+    expect(comboFiresWhileTyping("end")).toBe(false);
   });
 });
 

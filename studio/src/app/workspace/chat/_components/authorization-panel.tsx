@@ -4,6 +4,11 @@ import { ExternalLink, KeyRound, Link2, RefreshCw } from "lucide-react";
 import { useEffect, useId, useState } from "react";
 import { Button } from "@/components/ui/button";
 import type { AuthorizationRequest } from "@/features/agent";
+import { AUTHORIZATION_POLL_INTERVAL_MS } from "@/features/agent/mcp-authorization-phase";
+import { useConfirm } from "@/hooks/use-confirm";
+
+/** The line shown while Studio re-checks the sign-in on the poll cadence. */
+export const AUTHORIZATION_POLLING_STATUS = `Waiting for you to finish the sign-in in your browser — checking every ${AUTHORIZATION_POLL_INTERVAL_MS / 1000} seconds.`;
 
 /** The expiry line: a live countdown, or the nudge once it has passed. */
 export function formatAuthorizationCountdown(
@@ -47,6 +52,7 @@ export function AuthorizationPanel({
   const headingId = useId();
   const [busy, setBusy] = useState<Action | null>(null);
   const [now, setNow] = useState(() => Date.now());
+  const { confirm, ConfirmDialog } = useConfirm();
 
   useEffect(() => {
     if (authorization.expiresAt === undefined) return;
@@ -67,7 +73,22 @@ export function AuthorizationPanel({
   };
 
   const server = authorization.displayName.trim() || "An MCP server";
+  const serverInSentence = authorization.displayName.trim() || "the MCP server";
   const countdown = formatAuthorizationCountdown(authorization.expiresAt, now);
+
+  // Cancelling is not a dismissal: the daemon records the parked tool call as
+  // cancelled and the model carries on without it, so the click confirms.
+  const cancelAfterConfirm = async () => {
+    const ok = await confirm({
+      title: "Cancel the sign-in?",
+      description: `The tool call waiting on ${serverInSentence} is cancelled and the run carries on without it.`,
+      confirmText: "Cancel sign-in",
+      cancelText: "Keep waiting",
+      destructive: true,
+    });
+    if (!ok) return;
+    await onCancel();
+  };
 
   return (
     <section
@@ -89,6 +110,15 @@ export function AuthorizationPanel({
         The run is paused until you finish the sign-in or cancel it.
         {countdown ? ` ${countdown}` : ""}
       </p>
+      {authorization.polling ? (
+        <p className="mb-3 flex items-center gap-1.5 text-xs text-info">
+          <RefreshCw
+            aria-hidden="true"
+            className="size-3 shrink-0 motion-safe:animate-spin"
+          />
+          {AUTHORIZATION_POLLING_STATUS}
+        </p>
+      ) : null}
       <div className="flex flex-wrap gap-2">
         <Button
           size="sm"
@@ -125,13 +155,14 @@ export function AuthorizationPanel({
         <Button
           size="sm"
           variant="ghost"
-          onClick={run("cancel", onCancel)}
+          onClick={run("cancel", cancelAfterConfirm)}
           disabled={busy !== null}
           className="text-muted-foreground hover:text-foreground"
         >
           Cancel
         </Button>
       </div>
+      {ConfirmDialog}
       {authorization.error ? (
         <p role="alert" className="mt-3 text-xs font-medium text-destructive">
           {authorization.error}

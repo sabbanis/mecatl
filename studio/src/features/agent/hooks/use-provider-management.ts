@@ -9,6 +9,7 @@ import {
   removeHarnessProvider,
   restartHarnessDaemon,
   setActiveHarnessProvider,
+  startHarnessToolhiveGateway,
   testHarnessProviderKey,
 } from "@/lib/harness/client";
 import { useRuntimeStatus } from "../runtime-status";
@@ -183,6 +184,34 @@ export function useProviderManagement() {
     [load],
   );
 
+  /**
+   * Starts the ToolHive LLM gateway proxy through the controller (`thv llm
+   * proxy start`, detached) and re-reads the inventory so the ToolHive row
+   * reflects the probe. Does NOT restart the daemon. A proxy that did not
+   * answer within the controller's bounded poll is a NOTICE carrying the
+   * controller's hint (typically: run `thv llm login` in a terminal first),
+   * not an error — the spawn itself succeeded.
+   */
+  const startToolhive = useCallback(async () => {
+    setBusy("toolhive:start");
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await startHarnessToolhiveGateway();
+      await load();
+      setNotice(
+        result.available
+          ? "ToolHive gateway is reachable. Set it as active to use it."
+          : result.hint ||
+              "The ToolHive gateway did not answer yet — re-check in a moment.",
+      );
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setBusy("");
+    }
+  }, [load]);
+
   return {
     live: connected,
     /** False in external mode: the deployment owns its providers. */
@@ -199,5 +228,6 @@ export function useProviderManagement() {
     removeProvider,
     restartDaemon,
     setActiveProvider,
+    startToolhive,
   };
 }

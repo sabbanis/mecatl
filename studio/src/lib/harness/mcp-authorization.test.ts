@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { StreamEvent } from "@/features/agent/types";
 import {
+  CONTROL_FIRST_EVENT_TIMEOUT_MS,
   cancelMcpAuthorization,
   fetchMcpAuthorizationUrl,
   recheckMcpAuthorization,
@@ -270,5 +271,56 @@ describe("streamHarnessPrompt parked on an authorization", () => {
     await expect(
       streamHarnessPrompt("s1", "use github", [], () => undefined),
     ).rejects.toThrow("closed before Mecatl returned a final result");
+  });
+});
+
+describe("control first-event bound", () => {
+  it("fails a recheck whose stream produces no first event within 10 s, so the 3 s polling can recover instead of wedging", async () => {
+    vi.useFakeTimers();
+    try {
+      // The daemon answers a recheck synchronously; a transport that drops
+      // the stream (a stalled port-forward) never delivers a frame at all.
+      stubHarnessFetch((request) => {
+        if (request.path === "/v1/sessions/s1") return snapshotFor("s1");
+        if (request.path === `${base}/recheck`)
+          // Like a real fetch, the hung request still honours its abort —
+          // that is how the guard tears the SDK stream down afterwards.
+          return new Promise<Response>((_, reject) => {
+            request.init?.signal?.addEventListener(
+              "abort",
+              () =>
+                reject(
+                  new DOMException("The operation was aborted.", "AbortError"),
+                ),
+              { once: true },
+            );
+          });
+        return undefined;
+      });
+      const started = Date.now();
+      let settledAt: number | null = null;
+      const outcome = recheckMcpAuthorization("s1", "auth-1", () => undefined)
+        .then(() => "resolved")
+        .catch((error: Error) => error.message)
+        .finally(() => {
+          settledAt = Date.now();
+        });
+      // The client probe, the session GET and the stream open each take a
+      // macrotask hop before the first-event timer is even armed, so the
+      // clock is stepped until the control settles (bounded well under the
+      // 120 s idle bound, which must NOT be what fires).
+      for (let step = 0; step < 30 && settledAt === null; step++) {
+        await vi.advanceTimersByTimeAsync(1_000);
+      }
+      await expect(outcome).resolves.toBe(
+        "Mecatl did not answer the authorization check within 10 seconds.",
+      );
+      expect(settledAt).not.toBeNull();
+      const elapsed = (settledAt ?? started) - started;
+      expect(elapsed).toBeGreaterThanOrEqual(CONTROL_FIRST_EVENT_TIMEOUT_MS);
+      expect(elapsed).toBeLessThan(30_000);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

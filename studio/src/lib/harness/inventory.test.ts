@@ -4,6 +4,7 @@ import {
   fetchHarnessUserModel,
   listHarnessAgents,
   listHarnessCommands,
+  listHarnessModelInventory,
   listHarnessModels,
   listHarnessSkills,
   probeHarness,
@@ -159,6 +160,59 @@ describe("listHarnessModels", () => {
         reasoning: false,
       },
     ]);
+  });
+});
+
+describe("listHarnessModelInventory", () => {
+  it("maps provider_status rows (state passthrough, count coerced, flags defaulted)", async () => {
+    stubHarnessFetch(() => ({
+      models: [],
+      provider_status: [
+        {
+          provider_id: "toolhive",
+          state: "unreachable",
+          hint: "start it with `thv llm proxy start`",
+          model_count: 0,
+        },
+        {
+          provider_id: "openai-codex",
+          state: "ok",
+          hint: "",
+          default_model_auto_selected: true,
+          model_count: 3,
+          available_not_default: true,
+        },
+      ],
+    }));
+    const inventory = await listHarnessModelInventory();
+    expect(inventory.models).toEqual([]);
+    expect(inventory.providerStatus).toEqual([
+      {
+        providerId: "toolhive",
+        state: "unreachable",
+        hint: "start it with `thv llm proxy start`",
+        defaultModelAutoSelected: false,
+        modelCount: 0,
+        availableNotDefault: false,
+      },
+      {
+        providerId: "openai-codex",
+        state: "ok",
+        hint: "",
+        defaultModelAutoSelected: true,
+        modelCount: 3,
+        availableNotDefault: true,
+      },
+    ]);
+  });
+
+  it("reads an older daemon's list (no provider_status) as an empty status set", async () => {
+    stubHarnessFetch(() => ({
+      models: [{ id: "m", provider_id: "openrouter" }],
+    }));
+    const inventory = await listHarnessModelInventory();
+    expect(inventory.providerStatus).toEqual([]);
+    expect(inventory.models.map((model) => model.id)).toEqual(["m"]);
   });
 });
 

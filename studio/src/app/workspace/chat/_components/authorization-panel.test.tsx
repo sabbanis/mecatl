@@ -1,7 +1,14 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { AuthorizationRequest } from "@/features/agent";
 import {
+  AUTHORIZATION_POLLING_STATUS,
   AuthorizationPanel,
   formatAuthorizationCountdown,
 } from "./authorization-panel";
@@ -67,8 +74,45 @@ describe("AuthorizationPanel", () => {
       screen.getByRole("button", { name: "I've finished — re-check" }),
     );
     await waitFor(() => expect(handlers.onRecheck).toHaveBeenCalledTimes(1));
+    // Cancel fails the parked tool call, so it confirms first.
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent("Cancel the sign-in?");
+    expect(dialog).toHaveTextContent(
+      "The tool call waiting on GitHub MCP is cancelled and the run carries on without it.",
+    );
+    expect(handlers.onCancel).not.toHaveBeenCalled();
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Cancel sign-in" }),
+    );
     await waitFor(() => expect(handlers.onCancel).toHaveBeenCalledTimes(1));
+  });
+
+  it("keeps waiting when the cancel confirmation is declined", async () => {
+    const handlers = renderPanel();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    const dialog = await screen.findByRole("alertdialog");
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Keep waiting" }),
+    );
+    await waitFor(() =>
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument(),
+    );
+    expect(handlers.onCancel).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Cancel" })).toBeEnabled(),
+    );
+  });
+
+  it("shows the polling line only while Studio re-checks on the 3 s cadence", () => {
+    renderPanel();
+    expect(screen.queryByText(AUTHORIZATION_POLLING_STATUS)).toBeNull();
+  });
+
+  it("names the poll cadence once the sign-in page was opened or copied", () => {
+    renderPanel({ polling: true });
+    expect(screen.getByText(AUTHORIZATION_POLLING_STATUS)).toBeInTheDocument();
+    expect(AUTHORIZATION_POLLING_STATUS).toMatch(/checking every 3 seconds/);
   });
 
   it("disables every action while one is in flight, then re-enables them", async () => {

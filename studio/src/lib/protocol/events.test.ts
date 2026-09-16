@@ -1162,3 +1162,86 @@ describe("translateEvent", () => {
     }
   });
 });
+
+// ── MCP browser authorization ────────────────────────────────────────────────
+
+/**
+ * The per-tool MCP authorization lifecycle: both kinds translate to typed
+ * events (never the "not rendered yet" notice), the protobuf Timestamp expiry
+ * becomes epoch milliseconds, and no URL rides an event — the client fetches
+ * it from the presentation control when the operator opens it.
+ */
+describe("translateEvent — authorization", () => {
+  const authorization = (
+    status: string,
+    extra: Record<string, unknown> = {},
+  ) => ({
+    authorizationId: "auth-1",
+    callId: "call-7",
+    displayName: "GitHub MCP",
+    expiresAt: undefined,
+    status,
+    ...extra,
+  });
+
+  it("translates authorization.required into the parked phase with the expiry in ms, stamped with the run", () => {
+    expect(
+      translate(
+        sdkEvent(
+          "authorization.required",
+          authorization("pending", {
+            expiresAt: { seconds: BigInt(1_800_000_000), nanos: 500_000_000 },
+          }),
+          { runId: "run-1" },
+        ),
+      ),
+    ).toEqual([
+      {
+        type: "authorization",
+        authorizationId: "auth-1",
+        callId: "call-7",
+        displayName: "GitHub MCP",
+        status: "pending",
+        expiresAt: 1_800_000_000_500,
+        runId: "run-1",
+      },
+    ]);
+  });
+
+  it("reads an unset expiry as absent, never as 1970", () => {
+    const [event] = translate(
+      sdkEvent("authorization.required", authorization("pending")),
+    );
+    expect(event).toMatchObject({ type: "authorization", status: "pending" });
+    expect(event).not.toHaveProperty("expiresAt", expect.any(Number));
+  });
+
+  it("translates authorization.resolved with the terminal status", () => {
+    expect(
+      translate(
+        sdkEvent("authorization.resolved", authorization("granted"), {
+          runId: "run-2",
+        }),
+      ),
+    ).toEqual([
+      {
+        type: "authorization_resolved",
+        authorizationId: "auth-1",
+        displayName: "GitHub MCP",
+        status: "granted",
+        runId: "run-2",
+      },
+    ]);
+  });
+
+  it("renders neither kind as a not-rendered notice", () => {
+    for (const kind of ["authorization.required", "authorization.resolved"]) {
+      const events = translate(sdkEvent(kind, authorization("cancelled")));
+      expect(events, kind).toHaveLength(1);
+      expect(
+        events.some((event) => event.type === "notice"),
+        kind,
+      ).toBe(false);
+    }
+  });
+});

@@ -19,6 +19,8 @@ import {
   RotateCcw,
   Shield,
   SlidersHorizontal,
+  Terminal,
+  TriangleAlert,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -36,11 +38,17 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import {
+  type BuiltinGates,
+  type BuiltinOutcome,
+  builtinSlashCommands,
+  CLOSED_BUILTIN_GATES,
+  classifySlashLine,
+  isStudioBuiltinCommand,
+  type StudioBuiltinCommand,
+} from "@/features/agent/composer-builtins";
+import {
   getAgentMentions,
   getSlashCommands,
-  isStudioBuiltinCommand,
-  STUDIO_BUILTIN_COMMANDS,
-  type StudioBuiltinCommand,
 } from "@/features/agent/composer-capabilities";
 import { usePrompt } from "@/hooks/use-prompt";
 import { fileKindMeta } from "@/lib/file-meta";
@@ -124,11 +132,18 @@ interface ChatInputProps {
       Surfaces without a mode concept (the thread panel, the mock tour chat)
       simply omit it. */
   onModeChange?: (mode: SessionPermissionMode) => void;
-  /** Answers a Studio-local slash command (`/help`) instead of sending it:
-      picked from the `/` menu or typed as the whole message, the composer
-      clears and this fires. Absent, the builtins are not offered and the text
-      goes to the agent like any other message. */
-  onLocalCommand?: (command: StudioBuiltinCommand) => void;
+  /** Answers a Studio built-in slash command (`/clear /help /session /retry
+      /diagnostics /compact`) instead of sending it: picked from the `/` menu
+      or typed as the whole message, this fires; `{ ok: true }` (or no
+      outcome) clears the composer, a refusal keeps the text and shows its
+      warning above the input. Absent, the builtins are not offered and the
+      text goes to the agent like any other message. */
+  onLocalCommand?: (
+    command: StudioBuiltinCommand,
+  ) => BuiltinOutcome | undefined;
+  /** Which gated built-ins the daemon enables (`/compact` needs manual
+      compaction). Fail-closed when omitted. */
+  builtinGates?: BuiltinGates;
 }
 
 /**
@@ -1017,42 +1032,80 @@ function agentMenuItems(query: string): ComposerMenuItem[] {
 
 /**
  * Filter the slash-command list for the `/`-command menu by name prefix.
- * Studio's own builtins (`/help`) come first and shadow a daemon command of
- * the same name, so what the menu shows is what fires; `builtins: false` (a
- * surface with no local-command handler) lists the daemon's commands only.
- * Exported for its unit test.
+ * Studio's own builtins (`/clear /help /session /retry /diagnostics
+ * /compact`, in that fixed order, `gates` hiding the capability-gated ones)
+ * come first and shadow a daemon command of the same name, so what the menu
+ * shows is what fires; `builtins: false` (a surface with no local-command
+ * handler) lists the daemon's commands only. Exported for its unit test.
  */
 export function commandMenuItems(
   query: string,
-  options: { builtins?: boolean } = {},
+  options: { builtins?: boolean; gates?: BuiltinGates } = {},
 ): ComposerMenuItem[] {
   const q = query.toLowerCase();
   const builtins =
     options.builtins === false
       ? []
-      : STUDIO_BUILTIN_COMMANDS.filter((c) => c.name.startsWith(q));
+      : builtinSlashCommands(options.gates ?? CLOSED_BUILTIN_GATES).filter(
+          (c) => c.name.startsWith(q),
+        );
   const shadowed = new Set<string>(builtins.map((c) => c.name));
   const daemon = getSlashCommands().filter(
     (c) => c.name.startsWith(q) && !shadowed.has(c.name),
   );
-  return [...builtins, ...daemon].map((c) => ({
-    id: c.name,
-    label: c.name,
-    primary: `/${c.name}`,
-    secondary: c.description,
-  }));
+  return [
+    ...builtins.map((c) => ({
+      id: c.name,
+      label: c.name,
+      primary: `/${c.name}`,
+      secondary: c.description,
+      builtin: true,
+    })),
+    ...daemon.map((c) => ({
+      id: c.name,
+      label: c.name,
+      primary: `/${c.name}`,
+      secondary: c.description,
+    })),
+  ];
 }
 
+export type ComposerSubmission =
+  /** Ordinary text (or a daemon workspace command): steer/queue/send. */
+  | { readonly action: "pass" }
+  /** A bare Studio built-in: run it locally, never send it. */
+  | { readonly action: "builtin"; readonly name: StudioBuiltinCommand }
+  /** A held (arguments, second line) or gated-off built-in: keep the text
+   *  in the editor and show the warning. */
+  | { readonly action: "hold"; readonly warning: string };
+
 /**
- * The Studio-local command a whole message is, or null. Only a lone `/name`
- * (trailing whitespace allowed, case-insensitive) matches — `/helpme` and
- * `/help now` go to the agent. Exported for its unit test.
+ * The composer's built-in interception, extracted pure: what a submission
+ * does BEFORE the steer/queue/send branches. Only where a handler is wired
+ * (`hasHandler`); otherwise every text passes to the agent. Deliberately
+ * independent of `isStreaming` — a built-in typed mid-run is intercepted the
+ * same way, never queued or steered. Exported for its unit test.
  */
-export function matchLocalCommand(text: string): StudioBuiltinCommand | null {
-  const match = /^\/(\S+)\s*$/.exec(text);
-  if (!match) return null;
-  const name = (match[1] ?? "").toLowerCase();
-  return isStudioBuiltinCommand(name) ? name : null;
+export function resolveComposerSubmission(input: {
+  text: string;
+  gates?: BuiltinGates;
+  hasHandler: boolean;
+  isStreaming?: boolean;
+}): ComposerSubmission {
+  if (!input.hasHandler) return { action: "pass" };
+  const classified = classifySlashLine(
+    input.text,
+    input.gates ?? CLOSED_BUILTIN_GATES,
+  );
+  switch (classified.kind) {
+    case "builtin":
+      return { action: "builtin", name: classified.name };
+    case "held":
+    case "gated":
+      return { action: "hold", warning: classified.reason };
+    default:
+      return { action: "pass" };
+  }
 }
 
 /**
@@ -1261,6 +1314,7 @@ export function ChatInput({
   mode,
   onModeChange,
   onLocalCommand,
+  builtinGates,
 }: ChatInputProps) {
   const placeholder = placeholderProp ?? DEFAULT_PLACEHOLDER;
   // Plain-text mirror of the editor, kept in sync via onUpdate. Used only for
@@ -1268,6 +1322,9 @@ export function ChatInput({
   // the editor document is the source of truth for the message itself.
   const [text, setText] = useState("");
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
+  // A built-in's local warning (held arguments, a gated-off command, a
+  // refused dispatch), shown above the input until the next edit.
+  const [notice, setNotice] = useState<string | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [isWindowDrag, setIsWindowDrag] = useState(false);
   const dragCountRef = useRef(0);
@@ -1285,6 +1342,10 @@ export function ChatInput({
   useEffect(() => {
     onLocalCommandRef.current = onLocalCommand;
   }, [onLocalCommand]);
+  // The palette's gate set, read per keystroke by the suggestion plugin
+  // (which lives outside React's render), so a ref rather than a dep.
+  const builtinGatesRef = useRef(builtinGates);
+  builtinGatesRef.current = builtinGates;
 
   // Picking a menu row. A Studio builtin (`/help`) acts on selection: the
   // composer clears and the handler runs, so ONE Enter on the menu is enough
@@ -1298,10 +1359,17 @@ export function ChatInput({
     ) => {
       const handler = onLocalCommandRef.current;
       if (kind === "command" && handler && isStudioBuiltinCommand(item.id)) {
+        setMenu(null);
+        const outcome = handler(item.id);
+        if (outcome && outcome.ok === false) {
+          // Refused: show the full command with the reason above it, so
+          // what the warning names is what the field holds.
+          setComposerText(props.editor, `/${item.id}`);
+          setNotice(outcome.warning);
+          return;
+        }
         props.editor.commands.clearContent();
         setText("");
-        setMenu(null);
-        handler(item.id);
         return;
       }
       props.command(item);
@@ -1351,6 +1419,7 @@ export function ChatInput({
         commandItems: (query) =>
           commandMenuItems(query, {
             builtins: onLocalCommandRef.current != null,
+            gates: builtinGatesRef.current,
           }),
         makeRender,
       }),
@@ -1382,7 +1451,10 @@ export function ChatInput({
       Placeholder.configure({ placeholder }),
       ...mentions,
     ],
-    onUpdate: ({ editor }) => setText(editor.getText({ blockSeparator: "\n" })),
+    onUpdate: ({ editor }) => {
+      setText(editor.getText({ blockSeparator: "\n" }));
+      setNotice(null);
+    },
   });
 
   // Entering a chat or thread puts the caret in the field; autofocus only
@@ -1474,13 +1546,25 @@ export function ChatInput({
       if (action === "newline") return;
       const trimmed = editor ? composerText(editor) : "";
       if (!trimmed || disabled) return;
-      // A Studio-local command (`/help`) is answered here whatever the
-      // action — typed mid-stream it opens the page, never queues or steers.
-      // Only where the surface wired a handler; otherwise the text goes to
-      // the agent like any other message.
-      const local = onLocalCommand ? matchLocalCommand(trimmed) : null;
-      if (local && onLocalCommand) {
-        onLocalCommand(local);
+      // A Studio built-in is answered here whatever the action — typed
+      // mid-stream it runs (or is refused with a warning), never queues or
+      // steers. Only where the surface wired a handler; otherwise the text
+      // goes to the agent like any other message.
+      const submission = resolveComposerSubmission({
+        text: trimmed,
+        gates: builtinGates,
+        hasHandler: onLocalCommand != null,
+      });
+      if (submission.action === "hold") {
+        setNotice(submission.warning);
+        return;
+      }
+      if (submission.action === "builtin" && onLocalCommand) {
+        const outcome = onLocalCommand(submission.name);
+        if (outcome && outcome.ok === false) {
+          setNotice(outcome.warning);
+          return;
+        }
         editor?.commands.clearContent();
         setText("");
         return;
@@ -1510,7 +1594,16 @@ export function ChatInput({
       setText("");
       setAttachedFiles([]);
     },
-    [editor, disabled, onQueue, onSteer, onSend, onLocalCommand, attachedFiles],
+    [
+      editor,
+      disabled,
+      onQueue,
+      onSteer,
+      onSend,
+      onLocalCommand,
+      builtinGates,
+      attachedFiles,
+    ],
   );
 
   /** Resolve + perform for one Enter press (or a send-button click, which is
@@ -1668,7 +1761,15 @@ export function ChatInput({
                 )}
               >
                 {menu.kind === "command" ? (
-                  <span className="font-mono text-sm">/{item.id}</span>
+                  <>
+                    {item.builtin && (
+                      <Terminal
+                        className="size-4 shrink-0 text-muted-foreground"
+                        aria-label="Studio command"
+                      />
+                    )}
+                    <span className="font-mono text-sm">/{item.id}</span>
+                  </>
                 ) : (
                   <>
                     <Bot className="size-4 shrink-0 text-muted-foreground" />
@@ -1684,6 +1785,17 @@ export function ChatInput({
             ))}
           </div>
         </div>
+      )}
+      {/* A built-in's local warning: the typed text stays in the field. */}
+      {notice && (
+        <p
+          role="status"
+          data-testid="composer-notice"
+          className="mb-1.5 flex items-center gap-1.5 px-1 text-xs text-warning"
+        >
+          <TriangleAlert className="size-3.5 shrink-0" aria-hidden="true" />
+          {notice}
+        </p>
       )}
       {/* Input box: textarea + inline toolbar (+, mic) + send button.
           Has its own rounded border. The toolbar row below has a matching

@@ -4,9 +4,13 @@ import {
   customProviderAuthSnippet,
   customProviderProbeURL,
   customProviderSettingsSnippet,
+  describeProviderRow,
+  describeToolhiveRow,
   KNOWN_AUTH_PROVIDERS,
   listAuthFileProviders,
   listSettingsProviders,
+  PROVIDER_CLASSES,
+  PROVIDER_ENV_KEYS,
   RESERVED_CUSTOM_PROVIDER_IDS,
   removeAuthFileProvider,
   validCustomProviderBaseURL,
@@ -459,5 +463,280 @@ describe("customProviderProbeURL", () => {
         flavor,
       ).not.toBe("");
     }
+  });
+});
+
+/**
+ * The richer inventory row (`providers status` parity): class, auth method
+ * and state — including "the environment shadows auth.yaml" — the default
+ * model, and the next recovery step, all from booleans and non-secret
+ * definition fields. The matrix pins the exact strings the UI renders, and
+ * the last case proves the shaper has no channel a credential could ride.
+ */
+describe("describeProviderRow", () => {
+  it("names one env var per api-key built-in and none for openai-codex", () => {
+    expect(PROVIDER_ENV_KEYS).toEqual({
+      openrouter: "OPENROUTER_API_KEY",
+      openai: "OPENAI_API_KEY",
+      anthropic: "ANTHROPIC_API_KEY",
+      opencode: "OPENCODE_API_KEY",
+    });
+    expect(Object.keys(PROVIDER_ENV_KEYS)).not.toContain("openai-codex");
+    expect(PROVIDER_CLASSES).toEqual(["built-in", "custom", "external"]);
+  });
+
+  it("built-in with a file key: configured, api_key, set-as-active next", () => {
+    const row = describeProviderRow({
+      kind: "openrouter",
+      hasBlock: true,
+      keyPresent: true,
+    });
+    expect(row).toMatchObject({
+      name: "openrouter",
+      class: "built-in",
+      authMethod: "api_key",
+      configured: true,
+      keyPresent: true,
+      envShadowed: false,
+      authState: "configured",
+      source: "auth.yaml",
+      nextStep: "set as active to use it",
+      active: false,
+    });
+  });
+
+  it("built-in with a block but no key: not configured, add-a-key next", () => {
+    const row = describeProviderRow({
+      kind: "anthropic",
+      hasBlock: true,
+      keyPresent: false,
+    });
+    expect(row.authState).toBe("not configured");
+    expect(row.nextStep).toBe("add an API key to auth.yaml");
+    expect(row.configured).toBe(true);
+    expect(row.keyPresent).toBe(false);
+  });
+
+  it("built-in with NO block at all (the `status PROVIDER` unconfigured kind)", () => {
+    const row = describeProviderRow({ kind: "openai" });
+    expect(row).toMatchObject({
+      class: "built-in",
+      configured: false,
+      keyPresent: false,
+      authState: "not configured",
+      nextStep: "add an API key to auth.yaml",
+      source: "",
+    });
+  });
+
+  it("env-shadowed built-in: the environment wins over auth.yaml for mecated", () => {
+    const both = describeProviderRow({
+      kind: "openai",
+      hasBlock: true,
+      keyPresent: true,
+      envShadowed: true,
+    });
+    expect(both.envShadowed).toBe(true);
+    expect(both.authState).toBe("configured (environment shadows auth.yaml)");
+    expect(both.source).toBe("auth.yaml + environment");
+    // keyPresent stays the FILE truth (the key test reads the file).
+    expect(both.keyPresent).toBe(true);
+
+    const envOnly = describeProviderRow({ kind: "openai", envShadowed: true });
+    expect(envOnly.configured).toBe(true);
+    expect(envOnly.keyPresent).toBe(false);
+    expect(envOnly.authState).toBe("configured (environment)");
+    expect(envOnly.source).toBe("environment");
+    // A credential exists (in the environment), so the next step is use.
+    expect(envOnly.nextStep).toBe("set as active to use it");
+  });
+
+  it("openai-codex is an oauth manual token and never env-shadowed", () => {
+    const row = describeProviderRow({
+      kind: "openai-codex",
+      hasBlock: true,
+      keyPresent: true,
+      envShadowed: true, // ignored: there is no env var for the token
+    });
+    expect(row.authMethod).toBe("oauth");
+    expect(row.authState).toBe("manual token");
+    expect(row.envShadowed).toBe(false);
+    expect(
+      describeProviderRow({ kind: "openai-codex", hasBlock: true }).nextStep,
+    ).toBe("add the subscription token to auth.yaml");
+  });
+
+  it("orders the next step: ready when active, restart when the daemon has not loaded the key", () => {
+    expect(
+      describeProviderRow({
+        kind: "openrouter",
+        hasBlock: true,
+        keyPresent: true,
+        active: true,
+        inDaemonInventory: false,
+      }).nextStep,
+    ).toBe("ready to use");
+    expect(
+      describeProviderRow({
+        kind: "openrouter",
+        hasBlock: true,
+        keyPresent: true,
+        inDaemonInventory: false,
+      }).nextStep,
+    ).toBe("restart the daemon to load the key");
+    // Unknown inventory (daemon down / on the mock) offers no restart hint.
+    expect(
+      describeProviderRow({
+        kind: "openrouter",
+        hasBlock: true,
+        keyPresent: true,
+        inDaemonInventory: null,
+      }).nextStep,
+    ).toBe("set as active to use it");
+    // No credential outranks everything else.
+    expect(
+      describeProviderRow({
+        kind: "openrouter",
+        hasBlock: true,
+        active: true,
+        inDaemonInventory: false,
+      }).nextStep,
+    ).toBe("add an API key to auth.yaml");
+  });
+
+  it("carries the daemon default model for a built-in when one is saved", () => {
+    expect(
+      describeProviderRow({
+        kind: "openrouter",
+        hasBlock: true,
+        keyPresent: true,
+        defaultModel: "anthropic/claude",
+      }).defaultModel,
+    ).toBe("anthropic/claude");
+    expect(describeProviderRow({ kind: "openrouter" }).defaultModel).toBe("");
+  });
+
+  it("custom api_key gateway with and without its auth.yaml key", () => {
+    const definition = {
+      name: "my-gateway",
+      baseURL: "https://gw.example/v1",
+      defaultModel: "org/model",
+      apiFlavor: "openai-responses",
+      authMethod: "api_key",
+    };
+    const keyed = describeProviderRow({
+      kind: "my-gateway",
+      definition,
+      hasBlock: true,
+      keyPresent: true,
+    });
+    expect(keyed).toMatchObject({
+      class: "custom",
+      authMethod: "api_key",
+      configured: true,
+      keyPresent: true,
+      authState: "configured",
+      defaultModel: "org/model",
+      source: "settings.yaml + auth.yaml",
+      nextStep: "set as active to use it",
+    });
+    const unkeyed = describeProviderRow({ kind: "my-gateway", definition });
+    expect(unkeyed.keyPresent).toBe(false);
+    expect(unkeyed.authState).toBe("not configured");
+    expect(unkeyed.source).toBe("settings.yaml");
+    expect(unkeyed.nextStep).toBe("add an API key to auth.yaml");
+    // A custom gateway has no env var, so it is never env-shadowed.
+    expect(
+      describeProviderRow({ kind: "my-gateway", definition, envShadowed: true })
+        .envShadowed,
+    ).toBe(false);
+  });
+
+  it("custom keyless gateway: auth not required, credential satisfied", () => {
+    const row = describeProviderRow({
+      kind: "open-gw",
+      definition: {
+        name: "open-gw",
+        baseURL: "https://gw.example",
+        defaultModel: "",
+        apiFlavor: "openai-chat-completions",
+        authMethod: "none",
+      },
+    });
+    expect(row.authMethod).toBe("none");
+    expect(row.authState).toBe("not required");
+    expect(row.keyPresent).toBe(true);
+    expect(row.nextStep).toBe("set as active to use it");
+    expect(row.defaultModel).toBe("");
+  });
+
+  it("an auth.yaml block naming neither a built-in nor a custom id is class unknown", () => {
+    expect(
+      describeProviderRow({ kind: "mystery", hasBlock: true, keyPresent: true })
+        .class,
+    ).toBe("unknown");
+  });
+
+  it("has no channel a credential value could travel through", () => {
+    // Every argument is a flag, an id, a model name or a URL; a caller that
+    // passes a key-shaped extra property finds it nowhere in the row.
+    const row = describeProviderRow({
+      kind: "openrouter",
+      hasBlock: true,
+      keyPresent: true,
+      // @ts-expect-error — not an accepted input, and must not leak
+      apiKey: "sk-or-live-SECRET",
+      definition: null,
+    });
+    const rendered = JSON.stringify(row);
+    expect(rendered).not.toContain("SECRET");
+    expect(rendered).not.toContain("sk-or");
+    for (const value of Object.values(row)) {
+      expect(["string", "boolean"]).toContain(typeof value);
+    }
+  });
+});
+
+describe("describeToolhiveRow", () => {
+  it("reachable: an external row that can be set as active", () => {
+    const row = describeToolhiveRow({
+      reachable: true,
+      baseURL: "http://127.0.0.1:14000/v1",
+      thvOnPath: true,
+    });
+    expect(row).toMatchObject({
+      name: "toolhive",
+      class: "external",
+      authMethod: "external",
+      configured: true,
+      keyPresent: true,
+      reachable: true,
+      thvOnPath: true,
+      authState: "gateway reachable",
+      nextStep: "set as active to use it",
+      source: "thv llm proxy",
+      baseURL: "http://127.0.0.1:14000/v1",
+    });
+    expect(
+      describeToolhiveRow({ reachable: true, active: true }).nextStep,
+    ).toBe("ready to use");
+  });
+
+  it("unreachable: delegates to thv llm, or to installing it", () => {
+    const startable = describeToolhiveRow({ thvOnPath: true });
+    expect(startable.configured).toBe(false);
+    expect(startable.authState).toBe("gateway not reachable");
+    expect(startable.nextStep).toBe("start the gateway (thv llm proxy start)");
+    const missing = describeToolhiveRow({ thvOnPath: false });
+    expect(missing.nextStep).toBe(
+      "install ToolHive, then run thv llm proxy start",
+    );
+  });
+
+  it("detection switched off in daemon defaults out-ranks reachability", () => {
+    const row = describeToolhiveRow({ reachable: true, enabled: false });
+    expect(row.configured).toBe(false);
+    expect(row.authState).toBe("detection switched off");
+    expect(row.nextStep).toBe("enable ToolHive detection in Daemon defaults");
   });
 });

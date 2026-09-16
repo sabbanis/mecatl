@@ -19,6 +19,8 @@ import http from "node:http";
 const port = Number(process.env.FIXTURE_DAEMON_PORT || 8099);
 
 const sessionID = "session-fixture-1";
+// The successor `/clear` mints (an empty-history session the UI opens).
+const clearedSessionID = "session-fixture-clear";
 const runID = "run-fixture-1";
 // The MCP browser-authorization phase: a prompt whose text asks for
 // "authorization" parks its tool call on this authorization and the stream
@@ -71,6 +73,8 @@ const capabilities = {
   worktrees: true,
   scheduling: true,
   storage_health: true,
+  storage_migration: true,
+  storage_cleanup: true,
   steer: true,
   manual_compaction: true,
 };
@@ -133,8 +137,140 @@ const routes = {
     next_sweep_unix: 1_755_006_600,
     next_sweep_available: true,
   },
+  // Storage maintenance (advertised by storage_migration / storage_cleanup,
+  // so every route the Storage page can reach must answer). Proto-JSON,
+  // snake_case, static: the estimate finds two legacy families, apply
+  // answers an already-completed job; the clean-up plan has one eligible
+  // child run and a token, apply reports it deleted.
+  "POST /v1/storage/migrations/plan": {
+    plan_id: "plan-fixture-1",
+    available: true,
+    v1_families: 2,
+    v2_families: 3,
+    invalid_families: 0,
+    skipped_families: 0,
+    current_bytes: 20_480,
+    reclaimable_bytes: 4_096,
+    temporary_bytes: 8_192,
+  },
+  "POST /v1/storage/migrations/apply": {
+    job_id: "migration-fixture-1",
+    state: "completed",
+    v1_families: 2,
+    v2_families: 3,
+    processed: 2,
+    migrated: 2,
+    failed: 0,
+    errors: [],
+  },
+  "GET /v1/storage/migrations/migration-fixture-1": {
+    job_id: "migration-fixture-1",
+    state: "completed",
+    v1_families: 2,
+    v2_families: 3,
+    processed: 2,
+    migrated: 2,
+    failed: 0,
+    errors: [],
+  },
+  "POST /v1/storage/migrations/migration-fixture-1/cancel": {
+    job_id: "migration-fixture-1",
+    state: "cancelled",
+    v1_families: 2,
+    processed: 1,
+    migrated: 1,
+    failed: 0,
+    errors: [],
+  },
+  "POST /v1/storage/migrations/migration-fixture-1/resume": {
+    job_id: "migration-fixture-1",
+    state: "completed",
+    v1_families: 2,
+    processed: 2,
+    migrated: 2,
+    failed: 0,
+    errors: [],
+  },
+  "POST /v1/storage/cleanup:plan": {
+    confirmation_token: "cleanup-token-fixture",
+    available: true,
+    generation: "fixture-generation-1",
+    policy_version: "fixture-policy-1",
+    eligible: [
+      {
+        session_id: "subagent-fixture-old",
+        kind: "subagent",
+        state: "completed",
+        reason: "age",
+        modified_at_unix: 1_754_000_000,
+        estimated_bytes: 2_048,
+      },
+    ],
+    protected: {
+      total: 2,
+      by_kind: { main: 1, scheduled: 1 },
+      by_state: { idle: 2 },
+      by_reason: { live: 1, active_state: 1 },
+    },
+    eligible_counts: {
+      total: 1,
+      by_kind: { subagent: 1 },
+      by_state: { completed: 1 },
+      by_reason: { age: 1 },
+    },
+    estimated_bytes: 2_048,
+    planned_job_id: "cleanup-fixture-1",
+  },
+  "POST /v1/storage/cleanup:apply": {
+    job_id: "cleanup-fixture-1",
+    state: "completed",
+    processed: 1,
+    deleted: 1,
+    skipped: 0,
+    stale: 0,
+    failed: 0,
+    errors: [],
+  },
+  "GET /v1/storage/cleanup/jobs/cleanup-fixture-1": {
+    job_id: "cleanup-fixture-1",
+    state: "completed",
+    processed: 1,
+    deleted: 1,
+    skipped: 0,
+    stale: 0,
+    failed: 0,
+    errors: [],
+  },
+  "POST /v1/storage/cleanup/jobs/cleanup-fixture-1/cancel": {
+    job_id: "cleanup-fixture-1",
+    state: "cancelled",
+    processed: 0,
+    deleted: 0,
+    skipped: 0,
+    stale: 0,
+    failed: 0,
+    errors: [],
+  },
+  // The cleared successor renders as an empty chat: its snapshot (the chat
+  // hook's handle GET) and an empty, complete transcript.
+  [`GET /v1/sessions/${clearedSessionID}`]: {
+    ...snapshot,
+    session_id: clearedSessionID,
+    token_usage: {},
+  },
+  [`GET /v1/sessions/${clearedSessionID}/transcript`]: {
+    session_id: clearedSessionID,
+    complete: true,
+    messages: [],
+  },
   "GET /v1/models": {
     models: [{ id: "fixture-model", provider_id: "fixture" }],
+    // One healthy provider_status row (issue #262): the provider page's
+    // read-only daemon status list renders the row with NO hint line for
+    // state=ok (a hint accompanies only unreachable/unauthorized/empty).
+    provider_status: [
+      { provider_id: "fixture", state: "ok", hint: "", model_count: 1 },
+    ],
   },
   "GET /v1/sessions": { sessions: [session], next_cursor: "" },
   [`GET /v1/sessions/${sessionID}`]: snapshot,
@@ -232,6 +368,12 @@ const routes = {
   // answer, or a flow under test dies on a 404 problem instead of its logic:
   // manual compaction, the mode picker, and the six mutating schedule actions.
   [`POST /v1/sessions/${sessionID}/compact`]: { compacted: false },
+  // The `/clear` built-in's ClearSession successor (ADR 0291): a distinct
+  // empty-history session the UI navigates to; the source stays intact.
+  [`POST /v1/sessions/${sessionID}/clear`]: {
+    session_id: clearedSessionID,
+    placement,
+  },
   // The live sign-in URL of the parked MCP authorization (fetched when the
   // operator opens or copies it — it never rides an event).
   [`GET /v1/sessions/${sessionID}/mcp-authorizations/${authorizationID}/presentation`]:

@@ -58,16 +58,32 @@ export interface McpAuthorizationControlOutcome {
 const CONTROL_IDLE_TIMEOUT_MS = 120_000;
 const CONTROL_IDLE_MESSAGE = "Mecatl stopped sending updates for two minutes.";
 
+/**
+ * How long a control may take to produce its FIRST event. The daemon answers
+ * a recheck/cancel synchronously (one status frame, then either the stream
+ * closes or the granted continuation starts), so a first event that has not
+ * arrived in 10 s means the transport dropped the stream — a stalled
+ * port-forward, observed live. Without this bound a lost frame would leave
+ * the in-flight guard set and stop the 3 s polling for good (the TUI's
+ * `mcpAuthorizationFirstEventTimeout`). It bounds only the first read; a
+ * long-running continuation is then governed by the idle timeout.
+ */
+export const CONTROL_FIRST_EVENT_TIMEOUT_MS = 10_000;
+const CONTROL_FIRST_EVENT_MESSAGE =
+  "Mecatl did not answer the authorization check within 10 seconds.";
+
 async function readWithIdleTimeout<T>(
   read: Promise<T>,
   onTimeout: () => void,
+  timeoutMs = CONTROL_IDLE_TIMEOUT_MS,
+  message = CONTROL_IDLE_MESSAGE,
 ): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
       onTimeout();
-      reject(new Error(CONTROL_IDLE_MESSAGE));
-    }, CONTROL_IDLE_TIMEOUT_MS);
+      reject(new Error(message));
+    }, timeoutMs);
   });
   try {
     return await Promise.race([read, timeout]);
@@ -101,8 +117,17 @@ async function relayAuthorizationControl(
         ? handle.recheck({ signal: streamAbort.signal })
         : handle.cancel({ signal: streamAbort.signal });
     const events = stream[Symbol.asyncIterator]();
+    let first = true;
     for (;;) {
-      const next = await readWithIdleTimeout(events.next(), idle);
+      const next = first
+        ? await readWithIdleTimeout(
+            events.next(),
+            idle,
+            CONTROL_FIRST_EVENT_TIMEOUT_MS,
+            CONTROL_FIRST_EVENT_MESSAGE,
+          )
+        : await readWithIdleTimeout(events.next(), idle);
+      first = false;
       if (next.done) break;
       for (const translated of translateEvent(next.value, sessionId)) {
         if (

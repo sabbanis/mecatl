@@ -48,7 +48,9 @@ import {
 } from "../delegation-fleet";
 import { deliveryMessage, hasDeliveryNote } from "../delivery-message";
 import {
+  AUTHORIZATION_CHECK_IN_FLIGHT_NOTICE,
   AUTHORIZATION_LINK_COPIED_NOTICE,
+  AUTHORIZATION_POLL_INTERVAL_MS,
   AUTHORIZATION_POPUP_BLOCKED_NOTICE,
   AUTHORIZATION_STILL_PENDING_NOTICE,
   authorizationRequiredNotice,
@@ -673,6 +675,14 @@ export function useAgentChat(
   const authorizationIdsRef = useRef<{ assistant: string } | null>(null);
   // One authorization control in flight at a time.
   const authorizationBusyRef = useRef(false);
+  // The control in flight — its abort, whether a cancel pre-empted it, and a
+  // promise that settles once it has released the busy flag — so Cancel can
+  // take over from a 3 s poll tick instead of being dropped by the guard.
+  const authorizationControlRef = useRef<{
+    controller: AbortController;
+    preempted: boolean;
+    settled: Promise<void>;
+  } | null>(null);
   /** Steers the daemon accepted but has not yet drained into the run, in send
    *  order. The stream's `steer` echo splits this list on its watermark id. */
   const [pendingSteers, setPendingSteers] = useState<PendingSteer[]>([]);
@@ -2131,7 +2141,11 @@ export function useAgentChat(
         patchPendingAuthorization(authorizationId, {
           notice: AUTHORIZATION_POPUP_BLOCKED_NOTICE,
         });
+        return;
       }
+      // The page is open: the sign-in now completes out of band, so the 3 s
+      // re-check loop watches for it (the TUI's polling after a presentation).
+      patchPendingAuthorization(authorizationId, { polling: true });
     } catch (caught) {
       patchPendingAuthorization(authorizationId, {
         error: authorizationFailure(caught),
@@ -2152,8 +2166,10 @@ export function useAgentChat(
     try {
       const url = await fetchMcpAuthorizationUrl(daemonId, authorizationId);
       await navigator.clipboard.writeText(url);
+      // The link is in the operator's hands: poll for the sign-in like open.
       patchPendingAuthorization(authorizationId, {
         notice: AUTHORIZATION_LINK_COPIED_NOTICE,
+        polling: true,
       });
       return true;
     } catch (caught) {
@@ -2180,16 +2196,45 @@ export function useAgentChat(
         onEvent: (event: StreamEvent) => void,
         signal?: AbortSignal,
       ) => Promise<McpAuthorizationControlOutcome>,
+      options?: {
+        /** A 3 s poll tick: silent when another control is in flight, and it
+         *  leaves the panel's notice alone (the polling line owns that). */
+        poll?: boolean;
+        /** Cancel: takes over from an in-flight poll instead of being dropped. */
+        preempt?: boolean;
+      },
     ) => {
       const daemonId = daemonIdRef.current;
+      if (!daemonId || !pendingAuthorizationRef.current) return;
+      if (authorizationBusyRef.current) {
+        // One control at a time — only one stream may adopt the continuation
+        // run, or the transcript renders it twice. A poll tick waits for the
+        // next; a click says so instead of looking ignored.
+        const inFlight = authorizationControlRef.current;
+        if (!options?.preempt || !inFlight) {
+          if (!options?.poll) {
+            patchPendingAuthorization(
+              pendingAuthorizationRef.current.authorizationId,
+              { notice: AUTHORIZATION_CHECK_IN_FLIGHT_NOTICE },
+            );
+          }
+          return;
+        }
+        inFlight.preempted = true;
+        inFlight.controller.abort();
+        await inFlight.settled;
+        if (authorizationBusyRef.current) return;
+      }
       const pending = pendingAuthorizationRef.current;
-      if (!daemonId || !pending || authorizationBusyRef.current) return;
+      if (!pending) return;
       authorizationBusyRef.current = true;
       const { authorizationId } = pending;
-      patchPendingAuthorization(authorizationId, {
-        error: undefined,
-        notice: undefined,
-      });
+      patchPendingAuthorization(
+        authorizationId,
+        options?.poll
+          ? { error: undefined }
+          : { error: undefined, notice: undefined },
+      );
       // The continuation renders into the turn that parked; a phase found by
       // a watch replay with no known bubble gets a fresh one.
       const ids =
@@ -2218,6 +2263,15 @@ export function useAgentChat(
       // run would render the continuation twice.
       watchAbortRef.current?.abort();
       const controller = new AbortController();
+      let settle: () => void = () => undefined;
+      const inFlight = {
+        controller,
+        preempted: false,
+        settled: new Promise<void>((resolve) => {
+          settle = resolve;
+        }),
+      };
+      authorizationControlRef.current = inFlight;
       abortRef.current = controller;
       drivingRef.current = daemonId;
       runIdRef.current = "";
@@ -2231,10 +2285,13 @@ export function useAgentChat(
           controller.signal,
         );
         if (outcome.status === "pending") {
-          // The sign-in is not done yet: the run stays parked, the card stays.
-          patchPendingAuthorization(authorizationId, {
-            notice: AUTHORIZATION_STILL_PENDING_NOTICE,
-          });
+          // The sign-in is not done yet: the run stays parked, the card stays
+          // (a poll tick says nothing — the polling line already does).
+          if (!options?.poll) {
+            patchPendingAuthorization(authorizationId, {
+              notice: AUTHORIZATION_STILL_PENDING_NOTICE,
+            });
+          }
           return;
         }
         if (!outcome.sawResult) {
@@ -2258,7 +2315,9 @@ export function useAgentChat(
         );
       } catch (caught) {
         if (controller.signal.aborted) {
-          setStatus("idle");
+          // A poll Cancel pre-empted keeps the parked phase: the cancel
+          // control that follows owns the outcome.
+          if (!inFlight.preempted) setStatus("idle");
           return;
         }
         if (caught instanceof HarnessApiError && caught.status === 404) {
@@ -2284,8 +2343,12 @@ export function useAgentChat(
         });
       } finally {
         authorizationBusyRef.current = false;
+        if (authorizationControlRef.current === inFlight) {
+          authorizationControlRef.current = null;
+        }
         if (abortRef.current === controller) abortRef.current = null;
         if (drivingRef.current === daemonId) drivingRef.current = null;
+        settle();
       }
     },
     [makeStreamHandler, patchPendingAuthorization, rehydrate],
@@ -2299,20 +2362,53 @@ export function useAgentChat(
   );
 
   /** Abandons the sign-in through the AUTHORIZATION control — never the run's
-   *  cancel, which cannot reach a parked run. */
-  const cancelAuthorization = useCallback(
-    () => driveAuthorizationControl(cancelMcpAuthorization),
-    [driveAuthorizationControl],
-  );
+   *  cancel, which cannot reach a parked run. It stops the 3 s polling first
+   *  and takes over from a poll already in flight, so the click is never
+   *  dropped by the one-control-at-a-time guard. */
+  const cancelAuthorization = useCallback(async () => {
+    const pending = pendingAuthorizationRef.current;
+    if (pending?.polling) {
+      patchPendingAuthorization(pending.authorizationId, { polling: false });
+    }
+    await driveAuthorizationControl(cancelMcpAuthorization, { preempt: true });
+  }, [driveAuthorizationControl, patchPendingAuthorization]);
+
+  // The 3 s re-check loop (the TUI's poll after a presentation): armed once
+  // the sign-in page was opened or its link copied (`polling`), each tick asks
+  // the daemon whether the sign-in went through, so a completed sign-in
+  // resumes the run without a click. It stops when the request resolves —
+  // from the control stream OR a watch's `authorization_resolved` — or is
+  // cancelled (pending → null / polling → false: this effect's cleanup), on a
+  // chat switch (the switch effect resets the request) and on unmount. Ticks
+  // never overlap: the drive's in-flight guard drops a tick while a control
+  // (or the granted continuation it streams) is still running, so exactly one
+  // stream adopts the continuation run.
+  const pollingAuthorizationId = pendingAuthorization?.polling
+    ? pendingAuthorization.authorizationId
+    : null;
+  useEffect(() => {
+    if (!pollingAuthorizationId) return;
+    const timer = setInterval(() => {
+      if (
+        pendingAuthorizationRef.current?.authorizationId !==
+        pollingAuthorizationId
+      ) {
+        return;
+      }
+      void driveAuthorizationControl(recheckMcpAuthorization, { poll: true });
+    }, AUTHORIZATION_POLL_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [pollingAuthorizationId, driveAuthorizationControl]);
 
   const cancelChat = useCallback(async () => {
     // Hold the queue BEFORE anything flips to idle: a cancel must never fire
     // the next queued message on its own (the abort branch below and this
     // function both set idle; both carry the pause).
     setQueuePaused({ reason: pauseReasonFor("cancelled") });
-    if (pendingAuthorizationRef.current && !authorizationBusyRef.current) {
+    if (pendingAuthorizationRef.current) {
       // The run is PARKED on a browser sign-in: its own cancel control would
-      // answer stale — the authorization control is the one that moves it.
+      // answer stale — the authorization control is the one that moves it
+      // (and it takes over from a 3 s poll tick still in flight).
       await cancelAuthorization();
       return;
     }

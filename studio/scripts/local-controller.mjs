@@ -16,6 +16,13 @@ import { homedir } from "node:os";
 import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  diagnosticsOptionArgs,
+  diagnosticsRestartRequired,
+  mergeDiagnosticsOptions,
+  normalizeDiagnosticsOptions,
+  productMetricsEnvOptOut,
+} from "../src/lib/controller-diagnostics-options.mjs";
+import {
   normalizePermissions,
   permissionArgs,
 } from "../src/lib/controller-permissions.mjs";
@@ -31,9 +38,12 @@ import {
 } from "../src/lib/daemon-defaults.mjs";
 import {
   customProviderProbeURL,
+  describeProviderRow,
+  describeToolhiveRow,
   KNOWN_AUTH_PROVIDERS,
   listAuthFileProviders,
   listSettingsProviders,
+  PROVIDER_ENV_KEYS,
   removeAuthFileProvider,
   validProviderName,
 } from "../src/lib/provider-auth.mjs";
@@ -84,6 +94,15 @@ const retentionStateFile = resolve(studioStateDir, "retention.json");
 // (src/lib/daemon-defaults.mjs) — never a settings.yaml key — so the CLI
 // tier wins even under an imported operator-settings.yaml.
 const daemonDefaultsFile = resolve(studioStateDir, "daemon-defaults.json");
+// The Studio-owned DIAGNOSTICS OPTIONS (log level, the loopback
+// admin/metrics listener + perf MCP + goroutine alarm, product-metrics
+// opt-out) plus the controller-side `quiet` switch. Spawn flags again
+// (src/lib/controller-diagnostics-options.mjs) — never a settings.yaml key.
+// The operator POSTURE is NOT here: it is the permissions document's.
+const diagnosticsOptionsFile = resolve(
+  studioStateDir,
+  "diagnostics-options.json",
+);
 // Project-scoped skills only. A SKILL.md steers the model the same way AGENTS.md
 // does, so discovery is deliberately pinned to the workspace and we never pass
 // --skills-conventional (which would also pull in ~/.claude/skills and the
@@ -193,6 +212,12 @@ async function listSelectableProviderNames() {
   const names = await listConfiguredProviderNames();
   for (const provider of await listCustomSettingsProviders()) {
     if (!names.includes(provider.name)) names.push(provider.name);
+  }
+  // A built-in whose credential env var is set in this environment is
+  // registered by mecated from the variable alone (it inherits the env), so
+  // it is startable with no auth.yaml block at all. Presence only.
+  for (const kind of Object.keys(PROVIDER_ENV_KEYS)) {
+    if (providerEnvShadowed(kind) && !names.includes(kind)) names.push(kind);
   }
   return names;
 }
@@ -548,6 +573,11 @@ let operatorSettingsActive = false;
 // from permissionsStateFile before the first spawn; defaults are mecated's
 // own (strict, untrusted, shell on).
 let permissionsConfig = normalizePermissions({});
+// The saved diagnostics-options document (POST /diagnostics-options), loaded
+// from diagnosticsOptionsFile before the first spawn; defaults are mecated's
+// own (info logging, product metrics on) with the admin listener explicitly
+// OFF and the controller mirroring mecated's stderr.
+let diagnosticsOptions = normalizeDiagnosticsOptions({});
 // The SAVED storage document (POST /storage), or null while the env/built-in
 // defaults still apply — the same null-means-unsaved shape as
 // modelRouterConfig, so a failed restart can roll back to "no file".
@@ -594,6 +624,61 @@ const oauthRedirectUri = "http://127.0.0.1:8788/oauth/callback";
 // readiness probe that decides whether "toolhive" is an offerable provider.
 const toolhiveGatewayURL = "http://127.0.0.1:14000/v1";
 let toolhiveReady = false;
+// Whether ToolHive's `thv` CLI is on the controller's PATH — detected ONCE at
+// boot with a FIXED command (no user input reaches the shell), so the
+// provider inventory can offer to start the proxy (POST /toolhive/start)
+// instead of only telling the operator to. Presence only; the resolved path
+// is never reported.
+let thvOnPath = false;
+function detectThvOnPath() {
+  return new Promise((done) => {
+    execFile(
+      "/bin/sh",
+      ["-c", "command -v thv"],
+      { timeout: 2000 },
+      (error, stdout) => done(!error && String(stdout).trim() !== ""),
+    );
+  });
+}
+
+/**
+ * Whether `kind`'s documented credential env var is SET in this controller's
+ * environment — which the spawned mecated inherits, so the variable SHADOWS
+ * the auth.yaml key (the TUI's "configured (environment shadows …)" state).
+ * Presence only: the value is never read past the Boolean coercion, never
+ * logged, never sent.
+ */
+function providerEnvShadowed(kind) {
+  const name = PROVIDER_ENV_KEYS[kind];
+  return name ? Boolean(process.env[name]) : false;
+}
+
+/**
+ * The provider ids the RUNNING daemon lists models for (its ListModels view,
+ * where a provider with no resolved credentials is omitted — so "keyed in
+ * auth.yaml but absent here" means mecated started before the key landed and
+ * needs a restart). Null when the controller cannot tell: daemon down, on the
+ * offline mock (whose registry is the mock alone), or the read failed. A
+ * read-only inventory call; nothing about the key crosses it.
+ */
+async function daemonProviderIds() {
+  if (!child || !mecatlBaseURL || provider === "offline mock") return null;
+  try {
+    const response = await fetchMecatl("/v1/models", {
+      signal: AbortSignal.timeout(1500),
+    });
+    if (!response.ok) return null;
+    const body = await response.json();
+    const ids = new Set();
+    for (const model of Array.isArray(body?.models) ? body.models : []) {
+      const id = model?.provider_id ?? model?.providerId;
+      if (typeof id === "string" && id !== "") ids.add(id);
+    }
+    return ids;
+  } catch {
+    return null;
+  }
+}
 
 const delay = (milliseconds) =>
   new Promise((done) => setTimeout(done, milliseconds));
@@ -887,6 +972,48 @@ async function loadPermissions() {
       );
     return normalizePermissions({});
   }
+}
+
+/** Atomic (tmp + rename), owner-only. Flags only — no settings.yaml key. */
+async function persistDiagnosticsOptions(options) {
+  await mkdir(studioStateDir, { recursive: true, mode: 0o700 });
+  const temp = `${diagnosticsOptionsFile}.tmp`;
+  await writeFile(temp, `${JSON.stringify(options, null, 2)}\n`, {
+    mode: 0o600,
+  });
+  await rename(temp, diagnosticsOptionsFile);
+}
+
+/** The saved diagnostics options, or the defaults when none were saved yet.
+ *  A corrupt file is logged and ignored, never honoured. */
+async function loadDiagnosticsOptions() {
+  try {
+    return normalizeDiagnosticsOptions(
+      JSON.parse(await readFile(diagnosticsOptionsFile, "utf8")),
+    );
+  } catch (error) {
+    if (error?.code !== "ENOENT")
+      process.stderr.write(
+        `[diagnostics] saved options ignored: ${error.message || error}\n`,
+      );
+    return normalizeDiagnosticsOptions({});
+  }
+}
+
+/** The effective product-metrics verdict: the saved switch AND no opt-out
+ *  in the controller's own environment, which mecated inherits and honours
+ *  regardless of the flag Studio passes (the controller never passes
+ *  --product-metrics=true, so the operator's env opt-out always wins). */
+function diagnosticsStatus() {
+  const envOptOut = productMetricsEnvOptOut(process.env);
+  return {
+    options: diagnosticsOptions,
+    productMetrics: {
+      enabled: !envOptOut && diagnosticsOptions.productMetrics.enabled,
+      dryRun: diagnosticsOptions.productMetrics.dryRun,
+      source: envOptOut ? "environment" : "studio",
+    },
+  };
 }
 
 /** Atomic (tmp + rename), owner-only. Flags only — no settings.yaml key. */
@@ -1276,6 +1403,14 @@ async function startMecatl(kind) {
   // raises the project-trust floor for trusted/auto/yolo, which is what the
   // Permissions page tells the user (controller-permissions.test.ts pins it).
   args.push(...permissionArgs(permissionsConfig, { trustOnce }));
+  // Observability flags: log level, the admin/metrics listener (EXPLICITLY
+  // off — `--metrics-addr=` — until a diagnostics card opens it; mecated's
+  // built-in default is a fixed loopback port two managed daemons would
+  // fight over), the goroutine alarm, product-metrics opt-out. `quiet` is
+  // controller-side (the stderr mirror below) and adds no flag. No admin
+  // address is chosen yet, so an enabled listener still yields the explicit
+  // off flag and never `--perf-mcp` (mecated refuses it without a listener).
+  args.push(...diagnosticsOptionArgs(diagnosticsOptions, { adminAddr: "" }));
   // Retention limits + sweep cadence as CLI flags (they out-rank a settings
   // file per field), but ONLY when no imported operator settings file is
   // active: that file's own retention: block, if any, then stands untouched
@@ -1342,7 +1477,10 @@ async function startMecatl(kind) {
   proc.stderr.on("data", (chunk) => {
     const text = chunk.toString();
     startupLog = (startupLog + text).slice(-24_000);
-    process.stderr.write(`[mecatl] ${text}`);
+    // The controller-side `quiet` switch (POST /diagnostics-options): the
+    // startup classifier above always sees the text; only the mirror onto
+    // the controller's own stderr is optional.
+    if (!diagnosticsOptions.quiet) process.stderr.write(`[mecatl] ${text}`);
   });
   proc.once("exit", () => {
     if (child === proc) child = null;
@@ -1758,6 +1896,9 @@ const server = http.createServer(async (request, response) => {
           available: toolhiveReady,
           baseURL: toolhiveGatewayURL,
           active: provider === "ToolHive LLM gateway",
+          // Whether the thv CLI was found on PATH at boot (presence only),
+          // so the UI can offer POST /toolhive/start instead of a hint.
+          thvOnPath,
         },
         modelRouter: modelRouterConfig
           ? {
@@ -1790,6 +1931,11 @@ const server = http.createServer(async (request, response) => {
         // window, prompt caching, base URLs, ToolHive, aliases/slots, the
         // credentials-file PATH — never a key) — one poll for the UI.
         daemonDefaults,
+        // The saved diagnostics options the child was spawned with (log
+        // level, admin listener, product-metrics opt-out, controller-side
+        // quiet) plus the effective product-metrics verdict — read-only,
+        // nothing secret-shaped. The posture stays under `permissions`.
+        diagnosticsOptions: diagnosticsStatus(),
       }),
     );
     return;
@@ -1803,32 +1949,79 @@ const server = http.createServer(async (request, response) => {
     const authRows = listAuthFileProviders(await readAuthFileText());
     const custom = await listCustomSettingsProviders();
     const customNames = new Set(custom.map((definition) => definition.name));
+    // Every row is shaped by describeProviderRow (src/lib/provider-auth.mjs,
+    // vitest-covered): class, auth method + state (env shadowing included),
+    // default model, next step — from BOOLEANS and non-secret definition
+    // fields only. The running daemon's inventory decides the "restart to
+    // load the key" hint; the spawn kind decides `active`.
+    const inventory = await daemonProviderIds();
+    const inInventory = (name) => (inventory ? inventory.has(name) : null);
+    const savedDefaultModel = (kind) =>
+      daemonDefaults.models[kind]?.defaultModel ?? "";
+    const currentKind = preferredKind();
     const providers = authRows
       .filter((row) => !customNames.has(row.name))
       .map((row) => ({
-        name: row.name,
-        configured: true,
-        keyPresent: row.keyPresent,
-        source: "auth.yaml",
+        ...describeProviderRow({
+          kind: row.name,
+          hasBlock: true,
+          keyPresent: row.keyPresent,
+          envShadowed: providerEnvShadowed(row.name),
+          active: currentKind === row.name,
+          inDaemonInventory: inInventory(row.name),
+          defaultModel: savedDefaultModel(row.name),
+        }),
         testable: Object.hasOwn(providerKeyProbes, row.name),
       }));
     for (const definition of custom) {
       const keyed = definition.authMethod === "api_key";
       const authRow = authRows.find((row) => row.name === definition.name);
       providers.push({
-        name: definition.name,
-        configured: true,
-        // A keyless (auth.method: none) provider needs no credential — its
-        // requirement is satisfied by configuration alone.
-        keyPresent: keyed ? Boolean(authRow?.keyPresent) : true,
-        source:
-          keyed && authRow ? "settings.yaml + auth.yaml" : "settings.yaml",
+        ...describeProviderRow({
+          kind: definition.name,
+          definition,
+          hasBlock: Boolean(authRow),
+          keyPresent: Boolean(authRow?.keyPresent),
+          active: currentKind === definition.name,
+          inDaemonInventory: inInventory(definition.name),
+          defaultModel: savedDefaultModel(definition.name),
+        }),
         testable:
           keyed &&
           customProviderProbeURL(definition.apiFlavor, definition.baseURL) !==
             "",
       });
     }
+    // The UNCONFIGURED built-in kinds too (`configured: false`, or true when
+    // their env var alone configures them), so the UI can describe any kind
+    // the way `providers status PROVIDER` does and offer the guided add.
+    const listed = new Set(providers.map((row) => row.name));
+    for (const entry of KNOWN_AUTH_PROVIDERS) {
+      if (listed.has(entry.name)) continue;
+      providers.push({
+        ...describeProviderRow({
+          kind: entry.name,
+          envShadowed: providerEnvShadowed(entry.name),
+          active: currentKind === entry.name,
+          inDaemonInventory: inInventory(entry.name),
+          defaultModel: savedDefaultModel(entry.name),
+        }),
+        testable: false,
+      });
+    }
+    // The ToolHive LLM gateway as an EXTERNAL-class row: reachability from
+    // the loopback probe, whether thv is installed (so Studio can start the
+    // proxy), and the probe URL for display.
+    providers.push({
+      ...describeToolhiveRow({
+        reachable: toolhiveReady,
+        active: provider === "ToolHive LLM gateway",
+        baseURL: toolhiveGatewayURL,
+        thvOnPath,
+        enabled: daemonDefaults.toolhive.enabled,
+      }),
+      testable: false,
+    });
     response.end(JSON.stringify({ providers }));
     return;
   }
@@ -1836,6 +2029,62 @@ const server = http.createServer(async (request, response) => {
   // (a <YOUR_KEY> placeholder — this route never sees a real credential).
   if (request.method === "GET" && requestURL.pathname === "/providers/known") {
     response.end(JSON.stringify({ known: KNOWN_AUTH_PROVIDERS }));
+    return;
+  }
+  // Starts the ToolHive LLM gateway proxy for the operator — the `providers
+  // setup` delegation to `thv llm`. A DETACHED spawn with ignored stdio (the
+  // proxy outlives the controller) of a FIXED argv, then a bounded readiness
+  // poll that updates toolhiveReady. thv's INTERACTIVE browser login is
+  // deliberately not driven from here: with no cached token the proxy blocks
+  // on it, the poll simply times out, and the answer tells the operator to
+  // run `thv llm login` in a terminal first. Nothing here restarts mecated —
+  // "Set as active" on the row does that. Header-gated like every write.
+  if (request.method === "POST" && requestURL.pathname === "/toolhive/start") {
+    if (!thvOnPath) {
+      jsonError(
+        response,
+        409,
+        "ToolHive's thv CLI is not on the controller's PATH — install ToolHive, then run `thv llm proxy start` yourself.",
+      );
+      return;
+    }
+    if (!toolhiveReady) {
+      try {
+        const proxy = spawn("thv", ["llm", "proxy", "start"], {
+          detached: true,
+          stdio: "ignore",
+        });
+        proxy.on("error", (error) => {
+          process.stderr.write(
+            `[toolhive] thv llm proxy start failed: ${error.message || error}\n`,
+          );
+        });
+        proxy.unref();
+      } catch (error) {
+        jsonError(
+          response,
+          500,
+          `Could not start thv: ${error.message || error}`,
+        );
+        return;
+      }
+      // Up to ~8 s in total: each probe is itself bounded (2.5 s), so a proxy
+      // parked on its login prompt cannot hold this request for long.
+      const deadline = Date.now() + 8000;
+      while (!toolhiveReady && Date.now() < deadline) {
+        await delay(500);
+        toolhiveReady = await detectToolhiveGateway();
+      }
+    }
+    response.end(
+      JSON.stringify({
+        ok: true,
+        available: toolhiveReady,
+        hint: toolhiveReady
+          ? ""
+          : "The gateway did not answer within 8 seconds. If ToolHive has no cached login, run `thv llm login` in a terminal first, then re-check.",
+      }),
+    );
     return;
   }
   // Live provider switch: POST /providers/active { kind }. Unlike
@@ -2379,6 +2628,69 @@ const server = http.createServer(async (request, response) => {
     }
     return;
   }
+  // Diagnostics options: log level, the loopback admin/metrics listener (+
+  // perf MCP, goroutine alarm), product-metrics opt-out — spawn flags (see
+  // src/lib/controller-diagnostics-options.mjs) — plus the controller-side
+  // `quiet` switch. NOT in the header-free read-only allowlist (both verbs
+  // need the server-set studio header). The POST takes a PARTIAL document;
+  // a change to anything but `quiet` restarts the daemon, and a start
+  // mecated refuses on the new flags rolls the previous document back,
+  // restarts on it, and surfaces the refusal as the 400 body — the
+  // /permissions rollback idiom. The operator posture is NOT accepted here
+  // (mergeDiagnosticsOptions rejects the key): /permissions owns --posture.
+  if (
+    request.method === "GET" &&
+    requestURL.pathname === "/diagnostics-options"
+  ) {
+    response.end(JSON.stringify(diagnosticsStatus()));
+    return;
+  }
+  if (
+    request.method === "POST" &&
+    requestURL.pathname === "/diagnostics-options"
+  ) {
+    try {
+      if (
+        !String(request.headers["content-type"] || "")
+          .toLowerCase()
+          .startsWith("application/json")
+      )
+        throw Object.assign(
+          new Error("Content-Type must be application/json"),
+          { statusCode: 415 },
+        );
+      const patch = JSON.parse(
+        (await readBody(request, 16_384)).toString("utf8"),
+      );
+      await queueRestart(async () => {
+        const previous = diagnosticsOptions;
+        const next = normalizeDiagnosticsOptions(
+          mergeDiagnosticsOptions(previous, patch),
+        );
+        diagnosticsOptions = next;
+        await persistDiagnosticsOptions(next);
+        if (!diagnosticsRestartRequired(previous, next)) return;
+        try {
+          await startMecatl(preferredKind());
+        } catch (error) {
+          diagnosticsOptions = previous;
+          await persistDiagnosticsOptions(previous);
+          await startMecatl(preferredKind());
+          throw new Error(
+            `${error.message || error} (previous diagnostics options restored)`,
+          );
+        }
+      });
+      response.end(JSON.stringify({ ok: true, ...diagnosticsStatus() }));
+    } catch (error) {
+      jsonError(
+        response,
+        error.statusCode || 400,
+        error.message || "Could not update the diagnostics options",
+      );
+    }
+    return;
+  }
   // Permissions: the operator posture ladder, project trust and shell-less
   // mode, as mecated spawn flags (see src/lib/controller-permissions.mjs).
   // Like /providers (and unlike /status) the GET is NOT in the header-free
@@ -2709,14 +3021,16 @@ server.listen(8788, "127.0.0.1", async () => {
   operatorSettingsActive = await hasOperatorSettings();
   modelRouterConfig = await loadModelRouter();
   permissionsConfig = await loadPermissions();
+  diagnosticsOptions = await loadDiagnosticsOptions();
   storageSettings = await loadStorageSettings();
   retentionSettings = await loadRetentionSettings();
   applyDaemonDefaults(await loadDaemonDefaults());
   toolhiveReady = await detectToolhiveGateway();
+  thvOnPath = await detectThvOnPath();
   process.stdout.write(
     toolhiveReady
       ? `ToolHive LLM gateway detected at ${toolhiveGatewayURL}\n`
-      : `ToolHive LLM gateway not reachable at ${toolhiveGatewayURL} (start it with "thv llm proxy start"); falling back to the offline mock\n`,
+      : `ToolHive LLM gateway not reachable at ${toolhiveGatewayURL} (start it with "thv llm proxy start"${thvOnPath ? ", or from Settings → Model provider" : ""}); falling back to the offline mock\n`,
   );
   // The DURABLE active-provider choice seeds the live selection unless
   // MECATL_STUDIO_PROVIDER pins one (env stays authoritative). A saved kind

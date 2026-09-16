@@ -3,8 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AttachmentPill,
   commandMenuItems,
-  matchLocalCommand,
   resolveComposerAction,
+  resolveComposerSubmission,
 } from "./chat-input";
 
 // The composer's `/` menu reads the daemon's command list through this
@@ -21,43 +21,124 @@ vi.mock("@/features/agent/composer-capabilities", async (importOriginal) => ({
 }));
 
 /**
- * `/help` is Studio's own command: typed as the whole message it opens the
- * reference page instead of reaching the agent, and the `/` menu lists it
- * ahead of the daemon's commands. Both halves are pure and tested here.
+ * Studio's built-ins (`/clear /help /session /retry /diagnostics /compact`)
+ * are intercepted on send: a bare one runs locally instead of reaching the
+ * agent, a held one (arguments, a second line) or a gated-off one stays in
+ * the editor with a warning, and the `/` menu lists them ahead of the
+ * daemon's commands. Both halves are pure and tested here — interception
+ * through `resolveComposerSubmission`, the helper performAction runs BEFORE
+ * its steer/queue/send branches, so a built-in typed mid-stream is
+ * intercepted identically (never queued or steered).
  */
-describe("matchLocalCommand", () => {
-  it("matches a lone /help, case-insensitively, with trailing whitespace", () => {
-    expect(matchLocalCommand("/help")).toBe("help");
-    expect(matchLocalCommand("/HELP ")).toBe("help");
-    expect(matchLocalCommand("/Help\n")).toBe("help");
+describe("resolveComposerSubmission", () => {
+  const OPEN = { manualCompaction: true };
+
+  it("runs a bare built-in, case-insensitively, with trailing whitespace", () => {
+    for (const text of ["/help", "/HELP ", "/Help\n", "/clear"]) {
+      expect(
+        resolveComposerSubmission({ text, gates: OPEN, hasHandler: true }),
+      ).toEqual({
+        action: "builtin",
+        name: text.trim().toLowerCase().slice(1),
+      });
+    }
   });
 
-  it("leaves anything else to the agent", () => {
-    expect(matchLocalCommand("/helpme")).toBeNull();
-    expect(matchLocalCommand("help")).toBeNull();
-    expect(matchLocalCommand("/help now")).toBeNull();
-    expect(matchLocalCommand("")).toBeNull();
-    expect(matchLocalCommand("/review")).toBeNull();
+  it("holds a built-in with arguments, even while streaming", () => {
+    expect(
+      resolveComposerSubmission({
+        text: "/clear now",
+        gates: OPEN,
+        hasHandler: true,
+        isStreaming: true,
+      }),
+    ).toEqual({
+      action: "hold",
+      warning: "/clear takes no arguments — remove the text to run it",
+    });
+  });
+
+  it("holds a gated-off built-in with the daemon warning", () => {
+    expect(
+      resolveComposerSubmission({
+        text: "/compact",
+        gates: { manualCompaction: false },
+        hasHandler: true,
+      }),
+    ).toEqual({
+      action: "hold",
+      warning: "/compact is not available on this daemon",
+    });
+    // No gates at all fails closed the same way.
+    expect(
+      resolveComposerSubmission({ text: "/compact", hasHandler: true }),
+    ).toMatchObject({ action: "hold" });
+  });
+
+  it("passes everything else to the agent", () => {
+    for (const text of ["/helpme", "help", "", "/review", "/deploy prod"]) {
+      expect(
+        resolveComposerSubmission({ text, gates: OPEN, hasHandler: true }),
+      ).toEqual({ action: "pass" });
+    }
+  });
+
+  it("passes even a bare built-in where no handler is wired", () => {
+    expect(
+      resolveComposerSubmission({
+        text: "/help",
+        gates: OPEN,
+        hasHandler: false,
+      }),
+    ).toEqual({ action: "pass" });
   });
 });
 
 describe("commandMenuItems", () => {
-  const STUDIO_HELP = "Keyboard shortcuts and daemon features (Studio)";
+  const STUDIO_HELP = "show keys & features";
+  const OPEN = { manualCompaction: true };
 
   beforeEach(() => {
     daemon.commands = [{ name: "review", description: "Review a diff" }];
   });
 
-  it("lists the Studio /help builtin first, then the daemon's commands", () => {
-    const items = commandMenuItems("");
-    expect(items.map((i) => i.id)).toEqual(["help", "review"]);
-    expect(items[0]?.primary).toBe("/help");
-    expect(items[0]?.secondary).toBe(STUDIO_HELP);
+  it("lists the Studio builtins first, in fixed order, then the daemon's commands", () => {
+    const items = commandMenuItems("", { gates: OPEN });
+    expect(items.map((i) => i.id)).toEqual([
+      "clear",
+      "help",
+      "session",
+      "retry",
+      "diagnostics",
+      "compact",
+      "review",
+    ]);
+    expect(items[1]?.primary).toBe("/help");
+    expect(items[1]?.secondary).toBe(STUDIO_HELP);
+    // Builtin rows carry the mark the palette renders as a terminal glyph;
+    // daemon rows do not.
+    expect(items.slice(0, 6).every((i) => i.builtin === true)).toBe(true);
+    expect(items[6]?.builtin).toBeUndefined();
   });
 
-  it("keeps /help while the prefix matches and drops it otherwise", () => {
-    expect(commandMenuItems("he").map((i) => i.id)).toEqual(["help"]);
-    expect(commandMenuItems("re").map((i) => i.id)).toEqual(["review"]);
+  it("hides /compact unless the daemon enables manual compaction", () => {
+    expect(
+      commandMenuItems("", { gates: { manualCompaction: false } }).map(
+        (i) => i.id,
+      ),
+    ).not.toContain("compact");
+    // No gates at all fails closed.
+    expect(commandMenuItems("").map((i) => i.id)).not.toContain("compact");
+  });
+
+  it("filters both layers by prefix", () => {
+    expect(commandMenuItems("he", { gates: OPEN }).map((i) => i.id)).toEqual([
+      "help",
+    ]);
+    expect(commandMenuItems("re", { gates: OPEN }).map((i) => i.id)).toEqual([
+      "retry",
+      "review",
+    ]);
   });
 
   it("shadows a daemon command named like a builtin — the Studio row wins", () => {
@@ -65,16 +146,18 @@ describe("commandMenuItems", () => {
       { name: "help", description: "daemon help" },
       { name: "review", description: "Review a diff" },
     ];
-    const items = commandMenuItems("");
-    expect(items.map((i) => i.id)).toEqual(["help", "review"]);
-    expect(items[0]?.secondary).toBe(STUDIO_HELP);
+    const items = commandMenuItems("", { gates: OPEN });
+    expect(items.filter((i) => i.id === "help")).toHaveLength(1);
+    expect(items.find((i) => i.id === "help")?.secondary).toBe(STUDIO_HELP);
+    expect(items.at(-1)?.id).toBe("review");
   });
 
   it("omits the builtins for a surface with no local-command handler", () => {
     daemon.commands = [{ name: "help", description: "daemon help" }];
-    const items = commandMenuItems("", { builtins: false });
+    const items = commandMenuItems("", { builtins: false, gates: OPEN });
     expect(items.map((i) => i.id)).toEqual(["help"]);
     expect(items[0]?.secondary).toBe("daemon help");
+    expect(items[0]?.builtin).toBeUndefined();
   });
 });
 

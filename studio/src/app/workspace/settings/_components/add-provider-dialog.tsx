@@ -73,9 +73,19 @@ export function AddProviderDialog({
   savedBaseUrls,
   saveBaseURL,
   savingBaseURL = false,
+  initialKind = "",
+  openSignal = 0,
 }: {
   known: KnownHarnessProvider[];
   configured: string[];
+  /** The kind to PRESELECT when the dialog is opened from outside (an
+   *  "Available kinds" row); "" starts on the chooser. Read only when
+   *  `openSignal` changes. */
+  initialKind?: string;
+  /** Bumping this counter opens the dialog preselected on `initialKind` —
+   *  the section's unconfigured-kind rows drive it; the built-in trigger
+   *  button still opens a blank chooser. 0 = never requested. */
+  openSignal?: number;
   /** The auth.yaml path on the controller's machine (from /status). */
   authFile: string;
   /** Where a `provider_overrides:` / `providers:` block lands (from
@@ -154,19 +164,40 @@ export function AddProviderDialog({
     ? providerOverrideSnippet(selected.name, overrideURL)
     : "";
 
+  /** Resets every step to a fresh dialog, starting on `nextKind` ("" =
+   *  the chooser). */
+  function resetForm(nextKind: string) {
+    setKind(nextKind);
+    setCopied("");
+    setChecked(null);
+    setCustomId("");
+    setCustomFlavor(CUSTOM_PROVIDER_API_FLAVORS[0]);
+    setCustomBaseURL("");
+    setCustomModel("");
+    setCustomAuth("api_key");
+    setOverrideURL("");
+    setOverrideSaved(false);
+  }
+
   function handleOpenChange(next: boolean) {
     setOpen(next);
-    if (next) {
-      setKind("");
-      setCopied("");
-      setChecked(null);
-      setCustomId("");
-      setCustomFlavor(CUSTOM_PROVIDER_API_FLAVORS[0]);
-      setCustomBaseURL("");
-      setCustomModel("");
-      setCustomAuth("api_key");
-      setOverrideURL("");
-      setOverrideSaved(false);
+    if (next) resetForm("");
+  }
+
+  // An outside open request (an "Available kinds" row): open preselected on
+  // `initialKind` once per `openSignal` bump. Derived-state pattern — the
+  // previous signal is remembered in state and compared during render, so
+  // the request is honoured exactly once with no effect.
+  const [seenOpenSignal, setSeenOpenSignal] = useState(openSignal);
+  if (openSignal !== seenOpenSignal) {
+    setSeenOpenSignal(openSignal);
+    if (openSignal > 0) {
+      resetForm(
+        known.some((provider) => provider.name === initialKind)
+          ? initialKind
+          : "",
+      );
+      setOpen(true);
     }
   }
 

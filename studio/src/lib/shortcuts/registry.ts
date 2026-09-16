@@ -61,6 +61,15 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     description: "Close the side panel — or stop the running turn",
     group: "General",
   },
+  // The Agents panel (the TUI's f6 overlay). ⌘⇧L is preventable in Chrome,
+  // Firefox and Safari (Safari's own ⇧⌘L "Show Sidebar" yields to a page
+  // handler that prevents it); ⌘⇧A/N/T/W are browser-reserved and avoided.
+  {
+    id: "agents.toggle",
+    combo: "mod+shift+l",
+    description: "Toggle the agents panel (subagents, parallel runs, teams)",
+    group: "General",
+  },
 
   // Chats
   // NB: avoid browser-reserved combos. ⌘N / ⌘⇧N open a new (incognito) window
@@ -90,6 +99,38 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     combo: "k",
     description: "Previous chat (vim-style)",
     group: "Chats",
+  },
+
+  // Conversation — keyboard scrolling of the transcript (the TUI's
+  // PgUp/PgDn/Home/End). PgUp/PgDn never insert text, so these also fire
+  // while the caret sits in the composer (`comboFiresWhileTyping`). Home/End
+  // are deliberately NOT taken: they move the caret within a line while
+  // typing; the native keys work once the transcript itself has focus.
+  // Ctrl+PgUp/PgDn switch browser tabs and are avoided by construction
+  // (`matchCombo` rejects an unrequested mod).
+  {
+    id: "transcript.pageUp",
+    combo: "pageup",
+    description: "Scroll the conversation up a page — also while typing",
+    group: "Conversation",
+  },
+  {
+    id: "transcript.pageDown",
+    combo: "pagedown",
+    description: "Scroll the conversation down a page — also while typing",
+    group: "Conversation",
+  },
+  {
+    id: "transcript.top",
+    combo: "shift+pageup",
+    description: "Jump to the top of the conversation",
+    group: "Conversation",
+  },
+  {
+    id: "transcript.bottom",
+    combo: "shift+pagedown",
+    description: "Jump to the bottom and resume auto-follow",
+    group: "Conversation",
   },
 
   // Composer (behaviour lives in the composer; documentation-only here)
@@ -132,7 +173,8 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
   {
     id: "composer.slash",
     combo: "/",
-    description: "Slash commands and skills",
+    description:
+      "Slash commands — built-ins (/clear /help /session /retry /diagnostics /compact) and workspace commands",
     group: "Composer",
   },
   {
@@ -157,6 +199,7 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
 export const SHORTCUT_GROUPS = [
   "General",
   "Chats",
+  "Conversation",
   "Composer",
   "Scheduled",
 ] as const;
@@ -171,6 +214,8 @@ const CAP_LABEL: Record<string, string> = {
   right: "→",
   enter: "Enter",
   esc: "Esc",
+  pageup: "PgUp",
+  pagedown: "PgDn",
 };
 
 /** Display keycaps for a combo, e.g. "mod+k" → ["⌘", "K"]. */
@@ -199,19 +244,38 @@ export function matchCombo(combo: string, e: KeyboardEvent): boolean {
   if (wantMod !== hasMod) return false;
   if (wantAlt !== e.altKey) return false;
   // Only enforce shift when the combo asks for it — symbol keys like "?" carry
-  // their own implicit shift in `e.key`.
+  // their own implicit shift in `e.key`, and a capital letter still matches
+  // its lower-case combo. Named keys (`pageup`, `enter`, the arrows…) carry
+  // no such implicit shift, so an unrequested shift there is a DIFFERENT
+  // chord: without this, ⇧PgUp would satisfy `pageup` and — the dispatcher
+  // firing the first match — `shift+pageup` could never fire.
   if (wantShift && !e.shiftKey) return false;
+  if (!wantShift && e.shiftKey && key.length > 1) return false;
   return e.key.toLowerCase() === (KEY_ALIAS[key] ?? key);
 }
 
 /**
+ * Keys that never insert text and, in the short composer, would only nudge
+ * the caret — so claiming them for the transcript while typing is the natural
+ * desktop behaviour. Home/End are NOT here: they move the caret within a line.
+ */
+const PAGING_KEYS: ReadonlySet<string> = new Set(["pageup", "pagedown"]);
+
+/**
  * True when the combo may fire while the user is typing in an editable field:
  * combos carrying `mod` (the standard desktop-app rule — ⌘/Ctrl chords are
- * commands, not text), plus bare `esc` (it never inserts text, and Esc must
- * interrupt a streaming run even while the caret sits in the composer).
+ * commands, not text), bare `esc` (it never inserts text, and Esc must
+ * interrupt a streaming run even while the caret sits in the composer), and
+ * the paging keys PgUp/PgDn with or without shift (they scroll the transcript
+ * from the composer, as in the TUI).
  */
 export function comboFiresWhileTyping(combo: string): boolean {
-  return combo.split("+").includes("mod") || combo === "esc";
+  const parts = combo.split("+");
+  return (
+    parts.includes("mod") ||
+    combo === "esc" ||
+    PAGING_KEYS.has(parts[parts.length - 1])
+  );
 }
 
 /**

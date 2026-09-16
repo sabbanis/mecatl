@@ -23,7 +23,11 @@ import {
   useAgentRoster,
   useAgentSessions,
 } from "@/features/agent";
-import type { StudioBuiltinCommand } from "@/features/agent/composer-capabilities";
+import type {
+  BuiltinGates,
+  BuiltinOutcome,
+  StudioBuiltinCommand,
+} from "@/features/agent/composer-builtins";
 import { useDeliveryFollow } from "@/features/agent/hooks/use-delivery-follow";
 import { useHarnessRuntime } from "@/features/agent/hooks/use-harness-runtime";
 import { useSessionMode } from "@/features/agent/hooks/use-session-mode";
@@ -71,6 +75,7 @@ import {
   SessionList,
   SidebarGroup,
 } from "./session-sidebar";
+import { useBuiltinSlashCommands } from "./use-builtin-slash-commands";
 
 /** Route for a chat, or the base (a new draft) when none is selected. */
 const chatHref = (id?: string) =>
@@ -255,6 +260,7 @@ function DraftView({
   autoModelLabel,
   onModelChange,
   onLocalCommand,
+  builtinGates,
 }: {
   onSend: (content: string, files?: File[]) => void;
   seed: string | null;
@@ -276,8 +282,12 @@ function DraftView({
   models: ComposerModelOption[];
   autoModelLabel: string;
   onModelChange: (id: string) => void;
-  /** Answers `/help` typed in the draft composer (opens the reference). */
-  onLocalCommand?: (command: StudioBuiltinCommand) => void;
+  /** Answers a Studio built-in typed in the draft composer (`/help`,
+      `/diagnostics`, a draft `/clear`; the session-bound ones refuse). */
+  onLocalCommand?: (
+    command: StudioBuiltinCommand,
+  ) => BuiltinOutcome | undefined;
+  builtinGates?: BuiltinGates;
 }) {
   return (
     <div className="flex h-full flex-col">
@@ -332,6 +342,7 @@ function DraftView({
               autoModelLabel={autoModelLabel}
               onModelChange={onModelChange}
               onLocalCommand={onLocalCommand}
+              builtinGates={builtinGates}
             />
           </div>
         </div>
@@ -358,12 +369,6 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   } = useAgentSessions();
   const { agents } = useAgentRoster();
   const router = useRouter();
-  // `/help` typed in any composer opens the reference — the same page `?`,
-  // ⌘/ and the chat ··· menu reach.
-  const openHelp = useCallback(
-    () => router.push("/workspace/shortcuts"),
-    [router],
-  );
   const { name: agentName } = useAgentDisplayName();
   const { side: sidebarSide } = useSessionListSide();
   // Labs preference: list the mock feature tour. The mock id is treated as
@@ -551,6 +556,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     pendingClarification,
     respondToClarification,
     usage,
+    fleet,
     contextOccupancy,
     sessionDetail,
     queuedMessages,
@@ -830,10 +836,35 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     showMockProjects: mockFeatures,
   };
 
+  // The composer's Studio built-ins (`/clear /help /session /retry
+  // /diagnostics /compact`), dispatched here where the chat state lives. The
+  // same dispatcher serves the draft composer: the session-bound built-ins
+  // refuse there with a warning, `/clear` just drops the draft's queue.
+  const { builtinGates, handleSlashBuiltin, sessionDetailsDialog } =
+    useBuiltinSlashCommands({
+      sessionId: isMockSelected ? null : selectedId || null,
+      isStreaming,
+      // Live or rehydrated (`failed` inventory state), the only state with a
+      // failed step for the daemon to re-drive.
+      hasFailedStep: status === "error",
+      compactSupported,
+      onCompact: () => void handleCompact(),
+      onRetry: () => void retryLast(),
+      onSend: (content) => void sendMessage(content),
+      onClearQueue: clearQueue,
+      onSessionCleared: async (successorId) => {
+        await refreshSessions();
+        handleSelectSession(successorId);
+      },
+      resolvedModel,
+      permissionMode: mode,
+    });
+
   const dialogs = (
     <>
       {ConfirmDialog}
       {PromptDialog}
+      {sessionDetailsDialog}
     </>
   );
 
@@ -929,7 +960,12 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
           onRetractSteers={steerSupported ? cancelPendingSteers : undefined}
           onCancelRun={handleCancelRun}
           onCompact={compactSupported ? handleCompact : undefined}
-          onLocalCommand={openHelp}
+          onLocalCommand={handleSlashBuiltin}
+          builtinGates={builtinGates}
+          // The Agents panel's model; Teams is gated on the daemon's `teams`
+          // capability (absent on a daemon that never enabled teams).
+          fleet={fleet}
+          teamsSupported={serverCapabilities.teams === true}
           contextInfo={
             resolvedModel
               ? {
@@ -1003,7 +1039,8 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
             onShowSidebar={() => setSidebarOpen(true)}
             mode={mode}
             onModeChange={changeMode}
-            onLocalCommand={openHelp}
+            onLocalCommand={handleSlashBuiltin}
+            builtinGates={builtinGates}
           />
         )}
       </div>
@@ -1034,7 +1071,8 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
             onShowSidebar={() => setSidebarOpen(true)}
             mode={mode}
             onModeChange={changeMode}
-            onLocalCommand={openHelp}
+            onLocalCommand={handleSlashBuiltin}
+            builtinGates={builtinGates}
           />
         )}
       </div>

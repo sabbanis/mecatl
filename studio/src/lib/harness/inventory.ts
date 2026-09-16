@@ -203,31 +203,77 @@ export async function listHarnessSkills(
   }));
 }
 
-/** Reads the selectable provider/model inventory. Carries no secret material. */
-export async function listHarnessModels(signal?: AbortSignal): Promise<
-  {
-    id: string;
-    providerId: string;
-    displayName: string;
-    contextLimit: number;
-    image: boolean;
-    reasoning: boolean;
-  }[]
-> {
+/** One selectable model from the daemon's inventory. */
+export interface HarnessModelInfo {
+  id: string;
+  providerId: string;
+  displayName: string;
+  contextLimit: number;
+  image: boolean;
+  reasoning: boolean;
+}
+
+/**
+ * One provider's last live-listing outcome (proto `ProviderStatus`, issue
+ * #262): an operator-actionable hint for intent-driven gateways and
+ * openai-codex, present even when the provider contributes zero models.
+ * `state` is the daemon's string passthrough — "ok" | "unreachable" |
+ * "unauthorized" | "empty" today, rendered verbatim if it grows.
+ */
+export interface HarnessProviderStatus {
+  providerId: string;
+  state: string;
+  /** Short human remediation, e.g. "start it with `thv llm proxy start`". */
+  hint: string;
+  /** The server AUTO-selected this default provider's default model. */
+  defaultModelAutoSelected: boolean;
+  /** Models the last successful live listing returned (0 = none/unrecorded). */
+  modelCount: number;
+  /** Registered and reachable, but out-ranked by a key-driven default. */
+  availableNotDefault: boolean;
+}
+
+/**
+ * Reads the selectable provider/model inventory PLUS the daemon's
+ * per-provider status hints (`ListModelsResponse.provider_status`). Carries
+ * no secret material: an unavailable provider is omitted from `models`
+ * entirely, and a status row names only the provider and its outcome.
+ */
+export async function listHarnessModelInventory(signal?: AbortSignal): Promise<{
+  models: HarnessModelInfo[];
+  providerStatus: HarnessProviderStatus[];
+}> {
   const response = await harness(() =>
     getHarnessClient().models.list(
       { $typeName: "mecatl.v1.ListModelsRequest" },
       { signal },
     ),
   );
-  return response.models.map((model) => ({
-    id: model.id,
-    providerId: model.providerId,
-    displayName: model.displayName || model.id,
-    contextLimit: Number(model.contextLimit),
-    image: model.image,
-    reasoning: model.reasoning,
-  }));
+  return {
+    models: response.models.map((model) => ({
+      id: model.id,
+      providerId: model.providerId,
+      displayName: model.displayName || model.id,
+      contextLimit: Number(model.contextLimit),
+      image: model.image,
+      reasoning: model.reasoning,
+    })),
+    providerStatus: (response.providerStatus ?? []).map((row) => ({
+      providerId: row.providerId,
+      state: row.state,
+      hint: row.hint,
+      defaultModelAutoSelected: row.defaultModelAutoSelected === true,
+      modelCount: Number(row.modelCount ?? 0),
+      availableNotDefault: row.availableNotDefault === true,
+    })),
+  };
+}
+
+/** Reads the selectable provider/model inventory. Carries no secret material. */
+export async function listHarnessModels(
+  signal?: AbortSignal,
+): Promise<HarnessModelInfo[]> {
+  return (await listHarnessModelInventory(signal)).models;
 }
 
 /** One row of the daemon's resolved agent inventory (proto AgentInfo). */

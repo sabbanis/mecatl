@@ -694,3 +694,73 @@ export async function fetchHarnessSessionDetail(
       : null,
   };
 }
+
+// ── Session identity (the /session built-in) ────────────────────────────────
+
+/**
+ * What the `/session` details dialog shows: the exact daemon id, title,
+ * lifecycle state, permission mode, the resolved provider/model, the
+ * server-owned placement's DISPLAY metadata (never a path, ADR 0291), and the
+ * creation time. Read fresh from the snapshot on open.
+ */
+export interface HarnessSessionIdentity {
+  id: string;
+  title: string;
+  state: string;
+  mode: SessionPermissionMode;
+  resolvedModel: HarnessResolvedModel | null;
+  placement: { kind: string; label: string; branch: string } | null;
+  /** Unix seconds; 0 when the daemon reports none. */
+  createdAtUnix: number;
+}
+
+export async function fetchHarnessSessionIdentity(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<HarnessSessionIdentity> {
+  const snapshot = await fetchSnapshot(sessionId, signal);
+  const resolved = snapshot.resolvedModel;
+  const placement = snapshot.placement;
+  return {
+    id: snapshot.sessionId || sessionId,
+    title: snapshot.title?.value ?? "",
+    state: snapshot.state ?? "",
+    mode: sessionPermissionModeFromSdk(snapshot.mode),
+    resolvedModel: resolved
+      ? {
+          providerId: resolved.providerId,
+          modelId: resolved.modelId,
+          contextWindow: Number(resolved.contextWindow) || 0,
+          reasoningEffort: resolved.reasoningEffort ?? "",
+        }
+      : null,
+    placement:
+      placement && (placement.label || placement.kind)
+        ? {
+            kind: placement.kind,
+            label: placement.label,
+            branch: placement.branch,
+          }
+        : null,
+    createdAtUnix: Number(snapshot.createdAtUnix) || 0,
+  };
+}
+
+// ── Clear (the /clear built-in) ─────────────────────────────────────────────
+
+/**
+ * The ClearSession successor RPC (`POST /v1/sessions/{id}/clear`, ADR 0291):
+ * a DISTINCT empty-history session inheriting the source's placement, model,
+ * mode and limits; the source is left intact. Returns the successor's id
+ * (its handle adopted into the cache so the UI can drive it at once). A
+ * running/awaiting source is refused by the daemon (typed HarnessApiError).
+ */
+export async function clearHarnessSession(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const session = await harnessSession(sessionId, signal);
+  const successor = await harness(() => session.clear({}, { signal }));
+  if (!successor.id) throw new Error("harness returned no session id");
+  return adoptSession(successor).id;
+}

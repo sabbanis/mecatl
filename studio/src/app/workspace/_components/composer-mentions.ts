@@ -27,6 +27,9 @@ export interface ComposerMenuItem {
   readonly primary: string;
   /** Muted description shown in the menu row. */
   readonly secondary: string;
+  /** A Studio built-in slash command (rendered with a terminal glyph and
+   *  run on selection, never inserted as a chip). */
+  readonly builtin?: boolean;
 }
 
 /** The trigger kind, so the caller can render agent vs command rows. */

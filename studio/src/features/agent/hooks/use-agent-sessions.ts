@@ -9,6 +9,7 @@ import {
 } from "@/lib/harness/client";
 import type { SessionSummary } from "@/lib/protocol";
 import { useRuntimeStatus } from "../runtime-status";
+import { onSessionsChanged } from "../sessions-changed";
 import type { AgentSession, CreateSessionOpts } from "../types";
 
 const POLL_INTERVAL_MS = 20_000;
@@ -95,9 +96,15 @@ export function useAgentSessions() {
     const timer = setInterval(() => {
       void load(controller.signal);
     }, POLL_INTERVAL_MS);
+    // A bulk clean-up on the Storage page deletes rows behind this hook's
+    // back; its signal re-walks the inventory now instead of on the next poll.
+    const unsubscribe = onSessionsChanged(() => {
+      void load(controller.signal);
+    });
     return () => {
       controller.abort();
       clearInterval(timer);
+      unsubscribe();
     };
   }, [connected, load]);
 

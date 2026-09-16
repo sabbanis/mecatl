@@ -27,9 +27,21 @@ import type {
   ProviderKeyHealth,
   useProviderManagement,
 } from "@/features/agent/hooks/use-provider-management";
-import type { HarnessProviderInfo } from "@/lib/harness/client";
+import type { useProviderStatus } from "@/features/agent/hooks/use-provider-status";
+import type {
+  HarnessProviderInfo,
+  HarnessProviderStatus,
+} from "@/lib/harness/client";
 import { cn } from "@/lib/utils";
 import { AddProviderDialog } from "./add-provider-dialog";
+import {
+  AvailableProviderKinds,
+  DaemonProviderStatusList,
+  groupProviderRows,
+  NoProvidersNote,
+  ProviderRowDetails,
+  ToolhiveGatewayRow,
+} from "./provider-inventory";
 import {
   ExternalManagedNote,
   Note,
@@ -41,6 +53,7 @@ import { SwitchToMockButton } from "./switch-to-mock-button";
 type Runtime = ReturnType<typeof useHarnessRuntime>;
 type Management = ReturnType<typeof useProviderManagement>;
 type DaemonDefaults = ReturnType<typeof useDaemonDefaults>;
+type ProviderStatus = ReturnType<typeof useProviderStatus>;
 
 /** Dot color + label for a row's key health. Green = a test passed, red =
  *  the provider rejected the key, amber = the test could not complete, gray
@@ -89,6 +102,7 @@ export function ProviderSection({
   runtime,
   management,
   daemonDefaults,
+  providerStatus,
 }: {
   runtime: Runtime;
   management: Management;
@@ -97,6 +111,10 @@ export function ProviderSection({
    *  rendering the settings.yaml snippet. Optional: without it the dialog
    *  falls back to copy-only. */
   daemonDefaults?: DaemonDefaults;
+  /** The DAEMON's per-provider status hints (`provider_status`), merged
+   *  into each row in managed mode and listed read-only in external mode.
+   *  Optional: without it no daemon hint renders. */
+  providerStatus?: ProviderStatus;
 }) {
   const status = runtime.status;
   const [removing, setRemoving] = useState<HarnessProviderInfo | null>(null);
@@ -124,10 +142,20 @@ export function ProviderSection({
   // (the top card's provider/running/selectedProvider) is a SEPARATE poll
   // owned by useHarnessRuntime, so a mutation that restarts the daemon must
   // explicitly refresh it too or the card shows the pre-mutation provider.
+  const refreshAll = async () => {
+    await Promise.all([runtime.refresh(), providerStatus?.refresh()]);
+  };
   const activateProvider = (kind: string) =>
-    management.setActiveProvider(kind).then(() => runtime.refresh());
+    management.setActiveProvider(kind).then(refreshAll);
   const removeProvider = (name: string) =>
-    management.removeProvider(name).then(() => runtime.refresh());
+    management.removeProvider(name).then(refreshAll);
+  // The controller's rows grouped for rendering: configured providers, the
+  // ToolHive external row, and the unconfigured built-in kinds (which open
+  // the Add dialog preselected via `addRequest`).
+  const groups = groupProviderRows(management.providers);
+  const [addRequest, setAddRequest] = useState({ kind: "", seq: 0 });
+  const daemonStatusFor = (name: string) =>
+    providerStatus?.forProvider(name) ?? null;
 
   return (
     <SettingsCard title="Model provider">
@@ -138,7 +166,13 @@ export function ProviderSection({
       ) : (
         <div className="flex flex-col gap-3">
           {runtime.mode === "external" ? (
-            <ExternalManagedNote />
+            <>
+              <ExternalManagedNote />
+              {/* The daemon's own per-provider hints are readable in every
+                  mode — they are the deployment's daemon speaking, not the
+                  (absent) controller. Read-only. */}
+              <DaemonProviderStatusList rows={providerStatus?.rows ?? []} />
+            </>
           ) : (
             <>
               {management.error && (
@@ -152,8 +186,17 @@ export function ProviderSection({
                 </p>
               )}
 
+              {groups.configured.length === 0 && !management.isLoading ? (
+                <NoProvidersNote
+                  toolhive={
+                    groups.toolhive !== null &&
+                    (groups.toolhive.reachable === true ||
+                      groups.toolhive.thvOnPath === true)
+                  }
+                />
+              ) : null}
               <ul className="divide-y overflow-hidden rounded-lg border">
-                {management.providers.map((row) => (
+                {groups.configured.map((row) => (
                   <ProviderRow
                     key={row.name}
                     row={row}
@@ -161,17 +204,45 @@ export function ProviderSection({
                     running={status.running}
                     modelCount={modelsFor(row.name)}
                     health={management.health[row.name]}
+                    daemonStatus={daemonStatusFor(row.name)}
                     busy={management.busy}
                     onTest={() => void management.testKey(row.name)}
                     onActivate={() => void activateProvider(row.name)}
                     onRemove={() => setRemoving(row)}
                   />
                 ))}
+                {groups.toolhive ? (
+                  <ToolhiveGatewayRow
+                    row={groups.toolhive}
+                    running={status.running}
+                    busy={management.busy}
+                    daemonStatus={daemonStatusFor("toolhive")}
+                    onActivate={() => void activateProvider("toolhive")}
+                    onStart={() => void management.startToolhive()}
+                    onRecheck={() =>
+                      void Promise.all([
+                        management.reload(),
+                        runtime.refresh(),
+                        providerStatus?.refresh(),
+                      ])
+                    }
+                  />
+                ) : null}
               </ul>
+              <AvailableProviderKinds
+                rows={groups.available}
+                known={management.known}
+                onAdd={(kind) =>
+                  setAddRequest((previous) => ({
+                    kind,
+                    seq: previous.seq + 1,
+                  }))
+                }
+              />
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <AddProviderDialog
                   known={management.known}
-                  configured={management.providers.map((p) => p.name)}
+                  configured={groups.configured.map((p) => p.name)}
                   authFile={status.authFile}
                   settingsFile={status.settingsFile}
                   operatorSettings={status.operatorSettings}
@@ -181,6 +252,8 @@ export function ProviderSection({
                   savedBaseUrls={daemonDefaults?.defaults?.baseUrls}
                   saveBaseURL={saveBaseURL}
                   savingBaseURL={daemonDefaults?.busy ?? false}
+                  initialKind={addRequest.kind}
+                  openSignal={addRequest.seq}
                 />
                 {/* The explicit `--mock` control (hidden while the mock is
                     already the active provider). */}
@@ -210,7 +283,7 @@ export function ProviderSection({
                 and session ids die with it.
                 {removing.name === status?.selectedProvider &&
                   " This is the SELECTED provider (MECATL_STUDIO_PROVIDER names it) — the daemon will fail to restart until the variable changes or the key returns."}
-                {management.providers.length === 1 &&
+                {groups.configured.length === 1 &&
                   " It is also the only configured provider: mecated will come back on the offline mock."}
               </AlertDialogDescription>
             </AlertDialogHeader>
@@ -246,6 +319,7 @@ function ProviderRow({
   running,
   modelCount,
   health,
+  daemonStatus = null,
   busy,
   onTest,
   onActivate,
@@ -256,6 +330,8 @@ function ProviderRow({
   running: boolean;
   modelCount: number;
   health: ProviderKeyHealth | undefined;
+  /** The daemon's own status row for this provider, when it surfaced one. */
+  daemonStatus?: HarnessProviderStatus | null;
   busy: string;
   onTest: () => void;
   onActivate: () => void;
@@ -297,6 +373,7 @@ function ProviderRow({
           {" · "}
           {row.source}
         </span>
+        <ProviderRowDetails row={row} daemonStatus={daemonStatus} />
       </Link>
       <DropdownMenu modal={false}>
         <DropdownMenuTrigger asChild>
@@ -324,11 +401,13 @@ function ProviderRow({
             {testing ? "Testing key…" : "Test key"}
           </DropdownMenuItem>
           <DropdownMenuItem
-            disabled={active || !row.keyPresent || activating}
+            disabled={
+              active || !(row.keyPresent || row.envShadowed) || activating
+            }
             title={
               active
                 ? undefined
-                : !row.keyPresent
+                : !(row.keyPresent || row.envShadowed)
                   ? "No key in the block to activate"
                   : undefined
             }
@@ -341,7 +420,12 @@ function ProviderRow({
           </DropdownMenuItem>
           <DropdownMenuItem
             variant="destructive"
-            disabled={removingBusy}
+            disabled={removingBusy || !row.source.includes("auth.yaml")}
+            title={
+              row.source.includes("auth.yaml")
+                ? undefined
+                : "No auth.yaml block to remove (configured from the environment or the settings file)"
+            }
             onClick={onRemove}
           >
             {removingBusy ? "Removing…" : "Remove"}

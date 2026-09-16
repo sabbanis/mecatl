@@ -704,6 +704,12 @@ export interface AuthorizationRequest {
   error?: string;
   /** A one-line status the last control produced (copied, still pending…). */
   notice?: string;
+  /**
+   * True once the sign-in page was opened or its link copied: Studio then
+   * re-checks the authorization every 3 seconds until it resolves or the
+   * operator cancels, so a completed sign-in resumes the run on its own.
+   */
+  polling?: boolean;
 }
 
 // ── Models ──────────────────────────────────────────────────────────────────
