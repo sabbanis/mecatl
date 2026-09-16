@@ -4,8 +4,10 @@ import { Fullscreen, ShieldAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { ApprovalChoice, ApprovalRequest } from "@/features/agent";
+import { isPlanAsk } from "@/features/agent/plan-ask";
 import { cn } from "@/lib/utils";
 import { AskArgsView } from "./ask-args-view";
+import { PlanReviewCard } from "./plan-review-panel";
 
 const DELETE_WORDS = /\b(delete|remove|drop|revoke|destroy|purge|rm)\b/i;
 
@@ -29,6 +31,18 @@ export function ApprovalPanel({
    *  offers no Expand button (the thread panel keeps it inline). */
   onExpand?: (approval: ApprovalRequest) => void;
 }) {
+  // A PresentPlan ask is a plan review, not a tool authorization: its own
+  // surface (rendered plan, approve & run / auto-accept edits / iterate).
+  if (isPlanAsk(approval.toolName)) {
+    return (
+      <PlanReviewCard
+        approval={approval}
+        onRespond={onRespond}
+        queuePosition={queuePosition}
+        onExpand={onExpand}
+      />
+    );
+  }
   // ONE ask = ONE tool call. The pill names the tool; the args belong in the
   // preview block below, never badge-ified (a Write ask's args are a whole
   // file). Destructiveness is judged on the tool name alone — scanning file

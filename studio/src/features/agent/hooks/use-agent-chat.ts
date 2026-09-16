@@ -3,7 +3,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import {
+  mapPromptValidationError,
+  resolveMediaCapabilities,
+} from "@/lib/attachment-inline";
+import {
   loadSentAttachments,
+  type SentAttachmentRecord,
   saveSentAttachments,
 } from "@/lib/attachment-store";
 import { fileFromToolCall } from "@/lib/file-meta";
@@ -62,6 +67,13 @@ import {
   openAuthorizationWindow,
   reduceAuthorizationEvent,
 } from "../mcp-authorization-phase";
+import {
+  isPlanApprovalVerdict,
+  isPlanAsk,
+  PLAN_APPROVED_PROCEED_TEXT,
+  shouldAutoProceed,
+} from "../plan-ask";
+import { buildPromptPayload } from "../prompt-payload";
 import { useRuntimeStatus } from "../runtime-status";
 import {
   type StatusMessage,
@@ -640,6 +652,13 @@ export function useAgentChat(
      * instead of a frozen "running" badge.
      */
     sessionState?: string;
+    /**
+     * Fired at every run terminal this hook observes (the live prompt stream
+     * and the durable watch) with the daemon's `stop`. The host re-reads
+     * daemon-owned per-session state the run may have changed — the
+     * permission mode, which a plan-run terminal flips on its own.
+     */
+    onRunEnded?: (stop: string) => void;
   },
 ) {
   const { connected, features, serverCapabilities } = useRuntimeStatus();
@@ -721,6 +740,25 @@ export function useAgentChat(
   // is measured against, and the daemon's durable cumulative token usage.
   const [sessionDetail, setSessionDetail] =
     useState<HarnessSessionDetail | null>(null);
+  // What this chat may send as media (the TUI's `attach:` gate): the
+  // session's resolved modalities once the detail lands, the deployment's
+  // compatibility echo before that or for a draft. A ref so the send/steer
+  // closures read the CURRENT gate without rebuilding on every detail load.
+  const mediaCapabilitiesRef = useRef(resolveMediaCapabilities(null, {}));
+  mediaCapabilitiesRef.current = resolveMediaCapabilities(
+    sessionDetail?.sessionCapabilities,
+    serverCapabilities,
+  );
+  // Whether that detail read is in flight, landed, or failed — so the status
+  // strip says "resolving model…" only while a read is genuinely pending and
+  // falls back honestly against an older daemon or a failed fetch.
+  const [sessionDetailStatus, setSessionDetailStatus] = useState<
+    "loading" | "ok" | "failed"
+  >("loading");
+  // The downstream provider the current/last turn was routed to
+  // (provider.route, ADR 0210): the strip's `model/route` suffix. Cleared on
+  // send and on chat open; absent on a cache hit (never fabricated).
+  const [providerRoute, setProviderRoute] = useState("");
 
   // The daemon session backing this chat: the route id, or the one minted for
   // a draft on first send. A ref so an in-flight stream keeps its binding
@@ -768,6 +806,16 @@ export function useAgentChat(
   // The automatic retry armed by a retryable + precommit failure; fired by
   // an effect once the error state has committed (retryLast reads status).
   const [autoRetryPending, setAutoRetryPending] = useState(false);
+  // The plan-approved auto-proceed (TUI parity): ARMED when this tab approves
+  // a PresentPlan ask (session + ask id, so a watcher that merely sees the
+  // terminal never fires it), set PENDING by that run's plan_approved
+  // terminal, and fired by an effect once the run has settled to idle — the
+  // proceed prompt is an ordinary startRun, which reads `status`.
+  const planProceedArmRef = useRef<{
+    sessionId: string;
+    askId: string;
+  } | null>(null);
+  const [planProceedPending, setPlanProceedPending] = useState(false);
   // Set by that effect right before it calls retryLast, so the retried turn
   // can say it was automatic (the strip's onClick calls in with a MouseEvent,
   // so retryLast takes no parameter).
@@ -795,9 +843,7 @@ export function useAgentChat(
   // Attachments sent this visit, keyed by session: the daemon's transcript
   // carries no attachment bytes, so every rehydrate would strip the chips —
   // this ref re-attaches them by matching user turns in send order.
-  const sentAttachmentsRef = useRef(
-    new Map<string, { content: string; attachments: Attachment[] }[]>(),
-  );
+  const sentAttachmentsRef = useRef(new Map<string, SentAttachmentRecord[]>());
 
   const onSessionCreatedRef = useRef(options?.onSessionCreated);
   onSessionCreatedRef.current = options?.onSessionCreated;
@@ -807,6 +853,8 @@ export function useAgentChat(
   createModelRef.current = options?.createModel;
   const createEffortRef = useRef(options?.createEffort);
   createEffortRef.current = options?.createEffort;
+  const onRunEndedRef = useRef(options?.onRunEnded);
+  onRunEndedRef.current = options?.onRunEnded;
 
   /**
    * Rebuilds the message list from the daemon's authoritative transcript,
@@ -836,6 +884,10 @@ export function useAgentChat(
         );
         if (index !== -1) {
           message.attachments = pool[index].attachments;
+          // A text attachment was inlined into the recorded prompt; show the
+          // typed text with its chip, not the delimited blocks.
+          const display = pool[index].display;
+          if (display !== undefined) message.content = display;
           pool.splice(index, 1);
         }
       }
@@ -858,8 +910,34 @@ export function useAgentChat(
       const detail = await fetchHarnessSessionDetail(id, signal);
       if (signal?.aborted) return;
       setSessionDetail(detail);
+      setSessionDetailStatus("ok");
       if (detail.tokenUsage) {
         setUsage({ ...detail.tokenUsage, estimatedCost: null });
+      }
+    },
+    [],
+  );
+
+  /**
+   * The plan-review half of a run terminal, shared by the live stream and
+   * the durable watch: tells the host the run ended (mode pill refresh), and
+   * turns an arm this tab set by approving a PresentPlan ask into the
+   * pending auto-proceed when the run ended on `plan_approved`. Whatever the
+   * stop, the arm is spent — one approval answers exactly one terminal.
+   */
+  const settlePlanTerminal = useCallback(
+    (daemonId: string, stop: string | undefined) => {
+      onRunEndedRef.current?.(stop ?? "");
+      const arm = planProceedArmRef.current;
+      planProceedArmRef.current = null;
+      if (
+        shouldAutoProceed({
+          stop,
+          armed: arm !== null && arm.sessionId === daemonId,
+          queueLength: approvalQueueRef.current.length,
+        })
+      ) {
+        setPlanProceedPending(true);
       }
     },
     [],
@@ -870,9 +948,15 @@ export function useAgentChat(
   useEffect(() => {
     setSessionDetail(null);
     setContextOccupancy(0);
+    setProviderRoute("");
+    // A draft has nothing to resolve yet: settled, not "resolving".
+    setSessionDetailStatus(sessionId ? "loading" : "ok");
     if (!sessionId || !connected) return;
     const controller = new AbortController();
-    void loadSessionDetail(sessionId, controller.signal).catch(() => undefined);
+    void loadSessionDetail(sessionId, controller.signal).catch(() => {
+      // Never load-bearing — but the strip must stop saying "resolving".
+      if (!controller.signal.aborted) setSessionDetailStatus("failed");
+    });
     return () => controller.abort();
   }, [sessionId, connected, loadSessionDetail]);
 
@@ -907,6 +991,8 @@ export function useAgentChat(
     setLastFailurePermanent(false);
     setRecoverDraft(null);
     setAutoRetryPending(false);
+    planProceedArmRef.current = null;
+    setPlanProceedPending(false);
     setMessages([]);
     setFleet(emptyFleet());
     replaceApprovalQueue([]);
@@ -1179,6 +1265,10 @@ export function useAgentChat(
               }));
             }
             break;
+          case "provider_route":
+            // The replay spans earlier runs too: only the LIVE route counts.
+            if (live) setProviderRoute(event.label);
+            break;
           case "status":
             // Transient: the status line only, never the transcript.
             if (live) {
@@ -1200,6 +1290,7 @@ export function useAgentChat(
               // An ask left over from the ended run is dead: never keep it.
               parkedAsks = [];
               replaceApprovalQueue([]);
+              settlePlanTerminal(sessionId, event.stop);
               // The daemon's durable cumulative usage supersedes the sum.
               void loadSessionDetail(sessionId).catch(() => undefined);
               if (event.stop === "error") {
@@ -1264,6 +1355,7 @@ export function useAgentChat(
     rehydrate,
     loadSessionDetail,
     replaceApprovalQueue,
+    settlePlanTerminal,
   ]);
 
   const queueMessage = useCallback((text: string, files?: File[]) => {
@@ -1462,6 +1554,10 @@ export function useAgentChat(
               notices: [...(message.notices ?? []), event.text],
             }));
             break;
+          case "provider_route":
+            // Metadata for the status strip's model segment, not transcript.
+            setProviderRoute(event.label);
+            break;
           case "status":
             // Transient (no-progress nudge, recover notice): the status line
             // under the transcript, never the bubble's durable notices.
@@ -1566,6 +1662,15 @@ export function useAgentChat(
             // pre-seal, but a dead ask must never stay on screen).
             runIdRef.current = "";
             replaceApprovalQueue([]);
+            // The run ended while an ask was still on screen (another client
+            // answered it — a plan approved from mecatui, say): the parked
+            // status must not outlive the run, or the stream's end handler
+            // keeps it and the chat reads "Plan review" forever. Back to
+            // streaming; that handler then lands idle as for any clean end.
+            setStatus((current) =>
+              current === "waiting_approval" ? "streaming" : current,
+            );
+            settlePlanTerminal(daemonId, event.stop);
             // The daemon's durable cumulative usage supersedes the sum.
             void loadSessionDetail(daemonId).catch(() => undefined);
             // How the run ended, on the status line: a limit stop or cancel
@@ -1637,7 +1742,7 @@ export function useAgentChat(
         }
       };
     },
-    [loadSessionDetail, replaceApprovalQueue],
+    [loadSessionDetail, replaceApprovalQueue, settlePlanTerminal],
   );
 
   // The run starter proper. Internal callers (the queue drain, Retry's
@@ -1645,7 +1750,15 @@ export function useAgentChat(
   // `sendMessage` below is the composer's fresh-prompt path, which lifts the
   // pause (the TUI rule: sending a fresh prompt also resumes the queue).
   const startRun = useCallback(
-    async (content: string, files?: File[]) => {
+    async (
+      content: string,
+      files?: File[],
+      opts?: {
+        /** A harness-authored turn (the plan-approved proceed prompt):
+         *  recorded like any prompt, rendered as a harness note. */
+        synthetic?: boolean;
+      },
+    ) => {
       if (!connected) return;
       if (
         status === "streaming" ||
@@ -1660,35 +1773,27 @@ export function useAgentChat(
         return;
       }
 
-      // Only images cross the wire — the daemon's prompt parts are
-      // image/audio only (documents are a daemon capability gap).
-      const images = (files ?? []).filter((file) =>
-        file.type.startsWith("image/"),
-      );
-      let parts: PromptPart[];
-      try {
-        parts = await Promise.all(images.map(imageToPart));
-      } catch (caught) {
-        setError(caught instanceof Error ? caught.message : String(caught));
+      // Every staged file crosses (TUI parity): images and audio as media
+      // parts, gated on the session's resolved modalities; anything else is
+      // inlined into the prompt text as a delimited block. A refusal names
+      // the file and abandons the send before anything reaches the daemon.
+      // Media chips carry the SAME bytes the wire part holds (a data: URL)
+      // and text chips the inlined content, so thumbnails and the canvas
+      // preview work on the live message; rehydrated transcripts get them
+      // back from the sent-attachments store.
+      const payload = await buildPromptPayload({
+        text: content,
+        files: files ?? [],
+        capabilities: mediaCapabilitiesRef.current,
+        encodeImage: imageToPart,
+      });
+      if (!payload.ok) {
+        setError(payload.error);
         return;
       }
-      // Each image attachment carries the SAME bytes the wire part holds (a
-      // data: URL), so the chip's thumbnail and the canvas preview work on
-      // the live message. Rehydrated transcripts have no bytes — the daemon
-      // never echoes attachment content — so old messages stay preview-less.
-      const attachments: Attachment[] | undefined =
-        images.length > 0
-          ? images.map((file, index) => {
-              const part = parts[index];
-              return {
-                name: file.name,
-                type: file.type,
-                url: part
-                  ? `data:${part.mime_type};base64,${part.data}`
-                  : undefined,
-              };
-            })
-          : undefined;
+      const { parts, attachments } = payload;
+      // What the daemon records — the typed text plus the inlined files.
+      const wireText = payload.text;
 
       const userMessage: AgentMessage = {
         id: `user-${Date.now()}`,
@@ -1696,18 +1801,21 @@ export function useAgentChat(
         content,
         timestamp: Date.now(),
         attachments,
+        ...(opts?.synthetic ? { synthetic: true } : {}),
       };
 
       setMessages((prev) => [...prev, userMessage]);
       setStatus("streaming");
       if (attachments && daemonIdRef.current) {
         const log = sentAttachmentsRef.current.get(daemonIdRef.current) ?? [];
-        log.push({ content, attachments });
+        log.push({ content: wireText, attachments, display: content });
         sentAttachmentsRef.current.set(daemonIdRef.current, log);
         void saveSentAttachments(daemonIdRef.current, log);
       }
       setError(null);
       setStatusMessage(null);
+      // The route belongs to a turn: a new prompt starts with none reported.
+      setProviderRoute("");
       // Scoped to this chat (null for a draft minted on this very send) and
       // this send; files ride along so a resend never drops attachments.
       lastPromptRef.current = {
@@ -1773,10 +1881,10 @@ export function useAgentChat(
             const log = sentAttachmentsRef.current.get(daemonId) ?? [];
             if (
               !log.some(
-                (r) => r.content === content && r.attachments === attachments,
+                (r) => r.content === wireText && r.attachments === attachments,
               )
             ) {
-              log.push({ content, attachments });
+              log.push({ content: wireText, attachments, display: content });
             }
             sentAttachmentsRef.current.set(daemonId, log);
             void saveSentAttachments(
@@ -1793,7 +1901,7 @@ export function useAgentChat(
         lastDispositionRef.current = undefined;
         await streamHarnessPrompt(
           daemonId,
-          content,
+          wireText,
           parts,
           makeStreamHandler(daemonId, ids),
           controller.signal,
@@ -1834,8 +1942,11 @@ export function useAgentChat(
           setStatus("idle");
           return;
         }
+        // A prompt the SDK refused to build (a part the session's modalities
+        // reject, media over its ceilings) gets the composer's own wording.
         const message =
-          caught instanceof Error ? caught.message : String(caught);
+          mapPromptValidationError(caught) ??
+          (caught instanceof Error ? caught.message : String(caught));
         setError(message);
         setQueuePaused({ reason: pauseReasonFor("transport") });
         setStatus("error");
@@ -2078,6 +2189,20 @@ export function useAgentChat(
     autoRetryModeRef.current = true;
     void retryLast();
   }, [autoRetryPending, status, retryLast]);
+
+  // Fires the plan-approved proceed prompt (TUI parity, cmd/mecatui/ui/
+  // update.go's `plan_approved` arm): the interactive resumeApproval path
+  // Studio answers asks through ends the plan run on `plan_approved` WITHOUT
+  // starting execution — only the parked-plan ApprovePlan RPC does — so the
+  // client that approved sends the harness-framed prompt itself. It runs
+  // from a render that already sees "idle" (startRun reads `status`), holds
+  // while an ask is still on screen, and is spent once it fires.
+  useEffect(() => {
+    if (!planProceedPending) return;
+    if (status !== "idle" || !connected || approvalQueue.length > 0) return;
+    setPlanProceedPending(false);
+    void startRun(PLAN_APPROVED_PROCEED_TEXT, undefined, { synthetic: true });
+  }, [planProceedPending, status, connected, approvalQueue.length, startRun]);
 
   /** The composer took the recovered prompt: it is the user's draft now, and
    *  the resend fallback must not replay the same text behind it. */
@@ -2511,35 +2636,24 @@ export function useAgentChat(
         queueMessage(trimmed, files);
         return;
       }
-      const images = (files ?? []).filter((file) =>
-        file.type.startsWith("image/"),
-      );
-      let parts: PromptPart[];
-      try {
-        parts = await Promise.all(images.map(imageToPart));
-      } catch (caught) {
-        setError(caught instanceof Error ? caught.message : String(caught));
+      // Same classification as sendMessage: media parts gated on the
+      // session's modalities, text files inlined into the steer text, and
+      // chips carrying the same bytes/content for the optimistic bubble.
+      const payload = await buildPromptPayload({
+        text: trimmed,
+        files: files ?? [],
+        capabilities: mediaCapabilitiesRef.current,
+        encodeImage: imageToPart,
+      });
+      if (!payload.ok) {
+        setError(payload.error);
         return;
       }
-      // Same bytes as the wire parts, so the optimistic bubble's chips show
-      // thumbnails (mirrors sendMessage's attachment handling).
-      const attachments: Attachment[] | undefined =
-        images.length > 0
-          ? images.map((file, index) => {
-              const part = parts[index];
-              return {
-                name: file.name,
-                type: file.type,
-                url: part
-                  ? `data:${part.mime_type};base64,${part.data}`
-                  : undefined,
-              };
-            })
-          : undefined;
+      const { parts, attachments } = payload;
       steerSerialRef.current += 1;
       const id = `steer-${Date.now()}-${steerSerialRef.current}`;
       try {
-        const { outcome } = await steerHarnessRun(daemonId, trimmed, id, {
+        const { outcome } = await steerHarnessRun(daemonId, payload.text, id, {
           expectedRunId: runId,
           parts,
         });
@@ -2559,7 +2673,7 @@ export function useAgentChat(
           ]);
           setPendingSteers((prev) => [
             ...prev,
-            { id, text: trimmed, files: images.length ? images : undefined },
+            { id, text: trimmed, files: files?.length ? files : undefined },
           ]);
           return;
         }
@@ -2576,7 +2690,10 @@ export function useAgentChat(
           return;
         }
         queueMessage(trimmed, files);
-        setError(caught instanceof Error ? caught.message : String(caught));
+        setError(
+          mapPromptValidationError(caught) ??
+            (caught instanceof Error ? caught.message : String(caught)),
+        );
       }
     },
     [queueMessage, steerSupported],
@@ -2668,6 +2785,9 @@ export function useAgentChat(
   // its own — the strip offers Send now / Edit all / Clear all, and the
   // composer's Enter / ↑ / Esc on an empty line do the same.
   useEffect(() => {
+    // The plan-approved proceed prompt goes first: it starts the execution
+    // run the held messages were typed for, and two runs cannot start at once.
+    if (planProceedPending) return;
     if (
       !shouldDrainQueue({
         status,
@@ -2686,7 +2806,15 @@ export function useAgentChat(
     void startRun(next.text, next.files).finally(() => {
       flushingRef.current = false;
     });
-  }, [status, connected, queuedMessages, pendingSteers, queuePaused, startRun]);
+  }, [
+    status,
+    connected,
+    queuedMessages,
+    pendingSteers,
+    queuePaused,
+    planProceedPending,
+    startRun,
+  ]);
 
   // Nothing held → nothing to pause: a stale pause (a cancel with an empty
   // queue, the last row deleted or edited away) clears itself. Orphaned
@@ -2750,6 +2878,14 @@ export function useAgentChat(
           : choice === "once"
             ? ("allow_once" as const)
             : ("allow_always" as const);
+      // A PresentPlan verdict: approve & run / auto-accept edits ARM the
+      // auto-proceed for THIS tab (the daemon ends the plan run on
+      // plan_approved without starting execution); iterate clears it.
+      if (isPlanAsk(answered?.toolName)) {
+        planProceedArmRef.current = isPlanApprovalVerdict(verdict)
+          ? { sessionId: daemonId, askId: approvalId }
+          : null;
+      }
       // EvApproval is log-only — it never rides the live prompt stream — so
       // a session THIS tab drives would show no record of what was decided
       // until a reload. Record it locally, in the very words the durable
@@ -2766,6 +2902,8 @@ export function useAgentChat(
           runIdRef.current,
         );
       } catch (caught) {
+        // A verdict the daemon never took cannot have approved a plan.
+        planProceedArmRef.current = null;
         if (
           caught instanceof HarnessApiError &&
           caught.code === "stale_run_control"
@@ -2866,5 +3004,11 @@ export function useAgentChat(
     contextOccupancy,
     /** The GET-session detail (resolved model + window, durable usage). */
     sessionDetail,
+    /** Whether that detail read is pending, landed, or failed — the status
+     *  strip's "resolving model…" is honest only while it is pending. */
+    sessionDetailStatus,
+    /** The downstream provider the current/last turn was routed to ("" =
+     *  none reported / cache hit); cleared on send and on chat open. */
+    providerRoute,
   };
 }

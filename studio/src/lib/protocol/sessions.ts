@@ -57,9 +57,17 @@ export type SessionSummary = {
    * the `/session` overlay). Omitted reads as denied, like every capability.
    */
   canCopyId: boolean;
+  /**
+   * Whether the daemon would mint a successor of this row (`fork`): the
+   * honest gate for both the history-carrying fork and the empty-history
+   * ClearSession successor. Denied for a non-chat kind, a parked approval,
+   * and a run active elsewhere — `forkReason` names which.
+   */
+  canFork: boolean;
   renameReason: string;
   deleteReason: string;
   copyIdReason: string;
+  forkReason: string;
 };
 
 export type SessionInventoryPage = {
@@ -178,9 +186,11 @@ export function sessionInventoryFromResponse(
       canDelete: capabilities?.delete === true,
       canViewTranscript: capabilities?.viewTranscript === true,
       canCopyId: capabilities?.copyId === true,
+      canFork: capabilities?.fork === true,
       renameReason: reasons?.rename ?? "",
       deleteReason: reasons?.delete ?? "",
       copyIdReason: reasons?.copyId ?? "",
+      forkReason: reasons?.fork ?? "",
     });
   }
   return { sessions, nextCursor: response.nextCursor ?? "" };

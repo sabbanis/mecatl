@@ -32,7 +32,8 @@ import {
   useHarnessRuntime,
 } from "@/features/agent/hooks/use-harness-runtime";
 import { useConfirm } from "@/hooks/use-confirm";
-import { useDisabledModels } from "@/lib/model-preferences";
+import { formatContextWindow } from "@/lib/formatters";
+import { useDefaultModel, useDisabledModels } from "@/lib/model-preferences";
 import { pageTitleClass } from "@/lib/typography";
 import { cn } from "@/lib/utils";
 import {
@@ -44,13 +45,6 @@ import {
   OfflineNote,
   SettingsCard,
 } from "../../settings/_components/settings-card";
-
-/** "128000" → "128k"; 0 stays an honest em dash (window unknown). */
-function formatContext(tokens: number): string {
-  if (tokens <= 0) return "—";
-  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k`;
-  return String(tokens);
-}
 
 /**
  * One provider's models from the daemon's live inventory (`GET /v1/models`,
@@ -66,6 +60,13 @@ export default function ProviderModelsPage() {
   const providerName = decodeURIComponent(params.providerName ?? "");
   const runtime = useHarnessRuntime();
   const { disabled, setModelEnabled } = useDisabledModels();
+  // The browser-local default for NEW chats (the composer picker's ★): a
+  // Studio preference in this browser only — distinct from the daemon
+  // default the kebab below writes, which every client inherits.
+  const { defaultModel, setDefaultModel, clearDefaultModel } =
+    useDefaultModel();
+  const studioDefaultHere =
+    defaultModel?.providerId === providerName ? defaultModel.modelId : "";
   const sort = useTableSort<"name" | "id" | "context" | "enabled">("name");
   // `providers set-default PROVIDER [MODEL]`: the daemon defaults' per-
   // provider model pair. The kebab writes THIS provider's --default-model
@@ -179,6 +180,9 @@ export default function ProviderModelsPage() {
                       sort={sort}
                       className="w-px whitespace-nowrap"
                     />
+                    <TableHead className="w-px whitespace-nowrap">
+                      New chats
+                    </TableHead>
                     {canSetDefault && (
                       <TableHead className="w-px whitespace-nowrap">
                         <span className="sr-only">Actions</span>
@@ -208,7 +212,7 @@ export default function ProviderModelsPage() {
                           </p>
                         </TableCell>
                         <TableCell className="whitespace-nowrap font-mono text-xs text-muted-foreground">
-                          {formatContext(model.contextLimit)}
+                          {formatContextWindow(model.contextLimit) || "—"}
                         </TableCell>
                         <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
                           {[
@@ -225,6 +229,21 @@ export default function ProviderModelsPage() {
                               setModelEnabled(model.id, next)
                             }
                             aria-label={`Show ${model.displayName} in Studio's model pickers`}
+                          />
+                        </TableCell>
+                        <TableCell className="whitespace-nowrap">
+                          <input
+                            type="radio"
+                            name="studio-default-model"
+                            className="size-4 accent-primary"
+                            checked={studioDefaultHere === model.id}
+                            onChange={() =>
+                              setDefaultModel({
+                                modelId: model.id,
+                                providerId: providerName,
+                              })
+                            }
+                            aria-label={`Use ${model.displayName} as my default for new chats`}
                           />
                         </TableCell>
                         {canSetDefault && (
@@ -272,6 +291,26 @@ export default function ProviderModelsPage() {
                 </TableBody>
               </Table>
             </div>
+          )}
+          {runtime.live && models.length > 0 && (
+            <p className="mt-3 text-xs text-muted-foreground">
+              “New chats” marks your default model for new chats in Studio —
+              this browser only; the daemon default is unchanged.{" "}
+              {defaultModel ? (
+                <>
+                  Currently {defaultModel.providerId}/{defaultModel.modelId}.{" "}
+                  <button
+                    type="button"
+                    onClick={clearDefaultModel}
+                    className="underline underline-offset-2 hover:text-foreground"
+                  >
+                    Clear my default
+                  </button>
+                </>
+              ) : (
+                "None set."
+              )}
+            </p>
           )}
         </SettingsCard>
         {canSetDefault && (daemonDefaults.error || daemonDefaults.notice) && (

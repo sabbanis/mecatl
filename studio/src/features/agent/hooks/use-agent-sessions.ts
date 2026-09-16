@@ -37,9 +37,11 @@ function toAgentSession(summary: SessionSummary): AgentSession {
     canRename: summary.canRename,
     canDelete: summary.canDelete,
     canCopyId: summary.canCopyId,
+    canFork: summary.canFork,
     renameReason: summary.renameReason,
     deleteReason: summary.deleteReason,
     copyIdReason: summary.copyIdReason,
+    forkReason: summary.forkReason,
     titleProvenance: summary.titleProvenance,
     debugTargetSessionId: summary.debugTargetSessionId,
   };

@@ -63,6 +63,7 @@ import { isMockTourSession } from "@/features/agent/mock-tour";
 import type { StatusMessage } from "@/features/agent/stop-reason";
 import { cacheHitRate, formatPercent } from "@/features/agent/turn-stats";
 import { useIsMobile } from "@/hooks/use-mobile";
+import type { MediaCapabilities } from "@/lib/attachment-inline";
 import { formatTokens } from "@/lib/formatters";
 import {
   createThreadHarnessSession,
@@ -95,12 +96,18 @@ import {
 import { ApprovalDetailPanel } from "./approval-detail-panel";
 import { ApprovalPanel } from "./approval-panel";
 import { AuthorizationPanel } from "./authorization-panel";
+import { ChatStatusStrip, type ModelResolution } from "./chat-status-strip";
 import {
   type AwaitingPhase,
+  awaitingPhaseFor,
   awaitingPhaseLabel,
   streamingSpinnerLabel,
 } from "./chat-view-phase";
 import { ClarificationPanel } from "./clarification-panel";
+import {
+  ClearConversationMenuItem,
+  ClearConversationSheetItem,
+} from "./clear-conversation-menu-item";
 import { ContextMeter } from "./context-meter";
 import {
   type DelegationFocus,
@@ -111,6 +118,7 @@ import {
 } from "./delegation-panel";
 import { resolveEscapeAction } from "./escape-layering";
 import { FilePreview } from "./file-preview";
+import { FleetStatusChip } from "./fleet-status-chip";
 import { HelpMenuItem, HelpSheetItem } from "./help-menu-item";
 import { MarkdownCanvasPanel } from "./markdown-canvas-panel";
 import { MessageBubble } from "./message-bubble";
@@ -267,6 +275,8 @@ function MobileChatMenu({
   onOpenDetails,
   onCompact,
   compactDisabled,
+  onClear,
+  clearDisabledReason,
   usage,
   transcript,
 }: {
@@ -280,6 +290,10 @@ function MobileChatMenu({
   onCompact?: () => void;
   /** True while a run streams — the daemon 412s a mid-run compact. */
   compactDisabled?: boolean;
+  /** Clear conversation (the `/clear` handoff): present for a chat row. */
+  onClear?: () => void;
+  /** Non-empty renders Clear conversation disabled with this reason. */
+  clearDisabledReason?: string;
   usage?: UsageFigures | null;
   /** Select / copy the whole conversation (the TUI's ctrl+g / ctrl+y). */
   transcript?: TranscriptActionProps;
@@ -325,6 +339,13 @@ function MobileChatMenu({
                 <FoldVertical className="size-4 text-muted-foreground" />
                 Compact conversation
               </button>
+            )}
+            {onClear && (
+              <ClearConversationSheetItem
+                onSelect={onClear}
+                disabledReason={clearDisabledReason}
+                onDone={() => setOpen(false)}
+              />
             )}
             {transcript && (
               <TranscriptSheetItems
@@ -658,7 +679,7 @@ function ThreadPanel({
           )}
           {isStreaming && !pendingAuthorization && (
             <StreamingIndicator
-              awaiting={pendingApproval ? "approval" : undefined}
+              awaiting={awaitingPhaseFor(pendingApproval)}
               message={
                 replies[replies.length - 1]?.role === "assistant"
                   ? replies[replies.length - 1]
@@ -948,7 +969,14 @@ export function ChatView({
   onRetractSteers,
   onCancelRun,
   onCompact,
+  onClear,
+  clearDisabledReason,
   contextInfo,
+  modelResolution = "ok",
+  providerRoute,
+  pendingMode,
+  modeSwitchDeferred = false,
+  debugMcpServers,
   readOnlyPlaceholder,
   mode,
   onModeChange,
@@ -961,6 +989,7 @@ export function ChatView({
   effortSupported,
   onLocalCommand,
   builtinGates,
+  mediaCapabilities,
   fleet,
   teamsSupported,
   onCancelChild,
@@ -1049,6 +1078,11 @@ export function ChatView({
   /** Manually compacts the conversation (B1.2); present only when the
       daemon's manual_compaction capability is on. Disabled while streaming. */
   onCompact?: () => void;
+  /** Clear conversation — the `/clear` handoff to an empty-history
+      successor with the same settings; present for a chat row. */
+  onClear?: () => void;
+  /** Non-empty renders Clear conversation disabled with this daemon reason. */
+  clearDisabledReason?: string;
   /** The session's effective model + context window (B1.1): feeds the slim
       approximate context meter near the composer. */
   contextInfo?: {
@@ -1057,6 +1091,19 @@ export function ChatView({
     /** resolved_model.reasoning_effort; "" / absent = none echoed. */
     effort?: string;
   } | null;
+  /** Whether the snapshot read behind `contextInfo` is pending/landed/failed:
+      the status strip says "resolving model…" only while pending. */
+  modelResolution?: ModelResolution;
+  /** The downstream provider the current/last turn was routed to ("" = none
+      reported); the status strip's `model/route` suffix. */
+  providerRoute?: string;
+  /** A mode switch deferred until the run ends (the strip's "(pending)"). */
+  pendingMode?: SessionPermissionMode | null;
+  /** True when the caller defers a mid-run mode switch: the composer's Mode
+      pill stays enabled while streaming instead of being disabled. */
+  modeSwitchDeferred?: boolean;
+  /** Reporting MCP servers bound to a debug session (the strip's notice). */
+  debugMcpServers?: string[];
   /** The latest turn's input tokens (turn.end): the meter's occupancy. */
   contextOccupancy?: number;
   /** The transient status line under the transcript (a no-progress nudge,
@@ -1091,6 +1138,9 @@ export function ChatView({
   ) => BuiltinOutcome | undefined;
   /** Which gated built-ins the daemon enables (`/compact`). */
   builtinGates?: BuiltinGates;
+  /** The session's resolved input modalities — what the composer may stage
+      as image/audio attachments (a refused file names its reason). */
+  mediaCapabilities?: MediaCapabilities;
   /** Every child this session's runs delegated, across turns: the Agents
       panel's model and the header button's badge. */
   fleet?: DelegationFleet;
@@ -1465,7 +1515,7 @@ export function ChatView({
           {isStreaming && (
             <Loader2
               aria-label={streamingSpinnerLabel(
-                pendingApproval ? "approval" : undefined,
+                awaitingPhaseFor(pendingApproval),
               )}
               className="size-4 shrink-0 animate-spin text-brand"
             />
@@ -1522,6 +1572,7 @@ export function ChatView({
                   variant="ghost"
                   size="icon"
                   className="size-8 shrink-0 text-muted-foreground"
+                  aria-label="Chat options"
                 >
                   <Ellipsis className="size-4" />
                 </Button>
@@ -1541,6 +1592,12 @@ export function ChatView({
                     <FoldVertical className="size-4 mr-2 text-muted-foreground" />
                     Compact conversation
                   </DropdownMenuItem>
+                )}
+                {onClear && (
+                  <ClearConversationMenuItem
+                    onSelect={onClear}
+                    disabledReason={clearDisabledReason}
+                  />
                 )}
                 <TranscriptMenuItems
                   messages={messages}
@@ -1575,6 +1632,8 @@ export function ChatView({
               onOpenDetails={onOpenDetails}
               onCompact={onCompact}
               compactDisabled={isStreaming}
+              onClear={onClear}
+              clearDisabledReason={clearDisabledReason}
               usage={usage}
               transcript={{
                 messages,
@@ -1584,6 +1643,24 @@ export function ChatView({
             />
           )}
         </div>
+
+        {/* The persistent status strip (mecatui's header bar): session handle
+            · effective model (+ route/effort) · mode (+ pending) · server,
+            with the daemon-reported posture badge; amber DEBUG target row +
+            privacy line on an AI-debug session. */}
+        <ChatStatusStrip
+          session={session}
+          live={live}
+          resolvedModelId={contextInfo?.modelLabel || null}
+          reasoningEffort={contextInfo?.effort}
+          modelResolution={modelResolution}
+          models={models}
+          providerRoute={providerRoute}
+          mode={mode}
+          pendingMode={pendingMode}
+          debugMcpServers={debugMcpServers}
+          onOpenSession={onOpenSession}
+        />
 
         <div className="relative flex-1 min-h-0">
           <section
@@ -1665,7 +1742,7 @@ export function ChatView({
               )}
               {isStreaming && !pendingAuthorization && (
                 <StreamingIndicator
-                  awaiting={pendingApproval ? "approval" : undefined}
+                  awaiting={awaitingPhaseFor(pendingApproval)}
                   message={
                     messages[messages.length - 1]?.role === "assistant"
                       ? messages[messages.length - 1]
@@ -1693,6 +1770,13 @@ export function ChatView({
               </div>
             )}
             <div className="max-w-[768px] space-y-1.5 max-[499px]:max-w-none">
+              {/* The fleet chip (the TUI footer's delegation segments): the
+                  persistent running/done glance per family, above the
+                  context meter, each segment opening the Agents panel. */}
+              <FleetStatusChip
+                fleet={fleet}
+                onOpen={(tab) => openDelegationPanel(tab)}
+              />
               {/* Effective model + three-band context meter + usage facets.
                   Renders once anything is counted; with an unknown window it
                   shows the bare current size instead of hiding. */}
@@ -1751,6 +1835,7 @@ export function ChatView({
                   onSteer={onSteerMessage}
                   onLocalCommand={onLocalCommand}
                   builtinGates={builtinGates}
+                  mediaCapabilities={mediaCapabilities}
                   onPreviewAttachment={handlePreviewFile}
                   focusKey={session.id}
                   mobileDocked
@@ -1769,6 +1854,7 @@ export function ChatView({
                   mode={mode}
                   onModeChange={onModeChange}
                   isStreaming={isStreaming}
+                  modeSwitchDeferred={modeSwitchDeferred}
                   disabled={!!pendingApproval || readOnlyPlaceholder != null}
                   appendText={appendText}
                   onAppendConsumed={handleAppendConsumed}

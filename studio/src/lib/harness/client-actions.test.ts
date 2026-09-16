@@ -1,3 +1,4 @@
+import { PromptValidationError } from "@stacklok-oss/mecatl-sdk";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { StreamEvent } from "@/features/agent/types";
 import { resetHarnessClient } from "./sdk";
@@ -289,6 +290,27 @@ describe("streamHarnessPrompt", () => {
       streamHarnessPrompt("s1", "hello", [], () => undefined),
     ).rejects.toThrow("closed before Mecatl returned a final result");
   });
+
+  it("refuses a media part the session's modalities reject with the SDK's TYPED error, before any prompt request", async () => {
+    const { requests } = stubHarnessFetch((request) => {
+      if (request.path === "/v1/sessions/s1")
+        return snapshotFor("s1", {
+          session_capabilities: { image: false, audio: false },
+        });
+      return undefined;
+    });
+    const attempt = streamHarnessPrompt(
+      "s1",
+      "look",
+      [{ kind: "image", mime_type: "image/png", data: "aGk=" }],
+      () => undefined,
+    );
+    await expect(attempt).rejects.toBeInstanceOf(PromptValidationError);
+    await expect(attempt).rejects.toMatchObject({ reason: "capability" });
+    expect(requests.some((r) => r.path === "/v1/sessions/s1/prompt")).toBe(
+      false,
+    );
+  });
 });
 
 describe("retryHarnessRun", () => {
@@ -404,6 +426,19 @@ describe("fetchHarnessSessionDetail", () => {
       resolvedModel: null,
       capabilities: {},
       tokenUsage: null,
+      sessionCapabilities: null,
     });
+  });
+
+  it("maps session_capabilities to the composer's image/audio gate (proto field 21)", async () => {
+    stubHarnessFetch((request) => {
+      if (request.path === "/v1/sessions/s1")
+        return snapshotFor("s1", {
+          session_capabilities: { image: true, audio: false },
+        });
+      return undefined;
+    });
+    const detail = await fetchHarnessSessionDetail("s1");
+    expect(detail.sessionCapabilities).toEqual({ image: true, audio: false });
   });
 });

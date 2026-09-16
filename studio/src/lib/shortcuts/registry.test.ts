@@ -63,6 +63,18 @@ describe("shortcut registry", () => {
     expect(byId.get("chat.details")).toBe("mod+i");
     expect(SHORTCUTS.find((s) => s.id === "chat.details")?.group).toBe("Chats");
     expect(comboFiresWhileTyping("mod+i")).toBe(true);
+    // Clear conversation (the TUI's /clear): a preventable ⌘⇧ chord, off the
+    // Agents panel's ⌘⇧L and Firefox's uninterceptable ⌘⇧K; a ⌘ chord, so
+    // it fires from the composer too.
+    expect(byId.get("chat.clear")).toBe("mod+shift+x");
+    expect(SHORTCUTS.find((s) => s.id === "chat.clear")?.group).toBe("Chats");
+    expect(comboFiresWhileTyping("mod+shift+x")).toBe(true);
+  });
+
+  it("gives every live shortcut a combo of its own", () => {
+    const live = SHORTCUTS.filter((s) => !s.fixed);
+    const combos = live.map((s) => s.combo);
+    expect(new Set(combos).size).toBe(combos.length);
   });
 
   it("binds the schedules list filter to a bare slash in its own group", () => {
@@ -153,6 +165,17 @@ describe("shortcut registry", () => {
       "Clear the selection, close the side panel — or stop the running turn",
     );
   });
+
+  it("locks Esc: dispatched (a handler is registered) but never user-rebindable", () => {
+    const def = SHORTCUTS.find((s) => s.id === "close.esc");
+    expect(def?.locked).toBe(true);
+    // Locked is NOT fixed — the dispatcher still fires it, so the keymap's
+    // collision checks keep it in scope.
+    expect(def?.fixed).toBeUndefined();
+    for (const s of SHORTCUTS) {
+      if (s.id !== "close.esc") expect(s.locked).toBeUndefined();
+    }
+  });
 });
 
 describe("keycaps", () => {
@@ -169,6 +192,17 @@ describe("keycaps", () => {
     expect(keycaps("shift+pageup")).toEqual(["⇧", "PgUp"]);
     expect(keycaps("shift+pagedown")).toEqual(["⇧", "PgDn"]);
   });
+
+  it("labels the keys only a user-recorded combo can carry", () => {
+    expect(keycaps("mod+space")).toEqual(["⌘", "Space"]);
+    expect(keycaps("alt+f5")).toEqual(["⌥", "F5"]);
+    expect(keycaps("shift+tab")).toEqual(["⇧", "Tab"]);
+    expect(keycaps("mod+backspace")).toEqual(["⌘", "⌫"]);
+    // matchCombo understands the same tokens (the space bar reports " ").
+    expect(matchCombo("mod+space", ev(" ", { meta: true }))).toBe(true);
+    expect(matchCombo("mod+space", ev(" "))).toBe(false);
+    expect(matchCombo("alt+f5", ev("F5", { alt: true }))).toBe(true);
+  });
 });
 
 describe("matchCombo", () => {
@@ -180,7 +214,13 @@ describe("matchCombo", () => {
 
   it("matches plain keys and arrow aliases", () => {
     expect(matchCombo("j", ev("j"))).toBe(true);
-    expect(matchCombo("j", ev("J", { shift: true }))).toBe(true); // capital J
+    // A Caps Lock capital (no shiftKey) still matches its lower-case combo…
+    expect(matchCombo("j", ev("J"))).toBe(true);
+    // …but a HELD shift is a different chord (⇧J is not J, ⌘⇧K is not ⌘K).
+    expect(matchCombo("j", ev("J", { shift: true }))).toBe(false);
+    expect(matchCombo("mod+k", ev("K", { meta: true, shift: true }))).toBe(
+      false,
+    );
     expect(matchCombo("down", ev("ArrowDown"))).toBe(true);
     expect(matchCombo("up", ev("ArrowUp"))).toBe(true);
   });
@@ -244,8 +284,9 @@ describe("matchCombo", () => {
     expect(matchCombo("pageup", ev("PageUp", { shift: true }))).toBe(false);
     expect(matchCombo("pagedown", ev("PageDown", { shift: true }))).toBe(false);
     expect(matchCombo("shift+pageup", ev("PageUp"))).toBe(false);
-    // …while single-character keys keep their implicit-shift leniency.
-    expect(matchCombo("j", ev("J", { shift: true }))).toBe(true);
+    // …and so is a held shift on a letter, while SYMBOL keys keep their
+    // implicit-shift leniency (`?` arrives with shiftKey on a US layout).
+    expect(matchCombo("j", ev("J", { shift: true }))).toBe(false);
     expect(matchCombo("?", ev("?", { shift: true }))).toBe(true);
   });
 

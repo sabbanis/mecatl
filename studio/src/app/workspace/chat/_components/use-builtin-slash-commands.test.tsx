@@ -9,8 +9,6 @@ import { toast } from "sonner";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   type BuiltinSlashDeps,
-  CLEAR_WHILE_STREAMING,
-  CLEARED_TOAST,
   COMPACT_NONE_YET,
   COMPACT_WHILE_STREAMING,
   DIAGNOSTICS_WHILE_STREAMING,
@@ -23,10 +21,11 @@ import {
 /**
  * Pins the chat workspace's built-in dispatch: each of the six commands, its
  * idle/streaming/no-session refusals (a refusal keeps the composer text and
- * carries the plain warning), `/clear` driving the ClearSession successor
- * and adopting it, `/retry` acting ONLY on a held failure (never re-sending
- * a successful turn), and `/diagnostics` being the one built-in that sends —
- * the sanitized report, as a prompt.
+ * carries the plain warning), `/clear` handing a live chat — streaming or
+ * not — to the Clear conversation handoff (use-clear-conversation.ts owns
+ * the daemon call), `/retry` acting ONLY on a held failure (never
+ * re-sending a successful turn), and `/diagnostics` being the one built-in
+ * that sends — the sanitized report, as a prompt.
  */
 
 const router = vi.hoisted(() => ({ push: vi.fn() }));
@@ -45,12 +44,10 @@ vi.mock("@/features/agent/runtime-status", () => ({
 }));
 
 const harness = vi.hoisted(() => ({
-  clear: vi.fn(),
   identity: vi.fn(),
   serverInfo: vi.fn(),
 }));
 vi.mock("@/lib/harness/sessions", () => ({
-  clearHarnessSession: harness.clear,
   fetchHarnessSessionIdentity: harness.identity,
 }));
 vi.mock("@/lib/harness/server-info", () => ({
@@ -67,7 +64,7 @@ function makeDeps(overrides: Partial<BuiltinSlashDeps> = {}): BuiltinSlashDeps {
     onRetry: vi.fn(),
     onSend: vi.fn(),
     onClearQueue: vi.fn(),
-    onSessionCleared: vi.fn(),
+    onClearConversation: vi.fn(),
     resolvedModel: { providerId: "openrouter", modelId: "openai/gpt-5" },
     permissionMode: "default",
     ...overrides,
@@ -75,8 +72,6 @@ function makeDeps(overrides: Partial<BuiltinSlashDeps> = {}): BuiltinSlashDeps {
 }
 
 beforeEach(() => {
-  harness.clear.mockReset();
-  harness.clear.mockResolvedValue("s2");
   harness.identity.mockReset();
   harness.identity.mockResolvedValue({
     id: "s1",
@@ -119,47 +114,29 @@ describe("useBuiltinSlashCommands", () => {
   });
 
   describe("/clear", () => {
-    it("refuses while a run is active", () => {
-      const deps = makeDeps({ isStreaming: true });
-      const { result } = renderHook(() => useBuiltinSlashCommands(deps));
-      expect(result.current.handleSlashBuiltin("clear")).toEqual({
-        ok: false,
-        warning: CLEAR_WHILE_STREAMING,
-      });
-      expect(harness.clear).not.toHaveBeenCalled();
-    });
-
     it("on a draft drops the held queue and clears the composer", () => {
       const deps = makeDeps({ sessionId: null });
       const { result } = renderHook(() => useBuiltinSlashCommands(deps));
       expect(result.current.handleSlashBuiltin("clear")).toEqual({ ok: true });
       expect(deps.onClearQueue).toHaveBeenCalledTimes(1);
-      expect(harness.clear).not.toHaveBeenCalled();
+      expect(deps.onClearConversation).not.toHaveBeenCalled();
     });
 
-    it("drives the ClearSession successor and adopts it", async () => {
+    it("hands a live chat to the Clear conversation handoff", () => {
       const deps = makeDeps();
       const { result } = renderHook(() => useBuiltinSlashCommands(deps));
       expect(result.current.handleSlashBuiltin("clear")).toEqual({ ok: true });
-      await waitFor(() =>
-        expect(deps.onSessionCleared).toHaveBeenCalledWith("s2"),
-      );
-      expect(harness.clear).toHaveBeenCalledWith("s1");
-      expect(deps.onClearQueue).toHaveBeenCalledTimes(1);
-      await waitFor(() =>
-        expect(toast.success).toHaveBeenCalledWith(CLEARED_TOAST),
-      );
+      expect(deps.onClearConversation).toHaveBeenCalledTimes(1);
+      // The handoff owns the queue drop (after the daemon answered), not
+      // the built-in.
+      expect(deps.onClearQueue).not.toHaveBeenCalled();
     });
 
-    it("surfaces a daemon refusal as a toast", async () => {
-      harness.clear.mockRejectedValue(new Error("session is running"));
-      const deps = makeDeps();
+    it("is never refused while a run streams — the daemon cancels the run", () => {
+      const deps = makeDeps({ isStreaming: true });
       const { result } = renderHook(() => useBuiltinSlashCommands(deps));
-      result.current.handleSlashBuiltin("clear");
-      await waitFor(() =>
-        expect(toast.error).toHaveBeenCalledWith("session is running"),
-      );
-      expect(deps.onSessionCleared).not.toHaveBeenCalled();
+      expect(result.current.handleSlashBuiltin("clear")).toEqual({ ok: true });
+      expect(deps.onClearConversation).toHaveBeenCalledTimes(1);
     });
   });
 

@@ -1,15 +1,16 @@
 "use client";
 
+import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { STUDIO_BUILTIN_COMMANDS } from "@/features/agent/composer-capabilities";
 import { deriveHelpFeatures } from "@/features/agent/help-features";
 import { useRuntimeStatus } from "@/features/agent/runtime-status";
 import { useEnterSendBehavior } from "@/lib/profile-preferences";
+import { useShortcutBindings } from "@/lib/shortcuts/keymap";
 import {
   describeShortcut,
   keycaps,
   SHORTCUT_GROUPS,
-  SHORTCUTS,
 } from "@/lib/shortcuts/registry";
 import { cn } from "@/lib/utils";
 
@@ -67,6 +68,9 @@ export function ShortcutsReference() {
   const { state, serverCapabilities, features, deployment } =
     useRuntimeStatus();
   const { behavior: enterBehavior } = useEnterSendBehavior();
+  // EFFECTIVE bindings: the registry defaults with this browser's keymap
+  // overrides applied, so a remapped key is documented as it actually fires.
+  const { bindings } = useShortcutBindings();
   const featureRows = deriveHelpFeatures(serverCapabilities, features);
 
   return (
@@ -76,22 +80,27 @@ export function ShortcutsReference() {
           <section key={group} className={CARD_CLASS}>
             <h2 className={CARD_HEADING_CLASS}>{group}</h2>
             <ul className="space-y-2.5">
-              {SHORTCUTS.filter((s) => s.group === group).map((s) => (
-                <li
-                  key={s.id}
-                  className="flex items-center justify-between gap-4"
-                >
-                  <span className="text-sm text-foreground">
-                    {describeShortcut(s, enterBehavior)}
-                  </span>
-                  <span className="flex shrink-0 items-center gap-1">
-                    {keycaps(s.combo).map((k, i) => (
-                      // biome-ignore lint/suspicious/noArrayIndexKey: positional keycaps
-                      <Key key={i}>{k}</Key>
-                    ))}
-                  </span>
-                </li>
-              ))}
+              {bindings
+                .filter((s) => s.group === group)
+                .map((s) => (
+                  <li
+                    key={s.id}
+                    className="flex items-center justify-between gap-4"
+                  >
+                    <span className="text-sm text-foreground">
+                      {describeShortcut(s, enterBehavior)}
+                    </span>
+                    <span className="flex shrink-0 items-center gap-1">
+                      {s.custom ? (
+                        <Badge variant="outline">custom</Badge>
+                      ) : null}
+                      {keycaps(s.effectiveCombo).map((k, i) => (
+                        // biome-ignore lint/suspicious/noArrayIndexKey: positional keycaps
+                        <Key key={i}>{k}</Key>
+                      ))}
+                    </span>
+                  </li>
+                ))}
             </ul>
           </section>
         ))}
@@ -123,6 +132,16 @@ export function ShortcutsReference() {
           </p>
         </section>
       </div>
+
+      <p className="text-xs text-muted-foreground">
+        Keys you have remapped are tagged &ldquo;custom&rdquo;.{" "}
+        <Link
+          href="/workspace/settings/keyboard"
+          className="font-medium text-foreground underline-offset-4 hover:underline"
+        >
+          Change shortcuts →
+        </Link>
+      </p>
 
       <section className={CARD_CLASS} aria-labelledby="daemon-features">
         <h2 id="daemon-features" className={CARD_HEADING_CLASS}>

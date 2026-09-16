@@ -3,9 +3,11 @@ import { expect, test } from "@playwright/test";
 /**
  * Browser smoke over the real stack: Studio's production build in external
  * mode → the /api/mecatl proxy → the fixture daemon (tests/e2e/
- * fixture-daemon.mjs). Assertions are read-only renders of fixture content;
- * the streaming/approval mechanics are covered by the protocol unit suite
- * and the hermetic server-tier suite.
+ * fixture-daemon.mjs). Assertions are mostly read-only renders of fixture
+ * content; the prompts that DO stream here (the authorization takeover, the
+ * subagent lifecycle) exercise the fixture's SSE relay end to end, while the
+ * approval mechanics stay with the protocol unit suite and the hermetic
+ * server-tier suite.
  */
 
 test("the chat list and transcript come from the daemon", async ({ page }) => {
@@ -218,6 +220,25 @@ test("the help reference reflects the daemon's features", async ({ page }) => {
   await expect(image.getByText("not enabled")).toBeVisible();
 });
 
+test("Settings → Keyboard lists the keymap with a recorder per rebindable row", async ({
+  page,
+}) => {
+  await page.goto("/workspace/settings/keyboard");
+  const card = page.locator("section", {
+    has: page.getByRole("heading", { name: "Keyboard shortcuts" }),
+  });
+  await expect(
+    card.getByRole("heading", { name: "Keyboard shortcuts" }),
+  ).toBeVisible();
+  await expect(card.getByText("New chat", { exact: true })).toBeVisible();
+  await expect(
+    card.getByRole("button", { name: /Change shortcut for New chat/ }),
+  ).toBeVisible();
+  // Esc is dispatched but locked: listed read-only, no recorder.
+  await expect(card.getByText(/Not rebindable — Esc/)).toBeVisible();
+  await expect(card.getByRole("button", { name: "Reset all" })).toBeDisabled();
+});
+
 test("typing /help in the composer opens the help reference", async ({
   page,
 }) => {
@@ -258,7 +279,41 @@ test("the / palette lists Studio's built-ins ahead of the daemon's commands and 
   await page.keyboard.type("clear");
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(/\/workspace\/chat\/session-fixture-clear$/);
-  await expect(page.getByText("Started a fresh chat")).toBeVisible();
+  await expect(
+    page.getByText(
+      "Conversation cleared — continuing in a fresh chat with the same settings",
+    ),
+  ).toBeVisible();
+});
+
+test("Clear conversation in the chat menu mints a successor and re-enables the composer", async ({
+  page,
+}) => {
+  await page.goto("/workspace/chat");
+  await page.getByText("Fix the flaky scheduler test").first().click();
+  await expect(
+    page.getByText("the test races the claim sentinel", { exact: false }),
+  ).toBeVisible();
+  // The fixture row offers `fork`, so the item is enabled (the same daemon
+  // verdict that gates the model/effort switch).
+  await page.getByRole("button", { name: "Chat options" }).click();
+  await page
+    .getByRole("menuitem", { name: "Clear conversation", exact: true })
+    .click();
+  // The scrollback switches only after the daemon answered with the
+  // successor; the old chat stays in the list and the composer is usable.
+  await expect(page).toHaveURL(/\/workspace\/chat\/session-fixture-clear$/);
+  await expect(
+    page.getByText(
+      "Conversation cleared — continuing in a fresh chat with the same settings",
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Fix the flaky scheduler test").first(),
+  ).toBeVisible();
+  await expect(
+    page.locator(".composer-editor .ProseMirror").first(),
+  ).toHaveAttribute("contenteditable", "true");
 });
 
 test("a scheduled task's delivery note renders as an attributed card", async ({
@@ -360,5 +415,67 @@ test("storage settings show aggregate health and the clean-up plan", async ({
   );
   await expect(page.getByTestId("storage-cleanup-progress")).toContainText(
     "1 deleted",
+  );
+});
+
+test("a prompt's subagent lifecycle feeds the inline card, the fleet chip, and the Agents panel", async ({
+  page,
+}) => {
+  await page.goto("/workspace/chat");
+  await page.getByText("Fix the flaky scheduler test").first().click();
+  await expect(
+    page.getByText("the test races the claim sentinel", { exact: false }),
+  ).toBeVisible();
+  // No child has run in this chat yet, so the composer strip has no chip.
+  await expect(
+    page.getByRole("list", { name: "Agents in this chat" }),
+  ).toHaveCount(0);
+  const composer = page.locator(".composer-editor .ProseMirror").first();
+  await composer.click();
+  await page.keyboard.type("Scan the scheduler tests for me");
+  await page.getByRole("button", { name: "Send message" }).first().click();
+  // The fixture streams subagent.start → tool → end inside the turn: the
+  // turn's delegation card names the child, and the persistent chip beside
+  // the context meter tallies it once the end frame lands.
+  await expect(
+    page.getByText("subagent: Scan the scheduler tests", { exact: false }),
+  ).toBeVisible();
+  const chip = page.getByRole("button", {
+    name: "subagents · 0 running · 1 done",
+  });
+  await expect(chip).toBeVisible();
+  // The chip opens the Agents panel on its family's tab.
+  await chip.click();
+  await expect(
+    page.getByText("subagents · 0 running · 1 done", { exact: true }),
+  ).toBeVisible();
+});
+
+test("the chat status strip shows the session handle, the resolved model and the posture badge", async ({
+  page,
+}) => {
+  await page.goto("/workspace/chat");
+  await page.getByText("Fix the flaky scheduler test").first().click();
+  const strip = page.getByTestId("chat-status-strip");
+  // The bare 12-column handle of `session-fixture-1` (docs/tui.md: no `#`);
+  // its accessible name carries the copy affordance.
+  await expect(
+    strip.getByRole("button", {
+      name: "Session session-fixt: copy the full session id",
+    }),
+  ).toHaveText("session-fixt");
+  // The daemon-RESOLVED model off the snapshot's resolved_model (the fixture
+  // lists it as "fixture-model"), never "resolving model…" once the read lands.
+  await expect(page.getByTestId("chat-status-model")).toHaveText(
+    /fixture-model/,
+  );
+  // The fixture's compatibility document reports posture "trusted": a muted
+  // badge whose tooltip is the `/posture` sentence.
+  const badge = page.getByTestId("chat-posture-badge");
+  await expect(badge).toHaveText("posture trusted");
+  await expect(badge).toHaveAttribute("data-tone", "muted");
+  await expect(badge).toHaveAttribute(
+    "title",
+    /posture trusted — allow-all off/,
   );
 });

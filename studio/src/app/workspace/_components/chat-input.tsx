@@ -32,7 +32,6 @@ import {
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuSub,
-  DropdownMenuSubContent,
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
@@ -51,7 +50,12 @@ import {
   getSlashCommands,
 } from "@/features/agent/composer-capabilities";
 import { usePrompt } from "@/hooks/use-prompt";
+import {
+  classifyAttachment,
+  type MediaCapabilities,
+} from "@/lib/attachment-inline";
 import { fileKindMeta } from "@/lib/file-meta";
+import { useDefaultModel } from "@/lib/model-preferences";
 import {
   type EnterSendBehavior,
   useEnterSendBehavior,
@@ -60,17 +64,25 @@ import type { SessionPermissionMode } from "@/lib/protocol";
 import { effortLabel } from "@/lib/reasoning-effort";
 import { cn } from "@/lib/utils";
 import {
+  fileMenuRows,
+  isAttachFileItem,
+  isFileMenuItem,
+  pathMentionText,
+} from "./composer-file-mention";
+import {
   type ComposerMenuItem,
   composerText,
   createComposerMentions,
   setComposerText,
 } from "./composer-mentions";
+import { liveModelProvenance, resolveDraftModel } from "./draft-model";
 import {
   EffortSheetSection,
   EffortSubmenu,
   effortTriggerLabel,
   ModelPickerShortcut,
 } from "./effort-picker";
+import { ModelSheetSection, ModelSubmenuContent } from "./model-picker";
 
 interface ProjectItem {
   id: string;
@@ -100,7 +112,10 @@ interface ChatInputProps {
       while `isStreaming`; absent when the daemon lacks the steer capability
       (mid-run sends then queue and files stay attached). */
   onSteer?: (content: string, files?: File[]) => void;
-  onModelChange?: (alias: string) => void;
+  /** Draft: the pending model pick ("" = the auto row, i.e. the daemon
+   *  default on purpose); null = reset to untouched, so the Studio default
+   *  for new chats applies again when the daemon lists it. */
+  onModelChange?: (id: string | null) => void;
   /** Live daemon models for the picker; absent = the sentinel only. */
   models?: ComposerModelOption[];
   /** Label for the empty (daemon-picks) entry. */
@@ -109,6 +124,10 @@ interface ChatInputProps {
   onPreviewAttachment?: (file: File) => void;
   disabled?: boolean;
   isStreaming?: boolean;
+  /** Keeps the Mode selector enabled while `isStreaming`: the caller defers
+      the switch until the run ends (the status strip shows it "(pending)"),
+      instead of disabling the pill mid-run. */
+  modeSwitchDeferred?: boolean;
   appendText?: string | null;
   onAppendConsumed?: () => void;
   /** Plain-text seed dropped into an empty composer (e.g. a "next step" chip
@@ -167,6 +186,11 @@ interface ChatInputProps {
   /** Which gated built-ins the daemon enables (`/compact` needs manual
       compaction). Fail-closed when omitted. */
   builtinGates?: BuiltinGates;
+  /** What the session may send as media (its resolved input modalities).
+      Gates staging: a file the model cannot take is refused with a reason
+      instead of being staged. Absent = no media gate (text-size limits still
+      apply); the send path gates again regardless. */
+  mediaCapabilities?: MediaCapabilities;
 }
 
 /**
@@ -180,18 +204,24 @@ const GHOST_TRIGGER_CLASS =
 /** The composer's "+" button: opens the file picker directly to attach files. */
 function FilesDropdown({
   onFilesSelected,
+  inputRef,
 }: {
   onFilesSelected?: (files: File[]) => void;
+  /** Lifted so the composer's `@` "Attach a file…" row opens the SAME
+      native picker; absent, the dropdown owns its own input. */
+  inputRef?: React.RefObject<HTMLInputElement | null>;
 }) {
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const ownInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = inputRef ?? ownInputRef;
 
   return (
     <>
+      {/* Any file: images and audio become media parts (gated when staged),
+          everything else is inlined as text — the TUI's attach parity. */}
       <input
         ref={fileInputRef}
         type="file"
         multiple
-        accept="image/*"
         className="hidden"
         onChange={(e) => {
           const selected = e.target.files;
@@ -240,6 +270,10 @@ export interface ComposerModelOption {
   /** The inventory's `reasoning` flag: false → the Effort list warns that a
    *  tier may be ignored; absent = unknown (no warning). */
   reasoning?: boolean;
+  /** The inventory's `image` flag: the picker row shows an image glyph. */
+  image?: boolean;
+  /** Context window in tokens (0/absent = unknown, no label on the row). */
+  contextLimit?: number;
 }
 
 /** The reasoning-effort sentinel as a WIRE value: "" = auto (the create/fork
@@ -316,7 +350,8 @@ export function ModelEffortSelector({
   currentModelReasoning,
   effortSupported = true,
 }: {
-  onModelChange?: (id: string) => void;
+  /** Draft pick ("" = auto row); null = reset to untouched (Studio default). */
+  onModelChange?: (id: string | null) => void;
   lockedLabel?: string;
   /** Live-chat switch: picking forks the chat onto the model. */
   onSwitchModel?: (option: ComposerModelOption | null) => void;
@@ -338,7 +373,12 @@ export function ModelEffortSelector({
   effortSupported?: boolean;
 }) {
   const modelOptions = [autoModel(autoModelLabel), ...(models ?? [])];
-  const [model, setModel] = useState<string>(AUTO_MODEL_ID);
+  // Draft: null = untouched (the browser-local Studio default for new chats
+  // applies when the daemon lists it), "" = the auto row picked on purpose.
+  const [model, setModel] = useState<string | null>(null);
+  const { defaultModel: studioDefault } = useDefaultModel();
+  const draft = resolveDraftModel(model, studioDefault, modelOptions);
+  const draftId = draft.id;
   const [localEffort, setLocalEffort] = useState<string>(DEFAULT_EFFORT);
   const [menuOpen, setMenuOpen] = useState(false);
   const switchId = currentModelId ?? AUTO_MODEL_ID;
@@ -347,7 +387,11 @@ export function ModelEffortSelector({
         id: switchId,
         label: switchId || autoModel(autoModelLabel).label,
       })
-    : (modelOptions.find((m) => m.id === model) ?? modelOptions[0]);
+    : (modelOptions.find((m) => m.id === draftId) ?? modelOptions[0]);
+  // The picker header's provenance tag: where the model in force came from.
+  const provenance = onSwitchModel
+    ? liveModelProvenance(switchId, studioDefault, modelOptions)
+    : draft.provenance;
   // Draft: the pending pick (caller-controlled when wired). Live: the
   // daemon's EFFECTIVE tier — never the local pick.
   const draftEffort = effort ?? localEffort;
@@ -358,7 +402,7 @@ export function ModelEffortSelector({
   // session's (caller-supplied, else its listed option) or the draft's picked
   // option; undefined (auto-routed / unlisted) renders no warning.
   const pickedOption = modelOptions.find(
-    (m) => m.id === (onSwitchModel ? switchId : model),
+    (m) => m.id === (onSwitchModel ? switchId : draftId),
   );
   const modelReasoning = onSwitchModel
     ? (currentModelReasoning ?? pickedOption?.reasoning)
@@ -423,42 +467,24 @@ export function ModelEffortSelector({
             <span className="flex-1">Model</span>
             <span className="text-muted-foreground">{selectedModel.label}</span>
           </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent className="w-80 p-2">
-            {onSwitchModel && (
-              <p className="px-3 pb-1.5 text-xs text-muted-foreground">
-                Picking a model continues this chat in a copy on it.
-              </p>
-            )}
-            {modelOptions.map((m) => {
-              const isSelected = m.id === (onSwitchModel ? switchId : model);
-              return (
-                <DropdownMenuItem
-                  key={m.id}
-                  className={cn(
-                    "flex items-center gap-3 rounded-lg px-3 py-3 text-sm cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-800 justify-between",
-                    isSelected && "bg-zinc-100 dark:bg-zinc-800",
-                  )}
-                  onClick={() => {
-                    if (onSwitchModel) {
-                      if (m.id !== switchId)
-                        onSwitchModel(m.id === AUTO_MODEL_ID ? null : m);
-                      return;
-                    }
-                    setModel(m.id);
-                    onModelChange?.(m.id);
-                  }}
-                >
-                  <span className="font-medium">{m.label}</span>
-                  <Check
-                    className={cn(
-                      "size-4 shrink-0",
-                      isSelected ? "text-foreground" : "text-transparent",
-                    )}
-                  />
-                </DropdownMenuItem>
-              );
-            })}
-          </DropdownMenuSubContent>
+          <ModelSubmenuContent
+            options={modelOptions}
+            selectedId={onSwitchModel ? switchId : draftId}
+            currentLabel={selectedModel.label}
+            provenance={provenance}
+            live={Boolean(onSwitchModel)}
+            onPick={(m) => {
+              // cmdk rows are not Radix items, so the menu is closed here.
+              setMenuOpen(false);
+              if (onSwitchModel) {
+                if (m.id !== switchId)
+                  onSwitchModel(m.id === AUTO_MODEL_ID ? null : m);
+                return;
+              }
+              setModel(m.id);
+              onModelChange?.(m.id);
+            }}
+          />
         </DropdownMenuSub>
         {showEffort && (
           <EffortSubmenu
@@ -479,13 +505,11 @@ export function ModelEffortSelector({
           <>
             <DropdownMenuSeparator />
             <DropdownMenuItem
-              disabled={
-                model === AUTO_MODEL_ID && draftEffort === DEFAULT_EFFORT
-              }
+              disabled={model === null && draftEffort === DEFAULT_EFFORT}
               onClick={() => {
-                setModel(AUTO_MODEL_ID);
+                setModel(null);
                 setLocalEffort(DEFAULT_EFFORT);
-                onModelChange?.(AUTO_MODEL_ID);
+                onModelChange?.(null);
                 onEffortChange?.(DEFAULT_EFFORT);
               }}
             >
@@ -663,7 +687,8 @@ function MobileComposerMenu({
   effortSupported = true,
 }: {
   onFilesSelected: (files: File[]) => void;
-  onModelChange?: (id: string) => void;
+  /** Draft pick ("" = auto row); null = reset to untouched (Studio default). */
+  onModelChange?: (id: string | null) => void;
   modelLockedLabel?: string;
   /** Present in a live chat: picking forks the chat onto the model (the
    *  daemon fixes a session's model at create). null = auto-routed. */
@@ -689,13 +714,17 @@ function MobileComposerMenu({
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [sub, setSub] = useState<"mode" | "model" | "memory" | null>(null);
-  const [model, setModel] = useState<string>(AUTO_MODEL_ID);
+  // Draft: null = untouched (Studio default applies), "" = auto on purpose.
+  const [model, setModel] = useState<string | null>(null);
   const [localEffort, setLocalEffort] = useState<string>(DEFAULT_EFFORT);
   const [memoryOn, setMemoryOn] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const modelOptions = [autoModel(autoModelLabel), ...(models ?? [])];
+  const { defaultModel: studioDefault } = useDefaultModel();
+  const draft = resolveDraftModel(model, studioDefault, modelOptions);
+  const draftId = draft.id;
   const selectedModel =
-    modelOptions.find((m) => m.id === model) ?? modelOptions[0];
+    modelOptions.find((m) => m.id === draftId) ?? modelOptions[0];
   // Switch mode ignores the local pick state — the session's model is the
   // truth, and a stale/disabled id still labels honestly as itself.
   const switchId = currentModelId ?? AUTO_MODEL_ID;
@@ -725,7 +754,6 @@ function MobileComposerMenu({
         ref={fileInputRef}
         type="file"
         multiple
-        accept="image/*"
         className="hidden"
         onChange={(event) => {
           const files = Array.from(event.target.files ?? []);
@@ -853,28 +881,29 @@ function MobileComposerMenu({
           <SheetTitle className="sr-only">Model and effort</SheetTitle>
           <div className="max-h-[70dvh] overflow-y-auto pb-2">
             <SheetSectionLabel>Model</SheetSectionLabel>
-            {onSwitchModel && (
-              <p className="px-4 pb-1 text-xs text-muted-foreground">
-                Picking a model continues this chat in a copy on it.
-              </p>
-            )}
-            {modelOptions.map((m) => (
-              <SheetOptionRow
-                key={m.id}
-                label={m.label}
-                selected={m.id === (onSwitchModel ? switchId : model)}
-                onSelect={() => {
-                  if (onSwitchModel) {
-                    setSub(null);
-                    if (m.id !== switchId)
-                      onSwitchModel(m.id === AUTO_MODEL_ID ? null : m);
-                    return;
-                  }
-                  setModel(m.id);
-                  onModelChange?.(m.id);
-                }}
-              />
-            ))}
+            <ModelSheetSection
+              options={modelOptions}
+              selectedId={onSwitchModel ? switchId : draftId}
+              currentLabel={
+                onSwitchModel ? switchSelected.label : selectedModel.label
+              }
+              provenance={
+                onSwitchModel
+                  ? liveModelProvenance(switchId, studioDefault, modelOptions)
+                  : draft.provenance
+              }
+              live={Boolean(onSwitchModel)}
+              onPick={(m) => {
+                if (onSwitchModel) {
+                  setSub(null);
+                  if (m.id !== switchId)
+                    onSwitchModel(m.id === AUTO_MODEL_ID ? null : m);
+                  return;
+                }
+                setModel(m.id);
+                onModelChange?.(m.id);
+              }}
+            />
             {showEffort && (
               <EffortSheetSection
                 value={selectedEffort}
@@ -896,13 +925,11 @@ function MobileComposerMenu({
                 <div className="mx-4 my-1 h-px bg-border" />
                 <button
                   type="button"
-                  disabled={
-                    model === AUTO_MODEL_ID && draftEffort === DEFAULT_EFFORT
-                  }
+                  disabled={model === null && draftEffort === DEFAULT_EFFORT}
                   onClick={() => {
-                    setModel(AUTO_MODEL_ID);
+                    setModel(null);
                     setLocalEffort(DEFAULT_EFFORT);
-                    onModelChange?.(AUTO_MODEL_ID);
+                    onModelChange?.(null);
                     onEffortChange?.(DEFAULT_EFFORT);
                     setSub(null);
                   }}
@@ -1099,12 +1126,17 @@ declare global {
 }
 
 const DEFAULT_PLACEHOLDER =
-  "Pull in tools and expertise by including @agent or +Files";
+  "Pull in tools and expertise by including @agent, @file or +Files";
 
-/** Filter the agent list for the `@`-mention menu by handle or name. */
-function agentMenuItems(query: string): ComposerMenuItem[] {
+/**
+ * The `@` menu: the file rows first — "Attach a file…" while the query could
+ * still spell "file", "Mention path @…" for a path-shaped token — then the
+ * agent list filtered by handle prefix or name substring. Exported for its
+ * unit test.
+ */
+export function agentMenuItems(query: string): ComposerMenuItem[] {
   const q = query.toLowerCase();
-  return getAgentMentions()
+  const agents = getAgentMentions()
     .filter((a) => a.handle.startsWith(q) || a.name.toLowerCase().includes(q))
     .map((a) => ({
       id: a.handle,
@@ -1112,6 +1144,7 @@ function agentMenuItems(query: string): ComposerMenuItem[] {
       primary: a.name,
       secondary: a.description,
     }));
+  return [...fileMenuRows(query), ...agents];
 }
 
 /**
@@ -1380,6 +1413,7 @@ export function ChatInput({
   onModelChange,
   disabled = false,
   isStreaming = false,
+  modeSwitchDeferred = false,
   appendText,
   onAppendConsumed,
   initialText,
@@ -1405,6 +1439,7 @@ export function ChatInput({
   onModeChange,
   onLocalCommand,
   builtinGates,
+  mediaCapabilities,
 }: ChatInputProps) {
   const placeholder = placeholderProp ?? DEFAULT_PLACEHOLDER;
   // Plain-text mirror of the editor, kept in sync via onUpdate. Used only for
@@ -1424,6 +1459,31 @@ export function ChatInput({
   // render the same full-width popover the pre-TipTap composer used. `menuRef`
   // gives the suggestion keydown handler a synchronous read of current state.
   const [menu, setMenu] = useState<ComposerMenu | null>(null);
+
+  // The hidden file input behind "+", shared with the `@` menu's "Attach a
+  // file…" row so both open the one native picker.
+  const attachInputRef = useRef<HTMLInputElement>(null);
+  // The staging gate (the TUI's `attach:` refusal, at stage time): a file
+  // the session's modalities reject — or a text file too big to inline — is
+  // never staged; its reason shows above the input like a built-in's
+  // warning. With no gate supplied only the size limits apply.
+  const stageFiles = useCallback(
+    (incoming: File[]) => {
+      const gate = mediaCapabilities ?? { image: true, audio: true };
+      const accepted: File[] = [];
+      const reasons: string[] = [];
+      for (const file of incoming) {
+        const verdict = classifyAttachment(file, gate);
+        if (verdict.kind === "rejected") reasons.push(verdict.reason);
+        else accepted.push(file);
+      }
+      if (accepted.length > 0) {
+        setAttachedFiles((prev) => [...prev, ...accepted]);
+      }
+      if (reasons.length > 0) setNotice(reasons.join(" "));
+    },
+    [mediaCapabilities],
+  );
 
   // The Studio-local command handler, read through a ref so the suggestion
   // plugins (built once) always see the latest prop without rebuilding the
@@ -1447,6 +1507,25 @@ export function ChatInput({
       props: SuggestionProps<ComposerMenuItem>,
       item: ComposerMenuItem,
     ) => {
+      if (kind === "agent" && isAttachFileItem(item)) {
+        // "Attach a file…": no chip — drop the `@` token, open the picker.
+        setMenu(null);
+        props.editor.chain().focus().deleteRange(props.range).run();
+        attachInputRef.current?.click();
+        return;
+      }
+      const pathText = kind === "agent" ? pathMentionText(item) : null;
+      if (pathText !== null) {
+        // "Mention path": plain text the model reads (and can Read from the
+        // workspace) — never a chip, and no completion is claimed.
+        setMenu(null);
+        props.editor
+          .chain()
+          .focus()
+          .insertContentAt(props.range, { type: "text", text: `${pathText} ` })
+          .run();
+        return;
+      }
       const handler = onLocalCommandRef.current;
       if (kind === "command" && handler && isStudioBuiltinCommand(item.id)) {
         setMenu(null);
@@ -1813,14 +1892,10 @@ export function ChatInput({
         e.preventDefault();
         dragCountRef.current = 0;
         setIsDragOver(false);
-        // Only images can cross the wire (the daemon's prompt parts are
-        // image/audio only), so only images attach.
-        const droppedFiles = Array.from(e.dataTransfer.files).filter((f) =>
-          f.type.startsWith("image/"),
-        );
-        if (droppedFiles.length > 0) {
-          setAttachedFiles((prev) => [...prev, ...droppedFiles]);
-        }
+        // Any file: images/audio as media parts, the rest inlined as text;
+        // the staging gate refuses what this session cannot take.
+        const droppedFiles = Array.from(e.dataTransfer.files);
+        if (droppedFiles.length > 0) stageFiles(droppedFiles);
       }}
       className={cn(
         "relative rounded-2xl bg-zinc-50 dark:bg-zinc-900",
@@ -1862,7 +1937,14 @@ export function ChatInput({
                   </>
                 ) : (
                   <>
-                    <Bot className="size-4 shrink-0 text-muted-foreground" />
+                    {isFileMenuItem(item) ? (
+                      <Paperclip
+                        className="size-4 shrink-0 text-muted-foreground"
+                        aria-label="File"
+                      />
+                    ) : (
+                      <Bot className="size-4 shrink-0 text-muted-foreground" />
+                    )}
                     <span className="shrink-0 text-sm font-medium">
                       {item.primary}
                     </span>
@@ -1954,9 +2036,7 @@ export function ChatInput({
             <MobileComposerMenu
               models={models}
               autoModelLabel={autoModelLabel}
-              onFilesSelected={(newFiles) =>
-                setAttachedFiles((prev) => [...prev, ...newFiles])
-              }
+              onFilesSelected={stageFiles}
               onModelChange={onModelChange}
               modelLockedLabel={modelLockedLabel}
               onSwitchModel={onSwitchModel}
@@ -1969,7 +2049,7 @@ export function ChatInput({
               effortSupported={effortSupported}
               mode={mode}
               onModeChange={onModeChange}
-              modeDisabled={disabled || isStreaming}
+              modeDisabled={disabled || (isStreaming && !modeSwitchDeferred)}
             />
           </div>
           {/* TipTap composer: resolved @agent / /skill mentions are atomic
@@ -2017,9 +2097,8 @@ export function ChatInput({
         {/* Desktop-only bottom row: attach (+), mic on the left; send right */}
         <div className="flex items-center gap-1 px-2 pb-2 max-[499px]:hidden">
           <FilesDropdown
-            onFilesSelected={(newFiles) =>
-              setAttachedFiles((prev) => [...prev, ...newFiles])
-            }
+            onFilesSelected={stageFiles}
+            inputRef={attachInputRef}
           />
           {voice.isSupported && (
             <Button
@@ -2070,7 +2149,7 @@ export function ChatInput({
               <ModeSelector
                 mode={mode ?? "default"}
                 onModeChange={onModeChange}
-                disabled={disabled || isStreaming}
+                disabled={disabled || (isStreaming && !modeSwitchDeferred)}
               />
             )}
             <ModelEffortSelector

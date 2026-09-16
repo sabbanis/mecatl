@@ -493,12 +493,19 @@ describe("translateEvent", () => {
         reasoningTokens: 0,
       },
     ]);
-    // Routing is an implementation detail, not something shown per turn.
+  });
+
+  it("translates provider.route into status-strip metadata, never a transcript line", () => {
+    // The Go loop emits the route on `text` with no payload (ADR 0210); the
+    // strip's model segment renders it as `model/route`.
     expect(
       translate(
-        sdkEvent("provider.route", undefined, { text: "routed to small-1" }),
+        sdkEvent("provider.route", undefined, { text: "openai/fast-lane" }),
       ),
-    ).toEqual([]);
+    ).toEqual([{ type: "provider_route", label: "openai/fast-lane" }]);
+    // A cache hit strips the metadata upstream: an empty text is nothing to
+    // show — no fabricated route, no "not rendered yet" notice.
+    expect(translate(sdkEvent("provider.route", undefined))).toEqual([]);
   });
 
   it("renders a durable-log user_prompt as a user message event", () => {

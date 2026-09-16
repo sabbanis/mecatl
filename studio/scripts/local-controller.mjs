@@ -8,6 +8,7 @@ import {
   open,
   readdir,
   readFile,
+  realpath,
   rename,
   rm,
   stat,
@@ -15,7 +16,7 @@ import {
 } from "node:fs/promises";
 import http from "node:http";
 import { homedir } from "node:os";
-import { dirname, resolve, sep } from "node:path";
+import { basename, dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   diagnosticsOptionArgs,
@@ -63,6 +64,19 @@ import {
   retentionArgs,
 } from "../src/lib/retention-settings.mjs";
 import {
+  DEFAULT_RUNTIME_SETTINGS,
+  effectiveRuntimeSettings,
+  NO_INHERITED_SETTINGS,
+  normalizeRuntimeSettings,
+  readLearningBlock,
+  readSteerScalar,
+  renderRuntimeSettingsYAML,
+  runtimeSettingsArgs,
+  runtimeSettingsHasYAML,
+  SOUL_MAX_BYTES,
+  soulFileWithinRoots,
+} from "../src/lib/runtime-settings.mjs";
+import {
   normalizeStorageSettings,
   resolveStoreDir,
   storageArgs,
@@ -84,6 +98,15 @@ const routerSettingsFile = resolve(
   "model-router-settings.yaml",
 );
 const routerStateFile = resolve(studioStateDir, "model-router.json");
+// The Studio-owned RUNTIME SETTINGS (learning mode/sensitivity, the steer
+// opt-out, the soul flags; src/lib/runtime-settings.mjs). Steer and soul are
+// spawn flags; learning has no flag, so it is a second CLI-tier
+// --permission-config file carrying the FULL merged `learning:` block
+// (mecated captures that section whole-block, first file wins — a partial
+// block would silently drop the operator's skills/automatic settings). The
+// user-global settings.yaml is never edited.
+const runtimeSettingsFile = resolve(studioStateDir, "runtime-settings.yaml");
+const runtimeStateFile = resolve(studioStateDir, "runtime-settings.json");
 // The Studio-owned permissions state (operator posture, project trust,
 // shell-less mode). It becomes mecated CLI flags on every spawn — never a
 // settings.yaml key — so an imported operator-settings.yaml is never
@@ -150,6 +173,15 @@ let authFile = defaultAuthFile;
 const userSettingsFile = process.env.XDG_CONFIG_HOME
   ? resolve(process.env.XDG_CONFIG_HOME, "mecatl/settings.yaml")
   : resolve(homedir(), ".config/mecatl/settings.yaml");
+// The conventional soul file mecated loads when no --soul-file is passed
+// (internal/adapter/soul/store.go soulSubpath) — the placeholder the
+// Persona card shows, and the first of the two roots a browser-chosen
+// --soul-file must sit under (the other is the workspace). A soul is
+// injected into every turn's prompt and GET /v1/soul echoes its content, so
+// an unconstrained path would turn the browser into a file-read oracle over
+// anything the daemon's user can read (auth.yaml, SSH keys).
+const userSoulFile = resolve(mecatlConfigDir, "soul.md");
+const soulFileRoots = [mecatlConfigDir, workspace];
 // mecated's --ready-file target: the atomically-published mecated-ready/1
 // document carrying the RESOLVED listener addresses (the daemon binds
 // 127.0.0.1:0 and reports what the kernel picked), pid, api_major, features,
@@ -590,6 +622,14 @@ let mecatlBaseURL = "";
 let readyInfo = null;
 let gateway = null;
 let modelRouterConfig = null;
+// The saved runtime-settings document (PUT /runtime-settings), loaded from
+// runtimeStateFile before the first spawn; the default document adds no
+// flag and no file, so the command line is byte-identical to before.
+let runtimeSettings = DEFAULT_RUNTIME_SETTINGS;
+// `--approve-soul` rides EXACTLY ONE spawn (POST /soul/approve): it rewrites
+// the drift baseline to the current soul, so persisting it would silently
+// re-accept every later edit. Never written to disk.
+let approveSoulPending = false;
 let operatorSettingsActive = false;
 // The saved permissions document (posture / trustProject / noShell), loaded
 // from permissionsStateFile before the first spawn; defaults are mecated's
@@ -971,6 +1011,171 @@ async function loadModelRouter() {
       );
     return null;
   }
+}
+
+/**
+ * The operator-tier `learning:` block and `steer:` scalar mecated will
+ * itself capture, mirroring its first-file-wins order: the imported
+ * operator-settings.yaml (a CLI-tier file) when active, then the user-global
+ * settings.yaml. What the rendered runtime-settings file merges over, and
+ * what GET /runtime-settings reports as inherited.
+ */
+async function readInheritedRuntimeSettings() {
+  const sources = operatorSettingsActive
+    ? [operatorSettingsFile, userSettingsFile]
+    : [userSettingsFile];
+  let learning = null;
+  let steer = null;
+  for (const file of sources) {
+    let text;
+    try {
+      text = await readFile(file, "utf8");
+    } catch {
+      continue;
+    }
+    if (learning === null) learning = readLearningBlock(text);
+    if (steer === null) steer = readSteerScalar(text);
+  }
+  return {
+    learning: learning ?? NO_INHERITED_SETTINGS.learning,
+    steer,
+  };
+}
+
+/** Atomic (tmp + rename), owner-only: the JSON document only. The YAML
+ *  mecated reads is rendered fresh by every spawn (writeRuntimeSettingsYAML)
+ *  so a later edit of the user-global learning block is still merged in. */
+async function persistRuntimeState(config) {
+  await mkdir(studioStateDir, { recursive: true, mode: 0o700 });
+  const temp = `${runtimeStateFile}.tmp`;
+  await writeFile(temp, `${JSON.stringify(config, null, 2)}\n`, {
+    mode: 0o600,
+  });
+  await rename(temp, runtimeStateFile);
+}
+
+/** The CLI-tier learning file for THIS spawn: Studio's mode/sensitivity
+ *  merged over the inherited block. Atomic, owner-only. */
+async function writeRuntimeSettingsYAML(config) {
+  await mkdir(studioStateDir, { recursive: true, mode: 0o700 });
+  const inherited = await readInheritedRuntimeSettings();
+  const temp = `${runtimeSettingsFile}.tmp`;
+  await writeFile(temp, renderRuntimeSettingsYAML(config, inherited), {
+    mode: 0o600,
+  });
+  await rename(temp, runtimeSettingsFile);
+}
+
+/** The saved runtime settings, or the defaults when none were saved yet. A
+ *  corrupt file is logged and ignored, never honoured. */
+async function loadRuntimeSettings() {
+  try {
+    return normalizeRuntimeSettings(
+      JSON.parse(await readFile(runtimeStateFile, "utf8")),
+    );
+  } catch (error) {
+    if (error?.code !== "ENOENT")
+      process.stderr.write(
+        `[runtime-settings] saved configuration ignored: ${error.message || error}\n`,
+      );
+    return DEFAULT_RUNTIME_SETTINGS;
+  }
+}
+
+/**
+ * The filesystem half of the soul-path check (the shape half is
+ * normalizeSoulFile): the path must sit under the mecatl config dir or the
+ * workspace BOTH lexically and after realpath() (a symlinked parent cannot
+ * escape), must itself be a regular file rather than a symlink (mecatui's
+ * rejectSymlinkPath discipline), must fit the daemon's 20 KiB ceiling
+ * (over it mecated rejects the soul outright, so the save would "succeed"
+ * into a persona-less daemon), and must be readable. Throws a 400-shaped
+ * error naming the reason.
+ */
+async function validateSoulFile(path) {
+  const bad = (message) =>
+    Object.assign(new Error(message), { statusCode: 400 });
+  if (!soulFileWithinRoots(path, soulFileRoots))
+    throw bad(
+      `soul.file must be inside ${mecatlConfigDir} or the workspace ${workspace}`,
+    );
+  let info;
+  try {
+    info = await lstat(path);
+  } catch {
+    throw bad(`soul.file does not exist: ${path}`);
+  }
+  if (info.isSymbolicLink()) throw bad("soul.file must not be a symlink");
+  if (!info.isFile()) throw bad("soul.file must be a regular file");
+  if (info.size > SOUL_MAX_BYTES)
+    throw bad(
+      `soul.file is ${info.size} bytes; mecated rejects a soul over ${SOUL_MAX_BYTES} bytes`,
+    );
+  const real = await realpath(path).catch(() => "");
+  const realRoots = await Promise.all(
+    soulFileRoots.map((root) => realpath(root).catch(() => root)),
+  );
+  if (!real || !soulFileWithinRoots(real, realRoots))
+    throw bad("soul.file resolves outside the allowed directories");
+  try {
+    await readFile(path, "utf8");
+  } catch (error) {
+    throw bad(`soul.file is not readable: ${error.message || error}`);
+  }
+}
+
+/** The `*.md` regular files directly inside the mecatl config dir (dotfiles
+ *  and symlinks skipped, at most 50, sorted) — the picker's candidates, so
+ *  a user need not type a path. Absolute paths on the operator's OWN
+ *  machine (managed mode only), never file contents. */
+async function listSoulCandidates() {
+  let entries;
+  try {
+    entries = await readdir(mecatlConfigDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return entries
+    .filter(
+      (entry) =>
+        entry.isFile() &&
+        !entry.name.startsWith(".") &&
+        entry.name.endsWith(".md") &&
+        entry.name !== ".md",
+    )
+    .map((entry) => ({
+      path: resolve(mecatlConfigDir, entry.name),
+      name: basename(entry.name, ".md"),
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .slice(0, 50);
+}
+
+/** The GET /runtime-settings body: the saved document, who manages each
+ *  knob, the inherited settings.yaml values, the fold mecated will actually
+ *  run with, and the soul picker's inputs. */
+async function runtimeSettingsDocument() {
+  const inherited = await readInheritedRuntimeSettings();
+  return {
+    config: runtimeSettings,
+    managedBy: {
+      learning: operatorSettingsActive ? "operator-settings" : "studio",
+      steer: "studio",
+      soul: "studio",
+    },
+    inherited: {
+      learning: {
+        mode: inherited.learning.mode,
+        sensitivity: inherited.learning.sensitivity,
+      },
+      steer: inherited.steer,
+    },
+    effective: effectiveRuntimeSettings(runtimeSettings, inherited, {
+      operatorSettingsActive,
+    }),
+    soulFileDefault: userSoulFile,
+    soulCandidates: await listSoulCandidates(),
+  };
 }
 
 /** Atomic (tmp + rename), owner-only. Flags only — no settings.yaml key. */
@@ -1487,6 +1692,15 @@ async function startMecatl(kind) {
     args.push("--permission-config", operatorSettingsFile);
   else if (modelRouterConfig)
     args.push("--permission-config", routerSettingsFile);
+  // The learning mode/sensitivity file (--permission-config is repeatable;
+  // its `learning:` block does not overlap the router file's `models:`),
+  // rendered fresh for THIS spawn over the user-global learning block, and
+  // only when the document overrides something. Not alongside an imported
+  // operator settings file: that file's own learning: block then stands.
+  if (!operatorSettingsActive && runtimeSettingsHasYAML(runtimeSettings)) {
+    await writeRuntimeSettingsYAML(runtimeSettings);
+    args.push("--permission-config", runtimeSettingsFile);
+  }
   // mecated refuses to start on a missing --skills-dir, and an empty directory is
   // the correct "no skills yet" state, so create it before every spawn.
   await mkdir(skillsDir, { recursive: true });
@@ -1517,6 +1731,16 @@ async function startMecatl(kind) {
   // and POST /retention is refused.
   if (!operatorSettingsActive)
     args.push(...retentionArgs(effectiveRetention()));
+  // The steer opt-out and the soul flags (--no-steer, --no-soul,
+  // --soul-strict, --soul-file; --approve-soul for the one spawn POST
+  // /soul/approve asks for). CLI flags out-rank any settings file, so they
+  // hold under an imported operator file too — and --no-steer can only
+  // tighten (steer is on by default; the file's own steer: false stands).
+  args.push(
+    ...runtimeSettingsArgs(runtimeSettings, {
+      approveSoul: approveSoulPending,
+    }),
+  );
   if (kind === "mock") {
     args.push("--mock");
   } else if (kind === "toolhive") {
@@ -3061,6 +3285,109 @@ const server = http.createServer(async (request, response) => {
     }
     return;
   }
+  // Runtime settings: learning mode/sensitivity, the steer opt-out, the soul
+  // flags (src/lib/runtime-settings.mjs). GET reads the saved document plus
+  // the inherited settings.yaml values and the effective fold (header-gated:
+  // the soul path and candidate list name files on this machine); PUT
+  // replaces it whole, restarts mecated, and rolls the previous document
+  // back when the new flags/file make it refuse to start. Learning is
+  // refused (409) while an imported operator settings file is active — the
+  // controller passes no learning file alongside it, so a save would lie.
+  if (request.method === "GET" && requestURL.pathname === "/runtime-settings") {
+    response.end(JSON.stringify(await runtimeSettingsDocument()));
+    return;
+  }
+  if (request.method === "PUT" && requestURL.pathname === "/runtime-settings") {
+    try {
+      if (
+        !String(request.headers["content-type"] || "")
+          .toLowerCase()
+          .startsWith("application/json")
+      )
+        throw Object.assign(
+          new Error("Content-Type must be application/json"),
+          { statusCode: 415 },
+        );
+      const next = normalizeRuntimeSettings(
+        JSON.parse((await readBody(request, 16_384)).toString("utf8")),
+      );
+      if (
+        operatorSettingsActive &&
+        JSON.stringify(next.learning) !==
+          JSON.stringify(runtimeSettings.learning)
+      )
+        throw Object.assign(
+          new Error(
+            "Learning mode and sensitivity are managed by the imported operator settings file while it is active. Edit its learning: block instead.",
+          ),
+          { statusCode: 409 },
+        );
+      if (next.soul.enabled && next.soul.file)
+        await validateSoulFile(next.soul.file);
+      await queueRestart(async () => {
+        const previous = runtimeSettings;
+        runtimeSettings = next;
+        await persistRuntimeState(next);
+        try {
+          await startMecatl(preferredKind());
+        } catch (error) {
+          runtimeSettings = previous;
+          await persistRuntimeState(previous);
+          await startMecatl(preferredKind());
+          throw new Error(
+            `${error.message || error} (previous runtime settings restored)`,
+          );
+        }
+      });
+      response.end(JSON.stringify({ ok: true, config: runtimeSettings }));
+    } catch (error) {
+      jsonError(
+        response,
+        error.statusCode || 400,
+        error.message || "Could not update the runtime settings",
+      );
+    }
+    return;
+  }
+  // Accept the current soul as the drift baseline: ONE spawn with
+  // --approve-soul (mecated rewrites <soul>.sha256), then the flag is gone
+  // again. A failed start retries WITHOUT the flag so the daemon is never
+  // left down by an approval. A no-op for a driver-provenance soul
+  // (--soul-source-url) and while the soul is disabled — the UI offers it
+  // only for a user/project soul.
+  if (request.method === "POST" && requestURL.pathname === "/soul/approve") {
+    try {
+      if (!runtimeSettings.soul.enabled)
+        throw Object.assign(
+          new Error(
+            "The persona is disabled; enable it before accepting a baseline.",
+          ),
+          { statusCode: 409 },
+        );
+      await queueRestart(async () => {
+        approveSoulPending = true;
+        try {
+          await startMecatl(preferredKind());
+        } catch (error) {
+          approveSoulPending = false;
+          await startMecatl(preferredKind());
+          throw new Error(
+            `${error.message || error} (restarted without --approve-soul)`,
+          );
+        } finally {
+          approveSoulPending = false;
+        }
+      });
+      response.end(JSON.stringify({ ok: true, restarted: true }));
+    } catch (error) {
+      jsonError(
+        response,
+        error.statusCode || 400,
+        error.message || "Could not accept the persona baseline",
+      );
+    }
+    return;
+  }
   if (request.method === "GET" && requestURL.pathname === "/model-router") {
     response.end(
       JSON.stringify({
@@ -3162,6 +3489,7 @@ server.listen(8788, "127.0.0.1", async () => {
   process.stdout.write("Mecatl local controller: http://127.0.0.1:8788\n");
   operatorSettingsActive = await hasOperatorSettings();
   modelRouterConfig = await loadModelRouter();
+  runtimeSettings = await loadRuntimeSettings();
   permissionsConfig = await loadPermissions();
   diagnosticsOptions = await loadDiagnosticsOptions();
   storageSettings = await loadStorageSettings();

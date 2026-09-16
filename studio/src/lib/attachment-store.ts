@@ -14,8 +14,14 @@ import type { Attachment } from "@/features/agent/types";
  * limit; a failed/unsupported IndexedDB degrades to session-only memory.
  */
 export interface SentAttachmentRecord {
+  /** The text as the daemon recorded it (text attachments inlined), which
+   *  is what the rehydrated transcript's user turn is matched against. */
   content: string;
   attachments: Attachment[];
+  /** The text the user actually typed, restored onto the matched turn so a
+   *  bubble shows the prompt plus chips rather than the inlined blocks.
+   *  Absent on records written before text attachments existed. */
+  display?: string;
 }
 
 const DB_NAME = "mecatl-studio";

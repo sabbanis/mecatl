@@ -1,7 +1,8 @@
 "use client";
 
 import { createContext, useContext, useEffect, useRef } from "react";
-import { comboFiresWhileTyping, matchCombo, SHORTCUTS } from "./registry";
+import { useShortcutBindings } from "./keymap";
+import { comboFiresWhileTyping, matchCombo } from "./registry";
 
 type Registry = {
   register: (id: string, handler: () => void) => void;
@@ -30,16 +31,22 @@ function isTyping(el: Element | null): boolean {
  */
 export function ShortcutsProvider({ children }: { children: React.ReactNode }) {
   const handlers = useRef(new Map<string, () => void>());
+  // EFFECTIVE bindings (registry defaults + the user's keymap overrides,
+  // Settings → Keyboard), mirrored into a ref so the one listener below
+  // always matches the current keys without re-subscribing.
+  const { bindings } = useShortcutBindings();
+  const bindingsRef = useRef(bindings);
+  bindingsRef.current = bindings;
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.defaultPrevented || e.isComposing) return;
       const typing = isTyping(document.activeElement);
-      for (const def of SHORTCUTS) {
+      for (const def of bindingsRef.current) {
         const handler = handlers.current.get(def.id);
         if (!handler) continue;
-        if (typing && !comboFiresWhileTyping(def.combo)) continue;
-        if (matchCombo(def.combo, e)) {
+        if (typing && !comboFiresWhileTyping(def.effectiveCombo)) continue;
+        if (matchCombo(def.effectiveCombo, e)) {
           e.preventDefault();
           handler();
           return;

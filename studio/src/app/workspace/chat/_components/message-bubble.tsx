@@ -29,6 +29,7 @@ import type {
   ToolCallInfo,
 } from "@/features/agent";
 import { DeliveryNoteCard } from "@/features/agent/components/delivery-note-card";
+import { isHarnessProceedMessage } from "@/features/agent/plan-ask";
 import { stopReasonLabel } from "@/features/agent/stop-reason";
 import { formatTurnStat, isTrivialTurn } from "@/features/agent/turn-stats";
 import { fileKindMeta } from "@/lib/file-meta";
@@ -42,6 +43,7 @@ import type { ThreadSummary } from "@/lib/thread-map";
 import { cn } from "@/lib/utils";
 import { DelegationCardRow } from "./delegation-card";
 import { FailedTurnCard } from "./failed-turn-card";
+import { HarnessNote } from "./harness-note";
 import { mdComponents } from "./markdown-components";
 import { StopReasonChip } from "./stop-reason-chip";
 import { ToolCallList } from "./tool-call-list";
@@ -401,6 +403,10 @@ export function MessageBubble({
   const touchStart = useRef<{ x: number; y: number } | null>(null);
 
   if (message.role === "tool") return null;
+  // The harness-authored proceed prompt (plan approved) is a recorded user
+  // turn, but not the user's words: a muted note, never a user bubble.
+  if (isHarnessProceedMessage(message))
+    return <HarnessNote message={message} />;
   const onTouchStart = (event: React.TouchEvent) => {
     const touch = event.touches[0];
     touchStart.current = { x: touch.clientX, y: touch.clientY };

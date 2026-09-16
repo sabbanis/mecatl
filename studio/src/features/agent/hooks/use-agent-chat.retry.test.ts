@@ -42,7 +42,9 @@ vi.mock("../runtime-status", () => ({
   useRuntimeStatus: () => ({
     connected: true,
     features: new Set(["http_steer"]),
-    serverCapabilities: {},
+    // The fixture daemon accepts images: the send-time media gate (mirroring
+    // the SDK's strict capability check) would otherwise refuse the PNG.
+    serverCapabilities: { image: true },
   }),
 }));
 

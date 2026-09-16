@@ -87,6 +87,29 @@ describe("sessionInventoryFromResponse", () => {
     });
   });
 
+  it("takes the successor (fork/clear) offer and its denial reason from the row's capabilities", () => {
+    const page = sessionInventoryFromResponse(
+      inventory([
+        { sessionId: "s1", capabilities: { fork: true, reasons: {} } },
+        {
+          sessionId: "s2",
+          capabilities: {
+            fork: false,
+            reasons: { fork: "active_elsewhere" },
+          },
+        },
+        // Omitted reads as denied, like every other capability.
+        { sessionId: "s3", capabilities: {} },
+      ]),
+    );
+    expect(page.sessions[0]).toMatchObject({ canFork: true, forkReason: "" });
+    expect(page.sessions[1]).toMatchObject({
+      canFork: false,
+      forkReason: "active_elsewhere",
+    });
+    expect(page.sessions[2]).toMatchObject({ canFork: false, forkReason: "" });
+  });
+
   it("filters chats on inspect_only_kind and ONLY that reason", () => {
     const page = sessionInventoryFromResponse(
       inventory([

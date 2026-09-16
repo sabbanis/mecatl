@@ -222,9 +222,6 @@ const SILENT_EVENT_KINDS = new Set([
   "schedule.fired",
   "schedule.skipped",
   "schedule.failed",
-  // The provider/model a prompt was routed to is an implementation detail,
-  // not something the operator asked to see under every turn.
-  "provider.route",
 ]);
 
 /** Advisory kinds whose `text` is worth a DURABLE one-line notice in the flow. */
@@ -651,6 +648,13 @@ function translateEventBody(event: SdkEvent, sessionId: string): StreamEvent[] {
       });
       return events;
     }
+    case "provider.route":
+      // The downstream provider the turn was routed to (ADR 0210). The Go
+      // loop emits it as `Event{Type: EvProviderRoute, Text: route}`, so the
+      // SDK payload is undefined and the label rides `text`. Metadata for the
+      // status strip's model segment, not a transcript line; absent on a
+      // cache hit, so an empty text is nothing to show — never fabricated.
+      return event.text ? [{ type: "provider_route", label: event.text }] : [];
     case "unknown":
       return [unrenderedNotice(event.wireKind)];
     default:

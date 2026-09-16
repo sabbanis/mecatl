@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AttachmentPill,
+  agentMenuItems,
   commandMenuItems,
   ModelEffortSelector,
   resolveComposerAction,
@@ -15,12 +16,14 @@ import { EFFORT_SWITCH_NOTE, NO_REASONING_WARNING } from "./effort-picker";
 // and keep every other export (the Studio builtins) real.
 const daemon = vi.hoisted(() => ({
   commands: [] as { name: string; description: string }[],
+  agents: [] as { handle: string; name: string; description: string }[],
 }));
 vi.mock("@/features/agent/composer-capabilities", async (importOriginal) => ({
   ...(await importOriginal<
     typeof import("@/features/agent/composer-capabilities")
   >()),
   getSlashCommands: () => daemon.commands,
+  getAgentMentions: () => daemon.agents,
 }));
 
 /**
@@ -94,6 +97,49 @@ describe("resolveComposerSubmission", () => {
         hasHandler: false,
       }),
     ).toEqual({ action: "pass" });
+  });
+});
+
+/**
+ * The `@` menu (TUI file-mention parity): the file rows lead — "Attach a
+ * file…" while the query could still spell "file", "Mention path" for a
+ * path-shaped token — ahead of the agent roster; an agent query shows
+ * neither. The rows are plain menu items (no new mention kind), recognised
+ * by their sentinel ids in the composer's select handler.
+ */
+describe("agentMenuItems", () => {
+  beforeEach(() => {
+    daemon.agents = [
+      { handle: "reviewer", name: "Reviewer", description: "reviews diffs" },
+      { handle: "planner", name: "Planner", description: "plans work" },
+    ];
+  });
+  afterEach(() => {
+    daemon.agents = [];
+  });
+
+  it("starts with the Attach-a-file row on an empty query, then every agent", () => {
+    const items = agentMenuItems("");
+    expect(items[0]).toMatchObject({
+      id: "__attach-file",
+      primary: "Attach a file…",
+    });
+    expect(items.slice(1).map((item) => item.id)).toEqual([
+      "reviewer",
+      "planner",
+    ]);
+  });
+
+  it("offers the Mention-path row for a path-shaped query", () => {
+    const items = agentMenuItems("src/");
+    expect(items.map((item) => item.primary)).toEqual(["Mention path @src/"]);
+    expect(items[0]?.label).toBe("@src/");
+  });
+
+  it("shows neither file row for an agent query, filtering by handle prefix or name", () => {
+    const items = agentMenuItems("rev");
+    expect(items.map((item) => item.id)).toEqual(["reviewer"]);
+    expect(agentMenuItems("PLAN").map((item) => item.id)).toEqual(["planner"]);
   });
 });
 
@@ -369,7 +415,7 @@ describe("ModelEffortSelector", () => {
     expect(screen.getByRole("note")).toHaveTextContent(NO_REASONING_WARNING);
   });
 
-  it("draft: reports the pending pick as a wire value, relabels the trigger, and reset returns to auto", async () => {
+  it("draft: reports the pending pick as a wire value, relabels the trigger, and reset returns to untouched (null)", async () => {
     const user = userEvent.setup();
     const onEffortChange = vi.fn();
     const onModelChange = vi.fn();
@@ -395,7 +441,8 @@ describe("ModelEffortSelector", () => {
       await screen.findByRole("menuitem", { name: "Reset to default" }),
     );
     expect(onEffortChange).toHaveBeenLastCalledWith("");
-    expect(onModelChange).toHaveBeenCalledWith("");
+    // Tri-state draft pick: Reset reports null (untouched), not "" (explicit auto).
+    expect(onModelChange).toHaveBeenCalledWith(null);
     await waitFor(() =>
       expect(trigger()).toHaveAttribute("title", "Default model · Auto"),
     );

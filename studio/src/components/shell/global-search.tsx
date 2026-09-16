@@ -23,6 +23,8 @@ import {
   useAgentSessions,
 } from "@/features/agent";
 import { useAgentSkills } from "@/features/agent/hooks/use-agent-skills";
+import { useShortcutBindings } from "@/lib/shortcuts/keymap";
+import { keycaps } from "@/lib/shortcuts/registry";
 import { useShortcut } from "@/lib/shortcuts/use-shortcuts";
 import { useThreadSessionIds } from "@/lib/thread-map";
 import { cn } from "@/lib/utils";
@@ -72,6 +74,12 @@ export function GlobalSearch() {
   useShortcut("shortcuts.open", () => router.push("/workspace/shortcuts"));
   useShortcut("shortcuts.open.mod", () => router.push("/workspace/shortcuts"));
   useShortcut("settings.open", () => router.push("/workspace/settings"));
+  // The trigger's hint shows the EFFECTIVE search chord, so a remapped ⌘K
+  // (Settings → Keyboard) never advertises a key that no longer opens it.
+  const { bindings } = useShortcutBindings();
+  const searchHint = keycaps(
+    bindings.find((b) => b.id === "search.open")?.effectiveCombo ?? "mod+k",
+  );
 
   const results = useMemo(() => provider.query(query), [provider, query]);
   const byCategory = useMemo(() => {
@@ -109,7 +117,15 @@ export function GlobalSearch() {
           Search…
         </span>
         <kbd className="pointer-events-none hidden select-none items-center gap-0.5 rounded border border-border bg-muted px-1.5 font-mono text-[0.65rem] font-medium text-muted-foreground min-[500px]:inline-flex">
-          <span className="text-xs">⌘</span>K
+          {searchHint.map((cap) =>
+            cap.length === 1 && "⌘⇧⌥".includes(cap) ? (
+              <span key={cap} className="text-xs">
+                {cap}
+              </span>
+            ) : (
+              <span key={cap}>{cap}</span>
+            ),
+          )}
         </kbd>
       </button>
 

@@ -5,6 +5,7 @@ import {
   Database,
   FlaskConical,
   GraduationCap,
+  Keyboard,
   Network,
   Palette,
   Route,
@@ -40,6 +41,11 @@ export const SETTINGS_GROUPS: Array<{
         href: "/workspace/settings/appearance",
         label: "Personalize",
         icon: Palette,
+      },
+      {
+        href: "/workspace/settings/keyboard",
+        label: "Keyboard",
+        icon: Keyboard,
       },
       // After Appearance: identity, then how the app looks, then how the chat
       // behaves, then when it interrupts you.

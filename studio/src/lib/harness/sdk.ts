@@ -16,6 +16,7 @@ import {
   type Client,
   connect,
   MecatlError,
+  PromptValidationError,
   ServerError,
 } from "@stacklok-oss/mecatl-sdk";
 
@@ -75,6 +76,10 @@ const codeFraming: Record<string, string> = {
  */
 export function toHarnessError(error: unknown): unknown {
   if (error instanceof HarnessApiError) return error;
+  // A prompt the SDK refused to BUILD (a media part the session's modalities
+  // reject, an oversized part, a bad MIME type) never left the browser: it
+  // keeps its typed `reason` so the composer can say exactly what to fix.
+  if (error instanceof PromptValidationError) return error;
   if (error instanceof ServerError) {
     const code = error.code === "unknown" ? "" : error.code;
     return new HarnessApiError(

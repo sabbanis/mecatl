@@ -36,9 +36,12 @@ export interface AgentSession {
   canDelete?: boolean;
   /** Whether the daemon offers this session's exact id for copying. */
   canCopyId?: boolean;
+  /** Whether the daemon would mint a successor of this chat (fork / clear). */
+  canFork?: boolean;
   renameReason?: string;
   deleteReason?: string;
   copyIdReason?: string;
+  forkReason?: string;
   /**
    * Title provenance off the inventory row (F4): "operator" (hand-set — an
    * auto-rename must never clobber it), "first-prompt" (seeded, replaceable),
@@ -74,6 +77,12 @@ export interface AgentMessage {
    * stripped, the card carries the attribution.
    */
   delivery?: DeliveryNoteInfo;
+  /**
+   * Set on a user-role message the HARNESS authored on the operator's behalf
+   * — the plan-approved proceed prompt this tab sent to start the execution
+   * run. Renders as a muted harness note, never as the user's own words.
+   */
+  synthetic?: boolean;
   attachments?: Attachment[];
   toolCalls?: ToolCallInfo[];
   reasoning?: string;
@@ -406,6 +415,12 @@ type StreamEventBody =
   | { type: "steer"; text: string; messageId: string; parts?: SteerEchoPart[] }
   /** A one-line advisory (tool progress, compaction, unrendered event kinds). */
   | { type: "notice"; text: string }
+  /**
+   * The downstream provider a turn was routed to (EvProviderRoute, ADR 0210):
+   * metadata for the chat status strip's model segment (`model/route`),
+   * never a transcript line. Absent on a prompt-cache hit — never fabricated.
+   */
+  | { type: "provider_route"; label: string }
   /**
    * A TRANSIENT advisory (the no-progress nudge, the pre-flight recover
    * notice): shown on the status line under the transcript until the next

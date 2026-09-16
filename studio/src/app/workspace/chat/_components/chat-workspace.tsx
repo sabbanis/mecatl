@@ -43,13 +43,17 @@ import { useNavReopenSidebar } from "@/hooks/use-nav-reopen-sidebar";
 import { usePanelWidth } from "@/hooks/use-panel-width";
 import { usePrompt } from "@/hooks/use-prompt";
 import {
+  type MediaCapabilities,
+  resolveMediaCapabilities,
+} from "@/lib/attachment-inline";
+import {
   compactHarnessSession,
   forkHarnessSessionToModel,
   forkHarnessSessionToSelection,
   ThreadSourceBusyError,
 } from "@/lib/harness/client";
 import { createHarnessDebugSession } from "@/lib/harness/debug";
-import { useDisabledModels } from "@/lib/model-preferences";
+import { useDefaultModel, useDisabledModels } from "@/lib/model-preferences";
 import {
   type SessionListSide,
   useAgentDisplayName,
@@ -67,8 +71,14 @@ import {
   ChatInput,
   type ComposerModelOption,
 } from "../../_components/chat-input";
+import { resolveDraftModel } from "../../_components/draft-model";
 import { ResizeHandle } from "../../_components/resize-handle";
 import { ChatView } from "./chat-view";
+import {
+  CLEARING_PLACEHOLDER,
+  clearConversationGate,
+  NOTHING_TO_CLEAR,
+} from "./clear-conversation";
 import { DraftGreeting } from "./draft-greeting";
 import {
   AgentList,
@@ -78,6 +88,7 @@ import {
   SidebarGroup,
 } from "./session-sidebar";
 import { useBuiltinSlashCommands } from "./use-builtin-slash-commands";
+import { useClearConversation } from "./use-clear-conversation";
 
 /** Route for a chat, or the base (a new draft) when none is selected. */
 const chatHref = (id?: string) =>
@@ -265,6 +276,7 @@ function DraftView({
   effortSupported,
   onLocalCommand,
   builtinGates,
+  mediaCapabilities,
 }: {
   onSend: (content: string, files?: File[]) => void;
   seed: string | null;
@@ -285,7 +297,8 @@ function DraftView({
   /** Live daemon models for the picker ("" = auto-routed). */
   models: ComposerModelOption[];
   autoModelLabel: string;
-  onModelChange: (id: string) => void;
+  /** Pending model pick ("" = auto row); null = reset to untouched. */
+  onModelChange: (id: string | null) => void;
   /** Pending reasoning-effort tier (wire value; "" = auto), applied when the
    *  first send mints the session. */
   onEffortChange: (wire: string) => void;
@@ -297,6 +310,8 @@ function DraftView({
     command: StudioBuiltinCommand,
   ) => BuiltinOutcome | undefined;
   builtinGates?: BuiltinGates;
+  /** The deployment's media modalities — a draft has no session detail yet. */
+  mediaCapabilities?: MediaCapabilities;
 }) {
   return (
     <div className="flex h-full flex-col">
@@ -354,6 +369,7 @@ function DraftView({
               effortSupported={effortSupported}
               onLocalCommand={onLocalCommand}
               builtinGates={builtinGates}
+              mediaCapabilities={mediaCapabilities}
             />
           </div>
         </div>
@@ -506,9 +522,14 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   // The composer's permission mode. For an open chat this reads/writes the
   // live session (POST /mode); for a draft it is pending local state, read
   // via modeRef when the first send mints the daemon session below.
-  const { mode, modeRef, changeMode } = useSessionMode(
-    isMockSelected ? null : selectedId || null,
-  );
+  // A mode change made mid-run is HELD by the hook (the daemon rejects it)
+  // and lands when the run ends; `busy` mirrors the chat hook's isStreaming,
+  // which is declared below this call, hence the state bridge.
+  const [modeBusy, setModeBusy] = useState(false);
+  const { mode, modeRef, changeMode, refreshMode, pendingMode } =
+    useSessionMode(isMockSelected ? null : selectedId || null, {
+      busy: modeBusy,
+    });
   const getCreateMode = useCallback(() => modeRef.current, [modeRef]);
 
   // The composer's model picker: live daemon models minus the Studio-side
@@ -527,28 +548,68 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
           providerId: m.providerId,
           // The Effort list warns when the picked model reports no reasoning.
           reasoning: m.reasoning,
+          // The picker rows' capability glyph and context-window label.
+          image: m.image,
+          contextLimit: m.contextLimit,
         })),
     [liveModels, disabledModels],
   );
   // "Auto-routed" is only an honest name for the empty pick while the model
   // router is actually on; otherwise the daemon just uses its default model.
   const routingEnabled = Boolean(runtimeStatus?.modelRouter?.enabled);
-  const draftModelRef = useRef("");
-  const handleDraftModelChange = useCallback((id: string) => {
+  // Draft pick: null = untouched (the browser-local Studio default for new
+  // chats applies when the daemon lists it), "" = the auto row on purpose.
+  const draftModelRef = useRef<string | null>(null);
+  const handleDraftModelChange = useCallback((id: string | null) => {
     draftModelRef.current = id;
   }, []);
   const modelOptionsRef = useRef(modelOptions);
   modelOptionsRef.current = modelOptions;
+  const { defaultModel: studioDefault } = useDefaultModel();
+  const studioDefaultRef = useRef(studioDefault);
+  studioDefaultRef.current = studioDefault;
   const getCreateModel = useCallback(() => {
-    const id = draftModelRef.current;
-    if (!id) return null;
-    const option = modelOptionsRef.current.find((m) => m.id === id);
-    // A pick that fell out of the inventory degrades to auto rather than
-    // sending a bare model_id the daemon would reject.
-    return option?.providerId
-      ? { modelId: id, providerId: option.providerId }
+    // The SAME resolver the picker labels itself with: a pick wins, else the
+    // Studio default when the inventory lists it, else the daemon default —
+    // a pick or default that fell out of the inventory never sends a bare
+    // model_id the daemon would reject.
+    const resolved = resolveDraftModel(
+      draftModelRef.current,
+      studioDefaultRef.current,
+      modelOptionsRef.current,
+    );
+    return resolved.id && resolved.providerId
+      ? { modelId: resolved.id, providerId: resolved.providerId }
       : null;
   }, []);
+  // Launch reconciliation (the TUI's saved-model-rejected warning): a Studio
+  // default the LOADED inventory does not list is announced once per default
+  // and left in storage untouched, so it applies again when the model comes
+  // back; new chats meanwhile use the daemon default.
+  const staleDefaultWarnedRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!studioDefault) {
+      staleDefaultWarnedRef.current = null;
+      return;
+    }
+    const key = `${studioDefault.providerId}/${studioDefault.modelId}`;
+    if (!resolveDraftModel(null, studioDefault, modelOptions).staleDefault) {
+      staleDefaultWarnedRef.current = null;
+      return;
+    }
+    if (staleDefaultWarnedRef.current === key) return;
+    staleDefaultWarnedRef.current = key;
+    const hidden = liveModels.some(
+      (m) =>
+        m.id === studioDefault.modelId &&
+        m.providerId === studioDefault.providerId,
+    );
+    toast.warning(
+      hidden
+        ? `Your default model ${key} is hidden in Studio — new chats use the daemon default until you show it again on its provider page`
+        : `Your default model ${key} is not available on this daemon — new chats use the daemon default`,
+    );
+  }, [studioDefault, modelOptions, liveModels]);
   // The composer's pending reasoning-effort tier (wire value; "" = auto, the
   // field is omitted so the operator's --reasoning-effort default applies).
   // Like the model pick: a ref read when the first send mints the session.
@@ -580,6 +641,8 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     fleet,
     contextOccupancy,
     sessionDetail,
+    sessionDetailStatus,
+    providerRoute,
     queuedMessages,
     queueMessage,
     deleteQueued,
@@ -610,7 +673,18 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     sessionState: hookSessionId
       ? sessions.find((s) => s.id === hookSessionId)?.state
       : undefined,
+    // A run terminal may have flipped the daemon-owned mode (a plan approved
+    // → Manual / Accept edits): re-adopt it so the Mode pill never lies.
+    // The resolved model/context window already re-reads via the hook's
+    // GET-session detail on the same terminal.
+    onRunEnded: refreshMode,
   });
+
+  // Bridges the chat hook's isStreaming (declared above) into the mode hook
+  // (declared before it): a run parked on an approval is still busy.
+  useEffect(() => {
+    setModeBusy(isStreaming);
+  }, [isStreaming]);
 
   /** Esc with nothing else open interrupts the in-flight run (close.esc). */
   const handleCancelRun = useCallback(() => {
@@ -626,10 +700,29 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   // fetch. Null against an older daemon — the meter then shows the bare size.
   const resolvedModel = sessionDetail?.resolvedModel ?? null;
 
+  // An AI-debug chat (ADR 0254) keeps its binding: no fork (a model/effort
+  // switch forks), no mode change, no compaction from the UI — the TUI hides
+  // the same controls. Read off the inventory row AND the snapshot, so a
+  // row that has not landed yet cannot expose the controls.
+  const debugChat = Boolean(
+    sessionDetail?.debugTargetSessionId ||
+      sessions.find((s) => s.id === selectedId)?.debugTargetSessionId,
+  );
+
   // Manual compaction (B1.2-B1.4): gated on the daemon's manual_compaction
   // capability (the compatibility document is the live source; the GET-session
   // echo is its per-session sibling once daemons stamp it).
   const compactSupported = serverCapabilities.manual_compaction === true;
+
+  // What the composer may stage as media (the TUI's `attach:` gate): the
+  // open session's resolved modalities off the GET-session detail, else the
+  // deployment's compatibility echo (a draft, or an older daemon). One value
+  // for the live composer and the draft's — a draft has no detail yet.
+  const sessionMedia = sessionDetail?.sessionCapabilities ?? null;
+  const mediaCapabilities = useMemo(
+    () => resolveMediaCapabilities(sessionMedia, serverCapabilities),
+    [sessionMedia, serverCapabilities],
+  );
   const handleCompact = useCallback(async () => {
     const id = selectedIdRef.current;
     if (!id || isMockTourSession(id)) return;
@@ -859,6 +952,23 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     showMockProjects: mockFeatures,
   };
 
+  // Clear conversation (the TUI's /clear handoff): the daemon cancels a
+  // running source itself and mints an empty-history successor with the same
+  // placement/model/mode; the composer blocks until the UI has moved there.
+  // Shared by the header menu, ⌘⇧X and the `/clear` built-in below.
+  const { clearing, clearConversation } = useClearConversation({
+    sessionId: isMockSelected ? null : selectedId || null,
+    onClearQueue: clearQueue,
+    onSessionCleared: async (successorId) => {
+      await refreshSessions();
+      handleSelectSession(successorId);
+    },
+  });
+  const clearGate = clearConversationGate(
+    isMockSelected ? undefined : selectedSession,
+    isStreaming,
+  );
+
   // The composer's Studio built-ins (`/clear /help /session /retry
   // /diagnostics /compact`), dispatched here where the chat state lives. The
   // same dispatcher serves the draft composer: the session-bound built-ins
@@ -879,10 +989,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     onRetry: () => void retryLast(),
     onSend: (content) => void sendMessage(content),
     onClearQueue: clearQueue,
-    onSessionCleared: async (successorId) => {
-      await refreshSessions();
-      handleSelectSession(successorId);
-    },
+    onClearConversation: clearConversation,
     resolvedModel,
     permissionMode: mode,
     // The inventory row's copy_id capability and last write, which the
@@ -894,6 +1001,14 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     },
   });
   useShortcut("chat.details", openSessionDetails);
+  // ⌘⇧X clears from anywhere in the chat; on a draft the hook says there is
+  // nothing to clear, and a row the daemon marks unclearable is refused
+  // the same way the menu item is disabled.
+  useShortcut("chat.clear", () => {
+    if (clearGate.kind === "enabled") void clearConversation();
+    else if (clearGate.kind === "disabled") toast.info(clearGate.reason);
+    else toast.info(NOTHING_TO_CLEAR);
+  });
 
   const dialogs = (
     <>
@@ -914,28 +1029,36 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     async (option: ComposerModelOption | null) => {
       const source = selectedSession;
       if (!source) return;
-      try {
-        const newId = await forkHarnessSessionToModel(
-          source.id,
-          option?.providerId
-            ? { modelId: option.id, providerId: option.providerId }
-            : null,
-          source.title || "",
-        );
-        await refreshSessions();
-        handleSelectSession(newId);
-        toast.success(
-          `Continuing on ${option?.label ?? "the auto-routed model"} in a copy of this chat`,
-        );
-      } catch (caught) {
-        toast.error(
-          caught instanceof ThreadSourceBusyError
-            ? "Wait for the current response to finish, then switch models."
-            : caught instanceof Error
-              ? caught.message
-              : String(caught),
-        );
-      }
+      const attempt = async (): Promise<void> => {
+        try {
+          const newId = await forkHarnessSessionToModel(
+            source.id,
+            option?.providerId
+              ? { modelId: option.id, providerId: option.providerId }
+              : null,
+            source.title || "",
+          );
+          await refreshSessions();
+          handleSelectSession(newId);
+          toast.success(
+            `Continuing on ${option?.label ?? "the auto-routed model"} in a copy of this chat`,
+          );
+        } catch (caught) {
+          // A busy source (412) is remedied by waiting, not retrying; every
+          // other failure offers the TUI's enter-to-retry as a toast action.
+          if (caught instanceof ThreadSourceBusyError) {
+            toast.error(
+              "Wait for the current response to finish, then switch models.",
+            );
+            return;
+          }
+          toast.error(
+            caught instanceof Error ? caught.message : String(caught),
+            { action: { label: "Retry", onClick: () => void attempt() } },
+          );
+        }
+      };
+      await attempt();
     },
     [selectedSession, refreshSessions, handleSelectSession],
   );
@@ -948,26 +1071,34 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     async (wire: string) => {
       const source = selectedSession;
       if (!source) return;
-      try {
-        const newId = await forkHarnessSessionToSelection(
-          source.id,
-          { reasoningEffort: wire },
-          source.title || "",
-        );
-        await refreshSessions();
-        handleSelectSession(newId);
-        toast.success(
-          `Continuing at ${effortLabel(wire)} effort in a copy of this chat`,
-        );
-      } catch (caught) {
-        toast.error(
-          caught instanceof ThreadSourceBusyError
-            ? "Wait for the current response to finish, then switch effort."
-            : caught instanceof Error
-              ? caught.message
-              : String(caught),
-        );
-      }
+      const attempt = async (): Promise<void> => {
+        try {
+          const newId = await forkHarnessSessionToSelection(
+            source.id,
+            { reasoningEffort: wire },
+            source.title || "",
+          );
+          await refreshSessions();
+          handleSelectSession(newId);
+          toast.success(
+            `Continuing at ${effortLabel(wire)} effort in a copy of this chat`,
+          );
+        } catch (caught) {
+          // Same retry shape as the model switch: waiting cures a 412, a
+          // Retry action covers everything else.
+          if (caught instanceof ThreadSourceBusyError) {
+            toast.error(
+              "Wait for the current response to finish, then switch effort.",
+            );
+            return;
+          }
+          toast.error(
+            caught instanceof Error ? caught.message : String(caught),
+            { action: { label: "Retry", onClick: () => void attempt() } },
+          );
+        }
+      };
+      await attempt();
     },
     [selectedSession, refreshSessions, handleSelectSession],
   );
@@ -1038,13 +1169,29 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
           pendingSteers={steerSupported ? pendingSteers : undefined}
           onRetractSteers={steerSupported ? cancelPendingSteers : undefined}
           onCancelRun={handleCancelRun}
-          onCompact={compactSupported ? handleCompact : undefined}
+          onCompact={compactSupported && !debugChat ? handleCompact : undefined}
+          // Clear conversation: the daemon's row verdict gates the item; the
+          // composer is blocked while the successor handoff is in flight.
+          onClear={
+            clearGate.kind === "hidden"
+              ? undefined
+              : () => void clearConversation()
+          }
+          clearDisabledReason={
+            clearGate.kind === "disabled"
+              ? clearGate.reason
+              : clearing
+                ? CLEARING_PLACEHOLDER
+                : undefined
+          }
+          readOnlyPlaceholder={clearing ? CLEARING_PLACEHOLDER : undefined}
           onLocalCommand={handleSlashBuiltin}
           builtinGates={builtinGates}
           // The Agents panel's model; Teams is gated on the daemon's `teams`
           // capability (absent on a daemon that never enabled teams).
           fleet={fleet}
           teamsSupported={serverCapabilities.teams === true}
+          mediaCapabilities={mediaCapabilities}
           onCancelChild={cancelChild}
           contextInfo={
             resolvedModel
@@ -1084,12 +1231,19 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
           onSidePanelOpenChange={
             isMobile ? undefined : handleSidePanelOpenChange
           }
-          mode={mode}
-          onModeChange={changeMode}
+          // The pill shows the user's pick while a mid-run switch is held; the
+          // status strip labels it "(pending)" until the daemon confirms.
+          mode={pendingMode ?? mode}
+          onModeChange={debugChat ? undefined : changeMode}
+          pendingMode={pendingMode}
+          modeSwitchDeferred
+          providerRoute={providerRoute}
+          modelResolution={sessionDetailStatus}
+          debugMcpServers={sessionDetail?.debugMcpServers}
           models={modelOptions}
           autoModelLabel={routingEnabled ? "Auto-routed" : "Default model"}
-          onSwitchModel={handleSwitchModel}
-          onSwitchEffort={handleSwitchEffort}
+          onSwitchModel={debugChat ? undefined : handleSwitchModel}
+          onSwitchEffort={debugChat ? undefined : handleSwitchEffort}
           currentEffort={resolvedModel?.reasoningEffort ?? ""}
           currentModelReasoning={currentModelReasoning}
           effortSupported={effortSupported}
@@ -1114,6 +1268,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
             onModelChange={handleDraftModelChange}
             onEffortChange={handleDraftEffortChange}
             effortSupported={effortSupported}
+            mediaCapabilities={mediaCapabilities}
             onSend={sendMessage}
             seed={draftSeed}
             onSeedConsumed={clearDraftSeed}
@@ -1148,6 +1303,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
             onModelChange={handleDraftModelChange}
             onEffortChange={handleDraftEffortChange}
             effortSupported={effortSupported}
+            mediaCapabilities={mediaCapabilities}
             onSend={sendMessage}
             seed={draftSeed}
             onSeedConsumed={clearDraftSeed}

@@ -21,7 +21,6 @@ import {
   buildDiagnosticsReport,
 } from "@/lib/harness/diagnostics-report";
 import { fetchHarnessServerInfo } from "@/lib/harness/server-info";
-import { clearHarnessSession } from "@/lib/harness/sessions";
 import { HELP_ROUTE } from "./help-menu-item";
 import {
   SessionDetailsDialog,
@@ -44,8 +43,10 @@ export interface BuiltinSlashDeps {
   onRetry: () => void;
   onSend: (content: string) => void;
   onClearQueue: () => void;
-  /** Adopts the ClearSession successor: refresh the list, select it. */
-  onSessionCleared: (successorId: string) => void | Promise<void>;
+  /** Runs the Clear conversation handoff (use-clear-conversation.ts): the
+   *  composer blocks, the daemon cancels a running source itself and mints
+   *  the empty-history successor, the UI moves there once it answered. */
+  onClearConversation: () => void | Promise<void>;
   /** The session's resolved provider/model (GET-session echo), for the
    *  diagnostics report; null with no session or an older daemon. */
   resolvedModel: { providerId: string; modelId: string } | null;
@@ -56,8 +57,6 @@ export interface BuiltinSlashDeps {
   sessionDetails?: SessionDetailsExtras;
 }
 
-export const CLEAR_WHILE_STREAMING =
-  "Stop the run (Esc) before clearing the chat";
 export const RETRY_WHILE_STREAMING =
   "/retry is unavailable while a run is active";
 export const RETRY_NOTHING_FAILED =
@@ -68,7 +67,6 @@ export const COMPACT_WHILE_STREAMING =
 export const COMPACT_NONE_YET = "No session yet — nothing to compact";
 export const DIAGNOSTICS_WHILE_STREAMING =
   "Wait for the run to finish before sending diagnostics";
-export const CLEARED_TOAST = "Started a fresh chat";
 
 const ok: BuiltinOutcome = { ok: true };
 const refuse = (warning: string): BuiltinOutcome => ({ ok: false, warning });
@@ -118,26 +116,16 @@ export function useBuiltinSlashCommands(deps: BuiltinSlashDeps): {
           router.push(HELP_ROUTE);
           return ok;
         case "clear": {
-          if (d.isStreaming) return refuse(CLEAR_WHILE_STREAMING);
           if (!d.sessionId) {
             // A draft has no daemon session: dropping the composer text
             // (the caller's `ok`) and the held queue IS the clear.
             d.onClearQueue();
             return ok;
           }
-          const sourceId = d.sessionId;
-          void (async () => {
-            try {
-              const successorId = await clearHarnessSession(sourceId);
-              d.onClearQueue();
-              await d.onSessionCleared(successorId);
-              toast.success(CLEARED_TOAST);
-            } catch (caught) {
-              toast.error(
-                caught instanceof Error ? caught.message : String(caught),
-              );
-            }
-          })();
+          // Never refused while a run streams: the handoff is the TUI's
+          // cancel-and-settle — the daemon stops the run, then mints the
+          // successor — and the workspace blocks input until it answers.
+          void d.onClearConversation();
           return ok;
         }
         case "session":

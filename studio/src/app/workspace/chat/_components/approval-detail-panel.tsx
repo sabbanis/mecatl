@@ -3,9 +3,11 @@
 import { ShieldAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { ApprovalChoice, ApprovalRequest } from "@/features/agent";
+import { isPlanAsk } from "@/features/agent/plan-ask";
 import { cn } from "@/lib/utils";
 import { askToolName } from "./ask-args";
 import { AskArgsView } from "./ask-args-view";
+import { PlanReviewDetailPanel } from "./plan-review-panel";
 import { SidePanel } from "./side-panel";
 
 const DELETE_WORDS = /\b(delete|remove|drop|revoke|destroy|purge|rm)\b/i;
@@ -31,6 +33,19 @@ export function ApprovalDetailPanel({
   onToggleMaximize: () => void;
   windowControls?: boolean;
 }) {
+  // A PresentPlan ask opens as the full-height plan review instead.
+  if (isPlanAsk(approval.toolName)) {
+    return (
+      <PlanReviewDetailPanel
+        approval={approval}
+        onRespond={onRespond}
+        onClose={onClose}
+        maximized={maximized}
+        onToggleMaximize={onToggleMaximize}
+        windowControls={windowControls}
+      />
+    );
+  }
   const toolName = askToolName(approval);
   const destructive = DELETE_WORDS.test(toolName);
   const child = approval.child === true;

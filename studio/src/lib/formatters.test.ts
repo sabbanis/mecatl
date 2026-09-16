@@ -2,9 +2,26 @@ import { describe, expect, it } from "vitest";
 import {
   describeCron,
   formatBytes,
+  formatContextWindow,
   formatDuration,
   formatDurationMs,
 } from "./formatters";
+
+describe("formatContextWindow", () => {
+  it("renders whole thousands as k and millions with a trimmed decimal", () => {
+    expect(formatContextWindow(200_000)).toBe("200k");
+    expect(formatContextWindow(128_000)).toBe("128k");
+    expect(formatContextWindow(1_048_576)).toBe("1M");
+    expect(formatContextWindow(1_500_000)).toBe("1.5M");
+    expect(formatContextWindow(512)).toBe("512");
+  });
+
+  it("reads an unknown (zero) or invalid window as empty so callers pick their own placeholder", () => {
+    expect(formatContextWindow(0)).toBe("");
+    expect(formatContextWindow(-1)).toBe("");
+    expect(formatContextWindow(Number.NaN)).toBe("");
+  });
+});
 
 describe("formatDuration", () => {
   it("humanises retention spans to their two largest units", () => {

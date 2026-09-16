@@ -752,6 +752,18 @@ export interface HarnessSessionDetail {
   /** Null when the daemon reports no main-bucket usage (older daemon, or a
    *  session that has not run yet) — the client keeps its own visit sum. */
   tokenUsage: HarnessSessionTokenUsage | null;
+  /** The session's RESOLVED input modalities (`session_capabilities`, proto
+   *  SessionSnapshot field 21): what the composer may send as image/audio
+   *  parts. Null on an older daemon — fall back to the compatibility echo. */
+  sessionCapabilities: { image: boolean; audio: boolean } | null;
+  /** On an AI-debug session (ADR 0254): the stored session it diagnoses, off
+   *  the snapshot's relationship — so the chat's DEBUG header does not depend
+   *  on the inventory row alone. Absent on an ordinary session. */
+  debugTargetSessionId?: string;
+  /** On an AI-debug session: the reporting MCP servers bound at create
+   *  (`--debug-mcp`); availability never authorizes publication. Absent when
+   *  none are bound. */
+  debugMcpServers?: string[];
 }
 
 /** The token-usage bucket the main agent's spend is recorded under. */
@@ -764,7 +776,13 @@ export async function fetchHarnessSessionDetail(
   const snapshot = await fetchSnapshot(sessionId, signal);
   const resolved = snapshot.resolvedModel;
   const total = snapshot.tokenUsage?.[MAIN_USAGE_BUCKET]?.total;
+  const debugTarget = snapshot.relationship?.debugTargetSessionId ?? "";
+  const debugServers = (snapshot.debugMcpServers ?? []).filter(Boolean);
   return {
+    // Debug-session facts ride only when set, so an ordinary session's detail
+    // stays the three-field shape older callers and tests compare against.
+    ...(debugTarget ? { debugTargetSessionId: debugTarget } : {}),
+    ...(debugServers.length > 0 ? { debugMcpServers: debugServers } : {}),
     resolvedModel: resolved
       ? {
           providerId: resolved.providerId,
@@ -781,6 +799,12 @@ export async function fetchHarnessSessionDetail(
           cacheReadTokens: Number(total.cacheReadTokens) || 0,
           cacheWriteTokens: Number(total.cacheWriteTokens) || 0,
           reasoningTokens: Number(total.reasoningTokens) || 0,
+        }
+      : null,
+    sessionCapabilities: snapshot.sessionCapabilities
+      ? {
+          image: snapshot.sessionCapabilities.image === true,
+          audio: snapshot.sessionCapabilities.audio === true,
         }
       : null,
   };

@@ -2,7 +2,7 @@
 
 The web client for the mecatl harness: a Next.js app (App Router) serving the
 Atrium workspace — Chats · Scheduled · Skills · Memory · Settings — against a
-`mecated` daemon. See ADR 0345 (module + posture) and ADR 0346 (server-backed
+`mecated` daemon. See ADR 0347 (module + posture) and ADR 0348 (server-backed
 chats).
 
 ## Commands
@@ -44,9 +44,15 @@ the usual reason it fails mysteriously.
   daemon defaults — default/subagent model per provider, reasoning effort,
   context window, prompt caching, base-URL overrides, ToolHive LLM gateway,
   aliases/slots, credentials-file path, plus the durable active-provider
-  choice — as spawn flags via `GET|PUT /daemon-defaults`); policy helpers in
-  `src/lib/controller-security.mjs`, the flag grammars in
-  `src/lib/controller-permissions.mjs` and `src/lib/daemon-defaults.mjs`.
+  choice — as spawn flags via `GET|PUT /daemon-defaults`, and the runtime
+  settings — learning mode/sensitivity as a second CLI-tier
+  `--permission-config` file carrying the FULL merged `learning:` block,
+  the steer opt-out and the soul flags (`--no-steer`, `--no-soul`,
+  `--soul-strict`, `--soul-file`, the one-shot `--approve-soul`) as spawn
+  flags — via `GET|PUT /runtime-settings` + `POST /soul/approve`); policy
+  helpers in `src/lib/controller-security.mjs`, the flag grammars in
+  `src/lib/controller-permissions.mjs`, `src/lib/daemon-defaults.mjs` and
+  `src/lib/runtime-settings.mjs`.
 - `src/features/agent/` — runtime-status provider + the daemon-backed hooks;
   `src/app/workspace/**` — the five surfaces.
 
@@ -226,6 +232,30 @@ Each rule is backed by a test; break the rule and its test names you.
     (`harness/storage.test.ts`, `use-storage-maintenance.test.ts`,
     `use-typed-confirm.test.tsx`, the three `storage-*-card.test.tsx`,
     `sessions-changed.test.ts`, the Playwright storage test.)
+19. **The chat status strip is mecatui's header bar, and it never shows an
+    address.** Under every chat's title row, `chat-status-strip.tsx`
+    renders session handle · effective model · mode · server with the
+    daemon-reported posture badge. The handle is the documented BARE
+    12-column literal (`src/lib/protocol/session-handle.ts` mirrors
+    `client.SessionHandle` byte for byte; no `#`); a click copies the full
+    id. The model is the snapshot's RESOLVED model (display name from the
+    picker list, `/route` from `provider.route` — translated to
+    `provider_route`, no longer silent — and the effective effort);
+    "resolving model…" shows only while the detail read is pending on a
+    live chat or the connection is connecting, and settles to the
+    configured id or "model unavailable" (`use-agent-chat`'s
+    `sessionDetailStatus`). A mode change made mid-run is HELD by
+    `useSessionMode({ busy })` as `pendingMode` — the strip reads
+    "(pending)", the pill stays enabled (`modeSwitchDeferred`) — and lands
+    once the run ends; a run parked on an approval is still busy. The
+    server segment is managed/external + deployment label only: the
+    same-origin proxy hides the daemon URL (rule 3), so no host is ever
+    rendered. On an AI-debug chat the strip turns amber with `DEBUG target
+    <handle>` and the TUI's durable PRIVACY line (+ bound reporting
+    servers), and chat-workspace withholds mode/model/effort/compact so no
+    control can fork or rebind the binding. (`session-handle.test.ts`,
+    `chat-status-strip.test.tsx`, `use-session-mode.test.ts`,
+    `events.test.ts` provider.route, the Playwright status-strip test.)
 
 ## Gotchas
 

@@ -51,6 +51,9 @@ const session = {
     view_transcript: true,
     // The `/session` dialog's Copy button is gated on this (omitted = denied).
     copy_id: true,
+    // The successor offer: gates the header menu's Clear conversation (and
+    // the fork-shaped model/effort switch). An idle main chat has it.
+    fork: true,
     reasons: {},
   },
 };
@@ -427,11 +430,54 @@ const promptFrames = [
     turn: 1,
     text: "from the fixture.",
   },
+  // One foreground subagent's lifecycle inside the turn (proto `Subagent`,
+  // snake_case protojson; int64 duration_ms as a string): start → one tool
+  // → end. It feeds the inline delegation card, the fleet chip beside the
+  // context meter, and the Agents panel.
+  {
+    type: "subagent.start",
+    run_id: runID,
+    seq: "4",
+    turn: 1,
+    subagent: {
+      parent_call_id: "call-fixture-1",
+      child_id: "subagent-fixture-1",
+      goal: "Scan the scheduler tests",
+      background: false,
+    },
+  },
+  {
+    type: "subagent.tool",
+    run_id: runID,
+    seq: "5",
+    turn: 1,
+    subagent: {
+      parent_call_id: "call-fixture-1",
+      child_id: "subagent-fixture-1",
+      tool_name: "Grep",
+      tool_count: 1,
+      inner_kind: "tool.call",
+    },
+  },
+  {
+    type: "subagent.end",
+    run_id: runID,
+    seq: "6",
+    turn: 1,
+    subagent: {
+      parent_call_id: "call-fixture-1",
+      child_id: "subagent-fixture-1",
+      stop: "end_turn",
+      tool_count: 1,
+      duration_ms: "850",
+      usage: { input_tokens: 4, output_tokens: 2 },
+    },
+  },
   // The per-turn stat frame (tokens + elapsed model-call time).
   {
     type: "turn.end",
     run_id: runID,
-    seq: "4",
+    seq: "7",
     turn: 1,
     turn_end: {
       duration_ms: "4100",
@@ -441,7 +487,7 @@ const promptFrames = [
   {
     type: "result",
     run_id: runID,
-    seq: "5",
+    seq: "8",
     turn: 1,
     text: "Streaming from the fixture.",
     result: {

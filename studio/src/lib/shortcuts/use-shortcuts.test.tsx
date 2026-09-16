@@ -1,5 +1,7 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { memoryStorage } from "@/test/memory-storage";
+import { KEYMAP_STORAGE_KEY, writeOverrides } from "./keymap";
 import { ShortcutsProvider, useShortcut } from "./use-shortcuts";
 
 /** A component that registers one shortcut handler, like ChatView does. */
@@ -160,5 +162,60 @@ describe("ShortcutsProvider dispatch while typing", () => {
     );
     expect(esc).not.toHaveBeenCalled();
     expect(search).not.toHaveBeenCalled();
+  });
+});
+
+describe("ShortcutsProvider with a user keymap (Settings → Keyboard)", () => {
+  it("dispatches the remapped chord and no longer the registry default", () => {
+    vi.stubGlobal("localStorage", memoryStorage());
+    window.localStorage.setItem(
+      KEYMAP_STORAGE_KEY,
+      JSON.stringify({ "chat.new": "mod+shift+k" }),
+    );
+    const newChat = vi.fn();
+    mount({ "chat.new": newChat });
+    (document.activeElement as HTMLElement | null)?.blur();
+
+    fireEvent.keyDown(document.body, {
+      key: "K",
+      metaKey: true,
+      shiftKey: true,
+    });
+    expect(newChat).toHaveBeenCalledTimes(1);
+
+    fireEvent.keyDown(document.body, {
+      key: "O",
+      metaKey: true,
+      shiftKey: true,
+    });
+    expect(newChat).toHaveBeenCalledTimes(1);
+  });
+
+  it("picks up a keymap change made while mounted", () => {
+    vi.stubGlobal("localStorage", memoryStorage());
+    const newChat = vi.fn();
+    mount({ "chat.new": newChat });
+    (document.activeElement as HTMLElement | null)?.blur();
+
+    fireEvent.keyDown(document.body, {
+      key: "O",
+      metaKey: true,
+      shiftKey: true,
+    });
+    expect(newChat).toHaveBeenCalledTimes(1);
+
+    act(() => writeOverrides({ "chat.new": "mod+shift+k" }));
+    fireEvent.keyDown(document.body, {
+      key: "K",
+      metaKey: true,
+      shiftKey: true,
+    });
+    expect(newChat).toHaveBeenCalledTimes(2);
+    fireEvent.keyDown(document.body, {
+      key: "O",
+      metaKey: true,
+      shiftKey: true,
+    });
+    expect(newChat).toHaveBeenCalledTimes(2);
   });
 });

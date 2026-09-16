@@ -40,6 +40,22 @@ export function formatTokens(n: number): string {
 }
 
 /**
+ * A model's context window as the conventional round label ("128k", "200k",
+ * "1M", "1.5M") — whole thousands, unlike `formatTokens`, which keeps one
+ * decimal for live usage counts. Zero/unknown (the daemon reports 0 when it
+ * does not know the window) reads "" so a caller can fall back to its own
+ * placeholder ("—" in a table, nothing in a picker row).
+ */
+export function formatContextWindow(tokens: number): string {
+  if (!Number.isFinite(tokens) || tokens <= 0) return "";
+  if (tokens >= 1_000_000) {
+    return `${(tokens / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+  }
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k`;
+  return String(Math.round(tokens));
+}
+
+/**
  * An elapsed millisecond count, compact: under one second verbatim in ms
  * ("840ms"), otherwise seconds to one decimal with a redundant ".0" trimmed
  * ("4.1s", "2s"). Mirrors the TUI footer's formatDuration; negatives and

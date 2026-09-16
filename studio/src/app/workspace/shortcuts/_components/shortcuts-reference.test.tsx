@@ -1,6 +1,8 @@
 import { render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { KEYMAP_STORAGE_KEY } from "@/lib/shortcuts/keymap";
 import { describeShortcut, SHORTCUTS } from "@/lib/shortcuts/registry";
+import { memoryStorage } from "@/test/memory-storage";
 import { ShortcutsReference } from "./shortcuts-reference";
 
 /**
@@ -126,5 +128,35 @@ describe("ShortcutsReference", () => {
       screen.getByText("Checking which features the daemon enables…"),
     ).toBeInTheDocument();
     expect(screen.queryByText("Steer")).toBeNull();
+  });
+
+  it("links to Settings → Keyboard for remapping", () => {
+    render(<ShortcutsReference />);
+    expect(
+      screen.getByRole("link", { name: "Change shortcuts →" }),
+    ).toHaveAttribute("href", "/workspace/settings/keyboard");
+  });
+
+  it("renders a remapped key's own keycaps with a custom tag; untouched rows stay plain", () => {
+    vi.stubGlobal("localStorage", memoryStorage());
+    window.localStorage.setItem(
+      KEYMAP_STORAGE_KEY,
+      JSON.stringify({ "chat.new": "mod+shift+k" }),
+    );
+    render(<ShortcutsReference />);
+
+    const newChat = screen.getByText("New chat").closest("li");
+    if (!newChat) throw new Error("no New chat row");
+    expect(within(newChat).getByText("custom")).toBeInTheDocument();
+    expect(
+      [...newChat.querySelectorAll("kbd")].map((k) => k.textContent),
+    ).toEqual(["⌘", "⇧", "K"]);
+
+    const search = screen.getByText("Open search").closest("li");
+    if (!search) throw new Error("no Open search row");
+    expect(within(search).queryByText("custom")).toBeNull();
+    expect(
+      [...search.querySelectorAll("kbd")].map((k) => k.textContent),
+    ).toEqual(["⌘", "K"]);
   });
 });

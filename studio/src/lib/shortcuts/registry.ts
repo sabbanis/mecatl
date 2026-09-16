@@ -25,6 +25,14 @@ export interface ShortcutDef {
    * everywhere else. Not user-rebindable.
    */
   readonly fixed?: true;
+  /**
+   * Dispatched by the global listener (a component registers a handler) but
+   * NOT user-rebindable: the literal key is load-bearing. `close.esc` is the
+   * one case — Esc's layering under dialogs/menus and its while-typing
+   * exemption both depend on it being Esc. Locked rows still take part in
+   * collision checks (they are live); `fixed` rows never do.
+   */
+  readonly locked?: true;
 }
 
 export const SHORTCUTS: readonly ShortcutDef[] = [
@@ -68,6 +76,7 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     description:
       "Clear the selection, close the side panel — or stop the running turn",
     group: "General",
+    locked: true,
   },
   // The Agents panel (the TUI's f6 overlay). ⌘⇧L is preventable in Chrome,
   // Firefox and Safari (Safari's own ⇧⌘L "Show Sidebar" yields to a page
@@ -117,6 +126,17 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     id: "chat.details",
     combo: "mod+i",
     description: "Session details (exact ID, state, model, placement)",
+    group: "Chats",
+  },
+  // Clear conversation (the TUI's /clear): an empty-history successor with
+  // the same settings. ⌘⇧X / Ctrl+Shift+X is unbound in Chrome, Safari and
+  // Edge; Firefox's Ctrl+Shift+X only toggles text direction inside a field
+  // and yields to a page handler. NOT ⌘⇧L (the Agents panel) and not ⌘⇧K
+  // (Firefox's Web Console on Windows/Linux cannot be intercepted).
+  {
+    id: "chat.clear",
+    combo: "mod+shift+x",
+    description: "Clear conversation — a fresh chat with the same settings",
     group: "Chats",
   },
 
@@ -228,7 +248,7 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
   {
     id: "composer.mention",
     combo: "@",
-    description: "Mention an agent",
+    description: "Mention an agent, or attach a file",
     group: "Composer",
     fixed: true,
   },
@@ -265,13 +285,25 @@ const CAP_LABEL: Record<string, string> = {
   esc: "Esc",
   pageup: "PgUp",
   pagedown: "PgDn",
+  // Keys only a user-recorded combo (Settings → Keyboard) can carry.
+  space: "Space",
+  tab: "Tab",
+  home: "Home",
+  end: "End",
+  delete: "Del",
+  backspace: "⌫",
+  insert: "Ins",
 };
 
 /** Display keycaps for a combo, e.g. "mod+k" → ["⌘", "K"]. */
 export function keycaps(combo: string): string[] {
   return combo
     .split("+")
-    .map((p) => CAP_LABEL[p] ?? (p.length === 1 ? p.toUpperCase() : p));
+    .map(
+      (p) =>
+        CAP_LABEL[p] ??
+        (p.length === 1 || /^f\d{1,2}$/.test(p) ? p.toUpperCase() : p),
+    );
 }
 
 const KEY_ALIAS: Record<string, string> = {
@@ -280,6 +312,8 @@ const KEY_ALIAS: Record<string, string> = {
   left: "arrowleft",
   right: "arrowright",
   esc: "escape",
+  // `KeyboardEvent.key` reports the space bar as a literal " ".
+  space: " ",
 };
 
 /** True when a live key event matches a combo. `mod` = ⌘ or Ctrl. */
@@ -292,14 +326,18 @@ export function matchCombo(combo: string, e: KeyboardEvent): boolean {
   const hasMod = e.metaKey || e.ctrlKey;
   if (wantMod !== hasMod) return false;
   if (wantAlt !== e.altKey) return false;
-  // Only enforce shift when the combo asks for it — symbol keys like "?" carry
-  // their own implicit shift in `e.key`, and a capital letter still matches
-  // its lower-case combo. Named keys (`pageup`, `enter`, the arrows…) carry
-  // no such implicit shift, so an unrequested shift there is a DIFFERENT
-  // chord: without this, ⇧PgUp would satisfy `pageup` and — the dispatcher
-  // firing the first match — `shift+pageup` could never fire.
+  // Only enforce shift when the combo asks for it on SYMBOL keys — "?" carries
+  // its own implicit shift in `e.key` (and layouts differ on where it lives).
+  // A Caps Lock capital still matches its lower-case combo (no shiftKey). But
+  // a HELD shift on a letter or a named key (`pageup`, `enter`, the arrows…)
+  // is a DIFFERENT chord: without this, ⇧PgUp would satisfy `pageup` and —
+  // the dispatcher firing the first match — `shift+pageup` could never fire;
+  // likewise ⌘⇧K would satisfy `mod+k`, so a user could never bind both
+  // (Settings → Keyboard treats combos as colliding only when equal).
   if (wantShift && !e.shiftKey) return false;
-  if (!wantShift && e.shiftKey && key.length > 1) return false;
+  if (!wantShift && e.shiftKey && (key.length > 1 || /\p{L}/u.test(key))) {
+    return false;
+  }
   return e.key.toLowerCase() === (KEY_ALIAS[key] ?? key);
 }
 

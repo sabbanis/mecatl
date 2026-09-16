@@ -228,6 +228,13 @@ test("external mode injects daemon auth server-side and disables local controls"
     // external owns them, read included.
     ["diagnostics-options", "GET"],
     ["diagnostics-options", "POST"],
+    // The runtime settings (learning mode/sensitivity, the steer opt-out,
+    // the soul flags) are spawn flags + a CLI-tier file of the MANAGED
+    // daemon, and the soul baseline approval is one of its spawns: external
+    // owns them all, read included.
+    ["runtime-settings", "GET"],
+    ["runtime-settings", "PUT"],
+    ["soul/approve", "POST"],
   ]) {
     const refused = await fetch(`${studioBaseURL}/api/mecatl-control/${path}`, {
       method,
@@ -364,6 +371,12 @@ test("controller policy rejects CSRF and DNS-rebinding requests", () => {
     // or download it.
     ["GET", "/logs"],
     ["GET", "/logs/download"],
+    // The runtime settings name files on this machine (the soul path and
+    // the picker's candidates) and the PUT/approve restart the daemon:
+    // another loopback-origin page must not read or write them.
+    ["GET", "/runtime-settings"],
+    ["PUT", "/runtime-settings"],
+    ["POST", "/soul/approve"],
   ]) {
     assert.equal(
       requestIsAllowed(
