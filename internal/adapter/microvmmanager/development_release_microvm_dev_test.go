@@ -120,7 +120,7 @@ func TestDevelopmentReleaseInputsRemainBoundAfterPathReplacement(t *testing.T) {
 	writeOwnerOnly(t, key, []byte("replacement key"))
 
 	ops := &DefaultOperations{GOOS: "linux", GOARCH: "amd64"}
-	manifest, err := ops.Download(context.Background(), request.Release, filepath.Join(root, "download"))
+	manifest, err := ops.Download(context.Background(), request.Release, root, filepath.Join(root, "download"))
 	if err != nil {
 		t.Fatalf("download bound bundle: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestDevelopmentReleaseDownloadNeverUsesHTTP(t *testing.T) {
 	transport := &rejectHTTPTransport{}
 	ops := &DefaultOperations{HTTPClient: &http.Client{Transport: transport}, GOOS: "linux", GOARCH: "amd64"}
 	release := Release{bundlePath: bundle, SHA256: fileDigest(t, bundle)}
-	manifest, err := ops.Download(context.Background(), release, filepath.Join(root, "download"))
+	manifest, err := ops.Download(context.Background(), release, root, filepath.Join(root, "download"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +267,7 @@ func TestPreparedDevelopmentReleaseBundleIsImportable(t *testing.T) {
 	}
 	ops := &DefaultOperations{GOOS: platformGOOS, GOARCH: platformGOARCH}
 	root := t.TempDir()
-	manifest, err := ops.Download(context.Background(), request.Release, filepath.Join(root, "download"))
+	manifest, err := ops.Download(context.Background(), request.Release, root, filepath.Join(root, "download"))
 	if err != nil {
 		t.Fatalf("import prepared development bundle: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestPreparedDevelopmentReleaseBundleIsImportable(t *testing.T) {
 	if err := ops.Verify(context.Background(), request.Release, manifest); err != nil {
 		t.Fatalf("verify prepared development bundle: %v", err)
 	}
-	installed, err := ops.Install(context.Background(), manifest, filepath.Join(root, "installed", "verified"))
+	installed, err := ops.Install(context.Background(), manifest, root, filepath.Join(root, "installed", "verified"))
 	if err != nil {
 		t.Fatalf("install prepared development bundle: %v", err)
 	}

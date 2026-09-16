@@ -243,8 +243,9 @@ func TestMicroVMUserBootstrap_Scenario7_DownloadVerifiesBeforeExtraction(t *test
 	defer srv.Close()
 	digest := fmt.Sprintf("%x", sha256.Sum256(bundle))
 	ops := &DefaultOperations{HTTPClient: srv.Client(), GOOS: "linux", GOARCH: "amd64"}
-	dest := filepath.Join(t.TempDir(), "download")
-	manifest, err := ops.Download(context.Background(), Release{URL: srv.URL, SHA256: digest}, dest)
+	destRoot := t.TempDir()
+	dest := filepath.Join(destRoot, "download")
+	manifest, err := ops.Download(context.Background(), Release{URL: srv.URL, SHA256: digest}, destRoot, dest)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -255,8 +256,9 @@ func TestMicroVMUserBootstrap_Scenario7_DownloadVerifiesBeforeExtraction(t *test
 		t.Fatalf("manifest was not safely extracted: %s", manifest)
 	}
 
-	badDest := filepath.Join(t.TempDir(), "bad")
-	if _, err := ops.Download(context.Background(), Release{URL: srv.URL, SHA256: strings.Repeat("0", 64)}, badDest); err == nil {
+	badRoot := t.TempDir()
+	badDest := filepath.Join(badRoot, "bad")
+	if _, err := ops.Download(context.Background(), Release{URL: srv.URL, SHA256: strings.Repeat("0", 64)}, badRoot, badDest); err == nil {
 		t.Fatal("digest mismatch was accepted")
 	}
 	if _, err := os.Stat(filepath.Join(badDest, "unpacked")); !os.IsNotExist(err) {
@@ -287,7 +289,7 @@ func TestMicroVMFirstRunRepair_InstallerComesFromVerifiedBundle(t *testing.T) {
 	if err := os.MkdirAll(installRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	installed, err := (&DefaultOperations{}).Install(context.Background(), manifest, installRoot)
+	installed, err := (&DefaultOperations{}).Install(context.Background(), manifest, root, installRoot)
 	if err != nil {
 		t.Fatalf("Install with verified bundled installer: %v", err)
 	}
@@ -313,7 +315,8 @@ func TestMicroVMUserBootstrap_Scenario8_BundleSymlinkIsRejected(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(bundle) }))
 	defer srv.Close()
 	ops := &DefaultOperations{HTTPClient: srv.Client(), GOOS: "linux", GOARCH: "amd64"}
-	_, err := ops.Download(context.Background(), Release{URL: srv.URL, SHA256: fmt.Sprintf("%x", sha256.Sum256(bundle))}, filepath.Join(t.TempDir(), "download"))
+	downloadRoot := t.TempDir()
+	_, err := ops.Download(context.Background(), Release{URL: srv.URL, SHA256: fmt.Sprintf("%x", sha256.Sum256(bundle))}, downloadRoot, filepath.Join(downloadRoot, "download"))
 	if err == nil || !strings.Contains(err.Error(), "symlink") {
 		t.Fatalf("error = %v, want symlink refusal", err)
 	}
@@ -339,7 +342,7 @@ func TestMicroVMUsabilityRepair_Scenario2_InstallerComesFromVerifiedBundle(t *te
 
 	installRoot := filepath.Join(root, "install", "artifacts")
 	ops := &DefaultOperations{GOOS: "linux", GOARCH: "amd64"}
-	if _, err := ops.Install(context.Background(), manifest, installRoot); err != nil {
+	if _, err := ops.Install(context.Background(), manifest, root, installRoot); err != nil {
 		t.Fatalf("install with packaged bundle member: %v", err)
 	}
 	if _, err := os.Stat(packagedMarker); err != nil {
