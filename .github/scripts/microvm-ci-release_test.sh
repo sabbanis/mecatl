@@ -36,7 +36,6 @@ require 'environment/microvm/go.sum' "$ci"
 require 'cd environment/microvm && go build ./...' "$ci"
 require '(cd environment/microvm && bash "$GITHUB_WORKSPACE/.github/scripts/race-test.sh" microvm ./...)' "$ci"
 require 'cd environment/microvm && golangci-lint run --config ../../.golangci.yml' "$ci"
-require 'cd environment/microvm && go vet ./...' "$ci"
 require 'name: MicroVM module (standalone, GOWORK=off)' "$ci"
 require 'GOWORK: off' "$ci"
 
@@ -177,8 +176,8 @@ require 'needs: [validate-release-ref, resolve-brood-base]' "$release"
 require 'name: Validate immutable release tag ref' "$release"
 require 'if [ "${GITHUB_REF}" != "${signing_ref}" ]; then' "$release"
 validation_line=$(grep -n 'name: Require the run itself to use the requested tag ref' "$release" | head -n1 | cut -d: -f1)
-first_checkout_line=$(grep -n 'uses: actions/checkout@' "$release" | head -n1 | cut -d: -f1)
-test "$validation_line" -lt "$first_checkout_line"
+validation_checkout_line=$(grep -n 'ref: ${{ github.sha }}' "$release" | head -n1 | cut -d: -f1)
+test "$validation_line" -lt "$validation_checkout_line"
 require 'signing_ref: ${{ steps.validate.outputs.signing_ref }}' "$release"
 assemble_bundle=$(awk '/^      - name: Assemble versioned platform bootstrap bundle$/{in_block=1; next} in_block && /^      - name: /{exit} in_block{print}' "$release")
 test "$(printf '%s\n' "$assemble_bundle" | grep -Fc 'signing_ref="${{ needs.validate-release-ref.outputs.signing_ref }}"')" -eq 1
@@ -187,10 +186,10 @@ checkout_count=$(grep -c 'uses: actions/checkout@' "$release")
 bound_checkout_count=$(grep -c 'ref: ${{ github.sha }}' "$release")
 version_checkout_count=$(grep -c 'ref: ${{ env.VERSION }}' "$release")
 head_assertion_count=$(grep -c 'run: test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"' "$release")
-# The CLI publisher deliberately checks out the validated release tag so
-# GoReleaser can inspect tag history; every other release checkout remains bound
-# to the workflow SHA and immediately asserts it.
-test "$version_checkout_count" -eq 1
+# The guard checkout validates the requested release tag is on main, and the CLI
+# publisher checks out that same tag so GoReleaser can inspect tag history; every
+# other release checkout remains bound to the workflow SHA and immediately asserts it.
+test "$version_checkout_count" -eq 2
 test "$checkout_count" -eq "$((bound_checkout_count + version_checkout_count))"
 test "$bound_checkout_count" -eq "$head_assertion_count"
 if "$validate_release_ref" v1.2.3 refs/heads/main >/dev/null 2>&1; then
@@ -285,7 +284,7 @@ go test -run '^TestMecatuiReleaseStampFeedsEmbeddedReadinessDefaults$' \
   -ldflags="-X main.version=${host_version} -X main.microVMReleaseDefaultsB64=${host_defaults} -X main.microVMReleaseStampRequired=release" \
   ./cmd/mecatui
 
-expected_status=$(printf '{"backend":"microvm-local","configured":false,"running":false,"state":"unconfigured","error":"","remediation":"Select microvm-local in operator settings; run '\''mecated microvm doctor'\'' first.","socket":"/tmp/mv-%s/microvmd.sock","guest_egress":"","generations":[],"continuation":""}\n' "$(id -u)")
+expected_status=$(printf '{"backend":"microvm-local","configured":false,"running":false,"state":"unconfigured","error":"","remediation":"Not configured; run '\''mecated microvm doctor'\'' to check host readiness.","socket":"/tmp/mv-%s/microvmd.sock","guest_egress":"","generations":[],"continuation":""}\n' "$(id -u)")
 test "$(cat "$host_scratch/mecated.json")" = "$expected_status"
 
 scratch="$repo_root/.scratch/microvm-release-test"

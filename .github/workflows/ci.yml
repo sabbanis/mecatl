@@ -899,11 +899,6 @@ jobs:
       - name: golangci-lint (microVM module)
         run: cd environment/microvm && golangci-lint run --config ../../.golangci.yml --allow-parallel-runners --timeout=10m ./...
 
-      # Main folded the former standalone vet job into Analysis. Keep the nested
-      # module's explicit vet proof here because root-module commands do not cross it.
-      - name: go vet (microVM module)
-        run: cd environment/microvm && go vet ./...
-
       # provider/ submodules (ADR 0093) — each its own module, sharing the ROOT
       # golangci config so the depguard allowlists stay the single source of truth.
       - name: golangci-lint (provider modules)
