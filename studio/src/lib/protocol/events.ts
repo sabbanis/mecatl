@@ -11,13 +11,21 @@ import type {
   ParallelEventPayload,
   Event as SdkEvent,
   SubagentEventPayload,
+  TeamEventPayload,
+  TeamFindingEventPayload,
+  TeamMemberDispositionEventPayload,
   TeamMemberSpecEventPayload,
+  TeamTaskEventPayload,
 } from "@stacklok-oss/mecatl-sdk";
 import type {
+  DelegationStopReason,
   RetryDisposition,
   SteerEchoPart,
   StreamEvent,
   StreamProgress,
+  TeamFindingInfo,
+  TeamMemberDispositionInfo,
+  TeamTaskInfo,
 } from "@/features/agent/types";
 import { fileFromToolCall } from "@/lib/file-meta";
 
@@ -128,26 +136,89 @@ const usageTokens = (usage: EventUsage | undefined) =>
     : { inputTokens: undefined, outputTokens: undefined };
 
 /**
+ * A protobuf Timestamp (bigint seconds + nanos) as epoch milliseconds. The
+ * zero timestamp is protobuf's "unset" and reads as absent, never as 1970.
+ */
+const timestampMs = (
+  value: { seconds: bigint; nanos: number } | undefined,
+): number | undefined => {
+  if (!value) return undefined;
+  const ms = Number(value.seconds) * 1000 + Math.floor(value.nanos / 1e6);
+  return Number.isFinite(ms) && ms > 0 ? ms : undefined;
+};
+
+// proto TEAM_MEMBER_STOP_REASON_*: why the supervisor benched a member.
+// UNSPECIFIED (0) and any unrecognized value read as "" — not stopped for a
+// named reason — never as an invented one.
+const TEAM_STOP_REASON: Record<number, DelegationStopReason> = {
+  1: "error",
+  2: "cancelled",
+  3: "budget",
+};
+
+/**
+ * The bounded child-activity preview fields shared by subagent.tool, a
+ * parallel branch_tool, and team.member. `detail`/`text` are daemon-clamped,
+ * model-influenced previews: consumers render them as plain text only.
+ */
+const activityPreview = (
+  source: Pick<
+    SubagentEventPayload | ParallelEventPayload | TeamEventPayload,
+    "innerKind" | "isError" | "detail" | "text" | "toolName"
+  >,
+) => ({
+  toolName: source.toolName || undefined,
+  innerKind: source.innerKind || undefined,
+  isError: source.isError || undefined,
+  detail: source.detail || undefined,
+  text: source.text || undefined,
+});
+
+const teamTasks = (
+  tasks: readonly TeamTaskEventPayload[] | undefined,
+): TeamTaskInfo[] =>
+  (tasks ?? []).map((task) => ({
+    id: task.id,
+    state: task.state,
+    assignee: task.assignee,
+    deps: [...task.deps],
+    description: task.description,
+  }));
+
+const teamFindings = (
+  findings: readonly TeamFindingEventPayload[] | undefined,
+): TeamFindingInfo[] =>
+  (findings ?? []).map((finding) => ({
+    member: finding.member,
+    body: finding.body,
+  }));
+
+const teamDispositions = (
+  dispositions: readonly TeamMemberDispositionEventPayload[] | undefined,
+): TeamMemberDispositionInfo[] =>
+  (dispositions ?? []).map((disposition) => ({
+    name: disposition.name,
+    stopped: disposition.stopped,
+    errorRounds: disposition.errorRounds,
+    reason: TEAM_STOP_REASON[disposition.reason] ?? "",
+  }));
+
+/**
  * Event kinds that deliberately have no visual surface in Studio: run
- * lifecycle markers, redacted child-activity detail beyond the start badge,
- * and kinds that only ever appear in durable-log replays. The other two
- * log-only kinds (`user_prompt`, `approval`) translate below — the durable
- * watch (ADR 0250) replays them and they must render, not vanish.
+ * lifecycle markers, schedule lifecycle, and kinds that only ever appear in
+ * durable-log replays. The other two log-only kinds (`user_prompt`,
+ * `approval`) translate below — the durable watch (ADR 0250) replays them
+ * and they must render, not vanish. Every delegation kind (subagent.*,
+ * parallel.*, team.*) translates below too — the cards and the Agents panel
+ * depend on all of them.
  */
 const SILENT_EVENT_KINDS = new Set([
   "session.init",
   "turn.start",
-  "turn.end",
   "hook",
   // The pre-compaction conversation archive: audit history for the durable
   // log, deliberately not re-rendered into the live transcript.
   "compaction.archive",
-  "team.member",
-  "team.tasks",
-  "team.findings",
-  "team.end",
-  "parallel.start",
-  "parallel.end",
   "schedule.fired",
   "schedule.skipped",
   "schedule.failed",
@@ -265,23 +336,28 @@ function translateEventBody(event: SdkEvent, sessionId: string): StreamEvent[] {
           label: subagent.goal || "subagent",
           detail: routingDetail(subagent),
           childId: subagent.childId || undefined,
+          parentCallId: subagent.parentCallId || undefined,
+          model: subagent.model || undefined,
           background: subagent.background || undefined,
           routingReason: subagent.routingReason || undefined,
         },
       ];
     }
     case "subagent.tool": {
-      // Live child activity (D1): cumulative counters for the delegation
-      // card. Only redacted metadata crosses — never child content.
+      // Live child activity (D1): cumulative counters plus the bounded
+      // activity preview (inner kind, tool name, clamped arg/result/message
+      // preview) for the card's trace. Redacted metadata — never child
+      // content beyond the daemon-clamped preview.
       const subagent = event.payload;
       if (!subagent.childId) return [];
       return [
         {
           type: "delegation_progress",
           childId: subagent.childId,
+          parentCallId: subagent.parentCallId || undefined,
           toolCount: subagent.toolCount,
           ...usageTokens(subagent.usage),
-          toolName: subagent.toolName || undefined,
+          ...activityPreview(subagent),
         },
       ];
     }
@@ -294,6 +370,7 @@ function translateEventBody(event: SdkEvent, sessionId: string): StreamEvent[] {
         {
           type: "delegation_end",
           childId: subagent.childId,
+          parentCallId: subagent.parentCallId || undefined,
           stop: subagent.stop,
           toolCount: subagent.toolCount,
           ...usageTokens(subagent.usage),
@@ -302,24 +379,197 @@ function translateEventBody(event: SdkEvent, sessionId: string): StreamEvent[] {
         },
       ];
     }
-    case "team.start":
-      return event.payload.roster.map((member) => ({
+    case "team.start": {
+      // One card per roster member, LEAD FIRST (a stable sort keeps the
+      // daemon's order among peers), carrying the handles the later
+      // team.member / team.end frames key on (team id, call id, member name).
+      const team = event.payload;
+      const roster = [...team.roster].sort(
+        (a, b) => Number(b.lead) - Number(a.lead),
+      );
+      return roster.map((member) => ({
         type: "delegation" as const,
         kind: "team" as const,
         label: [member.name, member.role && `(${member.role})`]
           .filter(Boolean)
           .join(" "),
         detail: routingDetail(member),
+        teamId: team.teamId || undefined,
+        parentCallId: team.parentCallId || undefined,
+        memberName: member.name,
+        lead: member.lead || undefined,
+        mutating: member.mutating || undefined,
+        routingReason: member.routingReason || undefined,
+        model: member.model || undefined,
       }));
-    case "parallel.branch": {
+    }
+    case "parallel.start": {
+      // The fan-out group header: join strategy + branch tally.
       const parallel = event.payload;
-      if (parallel.kind !== "branch_start") return [];
       return [
         {
-          type: "delegation",
-          kind: "parallel",
-          label: parallel.branchLabel || `branch ${parallel.branchIndex + 1}`,
-          detail: routingDetail(parallel),
+          type: "parallel_start",
+          parentCallId: parallel.parentCallId,
+          join: parallel.join,
+          branchCount: parallel.branchCount,
+        },
+      ];
+    }
+    case "parallel.branch": {
+      // Per-branch lifecycle, discriminated by `kind`. A branch_tool carries
+      // NO child id (engine/session/event.go ParallelPayload), so progress is
+      // keyed by (parentCallId, branchIndex); start/end carry the child id.
+      const parallel = event.payload;
+      switch (parallel.kind) {
+        case "branch_start":
+          return [
+            {
+              type: "delegation",
+              kind: "parallel",
+              label:
+                parallel.branchLabel || `branch ${parallel.branchIndex + 1}`,
+              detail: routingDetail(parallel),
+              childId: parallel.childId || undefined,
+              parentCallId: parallel.parentCallId || undefined,
+              branchIndex: parallel.branchIndex,
+              routingReason: parallel.routingReason || undefined,
+              model: parallel.model || undefined,
+            },
+          ];
+        case "branch_tool":
+          return [
+            {
+              type: "delegation_progress",
+              parentCallId: parallel.parentCallId || undefined,
+              branchIndex: parallel.branchIndex,
+              toolCount: parallel.toolCount,
+              ...usageTokens(parallel.usage),
+              ...activityPreview(parallel),
+            },
+          ];
+        case "branch_end":
+          return [
+            {
+              type: "delegation_end",
+              childId: parallel.childId || undefined,
+              parentCallId: parallel.parentCallId || undefined,
+              branchIndex: parallel.branchIndex,
+              stop: parallel.stop,
+              failed: parallel.failed || undefined,
+              toolCount: parallel.toolCount,
+              ...usageTokens(parallel.usage),
+              durationMs: tokens(parallel.durationMs),
+            },
+          ];
+        default:
+          return [];
+      }
+    }
+    case "parallel.end": {
+      // The group terminal: the winning branch (−1 = none / join=all), the
+      // run's stop, and the group's usage.
+      const parallel = event.payload;
+      return [
+        {
+          type: "parallel_end",
+          parentCallId: parallel.parentCallId,
+          join: parallel.join,
+          branchCount: parallel.branchCount,
+          winner: parallel.winner,
+          stop: parallel.stop,
+          ...usageTokens(parallel.usage),
+        },
+      ];
+    }
+    case "team.member": {
+      // One member's redacted activity, tagged with its roster name. The
+      // inner kind routes it on the lane; usage is PER EVENT (the lane sums);
+      // contextUsed/contextWindow feed the per-member context meter.
+      const team = event.payload;
+      return [
+        {
+          type: "team_member",
+          teamId: team.teamId,
+          parentCallId: team.parentCallId,
+          member: team.member,
+          memberSessionId: team.memberSessionId || undefined,
+          ...activityPreview(team),
+          // The inner kind and error flag are the ROUTING facts here, so
+          // they stay exact (never collapsed to undefined).
+          innerKind: team.innerKind,
+          isError: team.isError,
+          ...usageTokens(team.usage),
+          contextUsed: tokens(team.contextUsed),
+          contextWindow: tokens(team.contextWindow),
+          cause: team.cause || undefined,
+        },
+      ];
+    }
+    case "team.tasks": {
+      const team = event.payload;
+      return [
+        {
+          type: "team_tasks",
+          teamId: team.teamId,
+          parentCallId: team.parentCallId,
+          tasks: teamTasks(team.tasks),
+        },
+      ];
+    }
+    case "team.findings": {
+      const team = event.payload;
+      return [
+        {
+          type: "team_findings",
+          teamId: team.teamId,
+          parentCallId: team.parentCallId,
+          findings: teamFindings(team.findings),
+        },
+      ];
+    }
+    case "team.end": {
+      // The team terminal: rounds, stop, the TEAM-TOTAL usage, the final
+      // snapshots, and each member's disposition (stopped + reason + retries).
+      const team = event.payload;
+      return [
+        {
+          type: "team_end",
+          teamId: team.teamId,
+          parentCallId: team.parentCallId,
+          rounds: team.rounds,
+          stop: team.stop,
+          ...usageTokens(team.usage),
+          tasks: teamTasks(team.tasks),
+          findings: teamFindings(team.findings),
+          dispositions: teamDispositions(team.dispositions),
+        },
+      ];
+    }
+    case "authorization.required": {
+      // A tool call parked on a browser sign-in: the daemon closes the prompt
+      // stream WITHOUT a result and the run continues over the authorization
+      // control stream. The URL never rides an event — the client fetches it
+      // from the presentation control when the operator opens it.
+      const authorization = event.payload;
+      return [
+        {
+          type: "authorization",
+          authorizationId: authorization.authorizationId,
+          callId: authorization.callId,
+          displayName: authorization.displayName,
+          status: authorization.status,
+          expiresAt: timestampMs(authorization.expiresAt),
+        },
+      ];
+    }
+    case "authorization.resolved": {
+      const authorization = event.payload;
+      return [
+        {
+          type: "authorization_resolved",
+          authorizationId: authorization.authorizationId,
+          displayName: authorization.displayName,
+          status: authorization.status,
         },
       ];
     }
@@ -340,6 +590,24 @@ function translateEventBody(event: SdkEvent, sessionId: string): StreamEvent[] {
           approvalId: approval.askId,
           toolName: approval.tool,
           verdict: approval.verdict,
+        },
+      ];
+    }
+    case "turn.end": {
+      // One model exchange closed: the turn's own token figures + elapsed
+      // model-call time (the per-turn stat line and the context meter's
+      // occupancy read these; `result` below stays the per-RUN total).
+      const turn = event.payload;
+      const usage = turn.usage;
+      return [
+        {
+          type: "turn_end",
+          durationMs: tokens(turn.durationMs),
+          inputTokens: tokens(usage?.inputTokens),
+          outputTokens: tokens(usage?.outputTokens),
+          cacheReadTokens: tokens(usage?.cacheReadTokens),
+          cacheWriteTokens: tokens(usage?.cacheWriteTokens),
+          reasoningTokens: tokens(usage?.reasoningTokens),
         },
       ];
     }

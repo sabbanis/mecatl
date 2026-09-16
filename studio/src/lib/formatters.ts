@@ -39,6 +39,19 @@ export function formatTokens(n: number): string {
   return String(n);
 }
 
+/**
+ * An elapsed millisecond count, compact: under one second verbatim in ms
+ * ("840ms"), otherwise seconds to one decimal with a redundant ".0" trimmed
+ * ("4.1s", "2s"). Mirrors the TUI footer's formatDuration; negatives and
+ * non-finite values clamp to "0ms".
+ */
+export function formatDurationMs(ms: number): string {
+  const clamped = Number.isFinite(ms) && ms > 0 ? ms : 0;
+  if (clamped < 1000) return `${Math.round(clamped)}ms`;
+  const seconds = (clamped / 1000).toFixed(1).replace(/\.0$/, "");
+  return `${seconds}s`;
+}
+
 const CRON_DAYS = [
   "Sunday",
   "Monday",

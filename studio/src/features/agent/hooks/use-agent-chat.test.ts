@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { MAX_TRACE_ENTRIES } from "../delegation-fleet";
 import type { AgentMessage, StreamEvent } from "../types";
 import {
-  applyDelegationUpdate,
+  applyDelegationEvent,
   attachmentsFromSteerParts,
   reduceWatchEvent,
   splitPendingSteersOnWatermark,
@@ -51,6 +52,53 @@ describe("reduceWatchEvent", () => {
       (messages, event) => reduceWatchEvent(messages, event, nextId),
       [],
     );
+
+  it("stamps per-turn stats onto the trailing assistant across two turn_end frames (replay path)", () => {
+    const turnEnd = (
+      inputTokens: number,
+      outputTokens: number,
+      durationMs: number,
+      cacheReadTokens = 0,
+    ): StreamEvent => ({
+      type: "turn_end",
+      durationMs,
+      inputTokens,
+      outputTokens,
+      cacheReadTokens,
+      cacheWriteTokens: 0,
+      reasoningTokens: 0,
+    });
+    const messages = run([
+      { type: "user_prompt", text: "summarise the repo" },
+      { type: "token", text: "Looking…" },
+      turnEnd(1000, 50, 1200, 400),
+      { type: "token", text: " Done." },
+      turnEnd(1500, 300, 2000),
+    ]);
+    expect(messages).toHaveLength(2);
+    expect(messages[1]).toMatchObject({
+      role: "assistant",
+      content: "Looking… Done.",
+      turnStats: {
+        turns: 2,
+        inputTokens: 2500,
+        outputTokens: 350,
+        cacheReadTokens: 400,
+        cacheWriteTokens: 0,
+        durationMs: 3200,
+        // The latest turn's input is the context occupancy — assigned, not summed.
+        lastInputTokens: 1500,
+      },
+    });
+    // A turn_end with no assistant bubble yet opens one to carry the stats.
+    const opened = run([
+      { type: "user_prompt", text: "hi" },
+      turnEnd(20, 5, 300),
+    ]);
+    expect(opened).toHaveLength(2);
+    expect(opened[1].role).toBe("assistant");
+    expect(opened[1].turnStats?.turns).toBe(1);
+  });
 
   it("rebuilds a user → assistant exchange with tool activity", () => {
     const messages = run([
@@ -181,7 +229,7 @@ describe("reduceWatchEvent", () => {
 
 // ── delegation cards (D1) ────────────────────────────────────────────────────
 
-describe("applyDelegationUpdate", () => {
+describe("applyDelegationEvent", () => {
   const base = (): AgentMessage[] => [
     { id: "u1", role: "user", content: "go", timestamp: 0 },
     {
@@ -201,7 +249,7 @@ describe("applyDelegationUpdate", () => {
   ];
 
   it("ticks the running counters on delegation_progress, keyed by childId", () => {
-    let messages = applyDelegationUpdate(base(), {
+    let messages = applyDelegationEvent(base(), {
       type: "delegation_progress",
       childId: "subagent-abc",
       toolCount: 3,
@@ -209,7 +257,7 @@ describe("applyDelegationUpdate", () => {
       outputTokens: 80,
       toolName: "Read",
     });
-    messages = applyDelegationUpdate(messages, {
+    messages = applyDelegationEvent(messages, {
       type: "delegation_progress",
       childId: "subagent-abc",
       toolCount: 4,
@@ -227,7 +275,7 @@ describe("applyDelegationUpdate", () => {
   });
 
   it("stamps stop, duration, and the failure cause on delegation_end — a failed child never vanishes", () => {
-    const messages = applyDelegationUpdate(base(), {
+    const messages = applyDelegationEvent(base(), {
       type: "delegation_end",
       childId: "subagent-abc",
       stop: "error",
@@ -246,12 +294,238 @@ describe("applyDelegationUpdate", () => {
   it("returns the SAME array when no card carries the child (progress without a start)", () => {
     const before = base();
     expect(
-      applyDelegationUpdate(before, {
+      applyDelegationEvent(before, {
         type: "delegation_progress",
         childId: "subagent-unknown",
         toolCount: 1,
       }),
     ).toBe(before);
+  });
+
+  it("accumulates a bounded tool-chip trace: tool.call pends, tool.result resolves", () => {
+    let messages = applyDelegationEvent(base(), {
+      type: "delegation_progress",
+      childId: "subagent-abc",
+      innerKind: "tool.call",
+      toolName: "Read",
+      detail: "path: a.go",
+    });
+    messages = applyDelegationEvent(messages, {
+      type: "delegation_progress",
+      childId: "subagent-abc",
+      innerKind: "tool.result",
+      toolName: "Read",
+      isError: true,
+      detail: "no such file",
+    });
+    expect(messages[1].delegations?.[0]).toMatchObject({
+      lastTool: "Read",
+      lastToolError: true,
+      trace: [
+        {
+          kind: "tool",
+          name: "Read",
+          detail: "no such file",
+          isError: true,
+          pending: false,
+        },
+      ],
+    });
+    for (let index = 0; index < MAX_TRACE_ENTRIES + 3; index += 1) {
+      messages = applyDelegationEvent(messages, {
+        type: "delegation_progress",
+        childId: "subagent-abc",
+        innerKind: "tool.call",
+        toolName: `T${index}`,
+      });
+    }
+    expect(messages[1].delegations?.[0].trace).toHaveLength(MAX_TRACE_ENTRIES);
+  });
+
+  it("matches a parallel branch by (parentCallId, branchIndex) when the frame carries no childId", () => {
+    const start: AgentMessage[] = [
+      {
+        id: "a1",
+        role: "assistant",
+        content: "",
+        timestamp: 0,
+        toolCalls: [
+          { callId: "call-p", name: "Parallel", input: "", status: "running" },
+        ],
+      },
+    ];
+    let messages = applyDelegationEvent(start, {
+      type: "delegation",
+      kind: "parallel",
+      label: "branch 2",
+      detail: "",
+      childId: "parallel-call-p-1",
+      parentCallId: "call-p",
+      branchIndex: 1,
+    });
+    messages = applyDelegationEvent(messages, {
+      type: "delegation_progress",
+      parentCallId: "call-p",
+      branchIndex: 1,
+      toolCount: 2,
+      innerKind: "tool.call",
+      toolName: "Bash",
+    });
+    expect(messages[0].delegations?.[0]).toMatchObject({
+      childId: "parallel-call-p-1",
+      toolCount: 2,
+      lastTool: "Bash",
+    });
+    messages = applyDelegationEvent(messages, {
+      type: "delegation_end",
+      childId: "parallel-call-p-1",
+      parentCallId: "call-p",
+      branchIndex: 1,
+      stop: "error",
+      failed: true,
+    });
+    expect(messages[0].delegations?.[0]).toMatchObject({
+      stop: "error",
+      failed: true,
+    });
+    messages = applyDelegationEvent(messages, {
+      type: "parallel_end",
+      parentCallId: "call-p",
+      join: "first",
+      branchCount: 2,
+      winner: 1,
+      stop: "end_turn",
+    });
+    expect(messages[0].delegations?.[0].winner).toBe(true);
+    expect(messages[0].delegationGroups?.["call-p"]).toMatchObject({
+      kind: "parallel",
+      winner: 1,
+      done: true,
+    });
+  });
+
+  it("matches a team member by name and backfills its childId from team_member; team_end lands dispositions", () => {
+    const start: AgentMessage[] = [
+      {
+        id: "a1",
+        role: "assistant",
+        content: "",
+        timestamp: 0,
+        toolCalls: [
+          { callId: "call-t", name: "Team", input: "", status: "running" },
+        ],
+      },
+    ];
+    let messages = applyDelegationEvent(start, {
+      type: "delegation",
+      kind: "team",
+      label: "reviewer (lead)",
+      detail: "big-1",
+      teamId: "team-1",
+      parentCallId: "call-t",
+      memberName: "reviewer",
+      lead: true,
+    });
+    messages = applyDelegationEvent(messages, {
+      type: "team_member",
+      teamId: "team-1",
+      parentCallId: "call-t",
+      member: "reviewer",
+      memberSessionId: "team-team-1-reviewer",
+      innerKind: "turn.end",
+      isError: false,
+      inputTokens: 3000,
+      outputTokens: 100,
+      contextUsed: 3000,
+      contextWindow: 200000,
+    });
+    expect(messages[0].delegations?.[0]).toMatchObject({
+      memberName: "reviewer",
+      childId: "team-team-1-reviewer",
+      inputTokens: 3000,
+      contextUsed: 3000,
+      contextWindow: 200000,
+      idle: false,
+    });
+    messages = applyDelegationEvent(messages, {
+      type: "team_end",
+      teamId: "team-1",
+      parentCallId: "call-t",
+      rounds: 3,
+      stop: "end_turn",
+      tasks: [],
+      findings: [],
+      dispositions: [
+        { name: "reviewer", stopped: true, errorRounds: 2, reason: "error" },
+      ],
+    });
+    expect(messages[0].delegations?.[0]).toMatchObject({
+      stopped: true,
+      stopReason: "error",
+      errorRounds: 2,
+      stop: "error",
+    });
+    expect(messages[0].delegationGroups?.["call-t"]).toMatchObject({
+      kind: "team",
+      teamId: "team-1",
+      done: true,
+      rounds: 3,
+      stoppedCount: 1,
+    });
+  });
+});
+
+describe("reduceWatchEvent delegation frames", () => {
+  let serial = 0;
+  const nextId = () => `d-${++serial}`;
+
+  it("leaves messages unchanged for team_tasks / team_findings (panel-only)", () => {
+    const before: AgentMessage[] = [
+      { id: "m1", role: "assistant", content: "hi", timestamp: 0 },
+    ];
+    expect(
+      reduceWatchEvent(
+        before,
+        {
+          type: "team_tasks",
+          teamId: "team-1",
+          parentCallId: "call-t",
+          tasks: [],
+        },
+        nextId,
+      ),
+    ).toBe(before);
+    expect(
+      reduceWatchEvent(
+        before,
+        {
+          type: "team_findings",
+          teamId: "team-1",
+          parentCallId: "call-t",
+          findings: [],
+        },
+        nextId,
+      ),
+    ).toBe(before);
+  });
+
+  it("opens an assistant bubble for a delegation start with no owning turn, like other activity", () => {
+    const messages = reduceWatchEvent(
+      [{ id: "u1", role: "user", content: "go", timestamp: 0 }],
+      {
+        type: "delegation",
+        kind: "subagent",
+        label: "explore",
+        detail: "",
+        childId: "subagent-1",
+      },
+      nextId,
+    );
+    expect(messages).toHaveLength(2);
+    expect(messages[1]).toMatchObject({
+      role: "assistant",
+      delegations: [{ childId: "subagent-1" }],
+    });
   });
 });
 

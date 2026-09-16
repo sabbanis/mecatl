@@ -9,10 +9,16 @@ import { fileFromToolCall } from "@/lib/file-meta";
 import {
   cancelHarnessRun,
   cancelHarnessSteer,
+  cancelMcpAuthorization,
   createHarnessSession,
+  fetchHarnessSessionDetail,
+  fetchMcpAuthorizationUrl,
   fetchSessionTranscriptMessages,
   HarnessApiError,
+  type HarnessSessionDetail,
+  type McpAuthorizationControlOutcome,
   type PromptPart,
+  recheckMcpAuthorization,
   respondToHarnessApproval,
   retryHarnessRun,
   steerHarnessRun,
@@ -25,14 +31,32 @@ import {
   type SessionTranscript,
 } from "@/lib/protocol";
 import { refreshSlashCommands } from "../composer-capabilities";
+import {
+  applyDelegationEvent,
+  type DelegationFleet,
+  emptyFleet,
+  isDelegationEvent,
+  reduceDelegationFleet,
+} from "../delegation-fleet";
+import { deliveryMessage, hasDeliveryNote } from "../delivery-message";
+import {
+  AUTHORIZATION_LINK_COPIED_NOTICE,
+  AUTHORIZATION_POPUP_BLOCKED_NOTICE,
+  AUTHORIZATION_STILL_PENDING_NOTICE,
+  authorizationRequiredNotice,
+  authorizationResolvedNotice,
+  openAuthorizationWindow,
+  reduceAuthorizationEvent,
+} from "../mcp-authorization-phase";
 import { useRuntimeStatus } from "../runtime-status";
+import { accumulateTurnStats } from "../turn-stats";
 import type {
   AgentMessage,
   ApprovalChoice,
   ApprovalRequest,
   Attachment,
+  AuthorizationRequest,
   ClarificationRequest,
-  DelegationInfo,
   RetryDisposition,
   SteerEchoPart,
   StreamEvent,
@@ -43,6 +67,8 @@ type ChatStatus =
   | "idle"
   | "streaming"
   | "waiting_approval"
+  /** The run is parked on an MCP browser sign-in (authorization.required). */
+  | "waiting_authorization"
   | "waiting_clarification"
   | "error";
 
@@ -78,6 +104,67 @@ export function splitPendingSteersOnWatermark(
   const index = pending.findIndex((steer) => steer.id === messageId);
   if (index === -1) return [];
   return pending.slice(index + 1);
+}
+
+/** Why the queue is held after a non-clean stop (the TUI's "paused: …"). */
+export type QueuePauseCause = "cancelled" | "error" | "transport";
+
+/** The queue is held: nothing drains until the user resumes or clears it. */
+export interface QueuePause {
+  /** Plain-language reason shown in the strip ("paused: <reason>"). */
+  reason: string;
+}
+
+/** Maps a non-clean stop to the reason the paused strip shows. */
+export function pauseReasonFor(cause: QueuePauseCause): string {
+  switch (cause) {
+    case "cancelled":
+      return "cancelled";
+    case "error":
+      return "the last turn failed";
+    case "transport":
+      return "connection lost";
+  }
+}
+
+/**
+ * Merges held rows (queued messages, retracted steers) into ONE prompt: texts
+ * joined by a blank line, files concatenated in order. Null when there is
+ * nothing to merge.
+ */
+export function mergeQueued(
+  rows: readonly { text: string; files?: File[] }[],
+): { text: string; files?: File[] } | null {
+  if (rows.length === 0) return null;
+  const text = rows
+    .map((row) => row.text)
+    .filter(Boolean)
+    .join("\n\n");
+  const files = rows.flatMap((row) => row.files ?? []);
+  return { text, files: files.length > 0 ? files : undefined };
+}
+
+/**
+ * The queue drain gate, extracted pure: only a clean, connected idle with
+ * something queued, no pending steer (they requeue first), no in-flight flush
+ * and NO pause sends the next message.
+ */
+export function shouldDrainQueue(input: {
+  status: string;
+  connected: boolean;
+  queued: number;
+  pendingSteers: number;
+  paused: boolean;
+  flushing: boolean;
+}): boolean {
+  return (
+    input.status === "idle" &&
+    input.connected &&
+    input.queued > 0 &&
+    input.pendingSteers === 0 &&
+    !input.paused &&
+    !input.flushing
+  );
 }
 
 /** Formats every vision provider accepts; anything else gets re-encoded. */
@@ -164,12 +251,17 @@ function messagesFromTranscript(transcript: SessionTranscript): AgentMessage[] {
   for (const entry of transcript.messages) {
     sequence += 1;
     if (entry.role === "user") {
-      messages.push({
-        id: `history-user-${sequence}`,
-        role: "user",
-        content: entry.text,
-        timestamp: 0,
-      });
+      const message = deliveryMessage(
+        `history-user-${sequence}`,
+        entry.text,
+        0,
+      );
+      // A scheduled task's delivery note renders as a card, once per fire +
+      // kind (the daemon documents a bounded double-record of one note).
+      if (message.delivery && hasDeliveryNote(messages, message.delivery)) {
+        continue;
+      }
+      messages.push(message);
       continue;
     }
     if (entry.role === "assistant") {
@@ -249,56 +341,12 @@ export function attachmentsFromSteerParts(
 }
 
 /**
- * Applies one live child-activity event (`delegation_progress` /
- * `delegation_end`, D1) onto the delegation card it belongs to, searching the
- * transcript backwards for the entry keyed by `childId`. Pure — a new array
- * on a hit, the SAME array when the child has no card (a progress frame whose
- * start this visit never saw updates nothing).
+ * The transcript-side delegation applier — start cards, live progress, child
+ * terminals, and the Parallel/Team group headers — lives in
+ * `../delegation-fleet` (shared with the session-scoped fleet reducer) and
+ * is re-exported here for the hook's callers and tests.
  */
-export function applyDelegationUpdate(
-  messages: AgentMessage[],
-  event: Extract<
-    StreamEvent,
-    { type: "delegation_progress" | "delegation_end" }
-  >,
-): AgentMessage[] {
-  const apply = (delegation: DelegationInfo): DelegationInfo =>
-    event.type === "delegation_progress"
-      ? {
-          ...delegation,
-          toolCount: event.toolCount ?? delegation.toolCount,
-          inputTokens: event.inputTokens ?? delegation.inputTokens,
-          outputTokens: event.outputTokens ?? delegation.outputTokens,
-          lastTool: event.toolName ?? delegation.lastTool,
-        }
-      : {
-          ...delegation,
-          toolCount: event.toolCount ?? delegation.toolCount,
-          inputTokens: event.inputTokens ?? delegation.inputTokens,
-          outputTokens: event.outputTokens ?? delegation.outputTokens,
-          stop: event.stop || "end_turn",
-          durationMs: event.durationMs,
-          cause: event.cause,
-        };
-  for (let index = messages.length - 1; index >= 0; index -= 1) {
-    const message = messages[index];
-    if (
-      !message.delegations?.some(
-        (delegation) => delegation.childId === event.childId,
-      )
-    ) {
-      continue;
-    }
-    const updated: AgentMessage = {
-      ...message,
-      delegations: message.delegations.map((delegation) =>
-        delegation.childId === event.childId ? apply(delegation) : delegation,
-      ),
-    };
-    return [...messages.slice(0, index), updated, ...messages.slice(index + 1)];
-  }
-  return messages;
-}
+export { applyDelegationEvent };
 
 /**
  * Applies one watch-delivered StreamEvent to a transcript being rebuilt from
@@ -336,17 +384,15 @@ export function reduceWatchEvent(
   };
   switch (event.type) {
     case "user_prompt": {
-      // The durable record of what the user asked.
+      // The durable record of what the user asked — or a scheduled task's
+      // delivery note, which renders as a card once per fire + kind even
+      // when replay and live both carry it.
       if (!event.text) return messages;
-      return [
-        ...messages,
-        {
-          id: nextId(),
-          role: "user",
-          content: event.text,
-          timestamp: Date.now(),
-        },
-      ];
+      const message = deliveryMessage(nextId(), event.text, Date.now());
+      if (message.delivery && hasDeliveryNote(messages, message.delivery)) {
+        return messages;
+      }
+      return [...messages, message];
     }
     case "steer": {
       // The committed mid-run steer: text plus its media bundle (ADR 0251),
@@ -361,6 +407,7 @@ export function reduceWatchEvent(
           content: event.text,
           timestamp: Date.now(),
           attachments,
+          steered: true,
         },
       ];
     }
@@ -434,24 +481,51 @@ export function reduceWatchEvent(
         ...message,
         notices: [...(message.notices ?? []), event.text],
       }));
-    case "delegation":
+    case "authorization":
+      // The parked-on-sign-in phase leaves its trace on the turn; the phase
+      // itself is hook state (the takeover card), like an approval ask.
       return onAssistant((message) => ({
         ...message,
-        delegations: [
-          ...(message.delegations ?? []),
-          {
-            kind: event.kind,
-            label: event.label,
-            detail: event.detail,
-            childId: event.childId,
-            background: event.background,
-            routingReason: event.routingReason,
-          },
+        notices: [
+          ...(message.notices ?? []),
+          authorizationRequiredNotice(event.displayName),
         ],
       }));
+    case "authorization_resolved":
+      return onAssistant((message) => ({
+        ...message,
+        notices: [
+          ...(message.notices ?? []),
+          authorizationResolvedNotice(event.displayName, event.status),
+        ],
+      }));
+    case "delegation":
     case "delegation_progress":
     case "delegation_end":
-      return applyDelegationUpdate(messages, event);
+    case "parallel_start":
+    case "parallel_end":
+    case "team_member":
+    case "team_tasks":
+    case "team_findings":
+    case "team_end":
+      // Every delegation frame lands on the turn that owns its tool call
+      // (a background child's end can arrive after a later turn opened);
+      // a start with no owning turn opens a fresh bubble like other activity.
+      return applyDelegationEvent(messages, event, {
+        openAssistant: () => ({
+          id: nextId(),
+          role: "assistant",
+          content: "",
+          timestamp: Date.now(),
+        }),
+      });
+    case "turn_end":
+      // One model exchange closed: its cost folds onto the trailing
+      // assistant bubble's stat line (replay keeps the stats too).
+      return onAssistant((message) => ({
+        ...message,
+        turnStats: accumulateTurnStats(message.turnStats, event),
+      }));
     case "run_result": {
       if (event.stop === "error") {
         const detail =
@@ -479,6 +553,19 @@ export function reduceWatchEvent(
       // Approval asks, retractions, and usage are hook state, not transcript.
       return messages;
   }
+}
+
+/**
+ * An MCP authorization presentation/control refusal in the daemon's own
+ * words, plus the way out when the authorization itself is gone daemon-side
+ * (the four 404 reasons: expired, no longer pending, unclaimable, no match).
+ */
+function authorizationFailure(caught: unknown): string {
+  const message = caught instanceof Error ? caught.message : String(caught);
+  if (caught instanceof HarnessApiError && caught.status === 404) {
+    return `${message}. Re-check to see where the run stands.`;
+  }
+  return message;
 }
 
 /**
@@ -516,10 +603,25 @@ export function useAgentChat(
   const [pendingApproval, setPendingApproval] =
     useState<ApprovalRequest | null>(null);
   const [pendingClarification] = useState<ClarificationRequest | null>(null);
+  /** The MCP browser authorization the run is parked on, if any. Mirrored on
+   *  a ref because the stream handlers fold events into it synchronously. */
+  const [pendingAuthorization, setPendingAuthorization] =
+    useState<AuthorizationRequest | null>(null);
+  const pendingAuthorizationRef = useRef<AuthorizationRequest | null>(null);
+  // The assistant-bubble ids of the turn that parked: the continuation run
+  // (recheck/cancel) renders into it. Null when the phase was found by a
+  // watch replay and no live bubble is known.
+  const authorizationIdsRef = useRef<{ assistant: string } | null>(null);
+  // One authorization control in flight at a time.
+  const authorizationBusyRef = useRef(false);
   /** Steers the daemon accepted but has not yet drained into the run, in send
    *  order. The stream's `steer` echo splits this list on its watermark id. */
   const [pendingSteers, setPendingSteers] = useState<PendingSteer[]>([]);
   const steerSerialRef = useRef(0);
+  /** Set by every non-clean stop (cancel, failed turn, lost connection): the
+   *  queue then waits visibly until the user resumes, edits, or clears it —
+   *  or sends a fresh prompt. Cleared automatically once nothing is held. */
+  const [queuePaused, setQueuePaused] = useState<QueuePause | null>(null);
   const [usage, setUsage] = useState({
     inputTokens: 0,
     outputTokens: 0,
@@ -528,6 +630,18 @@ export function useAgentChat(
     reasoningTokens: 0,
     estimatedCost: null as number | null,
   });
+  // Every child this session's runs delegated (subagents, parallel groups,
+  // teams), aggregated across turns for the Agents panel. Per-visit like
+  // `usage`: the transcript rehydrate carries no delegation data, so it holds
+  // what this tab observed live or via the durable watch's replay.
+  const [fleet, setFleet] = useState<DelegationFleet>(emptyFleet);
+  // The latest turn's input tokens (turn.end) — the context occupancy the
+  // meter reads. ASSIGNED per turn, never summed; 0 until a turn ends.
+  const [contextOccupancy, setContextOccupancy] = useState(0);
+  // The GET-session detail: the resolved model + context window the meter
+  // is measured against, and the daemon's durable cumulative token usage.
+  const [sessionDetail, setSessionDetail] =
+    useState<HarnessSessionDetail | null>(null);
 
   // The daemon session backing this chat: the route id, or the one minted for
   // a draft on first send. A ref so an in-flight stream keeps its binding
@@ -608,6 +722,35 @@ export function useAgentChat(
     setMessages(rebuilt);
   }, []);
 
+  /**
+   * Reads the GET-session detail: the resolved model + context window the
+   * meter is measured against, and the daemon's durable cumulative token
+   * usage, which replaces this visit's client-side sum when present (an
+   * older daemon reports none, so the sum stays).
+   */
+  const loadSessionDetail = useCallback(
+    async (id: string, signal?: AbortSignal) => {
+      const detail = await fetchHarnessSessionDetail(id, signal);
+      if (signal?.aborted) return;
+      setSessionDetail(detail);
+      if (detail.tokenUsage) {
+        setUsage({ ...detail.tokenUsage, estimatedCost: null });
+      }
+    },
+    [],
+  );
+
+  // Opening a chat (or switching) reads its detail. A failure just leaves
+  // the meter on the visit-local figures — it is never load-bearing.
+  useEffect(() => {
+    setSessionDetail(null);
+    setContextOccupancy(0);
+    if (!sessionId || !connected) return;
+    const controller = new AbortController();
+    void loadSessionDetail(sessionId, controller.signal).catch(() => undefined);
+    return () => controller.abort();
+  }, [sessionId, connected, loadSessionDetail]);
+
   // The durable watch is gated on the daemon's open feature registry and the
   // session actually having a run to watch (running/awaiting per inventory).
   const watchSupported = features.has("watch_session_events");
@@ -628,7 +771,11 @@ export function useAgentChat(
     watchCursorRef.current = "";
     lastDispositionRef.current = undefined;
     setMessages([]);
+    setFleet(emptyFleet());
     setPendingApproval(null);
+    setPendingAuthorization(null);
+    pendingAuthorizationRef.current = null;
+    authorizationIdsRef.current = null;
     setError(null);
     setStatus("idle");
     // Usage is per-visit, per-chat: the context meter must not carry one
@@ -685,11 +832,33 @@ export function useAgentChat(
     // An ask seen in replay that no later verdict/retract resolved: surfaced
     // at the boundary — exactly the parked-approval case (state "awaiting").
     let parkedAsk: ApprovalRequest | null = null;
+    // Likewise a browser authorization seen in replay that nothing resolved:
+    // the run is parked on it, so the takeover card shows at the boundary.
+    let parkedAuthorization: AuthorizationRequest | null = null;
+    const surfaceAuthorization = (request: AuthorizationRequest) => {
+      // The continuation renders into the parked turn's bubble when the
+      // rebuild has one; otherwise the recheck opens a fresh bubble.
+      const lastAssistant = [...rebuilt]
+        .reverse()
+        .find((message) => message.role === "assistant");
+      authorizationIdsRef.current = lastAssistant
+        ? { assistant: lastAssistant.id }
+        : null;
+      pendingAuthorizationRef.current = request;
+      setPendingAuthorization(request);
+      setStatus("waiting_authorization");
+    };
     const nextId = () => {
       serial += 1;
       return `watch-${serial}`;
     };
-    const flush = () => setMessages(rebuilt);
+    // The delegation fleet rebuilt from the same replay (the replay spans the
+    // whole session, so it is the authoritative fleet for it).
+    let rebuiltFleet = emptyFleet();
+    const flush = () => {
+      setMessages(rebuilt);
+      setFleet(rebuiltFleet);
+    };
     const resolveAsk = (approvalId: string) => {
       if (parkedAsk?.approvalId === approvalId) parkedAsk = null;
       if (!live) return;
@@ -720,6 +889,7 @@ export function useAgentChat(
               setPendingApproval(parkedAsk);
               setStatus("waiting_approval");
             }
+            if (parkedAuthorization) surfaceAuthorization(parkedAuthorization);
           }
           return;
         }
@@ -743,12 +913,45 @@ export function useAgentChat(
           case "retract":
             resolveAsk(event.approvalId);
             break;
+          case "authorization":
+          case "authorization_resolved": {
+            // The parked-on-sign-in phase: a pending `authorization` with no
+            // later resolved is what "parked" looks like in the log.
+            parkedAuthorization = reduceAuthorizationEvent(
+              parkedAuthorization,
+              event,
+              sessionId,
+            );
+            rebuilt = reduceWatchEvent(rebuilt, event, nextId);
+            if (live) {
+              flush();
+              if (parkedAuthorization) {
+                surfaceAuthorization(parkedAuthorization);
+              } else if (pendingAuthorizationRef.current) {
+                pendingAuthorizationRef.current = null;
+                setPendingAuthorization(null);
+                setStatus((current) =>
+                  current === "waiting_authorization" ? "streaming" : current,
+                );
+              }
+            }
+            break;
+          }
           case "approval_verdict":
             // Another client resolved the ask; the quiet verdict line also
             // lands in the transcript via the reducer.
             resolveAsk(event.approvalId);
             rebuilt = reduceWatchEvent(rebuilt, event, nextId);
             if (live) flush();
+            break;
+          case "turn_end":
+            // The latest turn's input is the context occupancy — replay's
+            // LAST turn_end sets it too, so a reload never falls back to the
+            // summed-usage numerator; the stats land on the bubble either way.
+            setContextOccupancy(event.inputTokens);
+            rebuilt = reduceWatchEvent(rebuilt, event, nextId);
+            frames += 1;
+            if (live || frames % 200 === 0) flush();
             break;
           case "usage":
             // Only live frames accumulate: replay covers finished runs whose
@@ -774,11 +977,14 @@ export function useAgentChat(
               // completed-state flow takes over from here.
               flush();
               runIdRef.current = "";
+              // The daemon's durable cumulative usage supersedes the sum.
+              void loadSessionDetail(sessionId).catch(() => undefined);
               if (event.stop === "error") {
                 lastDispositionRef.current = event.retryDisposition;
                 setError(
                   event.errorText || "The run failed without a specific error.",
                 );
+                setQueuePaused({ reason: pauseReasonFor("error") });
                 setStatus("error");
               } else {
                 setStatus("idle");
@@ -787,6 +993,9 @@ export function useAgentChat(
             }
             break;
           default:
+            if (isDelegationEvent(event)) {
+              rebuiltFleet = reduceDelegationFleet(rebuiltFleet, event);
+            }
             rebuilt = reduceWatchEvent(rebuilt, event, nextId);
             frames += 1;
             if (live || frames % 200 === 0) flush();
@@ -801,6 +1010,9 @@ export function useAgentChat(
       // same, and the latch stops a re-attach loop while the run continues.
       watchFaultedRef.current = sessionId;
       setPendingApproval(null);
+      // The pause lands BEFORE idle so the drain never fires into a run this
+      // tab can no longer see.
+      setQueuePaused({ reason: pauseReasonFor("transport") });
       setStatus("idle");
       void rehydrate(sessionId).catch(() => undefined);
     });
@@ -811,12 +1023,21 @@ export function useAgentChat(
       // A torn-down watch (chat switch, state flip, disconnect) must not
       // leave the streaming badge stuck; real terminals set their own state.
       setStatus((current) =>
-        current === "streaming" || current === "waiting_approval"
+        current === "streaming" ||
+        current === "waiting_approval" ||
+        current === "waiting_authorization"
           ? "idle"
           : current,
       );
     };
-  }, [sessionId, connected, watchSupported, watchable, rehydrate]);
+  }, [
+    sessionId,
+    connected,
+    watchSupported,
+    watchable,
+    rehydrate,
+    loadSessionDetail,
+  ]);
 
   const queueMessage = useCallback((text: string, files?: File[]) => {
     const trimmed = text.trim();
@@ -853,6 +1074,11 @@ export function useAgentChat(
         // scopes this run's approve/cancel/steer controls.
         if (event.runId && !runIdRef.current) {
           runIdRef.current = event.runId;
+        }
+        if (isDelegationEvent(event)) {
+          // The session-scoped fleet (Agents panel) folds every delegation
+          // frame, independent of which bubble the card lands on.
+          setFleet((prev) => reduceDelegationFleet(prev, event));
         }
         switch (event.type) {
           case "token":
@@ -936,7 +1162,10 @@ export function useAgentChat(
                 drained.map((p) => `steer-user-${p.id}`),
               );
               setMessages((msgs) => {
-                const moved = msgs.filter((m) => drainedBubbleIds.has(m.id));
+                // The echo IS the "steer applied" moment: stamp the bubbles.
+                const moved = msgs
+                  .filter((m) => drainedBubbleIds.has(m.id))
+                  .map((m) => ({ ...m, steered: true }));
                 const rest = msgs.filter((m) => !drainedBubbleIds.has(m.id));
                 // A steer accepted by the daemon but missing locally
                 // (e.g. after a reload) still surfaces via the echo — with
@@ -953,6 +1182,7 @@ export function useAgentChat(
                             content: event.text,
                             timestamp: Date.now(),
                             attachments: echoAttachments,
+                            steered: true,
                           },
                         ]
                       : [];
@@ -977,32 +1207,83 @@ export function useAgentChat(
               notices: [...(message.notices ?? []), event.text],
             }));
             break;
-          case "delegation":
+          case "authorization": {
+            // The daemon parked the tool call on a browser sign-in and will
+            // CLOSE this stream without a result; the run continues over the
+            // authorization control stream (recheck/cancel). A re-observed
+            // pending status (a recheck that found nothing new) refreshes
+            // the request without repeating the notice.
+            const previous = pendingAuthorizationRef.current;
+            const next = reduceAuthorizationEvent(previous, event, daemonId);
+            pendingAuthorizationRef.current = next;
+            setPendingAuthorization(next);
+            if (!next) break;
+            // The continuation renders into the turn that parked.
+            authorizationIdsRef.current = ids;
+            setStatus("waiting_authorization");
+            if (previous?.authorizationId !== next.authorizationId) {
+              patch((message) => ({
+                ...message,
+                notices: [
+                  ...(message.notices ?? []),
+                  authorizationRequiredNotice(event.displayName),
+                ],
+              }));
+            }
+            break;
+          }
+          case "authorization_resolved": {
+            const previous = pendingAuthorizationRef.current;
+            const next = reduceAuthorizationEvent(previous, event, daemonId);
+            if (next === previous) break;
+            pendingAuthorizationRef.current = next;
+            setPendingAuthorization(next);
             patch((message) => ({
               ...message,
-              delegations: [
-                ...(message.delegations ?? []),
-                {
-                  kind: event.kind,
-                  label: event.label,
-                  detail: event.detail,
-                  childId: event.childId,
-                  background: event.background,
-                  routingReason: event.routingReason,
-                },
+              notices: [
+                ...(message.notices ?? []),
+                authorizationResolvedNotice(event.displayName, event.status),
               ],
             }));
+            // Back to the run: granted resumes it, a terminal refusal records
+            // the call's failure and the model carries on — either way the
+            // stream's own result owns the eventual idle.
+            setStatus((current) =>
+              current === "waiting_authorization" ? "streaming" : current,
+            );
             break;
+          }
+          case "delegation":
           case "delegation_progress":
           case "delegation_end":
-            // Live child cards (D1): counters tick while the child works;
-            // the terminal stamps stop/duration/cause onto the card.
-            setMessages((prev) => applyDelegationUpdate(prev, event));
+          case "parallel_start":
+          case "parallel_end":
+          case "team_member":
+          case "team_tasks":
+          case "team_findings":
+          case "team_end":
+            // Delegation cards + group headers: a start lands on the turn
+            // that owns its tool call (else this run's assistant bubble —
+            // a pending steer bubble may trail it); progress/terminals find
+            // their card wherever it sits, so a background child's end
+            // after a later turn still resolves the right card.
+            setMessages((prev) =>
+              applyDelegationEvent(prev, event, { assistantId: ids.assistant }),
+            );
+            break;
+          case "turn_end":
+            // One model exchange closed: fold its cost onto the bubble's
+            // stat line and take its input as the current context occupancy.
+            patch((message) => ({
+              ...message,
+              turnStats: accumulateTurnStats(message.turnStats, event),
+            }));
+            setContextOccupancy(event.inputTokens);
             break;
           case "usage":
-            // The daemon reports per-run figures; the chat total is
-            // their sum. (Lost on reload: the HTTP read surface does
-            // not expose the session's cumulative usage yet.)
+            // The daemon reports per-run figures; the chat total is their
+            // sum until the run's terminal re-reads the session's durable
+            // cumulative usage (loadSessionDetail), which supersedes it.
             setUsage((prev) => ({
               inputTokens: prev.inputTokens + event.inputTokens,
               outputTokens: prev.outputTokens + event.outputTokens,
@@ -1018,6 +1299,8 @@ export function useAgentChat(
           case "run_result":
             // The run is over; a control scoped to it would be stale.
             runIdRef.current = "";
+            // The daemon's durable cumulative usage supersedes the sum.
+            void loadSessionDetail(daemonId).catch(() => undefined);
             if (event.stop === "error") {
               // The typed disposition routes the Retry button (ADR 0239).
               lastDispositionRef.current = event.retryDisposition;
@@ -1036,6 +1319,7 @@ export function useAgentChat(
                 ),
               }));
               setError(detail);
+              setQueuePaused({ reason: pauseReasonFor("error") });
               setStatus("error");
             } else if (event.text) {
               // A run that produced no deltas (a rehydrated approve, a
@@ -1046,21 +1330,49 @@ export function useAgentChat(
               }));
             }
             break;
+          case "user_prompt": {
+            // The HTTP live wire omits EvUserPrompt today (the durable log's
+            // record of what was asked; the prompt this tab sent is already
+            // on screen). Should it ever relay the gRPC exception — a
+            // scheduled task's delivery note drained into THIS run at a turn
+            // boundary — the note must render, never be dropped. Appended in
+            // arrival order; a duplicate record renders once.
+            const note = deliveryMessage(
+              `delivery-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              event.text,
+              Date.now(),
+            );
+            const delivery = note.delivery;
+            if (!delivery) break;
+            setMessages((prev) =>
+              hasDeliveryNote(prev, delivery) ? prev : [...prev, note],
+            );
+            break;
+          }
           default:
             break;
         }
       };
     },
-    [],
+    [loadSessionDetail],
   );
 
-  const sendMessage = useCallback(
+  // The run starter proper. Internal callers (the queue drain, Retry's
+  // resend) use it directly so a paused queue STAYS paused; the exported
+  // `sendMessage` below is the composer's fresh-prompt path, which lifts the
+  // pause (the TUI rule: sending a fresh prompt also resumes the queue).
+  const startRun = useCallback(
     async (content: string, files?: File[]) => {
       if (!connected) return;
-      if (status === "streaming" || status === "waiting_approval") {
+      if (
+        status === "streaming" ||
+        status === "waiting_approval" ||
+        status === "waiting_authorization"
+      ) {
         // Defense in depth behind the composer's own routing: text sent while
         // a run is live is HELD, never fired into the funnel (which would
-        // refuse with "already has an active run") and never dropped.
+        // refuse with "already has an active run" — or, parked on a browser
+        // sign-in, 409 mcp_authorization_pending) and never dropped.
         queueMessage(content, files);
         return;
       }
@@ -1185,20 +1497,28 @@ export function useAgentChat(
         );
         // A parked approval keeps its own status: the stream ends while the
         // run is still waiting on the operator, and flipping to idle here
-        // would hide the pending prompt. A failed turn keeps its error state.
+        // would hide the pending prompt. So does a parked browser
+        // authorization (the stream ENDS on it). A failed turn keeps its
+        // error state.
         setStatus((current) =>
-          current === "waiting_approval" || current === "error"
+          current === "waiting_approval" ||
+          current === "waiting_authorization" ||
+          current === "error"
             ? current
             : "idle",
         );
       } catch (caught) {
         if (controller.signal.aborted) {
+          // A cancelled run holds the queue (never auto-fires the next
+          // message): the pause lands with idle, in the same batch.
+          setQueuePaused({ reason: pauseReasonFor("cancelled") });
           setStatus("idle");
           return;
         }
         const message =
           caught instanceof Error ? caught.message : String(caught);
         setError(message);
+        setQueuePaused({ reason: pauseReasonFor("transport") });
         setStatus("error");
         patch((current) => ({
           ...current,
@@ -1218,6 +1538,16 @@ export function useAgentChat(
       }
     },
     [status, connected, queueMessage, makeStreamHandler, adoptRunId],
+  );
+
+  /** The composer's send: a fresh user prompt also lifts a paused queue, so
+   *  the held messages follow once this run ends cleanly. */
+  const sendMessage = useCallback(
+    async (content: string, files?: File[]) => {
+      setQueuePaused(null);
+      await startRun(content, files);
+    },
+    [startRun],
   );
 
   /**
@@ -1257,8 +1587,10 @@ export function useAgentChat(
     });
     setError(null);
     setStatus("idle");
-    await sendMessage(prompt);
-  }, [sendMessage]);
+    // startRun, not sendMessage: a retry re-drives the failed turn and
+    // leaves the held queue paused for the user to resume.
+    await startRun(prompt);
+  }, [startRun]);
 
   /**
    * The error banner's Retry. When the failed terminal was typed RETRYABLE
@@ -1318,12 +1650,15 @@ export function useAgentChat(
         { onRunStarted: adoptRunId },
       );
       setStatus((current) =>
-        current === "waiting_approval" || current === "error"
+        current === "waiting_approval" ||
+        current === "waiting_authorization" ||
+        current === "error"
           ? current
           : "idle",
       );
     } catch (caught) {
       if (controller.signal.aborted) {
+        setQueuePaused({ reason: pauseReasonFor("cancelled") });
         setStatus("idle");
         return;
       }
@@ -1339,6 +1674,7 @@ export function useAgentChat(
         const message =
           caught instanceof Error ? caught.message : String(caught);
         setError(message);
+        setQueuePaused({ reason: pauseReasonFor("transport") });
         setStatus("error");
       }
     } finally {
@@ -1358,17 +1694,257 @@ export function useAgentChat(
     setQueuedMessages((prev) => prev.filter((m) => m.id !== id));
   }, []);
 
-  /** Removes the message from the queue and returns its text (for editing). */
+  /** Removes the message from the queue and returns its text AND staged
+   *  files (for editing — the attachments come back to the composer too). */
   const takeQueued = useCallback(
-    (id: string) => {
+    (id: string): { text: string; files?: File[] } | null => {
       const hit = queuedMessages.find((m) => m.id === id);
-      if (hit) setQueuedMessages((prev) => prev.filter((m) => m.id !== id));
-      return hit?.text ?? null;
+      if (!hit) return null;
+      setQueuedMessages((prev) => prev.filter((m) => m.id !== id));
+      return { text: hit.text, files: hit.files };
     },
     [queuedMessages],
   );
 
+  /** Pulls the WHOLE queue back for editing as one merged draft (texts joined
+   *  by a blank line, files in order); the queue empties. Non-destructive. */
+  const takeAllQueued = useCallback((): {
+    text: string;
+    files?: File[];
+  } | null => {
+    const merged = mergeQueued(queuedMessages);
+    if (!merged) return null;
+    setQueuedMessages([]);
+    return merged;
+  }, [queuedMessages]);
+
+  /** Drops every held message (the paused strip's Clear all / Esc). */
+  const clearQueue = useCallback(() => {
+    setQueuedMessages([]);
+    setQueuePaused(null);
+  }, []);
+
+  // ── MCP browser authorization: the parked-run phase ────────────────────
+
+  /** Patches the pending request in place, ignoring a stale id. */
+  const patchPendingAuthorization = useCallback(
+    (authorizationId: string, patch: Partial<AuthorizationRequest>) => {
+      const current = pendingAuthorizationRef.current;
+      if (!current || current.authorizationId !== authorizationId) return;
+      const next = { ...current, ...patch };
+      pendingAuthorizationRef.current = next;
+      setPendingAuthorization(next);
+    },
+    [],
+  );
+
+  /**
+   * Opens the sign-in page. The blank window opens synchronously in the
+   * click's task (pop-up blockers attribute it to the gesture), then the URL
+   * is fetched live from the daemon and the window navigated to it.
+   */
+  const openAuthorization = useCallback(async () => {
+    const daemonId = daemonIdRef.current;
+    const pending = pendingAuthorizationRef.current;
+    if (!daemonId || !pending) return;
+    const { authorizationId } = pending;
+    patchPendingAuthorization(authorizationId, {
+      error: undefined,
+      notice: undefined,
+    });
+    try {
+      const outcome = await openAuthorizationWindow(() =>
+        fetchMcpAuthorizationUrl(daemonId, authorizationId),
+      );
+      if (outcome === "blocked") {
+        patchPendingAuthorization(authorizationId, {
+          notice: AUTHORIZATION_POPUP_BLOCKED_NOTICE,
+        });
+      }
+    } catch (caught) {
+      patchPendingAuthorization(authorizationId, {
+        error: authorizationFailure(caught),
+      });
+    }
+  }, [patchPendingAuthorization]);
+
+  /** Copies the live sign-in URL for a browser this one cannot pop up. */
+  const copyAuthorizationLink = useCallback(async (): Promise<boolean> => {
+    const daemonId = daemonIdRef.current;
+    const pending = pendingAuthorizationRef.current;
+    if (!daemonId || !pending) return false;
+    const { authorizationId } = pending;
+    patchPendingAuthorization(authorizationId, {
+      error: undefined,
+      notice: undefined,
+    });
+    try {
+      const url = await fetchMcpAuthorizationUrl(daemonId, authorizationId);
+      await navigator.clipboard.writeText(url);
+      patchPendingAuthorization(authorizationId, {
+        notice: AUTHORIZATION_LINK_COPIED_NOTICE,
+      });
+      return true;
+    } catch (caught) {
+      patchPendingAuthorization(authorizationId, {
+        error: authorizationFailure(caught),
+      });
+      return false;
+    }
+  }, [patchPendingAuthorization]);
+
+  /**
+   * Drives one authorization control stream (recheck / cancel) through the
+   * SAME stream handler the prompt path uses, so the continuation run's
+   * tokens, tool calls and result render exactly like a prompt's. The run is
+   * parked — the daemon closed the prompt stream — so this tab drives again
+   * for the continuation (a watch must not attach on top), and the
+   * continuation is a NEW run whose id the handler adopts.
+   */
+  const driveAuthorizationControl = useCallback(
+    async (
+      control: (
+        sessionId: string,
+        authorizationId: string,
+        onEvent: (event: StreamEvent) => void,
+        signal?: AbortSignal,
+      ) => Promise<McpAuthorizationControlOutcome>,
+    ) => {
+      const daemonId = daemonIdRef.current;
+      const pending = pendingAuthorizationRef.current;
+      if (!daemonId || !pending || authorizationBusyRef.current) return;
+      authorizationBusyRef.current = true;
+      const { authorizationId } = pending;
+      patchPendingAuthorization(authorizationId, {
+        error: undefined,
+        notice: undefined,
+      });
+      // The continuation renders into the turn that parked; a phase found by
+      // a watch replay with no known bubble gets a fresh one.
+      const ids =
+        authorizationIdsRef.current ??
+        (() => {
+          const fresh = { assistant: `assistant-${Date.now()}` };
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: fresh.assistant,
+              role: "assistant",
+              content: "",
+              timestamp: Date.now(),
+            },
+          ]);
+          authorizationIdsRef.current = fresh;
+          return fresh;
+        })();
+      const patch = (apply: (message: AgentMessage) => AgentMessage) =>
+        setMessages((prev) =>
+          prev.map((message) =>
+            message.id === ids.assistant ? apply(message) : message,
+          ),
+        );
+      // The control stream owns the view now: a durable watch on the parked
+      // run would render the continuation twice.
+      watchAbortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+      drivingRef.current = daemonId;
+      runIdRef.current = "";
+      lastDispositionRef.current = undefined;
+      setError(null);
+      try {
+        const outcome = await control(
+          daemonId,
+          authorizationId,
+          makeStreamHandler(daemonId, ids),
+          controller.signal,
+        );
+        if (outcome.status === "pending") {
+          // The sign-in is not done yet: the run stays parked, the card stays.
+          patchPendingAuthorization(authorizationId, {
+            notice: AUTHORIZATION_STILL_PENDING_NOTICE,
+          });
+          return;
+        }
+        if (!outcome.sawResult) {
+          // A terminal status with no continuation on the wire: the daemon
+          // settled the parked call itself. The transcript has the record.
+          runIdRef.current = "";
+          setStatus((current) =>
+            current === "waiting_authorization" || current === "streaming"
+              ? "idle"
+              : current,
+          );
+          void rehydrate(daemonId).catch(() => undefined);
+          return;
+        }
+        setStatus((current) =>
+          current === "waiting_approval" ||
+          current === "waiting_authorization" ||
+          current === "error"
+            ? current
+            : "idle",
+        );
+      } catch (caught) {
+        if (controller.signal.aborted) {
+          setStatus("idle");
+          return;
+        }
+        if (caught instanceof HarnessApiError && caught.status === 404) {
+          // The authorization is gone daemon-side (expired, or resolved from
+          // another client): the run moved on without this tab. Leave the
+          // phase, keep the daemon's words on the turn, and refresh.
+          pendingAuthorizationRef.current = null;
+          setPendingAuthorization(null);
+          patch((message) => ({
+            ...message,
+            notices: [
+              ...(message.notices ?? []),
+              `Browser authorization ended: ${caught.message}`,
+            ],
+          }));
+          runIdRef.current = "";
+          setStatus("idle");
+          void rehydrate(daemonId).catch(() => undefined);
+          return;
+        }
+        patchPendingAuthorization(authorizationId, {
+          error: authorizationFailure(caught),
+        });
+      } finally {
+        authorizationBusyRef.current = false;
+        if (abortRef.current === controller) abortRef.current = null;
+        if (drivingRef.current === daemonId) drivingRef.current = null;
+      }
+    },
+    [makeStreamHandler, patchPendingAuthorization, rehydrate],
+  );
+
+  /** "I've finished — re-check": asks the daemon to re-inspect the sign-in
+   *  and streams the continuation when it went through. */
+  const recheckAuthorization = useCallback(
+    () => driveAuthorizationControl(recheckMcpAuthorization),
+    [driveAuthorizationControl],
+  );
+
+  /** Abandons the sign-in through the AUTHORIZATION control — never the run's
+   *  cancel, which cannot reach a parked run. */
+  const cancelAuthorization = useCallback(
+    () => driveAuthorizationControl(cancelMcpAuthorization),
+    [driveAuthorizationControl],
+  );
+
   const cancelChat = useCallback(async () => {
+    // Hold the queue BEFORE anything flips to idle: a cancel must never fire
+    // the next queued message on its own (the abort branch below and this
+    // function both set idle; both carry the pause).
+    setQueuePaused({ reason: pauseReasonFor("cancelled") });
+    if (pendingAuthorizationRef.current && !authorizationBusyRef.current) {
+      // The run is PARKED on a browser sign-in: its own cancel control would
+      // answer stale — the authorization control is the one that moves it.
+      await cancelAuthorization();
+      return;
+    }
     abortRef.current?.abort();
     if (daemonIdRef.current) {
       // Scoped to the run this hook knows about (ADR 0249): if that run
@@ -1377,7 +1953,7 @@ export function useAgentChat(
       await cancelHarnessRun(daemonIdRef.current, runIdRef.current);
     }
     setStatus("idle");
-  }, []);
+  }, [cancelAuthorization]);
 
   // Steer is capability-gated (C1.2): the live `capabilities.steer` off
   // /v1/compatibility, or the `http_steer` feature-registry row a rebuilt
@@ -1403,6 +1979,12 @@ export function useAgentChat(
       if (!trimmed && !files?.length) return;
       const daemonId = daemonIdRef.current;
       const runId = runIdRef.current;
+      if (pendingAuthorizationRef.current) {
+        // The run is parked on a browser sign-in: nothing is consuming a
+        // steer, so hold the text until the continuation ends.
+        queueMessage(trimmed, files);
+        return;
+      }
       if (!daemonId || !steerSupported || !runId) {
         queueMessage(trimmed, files);
         return;
@@ -1500,20 +2082,37 @@ export function useAgentChat(
    * `none_pending` the bundle already drained (the echo reconciles the list),
    * so the pending list clears on either outcome.
    */
-  const cancelPendingSteers = useCallback(async () => {
+  const cancelPendingSteers = useCallback(async (): Promise<PendingSteer[]> => {
     const daemonId = daemonIdRef.current;
+    const bundle = pendingSteers;
+    // A retracted steer never reached the run: its optimistic bubble comes
+    // out of the transcript and the text goes back to the caller (the
+    // composer re-seeds it — "retract, then recompose").
+    const dropBubbles = () => {
+      const bubbleIds = new Set(bundle.map((p) => `steer-user-${p.id}`));
+      setMessages((prev) => prev.filter((m) => !bubbleIds.has(m.id)));
+    };
     if (!daemonId) {
       setPendingSteers([]);
-      return;
+      dropBubbles();
+      return bundle;
     }
     try {
-      await cancelHarnessSteer(daemonId, runIdRef.current);
+      const outcome = await cancelHarnessSteer(daemonId, runIdRef.current);
       setPendingSteers([]);
+      if (outcome === "retracted") {
+        dropBubbles();
+        return bundle;
+      }
+      // none_pending: the bundle already drained into the run — the echo
+      // owns the bubbles, and there is nothing to recompose.
+      return [];
     } catch (caught) {
       // Unknown daemon state: keep the list rather than pretend it retracted.
       setError(caught instanceof Error ? caught.message : String(caught));
+      return [];
     }
-  }, []);
+  }, [pendingSteers]);
 
   // On run end, steers that never drained were dropped with the run (the
   // daemon's steer buffer is run-scoped, best-effort): move them to the FRONT
@@ -1543,23 +2142,54 @@ export function useAgentChat(
   // verdict, and orphaned pending steers get requeued (above) before anything
   // sends. flushingRef bridges the async gap before sendMessage flips the
   // status, so a re-render can't double-send.
+  // A paused queue (cancel / failed turn / lost connection) never drains on
+  // its own — the strip offers Send now / Edit all / Clear all, and the
+  // composer's Enter / ↑ / Esc on an empty line do the same.
   useEffect(() => {
     if (
-      status !== "idle" ||
-      !connected ||
-      queuedMessages.length === 0 ||
-      pendingSteers.length > 0 ||
-      flushingRef.current
+      !shouldDrainQueue({
+        status,
+        connected,
+        queued: queuedMessages.length,
+        pendingSteers: pendingSteers.length,
+        paused: queuePaused !== null,
+        flushing: flushingRef.current,
+      })
     ) {
       return;
     }
     flushingRef.current = true;
     const next = queuedMessages[0];
     setQueuedMessages((prev) => prev.filter((m) => m.id !== next.id));
-    void sendMessage(next.text, next.files).finally(() => {
+    void startRun(next.text, next.files).finally(() => {
       flushingRef.current = false;
     });
-  }, [status, connected, queuedMessages, pendingSteers, sendMessage]);
+  }, [status, connected, queuedMessages, pendingSteers, queuePaused, startRun]);
+
+  // Nothing held → nothing to pause: a stale pause (a cancel with an empty
+  // queue, the last row deleted or edited away) clears itself. Orphaned
+  // steers are still on `pendingSteers` in the commit that requeues them, so
+  // this never races the requeue above.
+  useEffect(() => {
+    if (
+      queuePaused !== null &&
+      queuedMessages.length === 0 &&
+      pendingSteers.length === 0
+    ) {
+      setQueuePaused(null);
+    }
+  }, [queuePaused, queuedMessages, pendingSteers]);
+
+  /** Sends the whole held queue as ONE prompt (texts joined by a blank line,
+   *  files in order) and lifts the pause — the strip's Send now / Enter on an
+   *  empty idle composer. */
+  const resumeQueue = useCallback(() => {
+    const merged = mergeQueued(queuedMessages);
+    setQueuePaused(null);
+    if (!merged) return;
+    setQueuedMessages([]);
+    void startRun(merged.text, merged.files);
+  }, [queuedMessages, startRun]);
 
   const respondToApproval = useCallback(
     async (choice: ApprovalChoice) => {
@@ -1626,12 +2256,21 @@ export function useAgentChat(
   return {
     messages,
     // A parked approval is still an in-flight run daemon-side; the composer
-    // treats both as "run active" (queue/steer, never a raw prompt).
-    isStreaming: status === "streaming" || status === "waiting_approval",
+    // treats both as "run active" (queue/steer, never a raw prompt). So is a
+    // run parked on a browser authorization.
+    isStreaming:
+      status === "streaming" ||
+      status === "waiting_approval" ||
+      status === "waiting_authorization",
     queuedMessages,
     queueMessage,
     deleteQueued,
     takeQueued,
+    takeAllQueued,
+    clearQueue,
+    /** Non-null while the queue is held after a non-clean stop. */
+    queuePaused,
+    resumeQueue,
     steerQueued,
     pendingSteers,
     steerMessage,
@@ -1646,10 +2285,23 @@ export function useAgentChat(
     retryLast,
     refreshTranscript,
     cancelChat,
+    /** The MCP browser authorization the run is parked on (null = none). */
+    pendingAuthorization,
+    openAuthorization,
+    copyAuthorizationLink,
+    recheckAuthorization,
+    cancelAuthorization,
     pendingApproval,
     pendingClarification,
     respondToApproval,
     respondToClarification,
     usage,
+    /** Every child this session's runs delegated, aggregated across turns
+     *  (per-visit, like usage — rebuilt from the durable watch's replay). */
+    fleet,
+    /** The latest turn's input tokens: the context meter's occupancy. */
+    contextOccupancy,
+    /** The GET-session detail (resolved model + window, durable usage). */
+    sessionDetail,
   };
 }

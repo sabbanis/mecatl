@@ -28,6 +28,33 @@ export interface SlashCommand {
   readonly description: string;
 }
 
+/** The slash commands Studio itself answers, never sent to the daemon. */
+export type StudioBuiltinCommand = "help";
+
+/**
+ * Studio-local `/commands` — the analogue of the TUI's always-present
+ * built-ins (cmd/mecatui/ui/builtins.go). They are prepended to the
+ * composer's `/` menu ahead of the daemon's list and intercepted on send, so
+ * `/help` opens the reference page instead of reaching the model. A daemon
+ * command of the same name is shadowed (dropped from the menu) so what the
+ * menu shows is what fires. The daemon list itself is untouched.
+ */
+export const STUDIO_BUILTIN_COMMANDS: readonly (SlashCommand & {
+  readonly name: StudioBuiltinCommand;
+})[] = [
+  {
+    name: "help",
+    description: "Keyboard shortcuts and daemon features (Studio)",
+  },
+];
+
+/** True when `name` is one of Studio's own slash commands. */
+export function isStudioBuiltinCommand(
+  name: string,
+): name is StudioBuiltinCommand {
+  return STUDIO_BUILTIN_COMMANDS.some((command) => command.name === name);
+}
+
 /** Turns an agent name into an `@`-mention handle, e.g. "Code Reviewer" → "code-reviewer". */
 function toHandle(name: string): string {
   return name

@@ -20,6 +20,12 @@ const port = Number(process.env.FIXTURE_DAEMON_PORT || 8099);
 
 const sessionID = "session-fixture-1";
 const runID = "run-fixture-1";
+// The MCP browser-authorization phase: a prompt whose text asks for
+// "authorization" parks its tool call on this authorization and the stream
+// ENDS without a result (the daemon's parked shape); the recheck/cancel
+// controls stream the resolution plus the continuation run.
+const authorizationID = "auth-fixture-1";
+const continuationRunID = "run-fixture-2";
 const placement = {
   kind: "local",
   label: "fixture",
@@ -74,7 +80,17 @@ const snapshot = {
   mode: "default",
   state: "idle",
   placement,
-  resolved_model: { model: "fixture-model", provider_id: "fixture" },
+  // The proto field is `model_id` (SessionResolvedModel), and the context
+  // meter needs the window to draw its bar.
+  resolved_model: {
+    model_id: "fixture-model",
+    provider_id: "fixture",
+    context_window: 128000,
+  },
+  // The durable session-cumulative usage (engine/session/usage.go "main").
+  token_usage: {
+    main: { total: { input_tokens: 120, output_tokens: 40 }, models: {} },
+  },
   capabilities,
 };
 
@@ -102,6 +118,12 @@ const routes = {
       {
         role: "assistant",
         text: "The fixture transcript renders: the test races the claim sentinel.",
+      },
+      // A scheduled task's delivery note exactly as the daemon records it
+      // (fenced, with the provenance header): Studio renders it as a card.
+      {
+        role: "user",
+        text: "<<<UNTRUSTED\n[scheduled task nightly-fixture-digest (fire fire-1) completed with stop reason: end_turn]\nDigest: 3 PRs merged, 0 failures.\n<<<UNTRUSTED\n",
       },
     ],
   },
@@ -175,6 +197,10 @@ const routes = {
   // answer, or a flow under test dies on a 404 problem instead of its logic:
   // manual compaction, the mode picker, and the six mutating schedule actions.
   [`POST /v1/sessions/${sessionID}/compact`]: { compacted: false },
+  // The live sign-in URL of the parked MCP authorization (fetched when the
+  // operator opens or copies it — it never rides an event).
+  [`GET /v1/sessions/${sessionID}/mcp-authorizations/${authorizationID}/presentation`]:
+    { url: "https://example.test/authorize?state=fixture" },
   [`POST /v1/sessions/${sessionID}/mode`]: snapshot,
   "POST /v1/schedules": {},
   "PUT /v1/schedules/nightly-fixture-digest": {},
@@ -202,10 +228,21 @@ const promptFrames = [
     turn: 1,
     text: "from the fixture.",
   },
+  // The per-turn stat frame (tokens + elapsed model-call time).
+  {
+    type: "turn.end",
+    run_id: runID,
+    seq: "4",
+    turn: 1,
+    turn_end: {
+      duration_ms: "4100",
+      usage: { input_tokens: 10, output_tokens: 5, cache_read_tokens: 4 },
+    },
+  },
   {
     type: "result",
     run_id: runID,
-    seq: "4",
+    seq: "5",
     turn: 1,
     text: "Streaming from the fixture.",
     result: {
@@ -215,6 +252,96 @@ const promptFrames = [
     },
   },
 ];
+
+// A prompt parked on a browser sign-in: the daemon emits authorization.required
+// and closes the stream WITHOUT a result. Nothing here is a truncation.
+const authorizationPromptFrames = [
+  { type: "turn.start", run_id: runID, seq: "1", turn: 1 },
+  {
+    type: "message.delta",
+    run_id: runID,
+    seq: "2",
+    turn: 1,
+    text: "Signing in to Fixture MCP… ",
+  },
+  {
+    type: "authorization.required",
+    run_id: runID,
+    seq: "3",
+    turn: 1,
+    authorization: {
+      authorization_id: authorizationID,
+      call_id: "call-fixture-1",
+      status: "pending",
+      display_name: "Fixture MCP",
+      expires_at: new Date(Date.now() + 10 * 60_000).toISOString(),
+    },
+  },
+];
+
+// The recheck/cancel control stream: the terminal status, then the
+// continuation run through its result (the parked call resumes on granted;
+// on cancelled it records the cancellation and the model carries on).
+function authorizationControlFrames(status) {
+  const text =
+    status === "granted"
+      ? "Authorized: continuing from the fixture."
+      : "Sign-in cancelled: continuing without the tool.";
+  return [
+    {
+      type: "authorization.resolved",
+      run_id: continuationRunID,
+      seq: "1",
+      authorization: {
+        authorization_id: authorizationID,
+        call_id: "call-fixture-1",
+        status,
+        display_name: "Fixture MCP",
+      },
+    },
+    { type: "message.delta", run_id: continuationRunID, seq: "2", text },
+    {
+      type: "result",
+      run_id: continuationRunID,
+      seq: "3",
+      text,
+      result: {
+        stop: "end_turn",
+        text,
+        usage: { input_tokens: 4, output_tokens: 6 },
+      },
+    },
+  ];
+}
+
+const promptAsksForAuthorization = (raw) => {
+  try {
+    return /authoriz/i.test(String(JSON.parse(raw).text ?? ""));
+  } catch {
+    return false;
+  }
+};
+
+function readBody(request) {
+  return new Promise((resolve) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(chunk));
+    request.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+  });
+}
+
+function writeProblem(response, status, code, detail) {
+  response.writeHead(status, { "Content-Type": "application/problem+json" });
+  response.end(
+    JSON.stringify({
+      type: `https://mecatl.stacklok.com/problems/${code}`,
+      title: detail,
+      status,
+      code,
+      detail,
+    }),
+  );
+}
 
 function writeSSE(response, frame) {
   response.write(`data: ${JSON.stringify(frame)}\n\n`);
@@ -230,9 +357,38 @@ http
       key === `POST /v1/sessions/${sessionID}/prompt` ||
       key === `POST /v1/sessions/${sessionID}/retry`
     ) {
-      response.writeHead(200, { "Content-Type": "text/event-stream" });
-      for (const frame of promptFrames) writeSSE(response, frame);
-      response.end();
+      void readBody(request).then((raw) => {
+        const frames =
+          key.endsWith("/prompt") && promptAsksForAuthorization(raw)
+            ? authorizationPromptFrames
+            : promptFrames;
+        response.writeHead(200, { "Content-Type": "text/event-stream" });
+        for (const frame of frames) writeSSE(response, frame);
+        response.end();
+      });
+      return;
+    }
+    const controlPrefix = `POST /v1/sessions/${sessionID}/mcp-authorizations/${authorizationID}/`;
+    if (key === `${controlPrefix}recheck` || key === `${controlPrefix}cancel`) {
+      // Correlation-only, like the daemon's controlRequestBodyEmpty: ONE body
+      // byte is a 400, so a client that posts `{}` fails here as it would live.
+      void readBody(request).then((raw) => {
+        if (raw.length > 0) {
+          writeProblem(
+            response,
+            400,
+            "invalid_argument",
+            "MCP authorization controls do not accept a request body",
+          );
+          return;
+        }
+        response.writeHead(200, { "Content-Type": "text/event-stream" });
+        const status = key.endsWith("/cancel") ? "cancelled" : "granted";
+        for (const frame of authorizationControlFrames(status)) {
+          writeSSE(response, frame);
+        }
+        response.end();
+      });
       return;
     }
     if (key === `GET /v1/sessions/${sessionID}/watch`) {

@@ -1,5 +1,19 @@
 import { describe, expect, it } from "vitest";
-import { describeCron } from "./formatters";
+import { describeCron, formatDurationMs } from "./formatters";
+
+describe("formatDurationMs", () => {
+  it("renders sub-second spans in ms and longer spans in trimmed seconds", () => {
+    expect(formatDurationMs(840)).toBe("840ms");
+    expect(formatDurationMs(4100)).toBe("4.1s");
+    expect(formatDurationMs(2000)).toBe("2s");
+    expect(formatDurationMs(61_500)).toBe("61.5s");
+  });
+
+  it("clamps negatives and non-finite values to 0ms", () => {
+    expect(formatDurationMs(-5)).toBe("0ms");
+    expect(formatDurationMs(Number.NaN)).toBe("0ms");
+  });
+});
 
 describe("describeCron", () => {
   it("reads the shapes the schedule builder emits", () => {

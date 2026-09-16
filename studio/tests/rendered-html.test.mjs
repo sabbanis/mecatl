@@ -147,6 +147,14 @@ test("external mode injects daemon auth server-side and disables local controls"
   );
   assert.equal(status.mode, "external");
   assert.equal(status.workspace, "/workspace/from-deployment");
+  // The deployment spawned its own mecated: Studio neither knows nor sets
+  // its posture/trust/shell flags, so the saved-permissions mirror is null
+  // (the EFFECTIVE posture still reads off the daemon's capabilities).
+  assert.equal(status.permissions, null);
+  // Same for the session store: its location / in-memory mode is the
+  // deployment's own spawn flag, so the mirror is null and the Storage card
+  // renders the managed note instead of a form.
+  assert.equal(status.storage, null);
 
   const mutation = await fetch(
     `${studioBaseURL}/api/mecatl-control/model-router`,
@@ -171,6 +179,13 @@ test("external mode injects daemon auth server-side and disables local controls"
     ["providers/openrouter/test", "POST"],
     ["providers/openrouter", "DELETE"],
     ["restart", "POST"],
+    // Posture / trust / shell-less mode are spawn flags of the MANAGED
+    // daemon: the external deployment owns its own, read included.
+    ["permissions", "GET"],
+    ["permissions", "POST"],
+    // The session-store location / in-memory switch is a spawn flag of the
+    // MANAGED daemon too.
+    ["storage", "POST"],
   ]) {
     const refused = await fetch(`${studioBaseURL}/api/mecatl-control/${path}`, {
       method,
@@ -288,6 +303,14 @@ test("controller policy rejects CSRF and DNS-rebinding requests", () => {
     ["POST", "/providers/openrouter/test"],
     ["DELETE", "/providers/openrouter"],
     ["POST", "/restart"],
+    // The permissions document (posture / trust / shell-less) is likewise
+    // header-gated on BOTH verbs: another loopback-origin page must not read
+    // the daemon's trust flags, let alone raise its posture.
+    ["GET", "/permissions"],
+    ["POST", "/permissions"],
+    // The session-store write relocates (or drops) the daemon's persistence;
+    // another loopback-origin page must not be able to do that.
+    ["POST", "/storage"],
   ]) {
     assert.equal(
       requestIsAllowed(

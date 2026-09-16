@@ -116,8 +116,15 @@ export async function proxyControl(request: Request, path: string[]) {
         gateway: null,
         modelRouter: null,
         operatorSettings: true,
+        // The deployment spawned its own mecated: Studio neither knows nor
+        // sets its posture/trust/shell flags (the EFFECTIVE posture still
+        // reads off the daemon's capabilities.posture).
+        permissions: null,
         skills: null,
         memory: null,
+        // The session store is likewise the deployment's spawn flag: Studio
+        // neither knows its location nor whether it is in-memory.
+        storage: null,
       });
     }
     return Response.json(

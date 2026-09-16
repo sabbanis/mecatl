@@ -158,7 +158,7 @@ export default function AppearanceSettingsPage() {
 
         <SettingsRow
           label="Message queuing"
-          description="Shift+Enter does the opposite."
+          description="Shift+Enter does the opposite; a cancelled or failed run pauses the queue until you resume it."
         >
           <OptionField
             label="Message queuing"

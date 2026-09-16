@@ -30,6 +30,8 @@ import type {
   DelegationInfo,
   ToolCallInfo,
 } from "@/features/agent";
+import { DeliveryNoteCard } from "@/features/agent/components/delivery-note-card";
+import { formatTurnStat, isTrivialTurn } from "@/features/agent/turn-stats";
 import { fileKindMeta } from "@/lib/file-meta";
 import { formatMessageTime, formatTokens } from "@/lib/formatters";
 import {
@@ -447,6 +449,7 @@ export function MessageBubble({
   threadSummary,
   botName = "Mecatl",
   showActivity = true,
+  streaming = false,
 }: {
   message: AgentMessage;
   onOpenArtifact?: (artifact: Artifact) => void;
@@ -458,6 +461,8 @@ export function MessageBubble({
   threadSummary?: ThreadSummary;
   botName?: string;
   showActivity?: boolean;
+  /** The turn is still in flight: the per-turn stat line waits for it to finish. */
+  streaming?: boolean;
 }) {
   const isUser = message.role === "user";
   const { name: userName } = useUserDisplayName();
@@ -505,10 +510,22 @@ export function MessageBubble({
     ...d,
     id: d.childId ?? `${index}:${d.kind}:${d.label}`,
   }));
+  // The per-turn stat line waits for the FINISHED turn and skips a trivial
+  // one (a near-empty exchange whose figures are noise).
+  const turnStat =
+    !isUser &&
+    !streaming &&
+    message.turnStats &&
+    !isTrivialTurn(message.turnStats)
+      ? formatTurnStat(message.turnStats)
+      : null;
   // A failed turn must always render (never look like an empty success), as
-  // must one that only carries notices or delegation badges.
+  // must one that only carries notices, delegation badges, or a stat line.
   const hasExtras =
-    Boolean(message.failed) || notices.length > 0 || delegations.length > 0;
+    Boolean(message.failed) ||
+    notices.length > 0 ||
+    delegations.length > 0 ||
+    turnStat !== null;
 
   if (!isUser && !hasContent && !hasToolCalls && !hasExtras) return null;
   if (!isUser && !hasContent && hasToolCalls && !showActivity && !hasExtras)
@@ -523,11 +540,17 @@ export function MessageBubble({
       onTouchStart={onTouchStart}
       onTouchMove={onTouchMove}
     >
-      <div className="pt-0.5">{isUser ? <UserAvatar /> : <BotAvatar />}</div>
+      <div className="pt-0.5">
+        {isUser && !message.delivery ? <UserAvatar /> : <BotAvatar />}
+      </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           <span className="text-sm lg:text-[15px] font-bold">
-            {isUser ? userName || "You" : (message.agentName ?? botName)}
+            {message.delivery
+              ? "Scheduled task"
+              : isUser
+                ? userName || "You"
+                : (message.agentName ?? botName)}
           </span>
           <span
             suppressHydrationWarning
@@ -535,6 +558,14 @@ export function MessageBubble({
           >
             {formatMessageTime(message.timestamp)}
           </span>
+          {isUser && message.steered && (
+            <span
+              className="text-[11px] text-muted-foreground"
+              title="Injected into the run mid-turn as a steer"
+            >
+              steered
+            </span>
+          )}
         </div>
         {message.attachments && message.attachments.length > 0 && (
           <div className="flex flex-wrap gap-1.5 my-1.5">
@@ -582,7 +613,17 @@ export function MessageBubble({
             ))}
           </div>
         )}
-        {hasContent && (
+        {message.delivery && (
+          // A start note has an empty body, so the card renders independent
+          // of the content gate below.
+          <div className="mt-1">
+            <DeliveryNoteCard
+              delivery={message.delivery}
+              body={message.content}
+            />
+          </div>
+        )}
+        {hasContent && !message.delivery && (
           <div className="text-sm lg:text-[15px] mt-0.5 leading-[1.75] text-foreground/80">
             {isUser ? (
               (() => {
@@ -635,6 +676,14 @@ export function MessageBubble({
               ),
             )}
           </div>
+        )}
+        {turnStat && (
+          <p
+            className="mt-1 text-[11px] tabular-nums text-muted-foreground/70"
+            title="This turn's tokens sent ↑ and received ↓, model time, and the share of input served from the prompt cache."
+          >
+            {turnStat}
+          </p>
         )}
         {message.failed && (
           <div className="mt-2 flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2">

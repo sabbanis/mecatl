@@ -72,6 +72,56 @@ const result = (partial: Record<string, unknown>) => ({
   ...partial,
 });
 
+const parallelPayload = (partial: Record<string, unknown>) => ({
+  branchCount: 0,
+  branchIndex: 0,
+  branchLabel: "",
+  childId: "",
+  detail: "",
+  durationMs: BigInt(0),
+  failed: false,
+  goal: "",
+  innerKind: "",
+  isError: false,
+  join: "",
+  kind: "",
+  model: "",
+  parentCallId: "",
+  routedCategory: "",
+  routedModel: "",
+  routingReason: "",
+  stop: "",
+  text: "",
+  toolCount: 0,
+  toolName: "",
+  usage: undefined,
+  winner: -1,
+  ...partial,
+});
+
+const teamPayload = (partial: Record<string, unknown>) => ({
+  cause: "",
+  contextUsed: BigInt(0),
+  contextWindow: BigInt(0),
+  detail: "",
+  dispositions: [],
+  findings: [],
+  innerKind: "",
+  isError: false,
+  member: "",
+  memberSessionId: "",
+  parentCallId: "call-t",
+  roster: [],
+  rounds: 0,
+  stop: "",
+  tasks: [],
+  teamId: "team-1",
+  text: "",
+  toolName: "",
+  usage: undefined,
+  ...partial,
+});
+
 const translate = (event: SdkEvent) => translateEvent(event, "session-1");
 
 describe("translateEvent", () => {
@@ -203,6 +253,8 @@ describe("translateEvent", () => {
     expect(
       translate(
         sdkEvent("team.start", {
+          teamId: "team-1",
+          parentCallId: "call-t",
           roster: [
             member({ name: "reviewer", role: "lead", model: "big-1" }),
             member({ name: "tester" }),
@@ -215,33 +267,73 @@ describe("translateEvent", () => {
         kind: "team",
         label: "reviewer (lead)",
         detail: "big-1",
+        teamId: "team-1",
+        parentCallId: "call-t",
+        memberName: "reviewer",
+        model: "big-1",
       },
-      { type: "delegation", kind: "team", label: "tester", detail: "" },
+      {
+        type: "delegation",
+        kind: "team",
+        label: "tester",
+        detail: "",
+        teamId: "team-1",
+        parentCallId: "call-t",
+        memberName: "tester",
+      },
     ]);
-    const parallel = (partial: Record<string, unknown>) => ({
-      branchCount: 0,
-      branchIndex: 0,
-      branchLabel: "",
-      kind: "",
-      model: "",
-      routedCategory: "",
-      routedModel: "",
-      ...partial,
-    });
     expect(
       translate(
         sdkEvent(
           "parallel.branch",
-          parallel({ kind: "branch_start", branchIndex: 1 }),
+          parallelPayload({
+            kind: "branch_start",
+            branchIndex: 1,
+            parentCallId: "call-p",
+            childId: "parallel-call-p-1",
+          }),
         ),
       ),
     ).toEqual([
-      { type: "delegation", kind: "parallel", label: "branch 2", detail: "" },
+      {
+        type: "delegation",
+        kind: "parallel",
+        label: "branch 2",
+        detail: "",
+        childId: "parallel-call-p-1",
+        parentCallId: "call-p",
+        branchIndex: 1,
+      },
     ]);
-    // Only a branch START is a badge; other branch lifecycle frames are silent.
+    // A branch END is the terminal card update — never silent.
     expect(
-      translate(sdkEvent("parallel.branch", parallel({ kind: "branch_end" }))),
-    ).toEqual([]);
+      translate(
+        sdkEvent(
+          "parallel.branch",
+          parallelPayload({
+            kind: "branch_end",
+            branchIndex: 1,
+            parentCallId: "call-p",
+            childId: "parallel-call-p-1",
+            stop: "error",
+            failed: true,
+            toolCount: 3,
+            durationMs: BigInt(900),
+          }),
+        ),
+      ),
+    ).toEqual([
+      {
+        type: "delegation_end",
+        childId: "parallel-call-p-1",
+        parentCallId: "call-p",
+        branchIndex: 1,
+        stop: "error",
+        failed: true,
+        toolCount: 3,
+        durationMs: 900,
+      },
+    ]);
   });
 
   it("translates a steer drain echo to the steer arm with its watermark id", () => {
@@ -291,6 +383,46 @@ describe("translateEvent", () => {
     ).toEqual([{ type: "notice", text: "resumed after a retry" }]);
     expect(translate(sdkEvent("turn.start"))).toEqual([]);
     expect(translate(sdkEvent("session.init"))).toEqual([]);
+  });
+
+  it("translates turn.end into a per-turn stat event (bigint → number), never silent", () => {
+    expect(
+      translate(
+        sdkEvent("turn.end", {
+          durationMs: BigInt(4100),
+          usage: usage({
+            inputTokens: BigInt(1200),
+            outputTokens: BigInt(340),
+            cacheReadTokens: BigInt(420),
+            cacheWriteTokens: BigInt(7),
+          }),
+        }),
+      ),
+    ).toEqual([
+      {
+        type: "turn_end",
+        durationMs: 4100,
+        inputTokens: 1200,
+        outputTokens: 340,
+        cacheReadTokens: 420,
+        cacheWriteTokens: 7,
+        reasoningTokens: 0,
+      },
+    ]);
+    // A turn.end without usage still reports its elapsed model-call time.
+    expect(
+      translate(sdkEvent("turn.end", { durationMs: BigInt(250) })),
+    ).toEqual([
+      {
+        type: "turn_end",
+        durationMs: 250,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        reasoningTokens: 0,
+      },
+    ]);
     // Routing is an implementation detail, not something shown per turn.
     expect(
       translate(
@@ -511,6 +643,7 @@ describe("translateEvent", () => {
       {
         type: "delegation_progress",
         childId: "subagent-abc",
+        parentCallId: "call-1",
         toolCount: 4,
         inputTokens: 1200,
         outputTokens: 300,
@@ -606,5 +739,383 @@ describe("translateEvent", () => {
     ).toEqual([
       { type: "tool_result", callId: "c1", output: "ok", isError: false },
     ]);
+  });
+
+  // ── delegation protocol (parallel.* / team.* / subagent.tool previews) ────
+
+  it("carries the child-activity preview on subagent.tool (inner kind, error, detail, text)", () => {
+    expect(
+      translate(
+        sdkEvent(
+          "subagent.tool",
+          subagent({
+            parentCallId: "call-1",
+            childId: "subagent-abc",
+            innerKind: "tool.result",
+            toolName: "Read",
+            isError: true,
+            detail: "no such file",
+            text: "",
+            toolCount: 2,
+          }),
+        ),
+      ),
+    ).toEqual([
+      {
+        type: "delegation_progress",
+        childId: "subagent-abc",
+        parentCallId: "call-1",
+        toolCount: 2,
+        toolName: "Read",
+        innerKind: "tool.result",
+        isError: true,
+        detail: "no such file",
+      },
+    ]);
+    // subagent.start / subagent.end carry the call id and model too.
+    const [start] = translate(
+      sdkEvent(
+        "subagent.start",
+        subagent({ childId: "c", parentCallId: "call-1", model: "small-1" }),
+      ),
+    );
+    expect(start).toMatchObject({ parentCallId: "call-1", model: "small-1" });
+    const [end] = translate(
+      sdkEvent(
+        "subagent.end",
+        subagent({ childId: "c", parentCallId: "call-1", stop: "end_turn" }),
+      ),
+    );
+    expect(end).toMatchObject({
+      type: "delegation_end",
+      parentCallId: "call-1",
+    });
+  });
+
+  it("orders a team roster LEAD FIRST and carries the member handles", () => {
+    const member = (partial: Record<string, unknown>) => ({
+      lead: false,
+      model: "",
+      mutating: false,
+      name: "",
+      role: "",
+      routedCategory: "",
+      routedModel: "",
+      routingReason: "",
+      ...partial,
+    });
+    const events = translate(
+      sdkEvent(
+        "team.start",
+        teamPayload({
+          roster: [
+            member({ name: "tester", mutating: true, routingReason: "pinned" }),
+            member({ name: "coordinator", role: "lead", lead: true }),
+          ],
+        }),
+      ),
+    );
+    expect(events.map((event) => (event as { label: string }).label)).toEqual([
+      "coordinator (lead)",
+      "tester",
+    ]);
+    expect(events[0]).toMatchObject({
+      memberName: "coordinator",
+      lead: true,
+      teamId: "team-1",
+      parentCallId: "call-t",
+    });
+    expect(events[1]).toMatchObject({
+      memberName: "tester",
+      mutating: true,
+      routingReason: "pinned",
+    });
+    expect((events[1] as { lead?: boolean }).lead).toBeUndefined();
+  });
+
+  it("translates parallel.start / parallel.end into the group header and terminal", () => {
+    expect(
+      translate(
+        sdkEvent(
+          "parallel.start",
+          parallelPayload({
+            parentCallId: "call-p",
+            join: "first",
+            branchCount: 3,
+          }),
+        ),
+      ),
+    ).toEqual([
+      {
+        type: "parallel_start",
+        parentCallId: "call-p",
+        join: "first",
+        branchCount: 3,
+      },
+    ]);
+    expect(
+      translate(
+        sdkEvent(
+          "parallel.end",
+          parallelPayload({
+            parentCallId: "call-p",
+            join: "first",
+            branchCount: 3,
+            winner: 1,
+            stop: "end_turn",
+            usage: usage({
+              inputTokens: BigInt(500),
+              outputTokens: BigInt(50),
+            }),
+          }),
+        ),
+      ),
+    ).toEqual([
+      {
+        type: "parallel_end",
+        parentCallId: "call-p",
+        join: "first",
+        branchCount: 3,
+        winner: 1,
+        stop: "end_turn",
+        inputTokens: 500,
+        outputTokens: 50,
+      },
+    ]);
+    // join=all / none succeeded: winner −1 passes through verbatim.
+    const [none] = translate(
+      sdkEvent(
+        "parallel.end",
+        parallelPayload({ parentCallId: "call-p", join: "all", winner: -1 }),
+      ),
+    );
+    expect(none).toMatchObject({ winner: -1, join: "all" });
+  });
+
+  it("keys a parallel branch_tool by (parentCallId, branchIndex) — it carries no child id", () => {
+    expect(
+      translate(
+        sdkEvent(
+          "parallel.branch",
+          parallelPayload({
+            kind: "branch_tool",
+            parentCallId: "call-p",
+            branchIndex: 2,
+            toolCount: 5,
+            innerKind: "tool.call",
+            toolName: "Bash",
+            detail: "command: go test",
+            usage: usage({ inputTokens: BigInt(10) }),
+          }),
+        ),
+      ),
+    ).toEqual([
+      {
+        type: "delegation_progress",
+        parentCallId: "call-p",
+        branchIndex: 2,
+        toolCount: 5,
+        inputTokens: 10,
+        outputTokens: 0,
+        toolName: "Bash",
+        innerKind: "tool.call",
+        detail: "command: go test",
+      },
+    ]);
+    // An unrecognized branch kind is quiet (the per-branch kinds are closed).
+    expect(
+      translate(
+        sdkEvent("parallel.branch", parallelPayload({ kind: "branch_wat" })),
+      ),
+    ).toEqual([]);
+  });
+
+  it("translates team.member with its inner kind, usage, context meter (bigint → number), and cause", () => {
+    expect(
+      translate(
+        sdkEvent(
+          "team.member",
+          teamPayload({
+            member: "tester",
+            memberSessionId: "team-team-1-tester",
+            innerKind: "turn.end",
+            usage: usage({
+              inputTokens: BigInt(4000),
+              outputTokens: BigInt(200),
+            }),
+            contextUsed: BigInt(4000),
+            contextWindow: BigInt(128000),
+          }),
+        ),
+      ),
+    ).toEqual([
+      {
+        type: "team_member",
+        teamId: "team-1",
+        parentCallId: "call-t",
+        member: "tester",
+        memberSessionId: "team-team-1-tester",
+        innerKind: "turn.end",
+        isError: false,
+        inputTokens: 4000,
+        outputTokens: 200,
+        contextUsed: 4000,
+        contextWindow: 128000,
+      },
+    ]);
+    const [call] = translate(
+      sdkEvent(
+        "team.member",
+        teamPayload({
+          member: "tester",
+          innerKind: "tool.call",
+          toolName: "Edit",
+          detail: "path: x.go",
+        }),
+      ),
+    );
+    expect(call).toMatchObject({
+      innerKind: "tool.call",
+      toolName: "Edit",
+      detail: "path: x.go",
+      contextUsed: 0,
+      contextWindow: 0,
+    });
+    const [failed] = translate(
+      sdkEvent(
+        "team.member",
+        teamPayload({
+          member: "tester",
+          innerKind: "result",
+          text: "gave up",
+          cause: "provider outage",
+        }),
+      ),
+    );
+    expect(failed).toMatchObject({
+      innerKind: "result",
+      text: "gave up",
+      cause: "provider outage",
+    });
+  });
+
+  it("snapshots team.tasks and team.findings", () => {
+    expect(
+      translate(
+        sdkEvent(
+          "team.tasks",
+          teamPayload({
+            tasks: [
+              {
+                id: "t1",
+                state: "in_progress",
+                assignee: "tester",
+                deps: ["t0"],
+                description: "run the suite",
+              },
+            ],
+          }),
+        ),
+      ),
+    ).toEqual([
+      {
+        type: "team_tasks",
+        teamId: "team-1",
+        parentCallId: "call-t",
+        tasks: [
+          {
+            id: "t1",
+            state: "in_progress",
+            assignee: "tester",
+            deps: ["t0"],
+            description: "run the suite",
+          },
+        ],
+      },
+    ]);
+    expect(
+      translate(
+        sdkEvent(
+          "team.findings",
+          teamPayload({
+            findings: [{ member: "tester", body: "suite is green" }],
+          }),
+        ),
+      ),
+    ).toEqual([
+      {
+        type: "team_findings",
+        teamId: "team-1",
+        parentCallId: "call-t",
+        findings: [{ member: "tester", body: "suite is green" }],
+      },
+    ]);
+  });
+
+  it("translates team.end with dispositions, mapping the stop reason enum {1:error, 2:cancelled, 3:budget, 0:''}", () => {
+    expect(
+      translate(
+        sdkEvent(
+          "team.end",
+          teamPayload({
+            rounds: 4,
+            stop: "end_turn",
+            usage: usage({
+              inputTokens: BigInt(20000),
+              outputTokens: BigInt(1500),
+            }),
+            dispositions: [
+              { name: "lead", stopped: false, errorRounds: 1, reason: 0 },
+              { name: "a", stopped: true, errorRounds: 2, reason: 1 },
+              { name: "b", stopped: true, errorRounds: 0, reason: 2 },
+              { name: "c", stopped: true, errorRounds: 0, reason: 3 },
+              { name: "d", stopped: true, errorRounds: 0, reason: 42 },
+            ],
+          }),
+        ),
+      ),
+    ).toEqual([
+      {
+        type: "team_end",
+        teamId: "team-1",
+        parentCallId: "call-t",
+        rounds: 4,
+        stop: "end_turn",
+        inputTokens: 20000,
+        outputTokens: 1500,
+        tasks: [],
+        findings: [],
+        dispositions: [
+          { name: "lead", stopped: false, errorRounds: 1, reason: "" },
+          { name: "a", stopped: true, errorRounds: 2, reason: "error" },
+          { name: "b", stopped: true, errorRounds: 0, reason: "cancelled" },
+          { name: "c", stopped: true, errorRounds: 0, reason: "budget" },
+          { name: "d", stopped: true, errorRounds: 0, reason: "" },
+        ],
+      },
+    ]);
+  });
+
+  it("renders none of the delegation kinds as silent or as a not-rendered notice", () => {
+    const frames: [string, unknown][] = [
+      ["team.member", teamPayload({ member: "m", innerKind: "message.delta" })],
+      ["team.tasks", teamPayload({})],
+      ["team.findings", teamPayload({})],
+      ["team.end", teamPayload({})],
+      ["parallel.start", parallelPayload({ parentCallId: "call-p" })],
+      ["parallel.end", parallelPayload({ parentCallId: "call-p" })],
+      [
+        "parallel.branch",
+        parallelPayload({ kind: "branch_end", parentCallId: "call-p" }),
+      ],
+    ];
+    for (const [kind, payload] of frames) {
+      const events = translate(sdkEvent(kind, payload));
+      expect(events, kind).not.toEqual([]);
+      expect(
+        events.some((event) => event.type === "notice"),
+        kind,
+      ).toBe(false);
+    }
   });
 });

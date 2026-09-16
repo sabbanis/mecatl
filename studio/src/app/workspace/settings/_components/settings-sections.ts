@@ -1,12 +1,14 @@
 import {
   Bot,
   Brain,
+  Database,
   FlaskConical,
   GraduationCap,
   Network,
   Palette,
   Route,
   Server,
+  ShieldCheck,
   UserRound,
 } from "lucide-react";
 
@@ -51,6 +53,11 @@ export const SETTINGS_GROUPS: Array<{
         icon: Bot,
       },
       {
+        href: "/workspace/settings/permissions",
+        label: "Permissions",
+        icon: ShieldCheck,
+      },
+      {
         href: "/workspace/settings/memory",
         label: "Memory",
         icon: Brain,
@@ -74,6 +81,11 @@ export const SETTINGS_GROUPS: Array<{
         href: "/workspace/settings/gateway",
         label: "MCP gateway",
         icon: Network,
+      },
+      {
+        href: "/workspace/settings/storage",
+        label: "Storage",
+        icon: Database,
       },
     ],
   },

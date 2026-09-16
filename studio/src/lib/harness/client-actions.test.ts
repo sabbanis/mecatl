@@ -372,6 +372,7 @@ describe("fetchHarnessSessionDetail", () => {
       providerId: "openrouter",
       modelId: "openai/gpt-5",
       contextWindow: 400000,
+      reasoningEffort: "",
     });
     expect(detail.capabilities).toMatchObject({ manualCompaction: true });
   });
@@ -385,6 +386,7 @@ describe("fetchHarnessSessionDetail", () => {
     await expect(fetchHarnessSessionDetail("s1")).resolves.toEqual({
       resolvedModel: null,
       capabilities: {},
+      tokenUsage: null,
     });
   });
 });

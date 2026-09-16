@@ -38,6 +38,9 @@ import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import {
   getAgentMentions,
   getSlashCommands,
+  isStudioBuiltinCommand,
+  STUDIO_BUILTIN_COMMANDS,
+  type StudioBuiltinCommand,
 } from "@/features/agent/composer-capabilities";
 import { usePrompt } from "@/hooks/use-prompt";
 import { fileKindMeta } from "@/lib/file-meta";
@@ -74,7 +77,9 @@ interface ChatInputProps {
   /** Refocuses the field when this changes (e.g. the open chat's id). */
   focusKey?: string;
   onSend?: (content: string, files?: File[]) => void;
-  onQueue?: (content: string) => void;
+  /** Holds the text — plus the staged files, which leave the composer with
+      it — for the next run (mid-run queuing). */
+  onQueue?: (content: string, files?: File[]) => void;
   /** Injects the text — plus any staged image attachments (ADR 0251) — into
       the in-flight run at the next step (mid-run steering). Only meaningful
       while `isStreaming`; absent when the daemon lacks the steer capability
@@ -95,7 +100,17 @@ interface ChatInputProps {
       that pre-fills a prompt without sending it). Unlike `appendText`, it is
       not quoted and replaces rather than appends. */
   initialText?: string | null;
+  /** Files re-staged alongside `initialText` (a queued message pulled back
+      for editing brings its attachments with it); consumed together. */
+  initialFiles?: File[];
   onInitialTextConsumed?: () => void;
+  /** Messages held in the queue strip. On an EMPTY composer with a held
+      queue: Enter (idle) sends them via `onResumeQueue`, ↑ pulls them back
+      via `onEditAllQueued`, Esc (idle) drops them via `onClearQueue`. */
+  queuedCount?: number;
+  onResumeQueue?: () => void;
+  onEditAllQueued?: () => void;
+  onClearQueue?: () => void;
   /** Display-only model label for live-harness sessions (see ModelSelector). */
   modelLockedLabel?: string;
   /** Live-chat model switch: picking forks the chat onto the model (the
@@ -109,6 +124,11 @@ interface ChatInputProps {
       Surfaces without a mode concept (the thread panel, the mock tour chat)
       simply omit it. */
   onModeChange?: (mode: SessionPermissionMode) => void;
+  /** Answers a Studio-local slash command (`/help`) instead of sending it:
+      picked from the `/` menu or typed as the whole message, the composer
+      clears and this fires. Absent, the builtins are not offered and the text
+      goes to the agent like any other message. */
+  onLocalCommand?: (command: StudioBuiltinCommand) => void;
 }
 
 /**
@@ -995,17 +1015,44 @@ function agentMenuItems(query: string): ComposerMenuItem[] {
     }));
 }
 
-/** Filter the slash-command list for the `/`-command menu by name prefix. */
-function commandMenuItems(query: string): ComposerMenuItem[] {
+/**
+ * Filter the slash-command list for the `/`-command menu by name prefix.
+ * Studio's own builtins (`/help`) come first and shadow a daemon command of
+ * the same name, so what the menu shows is what fires; `builtins: false` (a
+ * surface with no local-command handler) lists the daemon's commands only.
+ * Exported for its unit test.
+ */
+export function commandMenuItems(
+  query: string,
+  options: { builtins?: boolean } = {},
+): ComposerMenuItem[] {
   const q = query.toLowerCase();
-  return getSlashCommands()
-    .filter((c) => c.name.startsWith(q))
-    .map((c) => ({
-      id: c.name,
-      label: c.name,
-      primary: `/${c.name}`,
-      secondary: c.description,
-    }));
+  const builtins =
+    options.builtins === false
+      ? []
+      : STUDIO_BUILTIN_COMMANDS.filter((c) => c.name.startsWith(q));
+  const shadowed = new Set<string>(builtins.map((c) => c.name));
+  const daemon = getSlashCommands().filter(
+    (c) => c.name.startsWith(q) && !shadowed.has(c.name),
+  );
+  return [...builtins, ...daemon].map((c) => ({
+    id: c.name,
+    label: c.name,
+    primary: `/${c.name}`,
+    secondary: c.description,
+  }));
+}
+
+/**
+ * The Studio-local command a whole message is, or null. Only a lone `/name`
+ * (trailing whitespace allowed, case-insensitive) matches — `/helpme` and
+ * `/help now` go to the agent. Exported for its unit test.
+ */
+export function matchLocalCommand(text: string): StudioBuiltinCommand | null {
+  const match = /^\/(\S+)\s*$/.exec(text);
+  if (!match) return null;
+  const name = (match[1] ?? "").toLowerCase();
+  return isStudioBuiltinCommand(name) ? name : null;
 }
 
 /**
@@ -1102,6 +1149,40 @@ export function resolveComposerAction(input: {
   return input.behavior === "queue" ? "steer" : "queue";
 }
 
+/** What a key does to the held queue from an EMPTY composer. */
+export type EmptyComposerQueueAction = "resume" | "edit" | "clear";
+
+/**
+ * The empty-composer queue keys, extracted pure (the TUI's paused-queue
+ * gestures): only with something queued and no autocomplete menu open —
+ *
+ * - Enter, idle: send the held queue now (`resume`).
+ * - ↑, streaming or idle: pull the held queue back for editing (`edit`).
+ * - Esc, idle: drop the held queue (`clear`) — while streaming Esc keeps
+ *   its run-cancel meaning (the global close.esc), so null.
+ *
+ * The caller has already established the composer is empty; a non-empty
+ * composer keeps every key's ordinary editing meaning.
+ */
+export function resolveEmptyComposerKey(input: {
+  key: string;
+  queuedCount: number;
+  isStreaming: boolean;
+  menuOpen: boolean;
+}): EmptyComposerQueueAction | null {
+  if (input.menuOpen || input.queuedCount <= 0) return null;
+  switch (input.key) {
+    case "Enter":
+      return input.isStreaming ? null : "resume";
+    case "ArrowUp":
+      return "edit";
+    case "Escape":
+      return input.isStreaming ? null : "clear";
+    default:
+      return null;
+  }
+}
+
 /** Open autocomplete menu state, mirrored from TipTap's suggestion lifecycle. */
 interface ComposerMenu {
   kind: "agent" | "command";
@@ -1165,7 +1246,12 @@ export function ChatInput({
   appendText,
   onAppendConsumed,
   initialText,
+  initialFiles,
   onInitialTextConsumed,
+  queuedCount = 0,
+  onResumeQueue,
+  onEditAllQueued,
+  onClearQueue,
   modelLockedLabel,
   onSwitchModel,
   currentModelId,
@@ -1174,6 +1260,7 @@ export function ChatInput({
   onPreviewAttachment,
   mode,
   onModeChange,
+  onLocalCommand,
 }: ChatInputProps) {
   const placeholder = placeholderProp ?? DEFAULT_PLACEHOLDER;
   // Plain-text mirror of the editor, kept in sync via onUpdate. Used only for
@@ -1191,6 +1278,37 @@ export function ChatInput({
   // gives the suggestion keydown handler a synchronous read of current state.
   const [menu, setMenu] = useState<ComposerMenu | null>(null);
 
+  // The Studio-local command handler, read through a ref so the suggestion
+  // plugins (built once) always see the latest prop without rebuilding the
+  // editor's extensions. Updated in an effect, never during render.
+  const onLocalCommandRef = useRef(onLocalCommand);
+  useEffect(() => {
+    onLocalCommandRef.current = onLocalCommand;
+  }, [onLocalCommand]);
+
+  // Picking a menu row. A Studio builtin (`/help`) acts on selection: the
+  // composer clears and the handler runs, so ONE Enter on the menu is enough
+  // and no chip is ever inserted. Every other row inserts its atomic chip via
+  // the suggestion's `command`.
+  const selectMenuItem = useCallback(
+    (
+      kind: "agent" | "command",
+      props: SuggestionProps<ComposerMenuItem>,
+      item: ComposerMenuItem,
+    ) => {
+      const handler = onLocalCommandRef.current;
+      if (kind === "command" && handler && isStudioBuiltinCommand(item.id)) {
+        props.editor.commands.clearContent();
+        setText("");
+        setMenu(null);
+        handler(item.id);
+        return;
+      }
+      props.command(item);
+    },
+    [],
+  );
+
   // Wire each mention's TipTap suggestion to the shared menu state. `command`
   // (from the suggestion props) inserts the atomic chip at the trigger range.
   // Keyboard navigation is handled by the editor's handleKeyDown (below), not
@@ -1202,7 +1320,7 @@ export function ChatInput({
           kind,
           items: props.items,
           index: 0,
-          select: (item) => props.command(item),
+          select: (item) => selectMenuItem(kind, props, item),
         });
       },
       onUpdate: (props: SuggestionProps<ComposerMenuItem>) => {
@@ -1215,20 +1333,25 @@ export function ChatInput({
             kind,
             items: props.items,
             index,
-            select: (item) => props.command(item),
+            select: (item) => selectMenuItem(kind, props, item),
           };
         });
       },
       onExit: () => setMenu((m) => (m && m.kind === kind ? null : m)),
     }),
-    [],
+    [selectMenuItem],
   );
 
   const mentions = useMemo(
     () =>
       createComposerMentions({
         agentItems: agentMenuItems,
-        commandItems: commandMenuItems,
+        // Builtins only where a handler can answer them; otherwise the menu
+        // is the daemon's list alone and `/help` would go to the agent.
+        commandItems: (query) =>
+          commandMenuItems(query, {
+            builtins: onLocalCommandRef.current != null,
+          }),
         makeRender,
       }),
     [makeRender],
@@ -1286,13 +1409,20 @@ export function ChatInput({
   }, [appendText, onAppendConsumed, editor]);
 
   useEffect(() => {
-    if (initialText && editor) {
+    if (!editor) return;
+    const hasFiles = (initialFiles?.length ?? 0) > 0;
+    if (!initialText && !hasFiles) return;
+    if (initialText) {
       setComposerText(editor, initialText);
       setText(editor.getText({ blockSeparator: "\n" }));
-      onInitialTextConsumed?.();
-      requestAnimationFrame(() => editor.commands.focus("end"));
     }
-  }, [initialText, onInitialTextConsumed, editor]);
+    // A pulled-back queued message brings its staged files with it.
+    if (initialFiles && hasFiles) {
+      setAttachedFiles((prev) => [...prev, ...initialFiles]);
+    }
+    onInitialTextConsumed?.();
+    requestAnimationFrame(() => editor.commands.focus("end"));
+  }, [initialText, initialFiles, onInitialTextConsumed, editor]);
 
   useEffect(() => {
     const onEnter = (e: DragEvent) => {
@@ -1344,6 +1474,17 @@ export function ChatInput({
       if (action === "newline") return;
       const trimmed = editor ? composerText(editor) : "";
       if (!trimmed || disabled) return;
+      // A Studio-local command (`/help`) is answered here whatever the
+      // action — typed mid-stream it opens the page, never queues or steers.
+      // Only where the surface wired a handler; otherwise the text goes to
+      // the agent like any other message.
+      const local = onLocalCommand ? matchLocalCommand(trimmed) : null;
+      if (local && onLocalCommand) {
+        onLocalCommand(local);
+        editor?.commands.clearContent();
+        setText("");
+        return;
+      }
       const files = attachedFiles.length > 0 ? attachedFiles : undefined;
       const resolved = action === "steer" && !onSteer ? "queue" : action;
       if (resolved === "steer" && onSteer) {
@@ -1356,11 +1497,12 @@ export function ChatInput({
         return;
       }
       if (resolved === "queue" && onQueue) {
-        onQueue(trimmed);
+        // The staged files travel with the queued text (and come back with
+        // it when the row is edited).
+        onQueue(trimmed, files);
         editor?.commands.clearContent();
         setText("");
-        // Attached files deliberately stay attached: a queued text cannot
-        // carry them, so they ride the next real send.
+        setAttachedFiles([]);
         return;
       }
       onSend?.(trimmed, files);
@@ -1368,7 +1510,7 @@ export function ChatInput({
       setText("");
       setAttachedFiles([]);
     },
-    [editor, disabled, onQueue, onSteer, onSend, attachedFiles],
+    [editor, disabled, onQueue, onSteer, onSend, onLocalCommand, attachedFiles],
   );
 
   /** Resolve + perform for one Enter press (or a send-button click, which is
@@ -1405,6 +1547,33 @@ export function ChatInput({
         }
         return;
       }
+      // The held-queue gestures live on an EMPTY composer only (Enter sends
+      // the queue, ↑ pulls it back, Esc clears it); a bare key, no chords.
+      if (
+        queuedCount > 0 &&
+        !event.shiftKey &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        (editor ? composerText(editor) : "") === ""
+      ) {
+        const queueAction = resolveEmptyComposerKey({
+          key: event.key,
+          queuedCount,
+          isStreaming,
+          menuOpen: false,
+        });
+        if (queueAction) {
+          // preventDefault also keeps the global close.esc from firing on
+          // the same Escape.
+          event.preventDefault();
+          event.stopPropagation();
+          if (queueAction === "resume") onResumeQueue?.();
+          else if (queueAction === "edit") onEditAllQueued?.();
+          else onClearQueue?.();
+          return;
+        }
+      }
       if (event.key !== "Enter") return;
       if (event.shiftKey) {
         // Shift+Enter acts (as the opposite of the Enter preference) only
@@ -1424,7 +1593,16 @@ export function ChatInput({
     };
     dom.addEventListener("keydown", onKeyDown, true);
     return () => dom.removeEventListener("keydown", onKeyDown, true);
-  }, [editor, menu, isStreaming, actOnEnter]);
+  }, [
+    editor,
+    menu,
+    isStreaming,
+    actOnEnter,
+    queuedCount,
+    onResumeQueue,
+    onEditAllQueued,
+    onClearQueue,
+  ]);
 
   const hasText = text.trim().length > 0;
 

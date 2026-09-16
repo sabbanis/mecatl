@@ -23,6 +23,8 @@ import {
   useAgentRoster,
   useAgentSessions,
 } from "@/features/agent";
+import type { StudioBuiltinCommand } from "@/features/agent/composer-capabilities";
+import { useDeliveryFollow } from "@/features/agent/hooks/use-delivery-follow";
 import { useHarnessRuntime } from "@/features/agent/hooks/use-harness-runtime";
 import { useSessionMode } from "@/features/agent/hooks/use-session-mode";
 import {
@@ -38,9 +40,7 @@ import { usePanelWidth } from "@/hooks/use-panel-width";
 import { usePrompt } from "@/hooks/use-prompt";
 import {
   compactHarnessSession,
-  fetchHarnessSessionDetail,
   forkHarnessSessionToModel,
-  type HarnessResolvedModel,
   ThreadSourceBusyError,
 } from "@/lib/harness/client";
 import { createHarnessDebugSession } from "@/lib/harness/debug";
@@ -257,6 +257,7 @@ function DraftView({
   models,
   autoModelLabel,
   onModelChange,
+  onLocalCommand,
 }: {
   onSend: (content: string, files?: File[]) => void;
   seed: string | null;
@@ -273,6 +274,8 @@ function DraftView({
   models: ComposerModelOption[];
   autoModelLabel: string;
   onModelChange: (id: string) => void;
+  /** Answers `/help` typed in the draft composer (opens the reference). */
+  onLocalCommand?: (command: StudioBuiltinCommand) => void;
 }) {
   return (
     <div className="flex h-full flex-col">
@@ -339,6 +342,7 @@ function DraftView({
               models={models}
               autoModelLabel={autoModelLabel}
               onModelChange={onModelChange}
+              onLocalCommand={onLocalCommand}
             />
           </div>
         </div>
@@ -365,6 +369,12 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   } = useAgentSessions();
   const { agents } = useAgentRoster();
   const router = useRouter();
+  // `/help` typed in any composer opens the reference — the same page `?`,
+  // ⌘/ and the chat ··· menu reach.
+  const openHelp = useCallback(
+    () => router.push("/workspace/shortcuts"),
+    [router],
+  );
   const { name: agentName } = useAgentDisplayName();
   const { side: sidebarSide } = useSessionListSide();
   // Labs preference: list the mock feature tour. The mock id is treated as
@@ -537,14 +547,27 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     pendingClarification,
     respondToClarification,
     usage,
+    contextOccupancy,
+    sessionDetail,
     queuedMessages,
     queueMessage,
     deleteQueued,
     takeQueued,
+    takeAllQueued,
+    clearQueue,
+    queuePaused,
+    resumeQueue,
     steerQueued,
     steerMessage,
     steerSupported,
+    pendingSteers,
+    cancelPendingSteers,
     cancelChat,
+    pendingAuthorization,
+    openAuthorization,
+    copyAuthorizationLink,
+    recheckAuthorization,
+    cancelAuthorization,
   } = useAgentChat(hookSessionId, {
     onSessionCreated: handleSessionCreated,
     createMode: getCreateMode,
@@ -562,24 +585,13 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   }, [cancelChat]);
 
   // The daemon's operator-enabled capabilities (A3 caches /v1/compatibility).
-  const { connected, serverCapabilities } = useRuntimeStatus();
+  const { serverCapabilities } = useRuntimeStatus();
 
-  // The session's effective model + context window (B1.1): GET-session's
-  // resolved_model echo. Per selected chat; a fetch failure just hides the
-  // meter (it is an approximation, never load-bearing).
-  const [resolvedModel, setResolvedModel] =
-    useState<HarnessResolvedModel | null>(null);
-  useEffect(() => {
-    setResolvedModel(null);
-    if (!selectedId || isMockTourSession(selectedId) || !connected) return;
-    const controller = new AbortController();
-    void fetchHarnessSessionDetail(selectedId, controller.signal)
-      .then((detail) => {
-        if (!controller.signal.aborted) setResolvedModel(detail.resolvedModel);
-      })
-      .catch(() => undefined);
-    return () => controller.abort();
-  }, [selectedId, connected]);
+  // The session's effective model + context window: the chat hook's
+  // GET-session detail (read on open and re-read on every run terminal), so
+  // the meter's denominator follows the daemon instead of a once-per-chat
+  // fetch. Null against an older daemon — the meter then shows the bare size.
+  const resolvedModel = sessionDetail?.resolvedModel ?? null;
 
   // Manual compaction (B1.2-B1.4): gated on the daemon's manual_compaction
   // capability (the compatibility document is the live source; the GET-session
@@ -662,6 +674,19 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
       thresholdTokens: null,
     };
   }, [selectedId, sessions]);
+
+  // Scheduled-task delivery notes that land while this chat sits idle (a
+  // fire that completed between two inventory polls): pick them up from the
+  // transcript, and notify a hidden tab of each newly completed one.
+  useDeliveryFollow({
+    sessionId: hookSessionId,
+    updatedAt: selectedSession?.updatedAt,
+    state: selectedSession?.state,
+    isStreaming,
+    connected: harnessLive,
+    messages,
+    refreshTranscript,
+  });
 
   const handleSelectSession = useCallback(
     (id: string) => {
@@ -884,19 +909,27 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
           onSteerQueued={steerQueued}
           onDeleteQueued={deleteQueued}
           onTakeQueued={takeQueued}
+          onTakeAllQueued={takeAllQueued}
+          onClearQueue={clearQueue}
+          queuePaused={queuePaused}
+          onResumeQueue={resumeQueue}
           // Steer is capability-gated (C1.2): absent, mid-run sends queue and
           // the composer's steer action degrades to queue.
           onSteerMessage={steerSupported ? steerMessage : undefined}
+          pendingSteers={steerSupported ? pendingSteers : undefined}
+          onRetractSteers={steerSupported ? cancelPendingSteers : undefined}
           onCancelRun={handleCancelRun}
           onCompact={compactSupported ? handleCompact : undefined}
+          onLocalCommand={openHelp}
           contextInfo={
-            resolvedModel && resolvedModel.contextWindow > 0
+            resolvedModel
               ? {
                   modelLabel: resolvedModel.modelId,
                   contextWindow: resolvedModel.contextWindow,
                 }
               : null
           }
+          contextOccupancy={contextOccupancy}
           botName={agentName}
           sidebarOpen={open}
           sidebarSide={sidebarSide}
@@ -905,6 +938,11 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
           onRespondApproval={respondToApproval}
           pendingClarification={pendingClarification}
           onRespondClarification={respondToClarification}
+          pendingAuthorization={pendingAuthorization}
+          onOpenAuthorization={openAuthorization}
+          onCopyAuthorizationLink={copyAuthorizationLink}
+          onRecheckAuthorization={recheckAuthorization}
+          onCancelAuthorization={cancelAuthorization}
           onRename={
             selectedSession.canRename === true
               ? () => sessionActions.onRename(selectedSession.id)
@@ -952,6 +990,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
             onShowSidebar={() => setSidebarOpen(true)}
             mode={mode}
             onModeChange={changeMode}
+            onLocalCommand={openHelp}
           />
         )}
       </div>
@@ -979,6 +1018,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
             onShowSidebar={() => setSidebarOpen(true)}
             mode={mode}
             onModeChange={changeMode}
+            onLocalCommand={openHelp}
           />
         )}
       </div>

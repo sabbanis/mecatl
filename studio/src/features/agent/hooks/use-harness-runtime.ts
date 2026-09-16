@@ -4,12 +4,18 @@ import { useCallback, useEffect, useState } from "react";
 import {
   connectHarnessGateway,
   fetchHarnessControlStatus,
+  fetchHarnessPermissions,
   fetchHarnessRouter,
   type HarnessControlStatus,
+  type HarnessPermissionsConfig,
+  type HarnessPermissionsState,
   type HarnessRouterCategory,
   type HarnessRouterConfig,
+  type HarnessStorageSettings,
   listHarnessModels,
+  saveHarnessPermissions,
   saveHarnessRouter,
+  saveHarnessStorageSettings,
   startHarnessGatewayOAuth,
   waitForHarnessGateway,
 } from "@/lib/harness/client";
@@ -45,6 +51,10 @@ export function useHarnessRuntime() {
   const { connected, mode } = useRuntimeStatus();
   const [status, setStatus] = useState<HarnessControlStatus | null>(null);
   const [router, setRouter] = useState<HarnessRouterConfig | null>(null);
+  const [permissions, setPermissions] = useState<{
+    config: HarnessPermissionsState;
+    operatorSettings: boolean;
+  } | null>(null);
   const [models, setModels] = useState<HarnessModel[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [busy, setBusy] = useState("");
@@ -55,14 +65,17 @@ export function useHarnessRuntime() {
     setIsLoading(true);
     try {
       // Independent reads, so they go out together rather than in a waterfall.
-      const [nextStatus, nextRouter, nextModels] = await Promise.all([
-        fetchHarnessControlStatus(signal),
-        fetchHarnessRouter(signal).catch(() => null),
-        listHarnessModels(signal).catch(() => []),
-      ]);
+      const [nextStatus, nextRouter, nextPermissions, nextModels] =
+        await Promise.all([
+          fetchHarnessControlStatus(signal),
+          fetchHarnessRouter(signal).catch(() => null),
+          fetchHarnessPermissions(signal).catch(() => null),
+          listHarnessModels(signal).catch(() => []),
+        ]);
       if (signal?.aborted) return;
       setStatus(nextStatus);
       setRouter(nextRouter);
+      setPermissions(nextPermissions);
       setModels(nextModels);
     } finally {
       if (!signal?.aborted) setIsLoading(false);
@@ -165,12 +178,47 @@ export function useHarnessRuntime() {
     [runWrite],
   );
 
+  /**
+   * Saves the operator posture / project trust / shell-less document. The
+   * controller restarts the daemon on the new flags; a refused start (auto or
+   * yolo as root outside a sandbox) is rolled back there and lands in `error`.
+   */
+  const savePermissions = useCallback(
+    async (config: HarnessPermissionsConfig) =>
+      runWrite(
+        "permissions",
+        () => saveHarnessPermissions(config),
+        "Permissions saved. The daemon restarted with the new posture.",
+      ),
+    [runWrite],
+  );
+
+  /**
+   * Saves the session-store document (durable directory or in-memory). The
+   * controller restarts the daemon on the new flag; a store it cannot use is
+   * rolled back there and lands in `error`.
+   */
+  const saveStorage = useCallback(
+    async (settings: HarnessStorageSettings) =>
+      runWrite(
+        "storage",
+        async () => {
+          await saveHarnessStorageSettings(settings);
+        },
+        "Storage settings saved. The daemon restarted.",
+      ),
+    [runWrite],
+  );
+
   return {
     live: connected,
     /** "external": config is owned by the deployment; writes answer 409. */
     mode,
     status,
     router,
+    /** The saved permissions document + whether an imported operator
+     *  settings file is active; null in external mode / before the load. */
+    permissions,
     models,
     isLoading,
     busy,
@@ -180,5 +228,7 @@ export function useHarnessRuntime() {
     connectGateway,
     connectGatewayOAuth,
     saveRouter,
+    savePermissions,
+    saveStorage,
   };
 }

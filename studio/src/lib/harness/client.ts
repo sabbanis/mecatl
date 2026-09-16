@@ -13,11 +13,14 @@
 
 import { validSkillName } from "@/lib/controller-security.mjs";
 import { apiError } from "./errors";
+import { type HarnessStorageState, readStorageState } from "./store-location";
 
 export { HarnessApiError } from "./errors";
 export * from "./inventory";
+export * from "./mcp-authorization";
 export * from "./schedules";
 export * from "./sessions";
+export * from "./store-location";
 
 // ── Controller: provider, model router, MCP gateway ─────────────────────────
 
@@ -49,6 +52,54 @@ export interface HarnessControlStatus {
   selectedProvider: string | null;
   /** The auth.yaml path on the controller's machine (guided-add copy). */
   authFile: string;
+  /** The controller's workspace label — display only (Studio rule 2). */
+  workspace: string;
+  /**
+   * The SAVED permissions the managed daemon was spawned with (operator
+   * posture, project trust, shell-less mode — CLI flags, never a
+   * settings.yaml key). Null in external mode, where the deployment owns
+   * them. The EFFECTIVE posture is `serverCapabilities.posture`.
+   */
+  permissions: HarnessPermissionsState | null;
+  /**
+   * The SESSION STORE the managed daemon was spawned with (durable
+   * directory or in-memory — a spawn flag the controller owns). Null in
+   * external mode and against an older controller that does not report it.
+   */
+  storage: HarnessStorageState | null;
+}
+
+/** The controller's saved permissions document (POST /permissions body). */
+export interface HarnessPermissionsConfig {
+  /** One of the daemon's posture ladder tiers: strict/trusted/auto/yolo. */
+  posture: string;
+  /** `--trust-project`: honour the project's ALLOW rules, soul, agents,
+   *  commands and skills. */
+  trustProject: boolean;
+  /** `--no-shell`: drop the Shell tool from the daemon's catalog. */
+  noShell: boolean;
+}
+
+export interface HarnessPermissionsState extends HarnessPermissionsConfig {
+  /** A this-process-only trust grant the controller passes on top of the
+   *  saved switch (never persisted). */
+  trustOnce: boolean;
+}
+
+function readPermissions(raw: unknown): HarnessPermissionsState | null {
+  if (!raw || typeof raw !== "object") return null;
+  const body = raw as {
+    posture?: unknown;
+    trustProject?: unknown;
+    noShell?: unknown;
+    trustOnce?: unknown;
+  };
+  return {
+    posture: typeof body.posture === "string" ? body.posture : "strict",
+    trustProject: body.trustProject === true,
+    noShell: body.noShell === true,
+    trustOnce: body.trustOnce === true,
+  };
 }
 
 export async function fetchHarnessControlStatus(
@@ -74,6 +125,9 @@ export async function fetchHarnessControlStatus(
       configuredProviders?: unknown;
       selectedProvider?: string | null;
       authFile?: string;
+      workspace?: string;
+      permissions?: unknown;
+      storage?: unknown;
     };
     return {
       mode: body.mode === "external" ? "external" : "managed",
@@ -105,10 +159,59 @@ export async function fetchHarnessControlStatus(
       authFile: body.authFile ?? "",
       skillsDir: body.skills?.dir ?? "",
       memoryDir: body.memory?.dir ?? "",
+      workspace: typeof body.workspace === "string" ? body.workspace : "",
+      permissions: readPermissions(body.permissions),
+      storage: readStorageState(body.storage),
     };
   } catch {
     return null;
   }
+}
+
+/**
+ * The controller's saved permissions plus whether an imported operator
+ * settings file is active (its `posture:` key is OUT-RANKED by Studio's
+ * explicit flag, but the user should know it exists). Null when the
+ * controller cannot answer (external mode's 409, offline).
+ */
+export async function fetchHarnessPermissions(signal?: AbortSignal): Promise<{
+  config: HarnessPermissionsState;
+  operatorSettings: boolean;
+} | null> {
+  const response = await fetch(`${CONTROL_API}/permissions`, {
+    signal,
+    cache: "no-store",
+  });
+  if (!response.ok) return null;
+  const body = (await response.json()) as {
+    config?: unknown;
+    trustOnce?: unknown;
+    operatorSettings?: unknown;
+  };
+  const config = readPermissions(body.config);
+  if (!config) return null;
+  return {
+    config: { ...config, trustOnce: body.trustOnce === true },
+    operatorSettings: body.operatorSettings === true,
+  };
+}
+
+/** Saves the permissions document. RESTARTS the daemon; a start mecated
+ *  refuses (auto/yolo as root outside a sandbox) is rolled back by the
+ *  controller and surfaces here as the thrown error. */
+export async function saveHarnessPermissions(
+  config: HarnessPermissionsConfig,
+): Promise<void> {
+  const response = await fetch(`${CONTROL_API}/permissions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      posture: config.posture,
+      trustProject: config.trustProject,
+      noShell: config.noShell,
+    }),
+  });
+  if (!response.ok) throw await apiError(response);
 }
 
 export interface HarnessRouterCategory {

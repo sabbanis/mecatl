@@ -37,8 +37,12 @@ the usual reason it fails mysteriously.
   server tier: origin trust, header allowlists, bearer injection (auth ONLY —
   daemon bodies and queries are forwarded verbatim), external-mode 409 policy.
 - `scripts/local-controller.mjs` — managed-mode sidecar (supervises `mecated`,
-  owns model-router/MCP-gateway config + OAuth); policy helpers in
-  `src/lib/controller-security.mjs`.
+  owns model-router/MCP-gateway config + OAuth, the permissions document
+  — operator posture / project trust / shell-less mode — as mecated spawn
+  flags via `GET|POST /permissions`, and the session-store location via
+  `POST /storage`); policy helpers in
+  `src/lib/controller-security.mjs`, the flag grammar in
+  `src/lib/controller-permissions.mjs`.
 - `src/features/agent/` — runtime-status provider + the daemon-backed hooks;
   `src/app/workspace/**` — the five surfaces.
 
@@ -90,6 +94,31 @@ Each rule is backed by a test; break the rule and its test names you.
     response back as a request body. (`schedules.test.ts`: the asymmetry test.)
 12. **Skills are project-scoped only.** The controller pins `--skills-dir` and
     never passes `--skills-conventional`.
+13. **Posture, project trust and shell-less mode are spawn FLAGS, never a
+    settings.yaml key.** Settings → Permissions saves a Studio-owned
+    `permissions.json`; the controller turns it into `--posture <tier>`
+    (ALWAYS passed, strict included, so Studio's tier out-ranks an imported
+    operator settings file's `posture:` in both directions),
+    `--trust-project` and `--no-shell`, and never `--headless` (mecated
+    raises the trust floor for trusted+ on interactive roots — the page's
+    "implied by the posture" claim depends on it). The daemon-wide posture is
+    NOT the composer's per-session Mode; the EFFECTIVE tier is
+    `serverCapabilities.posture` (capability-gated: absent on an older
+    daemon). External mode: `permissions: null`, every `/permissions` verb
+    409. (`src/lib/controller-permissions.test.ts`,
+    `permissions-section.test.tsx`, hermetic 409 + CSRF rows.)
+14. **The session store is a spawn FLAG too, never a settings.yaml key, and
+    in-memory means NO flag.** Settings → Storage saves a Studio-owned
+    `storage-settings.json` (seeded from `MECATL_STUDIO_STORE_DIR` /
+    `MECATL_STUDIO_NO_STORE=1`); the controller turns a durable store into
+    `--store-dir <absolute>` right after `--workspace` (relative paths resolve
+    under the controller's workspace, the dir is created first) and an
+    in-memory store into the ABSENCE of the flag (mecated has no `--no-store`).
+    `/status.storage` reports the saved AND default location; external mode:
+    `storage: null`, `POST /storage` 409. The card never invents a path an
+    older controller did not report. (`src/lib/storage-settings.test.ts`,
+    `store-location.test.ts`, `session-storage-section.test.tsx`, hermetic
+    409 + CSRF rows.)
 
 ## Gotchas
 

@@ -107,6 +107,28 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
       "Insert a new line — while the agent is replying: the opposite of your Enter preference",
     group: "Composer",
   },
+  // The held-queue gestures: only on an EMPTY composer with queued messages
+  // (a cancelled or failed run pauses the queue until one of these).
+  {
+    id: "composer.queue.resume",
+    combo: "enter",
+    description:
+      "On an empty composer with a held queue: send the queued messages",
+    group: "Composer",
+  },
+  {
+    id: "composer.queue.edit",
+    combo: "up",
+    description:
+      "On an empty composer: pull the queued messages back for editing",
+    group: "Composer",
+  },
+  {
+    id: "composer.queue.clear",
+    combo: "esc",
+    description: "On an empty idle composer: clear the queue",
+    group: "Composer",
+  },
   {
     id: "composer.slash",
     combo: "/",
@@ -175,4 +197,30 @@ export function matchCombo(combo: string, e: KeyboardEvent): boolean {
  */
 export function comboFiresWhileTyping(combo: string): boolean {
   return combo.split("+").includes("mod") || combo === "esc";
+}
+
+/**
+ * The description to SHOW for a shortcut, given the user's current Enter
+ * preference (Settings → Personalize). The registry's own descriptions stay
+ * static; only the two composer Enter rows are phrased live, so the help page
+ * says what Enter and Shift+Enter actually do right now (queue vs steer)
+ * instead of pointing at the setting. Every other shortcut returns its
+ * registry description unchanged.
+ */
+export function describeShortcut(
+  def: ShortcutDef,
+  enterBehavior: "queue" | "steer",
+): string {
+  const onEnter =
+    enterBehavior === "queue" ? "queue the message" : "steer the agent";
+  const onShiftEnter =
+    enterBehavior === "queue" ? "steer the agent" : "queue the message";
+  switch (def.id) {
+    case "composer.send":
+      return `Send — while the agent is replying: ${onEnter}`;
+    case "composer.newline":
+      return `Insert a new line — while the agent is replying: ${onShiftEnter}`;
+    default:
+      return def.description;
+  }
 }

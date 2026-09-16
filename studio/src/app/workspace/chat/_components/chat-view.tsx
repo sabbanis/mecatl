@@ -8,7 +8,6 @@ import {
   Ellipsis,
   FileText,
   FoldVertical,
-  ListEnd,
   Loader2,
   MessageCircle,
   MessageSquareText,
@@ -42,12 +41,20 @@ import {
   type ApprovalRequest,
   type Artifact,
   type Attachment,
+  type AuthorizationRequest,
   type ClarificationRequest,
   type ToolCallInfo,
   useAgentChat,
 } from "@/features/agent";
-import type { QueuedMessage } from "@/features/agent/hooks/use-agent-chat";
+import type { StudioBuiltinCommand } from "@/features/agent/composer-capabilities";
+import {
+  mergeQueued,
+  type PendingSteer,
+  type QueuedMessage,
+  type QueuePause,
+} from "@/features/agent/hooks/use-agent-chat";
 import { isMockTourSession } from "@/features/agent/mock-tour";
+import { cacheHitRate, formatPercent } from "@/features/agent/turn-stats";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { formatTokens } from "@/lib/formatters";
 import {
@@ -79,14 +86,20 @@ import {
   type ComposerModelOption,
 } from "../../_components/chat-input";
 import { ApprovalPanel } from "./approval-panel";
+import { AuthorizationPanel } from "./authorization-panel";
 import { ClarificationPanel } from "./clarification-panel";
 import { ContextMeter } from "./context-meter";
 import { FilePreview } from "./file-preview";
+import { HelpMenuItem, HelpSheetItem } from "./help-menu-item";
 import { MarkdownCanvasPanel } from "./markdown-canvas-panel";
 import { MessageBubble } from "./message-bubble";
 import { MockProviderNotice } from "./mock-provider-notice";
+import { QueuedMessageStrip } from "./queued-message-strip";
 import { SidePanel } from "./side-panel";
 import { ToolCallPanel } from "./tool-call-panel";
+
+/** The authorization card's fallback when a caller wires no handler. */
+const noAuthorizationAction = async () => {};
 
 /** The single right-hand panel: exactly one kind is open at a time, or none. */
 type ActivePanel =
@@ -150,95 +163,53 @@ function StreamingIndicator({ message }: { message?: AgentMessage }) {
   );
 }
 
-/** Token counts as a read-only info row inside the chat context menus. */
-function UsageMenuRow({
-  usage,
-}: {
-  usage?: { inputTokens: number; outputTokens: number } | null;
-}) {
+/** The session's token figures the menus and the context strip render. */
+type UsageFigures = {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  reasoningTokens?: number;
+};
+
+/**
+ * Token counts as a read-only info row inside the chat context menus: every
+ * non-zero facet (input, output, cache read, cache write, reasoning) plus
+ * the cache-hit rate once anything was read from cache.
+ */
+function UsageMenuRow({ usage }: { usage?: UsageFigures | null }) {
   if (!usage || usage.inputTokens + usage.outputTokens <= 0) return null;
+  const facets: [string, number][] = [
+    ["input", usage.inputTokens],
+    ["output", usage.outputTokens],
+    ["cache read", usage.cacheReadTokens ?? 0],
+    ["cache write", usage.cacheWriteTokens ?? 0],
+    ["reasoning", usage.reasoningTokens ?? 0],
+  ];
+  const hitRate = cacheHitRate(usage);
   return (
     <div className="mb-1 border-b border-border/60 px-3 py-2">
       <p className="text-xs font-medium text-muted-foreground">Token usage</p>
-      <p className="mt-1 text-sm tabular-nums">
-        {formatTokens(usage.inputTokens)} input
-      </p>
-      <p className="text-sm tabular-nums">
-        {formatTokens(usage.outputTokens)} output
-      </p>
-    </div>
-  );
-}
-
-/**
- * Messages held while a run is active, shown above the composer. Steered
- * messages the daemon accepted but has not yet applied render first, with a
- * pulsing "steering…" marker and a single retract control for the whole
- * bundle (the daemon retracts bundles, not single messages). Queued rows
- * offer Steer (inject into the in-flight run), Edit (back into the composer),
- * and Delete; they drain in order as runs complete.
- */
-function QueuedMessageStrip({
-  queued,
-  onSteer,
-  onEdit,
-  onDelete,
-}: {
-  queued: QueuedMessage[];
-  onSteer: (id: string) => void;
-  onEdit: (id: string) => void;
-  onDelete: (id: string) => void;
-}) {
-  if (queued.length === 0) return null;
-  return (
-    // ONE opaque group (the strip floats over the transcript): pending steers
-    // first, then the queue, as divided rows — never a stack of panels.
-    <div className="max-[499px]:mx-3">
-      <div className="divide-y overflow-hidden rounded-xl border bg-background">
-        {queued.map((message) => (
-          <div
-            key={message.id}
-            className="flex items-center gap-2 py-1 pr-1 pl-3"
-          >
-            <ListEnd className="size-4 shrink-0 text-muted-foreground" />
-            <span
-              className="min-w-0 flex-1 truncate text-sm"
-              title={message.text}
-            >
-              {message.text}
-            </span>
-            <DropdownMenu modal={false}>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-7 shrink-0 text-muted-foreground"
-                  aria-label={`Actions for queued message`}
-                >
-                  <Ellipsis className="size-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={() => onSteer(message.id)}>
-                  Steer
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => onEdit(message.id)}>
-                  Edit
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  variant="destructive"
-                  onClick={() => onDelete(message.id)}
-                >
-                  Delete
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        ))}
+      <div className="mt-1">
+        {facets
+          .filter(([, count]) => count > 0)
+          .map(([label, count]) => (
+            <p key={label} className="text-sm tabular-nums">
+              {formatTokens(count)} {label}
+            </p>
+          ))}
+        {hitRate > 0 && (
+          <p className="text-sm tabular-nums">
+            {formatPercent(hitRate)} cache hit rate
+          </p>
+        )}
       </div>
     </div>
   );
 }
+
+/** A composer re-seed: text plus the staged files that travel with it. */
+type ComposerSeed = { text: string; files?: File[] };
 
 function MobileChatMenu({
   showActivity,
@@ -257,7 +228,7 @@ function MobileChatMenu({
   onCompact?: () => void;
   /** True while a run streams — the daemon 412s a mid-run compact. */
   compactDisabled?: boolean;
-  usage?: { inputTokens: number; outputTokens: number } | null;
+  usage?: UsageFigures | null;
 }) {
   const [open, setOpen] = useState(false);
 
@@ -301,6 +272,7 @@ function MobileChatMenu({
                 Compact conversation
               </button>
             )}
+            <HelpSheetItem onSelect={() => setOpen(false)} />
             {onRename && (
               <button
                 type="button"
@@ -414,8 +386,9 @@ function ThreadPanel({
   const [sourceBusy, setSourceBusy] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   // Re-seeds the composer after a refused first send (keep the text) or a
-  // queued-message edit.
+  // queued-message edit (text AND its staged files come back).
   const [seedText, setSeedText] = useState<string | null>(null);
+  const [seedFiles, setSeedFiles] = useState<File[] | undefined>(undefined);
   const threadScrollRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
@@ -433,6 +406,11 @@ function ThreadPanel({
     steerQueued,
     pendingApproval,
     respondToApproval,
+    pendingAuthorization,
+    openAuthorization,
+    copyAuthorizationLink,
+    recheckAuthorization,
+    cancelAuthorization,
   } = useAgentChat(initialThreadId);
 
   // The thread session's history starts with the seeded parent conversation;
@@ -510,10 +488,13 @@ function ThreadPanel({
     [parentSessionId, rootKey, rootMessage.content, sendMessage, adoptSession],
   );
 
-  // Editing a queued reply pulls it out of the queue into the composer.
+  // Editing a queued reply pulls it out of the queue into the composer,
+  // attachments included.
   const handleEditQueued = (id: string) => {
-    const text = takeQueued(id);
-    if (text) setSeedText(text);
+    const hit = takeQueued(id);
+    if (!hit) return;
+    setSeedText(hit.text || null);
+    setSeedFiles(hit.files);
   };
 
   return (
@@ -587,7 +568,16 @@ function ThreadPanel({
               onRespond={respondToApproval}
             />
           )}
-          {isStreaming && (
+          {pendingAuthorization && (
+            <AuthorizationPanel
+              authorization={pendingAuthorization}
+              onOpen={openAuthorization}
+              onCopyLink={copyAuthorizationLink}
+              onRecheck={recheckAuthorization}
+              onCancel={cancelAuthorization}
+            />
+          )}
+          {isStreaming && !pendingAuthorization && (
             <StreamingIndicator
               message={
                 replies[replies.length - 1]?.role === "assistant"
@@ -615,6 +605,7 @@ function ThreadPanel({
           <div className="space-y-1.5">
             <QueuedMessageStrip
               queued={queuedMessages}
+              isStreaming={isStreaming}
               onSteer={steerQueued}
               onEdit={handleEditQueued}
               onDelete={deleteQueued}
@@ -646,7 +637,11 @@ function ThreadPanel({
               isStreaming={isStreaming}
               disabled={!!pendingApproval}
               initialText={seedText}
-              onInitialTextConsumed={() => setSeedText(null)}
+              initialFiles={seedFiles}
+              onInitialTextConsumed={() => {
+                setSeedText(null);
+                setSeedFiles(undefined);
+              }}
               onModelChange={() => {}}
               placeholder={isStreaming ? "Queue a reply…" : "Reply in thread…"}
               mobileDocked
@@ -828,6 +823,7 @@ export function ChatView({
   botName,
   live = false,
   usage,
+  contextOccupancy = 0,
   error,
   onRetry,
   sidebarOpen,
@@ -837,6 +833,11 @@ export function ChatView({
   onRespondApproval,
   pendingClarification,
   onRespondClarification,
+  pendingAuthorization = null,
+  onOpenAuthorization,
+  onCopyAuthorizationLink,
+  onRecheckAuthorization,
+  onCancelAuthorization,
   onRename,
   onDelete,
   onSidePanelOpenChange,
@@ -848,7 +849,13 @@ export function ChatView({
   onSteerQueued,
   onDeleteQueued,
   onTakeQueued,
+  onTakeAllQueued,
+  onClearQueue,
+  queuePaused,
+  onResumeQueue,
+  pendingSteers,
   onSteerMessage,
+  onRetractSteers,
   onCancelRun,
   onCompact,
   contextInfo,
@@ -858,6 +865,7 @@ export function ChatView({
   models,
   autoModelLabel,
   onSwitchModel,
+  onLocalCommand,
 }: {
   session: AgentSession;
   messages: AgentMessage[];
@@ -866,7 +874,7 @@ export function ChatView({
   botName: string;
   /** True while the daemon connection is up. */
   live?: boolean;
-  usage?: { inputTokens: number; outputTokens: number };
+  usage?: UsageFigures;
   /** The last turn failed with this text; rendered as an inline strip. */
   error?: string | null;
   onRetry?: () => void;
@@ -877,6 +885,13 @@ export function ChatView({
   onRespondApproval: (choice: ApprovalChoice) => void;
   pendingClarification: ClarificationRequest | null;
   onRespondClarification: (response: string) => void;
+  /** The MCP browser authorization the run is parked on: the takeover card
+      replaces the composer until the sign-in is confirmed or cancelled. */
+  pendingAuthorization?: AuthorizationRequest | null;
+  onOpenAuthorization?: () => Promise<unknown>;
+  onCopyAuthorizationLink?: () => Promise<unknown>;
+  onRecheckAuthorization?: () => Promise<unknown>;
+  onCancelAuthorization?: () => Promise<unknown>;
   onRename?: () => void;
   onDelete?: () => void;
   /** Fires when the right-hand side panel (artifact/attachment) opens or
@@ -888,19 +903,35 @@ export function ChatView({
   onInitialDraftConsumed?: () => void;
   /** Messages held while a run is active (see QueuedMessageStrip). */
   queuedMessages?: QueuedMessage[];
-  onQueueMessage?: (text: string) => void;
+  /** Holds a message (text plus its staged files) for the next run. */
+  onQueueMessage?: (text: string, files?: File[]) => void;
   /** Open a session as the main chat (thread → full chat conversion). */
   onOpenSession?: (sessionId: string) => void;
   onSteerQueued?: (id: string) => void;
   onDeleteQueued?: (id: string) => void;
-  /** Removes a queued message and returns its text (the Edit action). */
-  onTakeQueued?: (id: string) => string | null;
+  /** Removes a queued message and returns its text and files (the Edit
+      action re-seeds both into the composer). */
+  onTakeQueued?: (id: string) => ComposerSeed | null;
+  /** Pulls the WHOLE queue back as one merged draft (Edit all / ↑ on an
+      empty composer); the queue empties. */
+  onTakeAllQueued?: () => ComposerSeed | null;
+  /** Drops every held message (Clear all / Esc on an empty idle composer). */
+  onClearQueue?: () => void;
+  /** Non-null while the queue is held after a non-clean stop (cancel, a
+      failed turn, a lost connection); the strip shows the reason. */
+  queuePaused?: QueuePause | null;
+  /** Sends the held queue as one prompt and lifts the pause (Send now /
+      Enter on an empty idle composer). */
+  onResumeQueue?: () => void;
   /** Steers the daemon accepted but has not yet applied to the run. */
+  pendingSteers?: PendingSteer[];
   /** Injects composer text (plus staged image attachments, ADR 0251) into
       the in-flight run at the next step. Absent when the daemon lacks the
       steer capability — mid-run sends then queue. */
   onSteerMessage?: (text: string, files?: File[]) => void;
-  /** Retracts the whole pending steer bundle. */
+  /** Retracts the whole pending steer bundle; resolves to the steers that
+      never reached the run, so their text can be recomposed. */
+  onRetractSteers?: () => Promise<PendingSteer[]>;
   /** Cancels the in-flight run (Esc with no panel open). */
   onCancelRun?: () => void;
   /** Manually compacts the conversation (B1.2); present only when the
@@ -909,6 +940,8 @@ export function ChatView({
   /** The session's effective model + context window (B1.1): feeds the slim
       approximate context meter near the composer. */
   contextInfo?: { modelLabel: string; contextWindow: number } | null;
+  /** The latest turn's input tokens (turn.end): the meter's occupancy. */
+  contextOccupancy?: number;
   /** Disables the composer and shows this placeholder instead (the Labs
       mock chat is read-only demo content). */
   readOnlyPlaceholder?: string;
@@ -922,6 +955,9 @@ export function ChatView({
   autoModelLabel?: string;
   /** Picking a model forks this chat onto it (daemon fixes model at create). */
   onSwitchModel?: (option: ComposerModelOption | null) => void;
+  /** Answers a Studio-local slash command typed in the composer (`/help`
+      opens the shortcuts & features reference) instead of sending it. */
+  onLocalCommand?: (command: StudioBuiltinCommand) => void;
 }) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   // Whether the transcript is scrolled to (near) the bottom; when it isn't,
@@ -939,11 +975,22 @@ export function ChatView({
   const [appendText, setAppendText] = useState<string | null>(null);
   // The Enter preference (Settings → Chat) decides the streaming placeholder.
   const { behavior: enterBehavior } = useEnterSendBehavior();
-  // Editing a queued message pulls it out of the queue into the composer.
-  const [editSeed, setEditSeed] = useState<string | null>(null);
+  // Editing a queued message pulls it out of the queue into the composer —
+  // text and staged files alike. Edit all merges the whole queue; Retract
+  // pulls the never-applied steer bundle back the same way.
+  const [editSeed, setEditSeed] = useState<ComposerSeed | null>(null);
   const handleEditQueued = (id: string) => {
-    const text = onTakeQueued?.(id);
-    if (text) setEditSeed(text);
+    const hit = onTakeQueued?.(id);
+    if (hit) setEditSeed(hit);
+  };
+  const handleEditAllQueued = () => {
+    const hit = onTakeAllQueued?.();
+    if (hit) setEditSeed(hit);
+  };
+  const handleRetractSteers = async () => {
+    const retracted = await onRetractSteers?.();
+    const merged = mergeQueued(retracted ?? []);
+    if (merged) setEditSeed(merged);
   };
   // When maximized, the panel fills the pane and the conversation column is
   // hidden. Always reset when the panel is closed.
@@ -1170,6 +1217,7 @@ export function ChatView({
                     Compact conversation
                   </DropdownMenuItem>
                 )}
+                <HelpMenuItem />
                 {onRename && (
                   <DropdownMenuItem onClick={onRename}>
                     <Pencil className="size-4 mr-2 text-muted-foreground" />
@@ -1231,6 +1279,7 @@ export function ChatView({
                   threadSummary={threadMap[threadKeyForMessage(msg)]}
                   botName={botName}
                   showActivity={showActivity}
+                  streaming={isStreaming && msg.id === messages.at(-1)?.id}
                 />
               ))}
               {pendingApproval && (
@@ -1239,7 +1288,7 @@ export function ChatView({
                   onRespond={onRespondApproval}
                 />
               )}
-              {isStreaming && (
+              {isStreaming && !pendingAuthorization && (
                 <StreamingIndicator
                   message={
                     messages[messages.length - 1]?.role === "assistant"
@@ -1269,21 +1318,29 @@ export function ChatView({
               </div>
             )}
             <div className="max-w-[768px] space-y-1.5 max-[499px]:max-w-none">
-              {/* B1.1: effective model + approximate context utilisation,
-                  visible only when the window is known and tokens counted. */}
-              {contextInfo && contextInfo.contextWindow > 0 && (
-                <ContextMeter
-                  modelLabel={contextInfo.modelLabel}
-                  contextWindow={contextInfo.contextWindow}
-                  inputTokens={usage?.inputTokens ?? 0}
-                  outputTokens={usage?.outputTokens ?? 0}
-                />
-              )}
+              {/* Effective model + three-band context meter + usage facets.
+                  Renders once anything is counted; with an unknown window it
+                  shows the bare current size instead of hiding. */}
+              <ContextMeter
+                modelLabel={contextInfo?.modelLabel ?? ""}
+                contextWindow={contextInfo?.contextWindow ?? 0}
+                occupancyTokens={contextOccupancy}
+                usage={usage}
+              />
               <QueuedMessageStrip
                 queued={queuedMessages}
+                pendingSteers={pendingSteers}
+                paused={queuePaused}
+                isStreaming={isStreaming}
                 onSteer={(id) => onSteerQueued?.(id)}
                 onEdit={handleEditQueued}
                 onDelete={(id) => onDeleteQueued?.(id)}
+                onResume={onResumeQueue}
+                onEditAll={onTakeAllQueued ? handleEditAllQueued : undefined}
+                onClearAll={onClearQueue}
+                onRetractSteers={
+                  onRetractSteers ? () => void handleRetractSteers() : undefined
+                }
               />
               {error && (
                 <div className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-background bg-gradient-to-b from-destructive/5 to-destructive/5 px-3 py-2">
@@ -1310,11 +1367,24 @@ export function ChatView({
                   clarification={pendingClarification}
                   onRespond={onRespondClarification}
                 />
+              ) : pendingAuthorization ? (
+                // The run is parked on a browser sign-in: the takeover card
+                // owns the composer slot until the sign-in is confirmed
+                // (re-check) or abandoned (cancel) through the daemon's
+                // AUTHORIZATION controls.
+                <AuthorizationPanel
+                  authorization={pendingAuthorization}
+                  onOpen={onOpenAuthorization ?? noAuthorizationAction}
+                  onCopyLink={onCopyAuthorizationLink ?? noAuthorizationAction}
+                  onRecheck={onRecheckAuthorization ?? noAuthorizationAction}
+                  onCancel={onCancelAuthorization ?? noAuthorizationAction}
+                />
               ) : (
                 <ChatInput
                   onSend={onSend}
                   onQueue={onQueueMessage}
                   onSteer={onSteerMessage}
+                  onLocalCommand={onLocalCommand}
                   onPreviewAttachment={handlePreviewFile}
                   focusKey={session.id}
                   mobileDocked
@@ -1332,11 +1402,18 @@ export function ChatView({
                   disabled={!!pendingApproval || readOnlyPlaceholder != null}
                   appendText={appendText}
                   onAppendConsumed={handleAppendConsumed}
-                  initialText={editSeed ?? initialDraft}
+                  initialText={editSeed ? editSeed.text || null : initialDraft}
+                  initialFiles={editSeed?.files}
                   onInitialTextConsumed={() => {
                     if (editSeed !== null) setEditSeed(null);
                     else onInitialDraftConsumed?.();
                   }}
+                  queuedCount={queuedMessages.length}
+                  onResumeQueue={onResumeQueue}
+                  onEditAllQueued={
+                    onTakeAllQueued ? handleEditAllQueued : undefined
+                  }
+                  onClearQueue={onClearQueue}
                   placeholder={
                     readOnlyPlaceholder ??
                     (isStreaming

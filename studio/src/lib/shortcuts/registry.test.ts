@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   comboFiresWhileTyping,
+  describeShortcut,
   keycaps,
   matchCombo,
   SHORTCUT_GROUPS,
@@ -117,5 +118,39 @@ describe("comboFiresWhileTyping", () => {
     expect(comboFiresWhileTyping("j")).toBe(false);
     expect(comboFiresWhileTyping("?")).toBe(false);
     expect(comboFiresWhileTyping("shift+enter")).toBe(false);
+  });
+});
+
+describe("describeShortcut", () => {
+  const byId = (id: string) => {
+    const def = SHORTCUTS.find((s) => s.id === id);
+    if (!def) throw new Error(`missing shortcut ${id}`);
+    return def;
+  };
+
+  it("phrases Enter live from the queue preference", () => {
+    expect(describeShortcut(byId("composer.send"), "queue")).toBe(
+      "Send — while the agent is replying: queue the message",
+    );
+    expect(describeShortcut(byId("composer.newline"), "queue")).toBe(
+      "Insert a new line — while the agent is replying: steer the agent",
+    );
+  });
+
+  it("inverts both rows when the preference is steer", () => {
+    expect(describeShortcut(byId("composer.send"), "steer")).toBe(
+      "Send — while the agent is replying: steer the agent",
+    );
+    expect(describeShortcut(byId("composer.newline"), "steer")).toBe(
+      "Insert a new line — while the agent is replying: queue the message",
+    );
+  });
+
+  it("returns the registry description for every other shortcut", () => {
+    for (const def of SHORTCUTS) {
+      if (def.id === "composer.send" || def.id === "composer.newline") continue;
+      expect(describeShortcut(def, "queue")).toBe(def.description);
+      expect(describeShortcut(def, "steer")).toBe(def.description);
+    }
   });
 });

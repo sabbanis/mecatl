@@ -1,6 +1,82 @@
 import { render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AttachmentPill, resolveComposerAction } from "./chat-input";
+import {
+  AttachmentPill,
+  commandMenuItems,
+  matchLocalCommand,
+  resolveComposerAction,
+} from "./chat-input";
+
+// The composer's `/` menu reads the daemon's command list through this
+// module-level getter; the local-command tests swap it for a fixed roster
+// and keep every other export (the Studio builtins) real.
+const daemon = vi.hoisted(() => ({
+  commands: [] as { name: string; description: string }[],
+}));
+vi.mock("@/features/agent/composer-capabilities", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("@/features/agent/composer-capabilities")
+  >()),
+  getSlashCommands: () => daemon.commands,
+}));
+
+/**
+ * `/help` is Studio's own command: typed as the whole message it opens the
+ * reference page instead of reaching the agent, and the `/` menu lists it
+ * ahead of the daemon's commands. Both halves are pure and tested here.
+ */
+describe("matchLocalCommand", () => {
+  it("matches a lone /help, case-insensitively, with trailing whitespace", () => {
+    expect(matchLocalCommand("/help")).toBe("help");
+    expect(matchLocalCommand("/HELP ")).toBe("help");
+    expect(matchLocalCommand("/Help\n")).toBe("help");
+  });
+
+  it("leaves anything else to the agent", () => {
+    expect(matchLocalCommand("/helpme")).toBeNull();
+    expect(matchLocalCommand("help")).toBeNull();
+    expect(matchLocalCommand("/help now")).toBeNull();
+    expect(matchLocalCommand("")).toBeNull();
+    expect(matchLocalCommand("/review")).toBeNull();
+  });
+});
+
+describe("commandMenuItems", () => {
+  const STUDIO_HELP = "Keyboard shortcuts and daemon features (Studio)";
+
+  beforeEach(() => {
+    daemon.commands = [{ name: "review", description: "Review a diff" }];
+  });
+
+  it("lists the Studio /help builtin first, then the daemon's commands", () => {
+    const items = commandMenuItems("");
+    expect(items.map((i) => i.id)).toEqual(["help", "review"]);
+    expect(items[0]?.primary).toBe("/help");
+    expect(items[0]?.secondary).toBe(STUDIO_HELP);
+  });
+
+  it("keeps /help while the prefix matches and drops it otherwise", () => {
+    expect(commandMenuItems("he").map((i) => i.id)).toEqual(["help"]);
+    expect(commandMenuItems("re").map((i) => i.id)).toEqual(["review"]);
+  });
+
+  it("shadows a daemon command named like a builtin — the Studio row wins", () => {
+    daemon.commands = [
+      { name: "help", description: "daemon help" },
+      { name: "review", description: "Review a diff" },
+    ];
+    const items = commandMenuItems("");
+    expect(items.map((i) => i.id)).toEqual(["help", "review"]);
+    expect(items[0]?.secondary).toBe(STUDIO_HELP);
+  });
+
+  it("omits the builtins for a surface with no local-command handler", () => {
+    daemon.commands = [{ name: "help", description: "daemon help" }];
+    const items = commandMenuItems("", { builtins: false });
+    expect(items.map((i) => i.id)).toEqual(["help"]);
+    expect(items[0]?.secondary).toBe("daemon help");
+  });
+});
 
 /**
  * The Enter matrix is tested through `resolveComposerAction`, the pure

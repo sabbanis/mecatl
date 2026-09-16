@@ -16,6 +16,10 @@ import { homedir } from "node:os";
 import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  normalizePermissions,
+  permissionArgs,
+} from "../src/lib/controller-permissions.mjs";
+import {
   requestIsAllowed,
   validateGatewayURL,
   validSkillName,
@@ -28,6 +32,13 @@ import {
   removeAuthFileProvider,
   validProviderName,
 } from "../src/lib/provider-auth.mjs";
+import {
+  normalizeStorageSettings,
+  resolveStoreDir,
+  storageArgs,
+  storageDefaultsFromEnv,
+  storageStatus,
+} from "../src/lib/storage-settings.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 // Studio is a module INSIDE the mecatl monorepo, so the harness it drives is
@@ -43,6 +54,15 @@ const routerSettingsFile = resolve(
   "model-router-settings.yaml",
 );
 const routerStateFile = resolve(studioStateDir, "model-router.json");
+// The Studio-owned permissions state (operator posture, project trust,
+// shell-less mode). It becomes mecated CLI flags on every spawn — never a
+// settings.yaml key — so an imported operator-settings.yaml is never
+// rewritten by this controller.
+const permissionsStateFile = resolve(studioStateDir, "permissions.json");
+// The Studio-owned session-store setting (durable dir or in-memory). Like
+// permissions it becomes a spawn flag — `--store-dir <abs>` or no flag at all
+// — never a settings.yaml key; see src/lib/storage-settings.mjs.
+const storageStateFile = resolve(studioStateDir, "storage-settings.json");
 // Project-scoped skills only. A SKILL.md steers the model the same way AGENTS.md
 // does, so discovery is deliberately pinned to the workspace and we never pass
 // --skills-conventional (which would also pull in ~/.claude/skills and the
@@ -462,6 +482,12 @@ if (configuredProvider && !KNOWN_PROVIDER_KINDS.has(configuredProvider)) {
 // Studio settings UI's provider switch), so an operator can move between the
 // offline mock and a real provider without restarting `npm run dev`.
 let activeProviderOverride = configuredProvider || null;
+// Session-store defaults: MECATL_STUDIO_STORE_DIR (absolute or
+// workspace-relative; default .scratch/studio-sessions under the workspace)
+// and MECATL_STUDIO_NO_STORE=1 (in-memory: no --store-dir at all). A saved
+// storage-settings.json (POST /storage) overrides both; a bad value throws
+// here like a bad MECATL_STUDIO_PROVIDER does.
+const storageDefaults = storageDefaultsFromEnv(process.env);
 const managedAuthToken = (
   process.env.MECATL_AUTH_TOKEN || randomBytes(32).toString("base64url")
 ).replace(/^Bearer\s+/i, "");
@@ -488,6 +514,19 @@ let readyInfo = null;
 let gateway = null;
 let modelRouterConfig = null;
 let operatorSettingsActive = false;
+// The saved permissions document (posture / trustProject / noShell), loaded
+// from permissionsStateFile before the first spawn; defaults are mecated's
+// own (strict, untrusted, shell on).
+let permissionsConfig = normalizePermissions({});
+// The SAVED storage document (POST /storage), or null while the env/built-in
+// defaults still apply — the same null-means-unsaved shape as
+// modelRouterConfig, so a failed restart can roll back to "no file".
+let storageSettings = null;
+const effectiveStorage = () => storageSettings ?? storageDefaults;
+// A this-process-only trust grant: `--trust-project` on the next spawns
+// without persisting it, for a "trust once" answer to a trust prompt. Never
+// written to disk, so it dies with the controller.
+const trustOnce = false;
 let startupLog = "";
 let restartQueue = Promise.resolve();
 let gatewayRefresh = null;
@@ -768,6 +807,59 @@ async function loadModelRouter() {
   }
 }
 
+/** Atomic (tmp + rename), owner-only. Flags only — no settings.yaml key. */
+async function persistPermissions(config) {
+  await mkdir(studioStateDir, { recursive: true, mode: 0o700 });
+  const temp = `${permissionsStateFile}.tmp`;
+  await writeFile(temp, `${JSON.stringify(config, null, 2)}\n`, {
+    mode: 0o600,
+  });
+  await rename(temp, permissionsStateFile);
+}
+
+/** The saved permissions, or mecated's defaults when none were saved yet. A
+ *  corrupt or unknown-posture file is logged and ignored, never honoured. */
+async function loadPermissions() {
+  try {
+    return normalizePermissions(
+      JSON.parse(await readFile(permissionsStateFile, "utf8")),
+    );
+  } catch (error) {
+    if (error?.code !== "ENOENT")
+      process.stderr.write(
+        `[permissions] saved configuration ignored: ${error.message || error}\n`,
+      );
+    return normalizePermissions({});
+  }
+}
+
+/** Atomic (tmp + rename), owner-only. A spawn flag — no settings.yaml key. */
+async function persistStorageSettings(config) {
+  await mkdir(studioStateDir, { recursive: true, mode: 0o700 });
+  const temp = `${storageStateFile}.tmp`;
+  await writeFile(temp, `${JSON.stringify(config, null, 2)}\n`, {
+    mode: 0o600,
+  });
+  await rename(temp, storageStateFile);
+}
+
+/** The saved storage document, or null when none was saved yet (the env /
+ *  built-in defaults then apply). A corrupt file is logged and ignored. */
+async function loadStorageSettings() {
+  try {
+    return normalizeStorageSettings(
+      JSON.parse(await readFile(storageStateFile, "utf8")),
+      storageDefaults,
+    );
+  } catch (error) {
+    if (error?.code !== "ENOENT")
+      process.stderr.write(
+        `[storage] saved configuration ignored: ${error.message || error}\n`,
+      );
+    return null;
+  }
+}
+
 async function hasOperatorSettings() {
   try {
     await readFile(operatorSettingsFile, "utf8");
@@ -1024,12 +1116,19 @@ async function startMecatl(kind) {
   // wait below could read yesterday's addresses. The pid check is the
   // backstop for the pathological race.
   await rm(readyFilePath, { force: true });
+  // Session store: `--store-dir <abs>` for a durable store (the directory
+  // created first — mecated does not create it), NO flag for in-memory
+  // (mecated has no --no-store; an empty --store-dir IS the in-memory store).
+  // A path mkdir refuses fails this start, which the POST /storage rollback
+  // turns into the 400 body and a restart on the previous document.
+  const storage = effectiveStorage();
+  if (storage.persistence === "durable")
+    await mkdir(resolveStoreDir(storage, workspace), { recursive: true });
   const args = [
     "serve",
     "--workspace",
     workspace,
-    "--store-dir",
-    ".scratch/studio-sessions",
+    ...storageArgs(storage, workspace),
     "--grpc-addr",
     "127.0.0.1:0",
     // An ephemeral HTTP port: the kernel picks it at bind(2) time and the
@@ -1049,6 +1148,11 @@ async function startMecatl(kind) {
   args.push("--skills-dir", skillsDir);
   await mkdir(memoryDir, { recursive: true });
   args.push("--memory-dir", memoryDir);
+  // Operator posture / project trust / shell-less mode as CLI flags. This
+  // spawn is deliberately NOT --headless: on an interactive root mecated
+  // raises the project-trust floor for trusted/auto/yolo, which is what the
+  // Permissions page tells the user (controller-permissions.test.ts pins it).
+  args.push(...permissionArgs(permissionsConfig, { trustOnce }));
   if (kind === "mock") {
     args.push("--mock");
   } else if (kind === "toolhive") {
@@ -1533,8 +1637,21 @@ const server = http.createServer(async (request, response) => {
             }
           : null,
         operatorSettings: operatorSettingsActive,
+        // The saved permissions the daemon was spawned with (flags, never a
+        // settings.yaml key) plus the volatile trust-once grant. The
+        // EFFECTIVE posture is the daemon's own capabilities.posture.
+        permissions: {
+          posture: permissionsConfig.posture,
+          trustProject: permissionsConfig.trustProject,
+          noShell: permissionsConfig.noShell,
+          trustOnce,
+        },
         skills: { dir: skillsDir, scope: "project" },
         memory: { dir: memoryDir, scope: "project" },
+        // The session store the daemon was spawned with: durable dir
+        // (resolved) or in-memory, plus the default the form falls back to.
+        // Paths only — the store's CONTENTS never cross here.
+        storage: storageStatus(effectiveStorage(), workspace, storageDefaults),
       }),
     );
     return;
@@ -2086,6 +2203,121 @@ const server = http.createServer(async (request, response) => {
     }
     return;
   }
+  // Permissions: the operator posture ladder, project trust and shell-less
+  // mode, as mecated spawn flags (see src/lib/controller-permissions.mjs).
+  // Like /providers (and unlike /status) the GET is NOT in the header-free
+  // read-only allowlist — it needs the server-set studio header. The write
+  // restarts the daemon; a start the new flags make mecated refuse (auto/yolo
+  // as root outside MECATL_SANDBOX) rolls the previous document back,
+  // restarts on it, and surfaces the refusal as the 400 body.
+  if (request.method === "GET" && requestURL.pathname === "/permissions") {
+    response.end(
+      JSON.stringify({
+        config: permissionsConfig,
+        trustOnce,
+        operatorSettings: operatorSettingsActive,
+      }),
+    );
+    return;
+  }
+  if (request.method === "POST" && requestURL.pathname === "/permissions") {
+    try {
+      if (
+        !String(request.headers["content-type"] || "")
+          .toLowerCase()
+          .startsWith("application/json")
+      )
+        throw Object.assign(
+          new Error("Content-Type must be application/json"),
+          { statusCode: 415 },
+        );
+      const next = normalizePermissions(
+        JSON.parse((await readBody(request, 16_384)).toString("utf8")),
+      );
+      await queueRestart(async () => {
+        const previous = permissionsConfig;
+        permissionsConfig = next;
+        await persistPermissions(next);
+        try {
+          await startMecatl(preferredKind());
+        } catch (error) {
+          // mecated names the refused tier on stderr; the generic
+          // "exited during startup" alone would hide the reason.
+          const refusal = startupLog.match(/posture "[a-z]+" refused[^\n]*/);
+          permissionsConfig = previous;
+          await persistPermissions(previous);
+          await startMecatl(preferredKind());
+          throw refusal
+            ? new Error(`${refusal[0]} (previous permissions restored)`)
+            : error;
+        }
+      });
+      response.end(JSON.stringify({ ok: true, config: permissionsConfig }));
+    } catch (error) {
+      jsonError(
+        response,
+        error.statusCode || 400,
+        error.message || "Could not update the permissions",
+      );
+    }
+    return;
+  }
+  // Session store: POST /storage {persistence: "durable"|"memory", storeDir?}
+  // (see src/lib/storage-settings.mjs). Header-gated like every write. The
+  // daemon restarts on the new flag; a start the new document makes mecated
+  // refuse (or a store directory that cannot be created) rolls the previous
+  // document back — "no file" included — restarts on it, and surfaces the
+  // failure as the 400 body. /status.storage is the read half.
+  if (request.method === "POST" && requestURL.pathname === "/storage") {
+    try {
+      if (
+        !String(request.headers["content-type"] || "")
+          .toLowerCase()
+          .startsWith("application/json")
+      )
+        throw Object.assign(
+          new Error("Content-Type must be application/json"),
+          { statusCode: 415 },
+        );
+      const next = normalizeStorageSettings(
+        JSON.parse((await readBody(request, 16_384)).toString("utf8")),
+        storageDefaults,
+      );
+      await queueRestart(async () => {
+        const previous = storageSettings;
+        storageSettings = next;
+        await persistStorageSettings(next);
+        try {
+          await startMecatl(preferredKind());
+        } catch (error) {
+          storageSettings = previous;
+          if (previous) await persistStorageSettings(previous);
+          else await rm(storageStateFile, { force: true });
+          await startMecatl(preferredKind());
+          throw new Error(
+            `${error.message || error} (previous session store restored)`,
+          );
+        }
+      });
+      response.end(
+        JSON.stringify({
+          ok: true,
+          storage: storageStatus(
+            effectiveStorage(),
+            workspace,
+            storageDefaults,
+          ),
+        }),
+      );
+    } catch (error) {
+      jsonError(
+        response,
+        error.statusCode || 400,
+        error.message || "Could not update the session store",
+      );
+    }
+    return;
+  }
   if (request.method === "GET" && requestURL.pathname === "/model-router") {
     response.end(
       JSON.stringify({
@@ -2187,6 +2419,8 @@ server.listen(8788, "127.0.0.1", async () => {
   process.stdout.write("Mecatl local controller: http://127.0.0.1:8788\n");
   operatorSettingsActive = await hasOperatorSettings();
   modelRouterConfig = await loadModelRouter();
+  permissionsConfig = await loadPermissions();
+  storageSettings = await loadStorageSettings();
   toolhiveReady = await detectToolhiveGateway();
   process.stdout.write(
     toolhiveReady

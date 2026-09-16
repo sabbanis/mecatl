@@ -1,3 +1,19 @@
+// Delegation bookkeeping (transcript cards + the session-scoped fleet)
+export {
+  type DelegationFleet,
+  type DelegationStreamEvent,
+  emptyFleet,
+  type FleetCounts,
+  fleetCounts,
+  isDelegationEvent,
+  MAX_TRACE_ENTRIES,
+  markCancelling,
+  markCardCancelling,
+  matchesDelegation,
+  type ParallelGroupState,
+  reduceDelegationFleet,
+  type TeamBoardState,
+} from "./delegation-fleet";
 // Hooks
 export { useAgentChat } from "./hooks/use-agent-chat";
 export { useAgentCron } from "./hooks/use-agent-cron";
@@ -15,12 +31,16 @@ export type {
   ApprovalRequest,
   Artifact,
   Attachment,
+  AuthorizationRequest,
   ClarificationRequest,
   CreateCronOpts,
   CreateSessionOpts,
   CronJob,
   CronRunRecord,
+  DelegationGroupInfo,
   DelegationInfo,
+  DelegationStopReason,
+  DelegationTraceEntry,
   FileContent,
   FileEntry,
   GitInfo,
@@ -28,5 +48,8 @@ export type {
   ModelInfo,
   Skill,
   StreamEvent,
+  TeamFindingInfo,
+  TeamMemberDispositionInfo,
+  TeamTaskInfo,
   ToolCallInfo,
 } from "./types";

@@ -1,3 +1,7 @@
+// The direct module, not the `@/lib/protocol` barrel: `protocol/events.ts`
+// imports this file, so the barrel would close a cycle.
+import type { DeliveryNoteInfo } from "@/lib/protocol/delivery-note";
+
 // ── Sessions ────────────────────────────────────────────────────────────────
 
 export interface AgentSession {
@@ -60,6 +64,13 @@ export interface AgentMessage {
   role: "user" | "assistant" | "tool";
   content: string;
   timestamp: number;
+  /**
+   * Set on a user-role message that is a scheduled task's delivery note
+   * (the daemon's fenced `[scheduled task …]` record): `content` then holds
+   * ONLY the fire's outcome body — the fence and provenance header are
+   * stripped, the card carries the attribution.
+   */
+  delivery?: DeliveryNoteInfo;
   attachments?: Attachment[];
   toolCalls?: ToolCallInfo[];
   reasoning?: string;
@@ -83,20 +94,57 @@ export interface AgentMessage {
   /** Delegation cards: work this turn handed to child agents. */
   delegations?: DelegationInfo[];
   /**
+   * Group-level facts for the Parallel fan-outs and Teams this turn ran,
+   * keyed by the Parallel/Team tool call id (`parentCallId`) — the header the
+   * card row renders above that group's branch/member cards.
+   */
+  delegationGroups?: Record<string, DelegationGroupInfo>;
+  /**
    * The turn ended with result.stop === "error". A failed turn renders as
    * failed — never as an empty success.
    */
   failed?: boolean;
   failureDetail?: string;
+  /** A user message that reached the run as a mid-run steer (the daemon's
+   *  drain echo landed): renders a small "steered" marker. */
+  steered?: boolean;
+  /**
+   * Per-turn cost, accumulated from the daemon's `turn.end` frames (tokens,
+   * cache reads, model-call time) — the muted stat line under a finished
+   * assistant turn. `lastInputTokens` is the LATEST turn's input, i.e. the
+   * current context occupancy the meter reads.
+   */
+  turnStats?: TurnStats;
+}
+
+/** Summed `turn.end` figures for one assistant message. */
+export interface TurnStats {
+  turns: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  durationMs: number;
+  lastInputTokens: number;
 }
 
 /**
- * One delegated child on an assistant turn. Starts as a badge (subagent.start
- * & friends), then live-updates while the child works — `subagent.tool`
- * frames tick `toolCount`/token counters — and settles on `subagent.end`
- * with the stop reason, duration, and (for a failed child) the cause, so a
- * failed child never silently vanishes. Keyed by `childId` where the daemon
- * names one; team/parallel entries may not carry an id and stay static.
+ * One delegated child on an assistant turn — a subagent, a team member lane,
+ * or a parallel branch. Starts as a badge (subagent.start / team.start /
+ * branch_start), then live-updates while the child works — `subagent.tool`,
+ * `branch_tool`, and `team.member` frames tick the counters and the bounded
+ * trace — and settles on its terminal (subagent.end / branch_end / the team's
+ * dispositions) with the stop reason, duration, and (for a failed child) the
+ * cause, so a failed child never silently vanishes.
+ *
+ * Update key: `childId` when both sides carry one; a parallel branch before
+ * its branch_end is keyed by (`parentCallId`, `branchIndex`); a team member
+ * by (`parentCallId` | `teamId`, `memberName`) until `team.member` backfills
+ * its session id. See `delegation-fleet.ts` (`matchesDelegation`).
+ *
+ * `trace`, `lastTool`, and `cause` carry bounded, model-influenced previews
+ * the daemon already clamped — render them as plain text nodes only, never
+ * through markdown, and never persist or forward them.
  */
 export interface DelegationInfo {
   kind: "subagent" | "team" | "parallel";
@@ -104,6 +152,20 @@ export interface DelegationInfo {
   detail: string;
   /** The child session id (`subagent.start` child_id) — the update key. */
   childId?: string;
+  /** The Subagent/Parallel/Team tool call this child belongs to. */
+  parentCallId?: string;
+  /** Team member lane: the team id (from team.start / team.member). */
+  teamId?: string;
+  /** Team member lane: the roster name the `team.member` frames are tagged with. */
+  memberName?: string;
+  /** Parallel branch: the 0-based branch index within its group. */
+  branchIndex?: number;
+  /** Team member lane: this member leads the team (rendered first). */
+  lead?: boolean;
+  /** Team member lane: the member may mutate the workspace. */
+  mutating?: boolean;
+  /** The concrete model id the child actually runs on (bare metadata). */
+  model?: string;
   /** Detached-delivery child: the parent run continues while it works. */
   background?: boolean;
   /** Why the model router did NOT route this delegation (bare metadata). */
@@ -115,12 +177,109 @@ export interface DelegationInfo {
   outputTokens?: number;
   /** The child's most recent tool, from the bounded activity projection. */
   lastTool?: string;
+  /** The most recent tool.result reported an error. */
+  lastToolError?: boolean;
+  /**
+   * Bounded per-child activity trace (tool chips + coalesced message lines),
+   * capped at `MAX_TRACE_ENTRIES`, oldest dropped. Plain text only.
+   */
+  trace?: DelegationTraceEntry[];
+  /** Team member: finished its round (a `result` frame), not terminal. */
+  idle?: boolean;
+  /** Team member: current context occupancy (most recent turn's input tokens). */
+  contextUsed?: number;
+  /** Team member: its engine's context window; sticky once known. */
+  contextWindow?: number;
   /** Terminal stop reason; presence means the child has ended. */
   stop?: string;
   /** Wall-clock child duration in milliseconds (end only, best-effort). */
   durationMs?: number;
   /** Failure detail when stop === "error" (harness metadata, clamped). */
   cause?: string;
+  /** Team member: benched by the supervisor (team.end disposition). */
+  stopped?: boolean;
+  /** Team member: why it was benched ("" = not stopped / unspecified). */
+  stopReason?: DelegationStopReason;
+  /** Team member: rounds that ended in error (retried up to the cap). */
+  errorRounds?: number;
+  /** Parallel branch: its child run failed (branch_end). */
+  failed?: boolean;
+  /** Parallel branch: the group's parallel.end named it the winner. */
+  winner?: boolean;
+  /** A cancel for this child is in flight (optimistic, cleared on its end). */
+  cancelling?: boolean;
+}
+
+/** A team member's benching reason (proto TEAM_MEMBER_STOP_REASON_*; "" = unspecified). */
+export type DelegationStopReason = "error" | "cancelled" | "budget" | "";
+
+/**
+ * One entry in a delegation lane's bounded trace: a tool chip (name + the
+ * daemon-bounded arg/result preview + error state, `pending` until its
+ * tool.result lands) or a coalesced message line. Plain text only.
+ */
+export interface DelegationTraceEntry {
+  kind: "tool" | "message";
+  /** Tool chip: the tool name. */
+  name?: string;
+  /** Tool chip: the bounded arg (call) or result preview. */
+  detail?: string;
+  /** Message line: the coalesced streamed text. */
+  text?: string;
+  isError?: boolean;
+  /** Tool chip: no tool.result has resolved it yet. */
+  pending?: boolean;
+}
+
+/**
+ * Group-level facts for one Parallel fan-out or Team on a turn, keyed on the
+ * message by the tool call id. `done` flips on parallel.end / team.end.
+ */
+export interface DelegationGroupInfo {
+  kind: "parallel" | "team";
+  /** Parallel: the join strategy (all / first / judge). */
+  join?: string;
+  /** Parallel: how many branches were fanned out. */
+  branchCount?: number;
+  /** Parallel: the winning branch index (−1 = none / join=all). */
+  winner?: number;
+  /** The group's run stop (parallel.end / team.end). */
+  stop?: string;
+  done?: boolean;
+  /** Team: the team id (`InspectMember`'s handle). */
+  teamId?: string;
+  /** Team: rounds the supervisor ran. */
+  rounds?: number;
+  /** Group token total (team.end sums every member; parallel.end the run). */
+  inputTokens?: number;
+  outputTokens?: number;
+  /** Team: members the supervisor benched (team.end dispositions). */
+  stoppedCount?: number;
+}
+
+/** One task on a team's shared task board (team.tasks snapshot). */
+export interface TeamTaskInfo {
+  id: string;
+  state: string;
+  assignee: string;
+  deps: string[];
+  /** Model-authored; render as plain text only. */
+  description: string;
+}
+
+/** One entry in a team's findings ledger (team.findings snapshot). */
+export interface TeamFindingInfo {
+  member: string;
+  /** Daemon-clamped, model-authored; render as plain text only. */
+  body: string;
+}
+
+/** How one team member ended (team.end). */
+export interface TeamMemberDispositionInfo {
+  name: string;
+  stopped: boolean;
+  errorRounds: number;
+  reason: DelegationStopReason;
 }
 
 export interface ToolCallInfo {
@@ -191,6 +350,19 @@ type StreamEventBody =
       reasoningTokens?: number;
       estimatedCost: number | null;
     }
+  /**
+   * One model exchange closed (`turn.end`): that turn's own tokens and
+   * elapsed model-call time. Per TURN, unlike `usage`, which is per RUN.
+   */
+  | {
+      type: "turn_end";
+      durationMs: number;
+      inputTokens: number;
+      outputTokens: number;
+      cacheReadTokens: number;
+      cacheWriteTokens: number;
+      reasoningTokens: number;
+    }
   | { type: "title"; title: string }
   | {
       type: "done";
@@ -227,44 +399,175 @@ type StreamEventBody =
       toolName: string;
       verdict: string;
     }
-  /** Delegation activity: the run handed work to a child agent. */
+  /**
+   * A tool call parked on a browser authorization (authorization.required):
+   * the MCP server wants the operator to sign in before the call can run.
+   * The daemon durably parks the run and CLOSES the prompt stream without a
+   * result; the run continues over the authorization control stream
+   * (recheck/cancel), never the prompt stream. `status` is the daemon's
+   * closed grammar (pending / granted / denied / cancelled / expired / …).
+   */
+  | {
+      type: "authorization";
+      authorizationId: string;
+      callId: string;
+      displayName: string;
+      status: string;
+      /** Epoch milliseconds; absent when the daemon set no expiry. */
+      expiresAt?: number;
+    }
+  /** The authorization reached a terminal status (authorization.resolved). */
+  | {
+      type: "authorization_resolved";
+      authorizationId: string;
+      displayName: string;
+      status: string;
+    }
+  /**
+   * Delegation activity: the run handed work to a child agent — one event per
+   * subagent (subagent.start), per team roster member (team.start, lead
+   * first), or per parallel branch (branch_start).
+   */
   | {
       type: "delegation";
       kind: "subagent" | "team" | "parallel";
       label: string;
       detail: string;
-      /** Child session id (subagent.start), keying later live updates. */
+      /** Child session id (subagent.start / branch_start), keying later live updates. */
       childId?: string;
+      /** The Subagent/Team/Parallel tool call id this child belongs to. */
+      parentCallId?: string;
+      /** Team member: the team id. */
+      teamId?: string;
+      /** Team member: the roster name later `team_member` frames are tagged with. */
+      memberName?: string;
+      /** Parallel branch: its 0-based index within the group. */
+      branchIndex?: number;
+      lead?: boolean;
+      mutating?: boolean;
+      /** The concrete model the child runs on (bare metadata). */
+      model?: string;
       background?: boolean;
       /** Why the router did not route this delegation (D2.1). */
       routingReason?: string;
     }
   /**
-   * Live child activity (subagent.tool): cumulative tool/token counters for
-   * the delegation card keyed by `childId`. Redacted metadata only.
+   * Live child activity (subagent.tool / parallel branch_tool): cumulative
+   * tool/token counters plus the bounded activity preview for the delegation
+   * card. Keyed by `childId` (subagent) or (`parentCallId`, `branchIndex`)
+   * (a branch_tool carries no child id). `detail`/`text` are daemon-clamped,
+   * model-influenced previews — plain text only.
    */
   | {
       type: "delegation_progress";
-      childId: string;
+      childId?: string;
+      parentCallId?: string;
+      branchIndex?: number;
       toolCount?: number;
       inputTokens?: number;
       outputTokens?: number;
       toolName?: string;
+      /** The child's inner event kind (tool.call / tool.result / message.delta / result). */
+      innerKind?: string;
+      isError?: boolean;
+      detail?: string;
+      text?: string;
     }
   /**
-   * Child terminal (subagent.end): final counters, the stop reason, the
-   * wall-clock duration, and — when stop === "error" — the failure cause,
-   * so a failed child renders as failed instead of vanishing.
+   * Child terminal (subagent.end / parallel branch_end): final counters, the
+   * stop reason, the wall-clock duration, and — when stop === "error" — the
+   * failure cause, so a failed child renders as failed instead of vanishing.
    */
   | {
       type: "delegation_end";
-      childId: string;
+      childId?: string;
+      parentCallId?: string;
+      branchIndex?: number;
       stop: string;
       toolCount?: number;
       inputTokens?: number;
       outputTokens?: number;
       durationMs?: number;
       cause?: string;
+      /** Parallel branch: the branch's child run failed. */
+      failed?: boolean;
+    }
+  /** A Parallel fan-out began: the group header facts (parallel.start). */
+  | {
+      type: "parallel_start";
+      parentCallId: string;
+      join: string;
+      branchCount: number;
+    }
+  /**
+   * A Parallel fan-out ended (parallel.end): the winning branch index (−1 =
+   * none / join=all), the run's stop, and the group's usage.
+   */
+  | {
+      type: "parallel_end";
+      parentCallId: string;
+      join: string;
+      branchCount: number;
+      winner: number;
+      stop: string;
+      inputTokens?: number;
+      outputTokens?: number;
+    }
+  /**
+   * One team member's redacted activity (team.member), tagged with the member
+   * name. `innerKind` routes it: tool.call / tool.result / message.delta /
+   * turn.end (usage + context meter) / result (round finished, optional
+   * cause). `text`/`detail` are daemon-clamped previews — plain text only.
+   */
+  | {
+      type: "team_member";
+      teamId: string;
+      parentCallId: string;
+      member: string;
+      /** The member's child session id (`team-<teamId>-<member>`), when carried. */
+      memberSessionId?: string;
+      innerKind: string;
+      text?: string;
+      toolName?: string;
+      detail?: string;
+      isError: boolean;
+      /** Per-event usage (turn.end / result) — the lane SUMS these. */
+      inputTokens?: number;
+      outputTokens?: number;
+      /** Context meter (turn.end): current occupancy / window; 0 = unknown. */
+      contextUsed: number;
+      contextWindow: number;
+      cause?: string;
+    }
+  /** The team's shared task board, a full snapshot (team.tasks). */
+  | {
+      type: "team_tasks";
+      teamId: string;
+      parentCallId: string;
+      tasks: TeamTaskInfo[];
+    }
+  /** The team's findings ledger, a full snapshot (team.findings). */
+  | {
+      type: "team_findings";
+      teamId: string;
+      parentCallId: string;
+      findings: TeamFindingInfo[];
+    }
+  /**
+   * The team's terminal (team.end): rounds, stop, the team-total usage, the
+   * final task/findings snapshots, and how each member ended.
+   */
+  | {
+      type: "team_end";
+      teamId: string;
+      parentCallId: string;
+      rounds: number;
+      stop: string;
+      inputTokens?: number;
+      outputTokens?: number;
+      tasks: TeamTaskInfo[];
+      findings: TeamFindingInfo[];
+      dispositions: TeamMemberDispositionInfo[];
     }
   /**
    * The run's terminal frame. `stop === "error"` is a FAILED turn and must
@@ -349,6 +652,27 @@ export interface ClarificationRequest {
   clarifyId: string;
   sessionId: string;
   question: string;
+}
+
+// ── MCP browser authorization ───────────────────────────────────────────────
+
+/**
+ * A pending browser authorization the chat is parked on: the MCP server named
+ * by `displayName` needs the operator to sign in before the tool call
+ * (`callId`) can run. The URL is never held here — it is fetched live from
+ * the daemon's presentation control at the moment it is opened or copied.
+ */
+export interface AuthorizationRequest {
+  authorizationId: string;
+  sessionId: string;
+  callId: string;
+  displayName: string;
+  /** Epoch milliseconds; absent when the daemon set no expiry. */
+  expiresAt?: number;
+  /** The last control failure, in the daemon's own words. */
+  error?: string;
+  /** A one-line status the last control produced (copied, still pending…). */
+  notice?: string;
 }
 
 // ── Models ──────────────────────────────────────────────────────────────────

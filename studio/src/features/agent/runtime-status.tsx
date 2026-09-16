@@ -47,6 +47,11 @@ export interface RuntimeStatus {
   serverCapabilities: Record<string, unknown>;
   /** Operator-set deployment label ("" when unset / older daemon). */
   deployment: string;
+  /** The SAVED permissions the managed daemon was spawned with (posture,
+   *  project trust, shell-less mode); null in external mode or while the
+   *  controller is unreachable. The EFFECTIVE posture is
+   *  `serverCapabilities.posture` (absent on an older daemon). */
+  permissions: HarnessControlStatus["permissions"];
   /** False only when the daemon reports an API major Studio does not speak. */
   apiCompatible: boolean;
   /** Forces an immediate re-probe (the offline screen's Retry). */
@@ -158,6 +163,7 @@ export function RuntimeStatusProvider({ children }: { children: ReactNode }) {
         features: featureSet,
         serverCapabilities: compat?.capabilities ?? {},
         deployment: compat?.deployment ?? "",
+        permissions: control?.permissions ?? null,
         apiCompatible,
         refresh,
         switchProvider,

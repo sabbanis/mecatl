@@ -20,6 +20,7 @@ import {
 } from "@stacklok-oss/mecatl-sdk";
 import type { StreamEvent } from "@/features/agent/types";
 import {
+  isPendingAuthorizationStatus,
   type SessionInventoryPage,
   type SessionPermissionMode,
   type SessionSummary,
@@ -348,6 +349,11 @@ async function relayRun(
   const idle = () => runAbort.abort();
 
   let sawResult = false;
+  // A run parked on a browser authorization (authorization.required with no
+  // later resolved) closes the prompt stream WITHOUT a result by design: the
+  // run continues over the authorization control stream, so that close is a
+  // normal end here, not a truncation.
+  let parkedOnAuthorization = false;
   try {
     const run = await readWithIdleTimeout(
       withRunnableSession(sessionId, (session) =>
@@ -362,21 +368,32 @@ async function relayRun(
       if (next.done) break;
       for (const translated of translateEvent(next.value, sessionId)) {
         if (translated.type === "run_result") sawResult = true;
+        if (translated.type === "authorization") {
+          parkedOnAuthorization = isPendingAuthorizationStatus(
+            translated.status,
+          );
+        } else if (translated.type === "authorization_resolved") {
+          parkedOnAuthorization = false;
+        }
         onEvent(translated);
       }
     }
   } catch (error) {
     if (signal?.aborted) throw error;
     // The SDK reports a stream that ended without its terminal result as a
-    // ProtocolError; Studio keeps its own words for that one failure.
+    // ProtocolError; Studio keeps its own words for that one failure — unless
+    // the run parked on an authorization, which is how that stream ENDS.
     if (!sawResult && error instanceof ProtocolError) {
+      if (parkedOnAuthorization) return;
       throw new Error(STREAM_TRUNCATED_MESSAGE);
     }
     throw toHarnessError(error);
   } finally {
     signal?.removeEventListener("abort", abortRun);
   }
-  if (!sawResult) throw new Error(STREAM_TRUNCATED_MESSAGE);
+  if (!sawResult && !parkedOnAuthorization) {
+    throw new Error(STREAM_TRUNCATED_MESSAGE);
+  }
 }
 
 // ── Run controls ────────────────────────────────────────────────────────────
@@ -613,10 +630,25 @@ export async function fetchSessionTranscriptMessages(
  * context window the context meter is measured against. Null when the daemon
  * reports none (older daemon / unresolved model).
  */
-export interface HarnessResolvedModel {
+interface HarnessResolvedModel {
   providerId: string;
   modelId: string;
   contextWindow: number;
+  /** The effective reasoning-effort tier ("" when the daemon echoes none). */
+  reasoningEffort: string;
+}
+
+/**
+ * The session's cumulative token spend as the daemon persists it (the
+ * snapshot's `token_usage["main"].total` bucket, engine/session/usage.go) —
+ * durable across reloads, unlike a client-side sum of run terminals.
+ */
+interface HarnessSessionTokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  reasoningTokens: number;
 }
 
 /** Session-snapshot detail Studio consumes beyond the mode. */
@@ -626,7 +658,13 @@ export interface HarnessSessionDetail {
    *  (B1.4), in the SDK's camelCase projection; older daemons omit it — fall
    *  back to the compatibility document. */
   capabilities: Record<string, unknown>;
+  /** Null when the daemon reports no main-bucket usage (older daemon, or a
+   *  session that has not run yet) — the client keeps its own visit sum. */
+  tokenUsage: HarnessSessionTokenUsage | null;
 }
+
+/** The token-usage bucket the main agent's spend is recorded under. */
+const MAIN_USAGE_BUCKET = "main";
 
 export async function fetchHarnessSessionDetail(
   sessionId: string,
@@ -634,14 +672,25 @@ export async function fetchHarnessSessionDetail(
 ): Promise<HarnessSessionDetail> {
   const snapshot = await fetchSnapshot(sessionId, signal);
   const resolved = snapshot.resolvedModel;
+  const total = snapshot.tokenUsage?.[MAIN_USAGE_BUCKET]?.total;
   return {
     resolvedModel: resolved
       ? {
           providerId: resolved.providerId,
           modelId: resolved.modelId,
           contextWindow: Number(resolved.contextWindow) || 0,
+          reasoningEffort: resolved.reasoningEffort ?? "",
         }
       : null,
     capabilities: snapshot.capabilities ? { ...snapshot.capabilities } : {},
+    tokenUsage: total
+      ? {
+          inputTokens: Number(total.inputTokens) || 0,
+          outputTokens: Number(total.outputTokens) || 0,
+          cacheReadTokens: Number(total.cacheReadTokens) || 0,
+          cacheWriteTokens: Number(total.cacheWriteTokens) || 0,
+          reasoningTokens: Number(total.reasoningTokens) || 0,
+        }
+      : null,
   };
 }

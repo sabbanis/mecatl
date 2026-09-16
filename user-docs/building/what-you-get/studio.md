@@ -50,7 +50,12 @@ token on the server; the browser never sees a daemon address or credential.
   creates its daemon session on the first message. Streaming shows tool calls,
   reasoning, delegation badges when the run hands work to subagents or teams,
   and permission asks with three-way verdicts (allow once / always / deny). A
-  failed run renders as failed, with a retry.
+  failed run renders as failed, with a retry. When a scheduled task reports
+  back into the chat it started from, the note renders as a **Scheduled task**
+  card: the schedule name (linked to its detail page), the fire id, how the
+  fire ended, and its outcome text as plain text. A hidden tab gets a browser
+  notification for each completed fire once notifications are enabled under
+  Settings → Appearance.
 - **Scheduled** — the schedule registry: create and edit schedules (cron with
   timezone, or one-shot), pause/resume/fire, and audit each schedule's fire
   history down to the per-fire session transcript. Write-capable schedules
@@ -79,8 +84,11 @@ token on the server; the browser never sees a daemon address or credential.
 
 ## Limits worth knowing
 
-- Studio cannot re-attach live to a run it did not start (a scheduled fire in
-  progress, another client's run): the live tail is gRPC-only today. It shows
-  the running state and reads the transcript when the run ends.
+- Re-attaching live to a run Studio did not start (a scheduled fire delivering
+  into a chat, another client's run) rides the daemon's session watch, which
+  Studio attaches once its 20-second inventory poll reports the run. A run
+  shorter than that interval shows only after it ends: Studio then re-reads
+  the transcript, so the delivered note still appears without reopening the
+  chat.
 - Config writes in managed mode restart the daemon, which ends in-flight runs.
 - There is no cost display: the daemon accounts tokens, not currency.

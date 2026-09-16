@@ -31,6 +31,9 @@ const status = {
   configuredProviders: ["openrouter", "anthropic"],
   selectedProvider: "openrouter",
   authFile: "/home/op/.config/mecatl/auth.yaml",
+  workspace: "",
+  permissions: null,
+  storage: null,
 };
 
 function fakeRuntime(overrides: Partial<Runtime> = {}): Runtime {
@@ -57,6 +60,9 @@ function fakeRuntime(overrides: Partial<Runtime> = {}): Runtime {
     connectGateway: vi.fn(async () => {}),
     connectGatewayOAuth: vi.fn(async () => {}),
     saveRouter: vi.fn(async () => {}),
+    permissions: null,
+    savePermissions: vi.fn(async () => {}),
+    saveStorage: vi.fn(async () => {}),
     ...overrides,
   };
 }
