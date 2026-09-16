@@ -78,9 +78,10 @@ func TestOpenRouterRouteE2E(t *testing.T) {
 		t.Fatalf("write openrouter config: %v", err)
 	}
 
-	built, err := Build(ctx, Config{
-		Workspace: workspace,
-		NoSoul:    true,
+	built, err := buildIsolated(t, ctx, Config{
+		Workspace:             workspace,
+		NoSoul:                true,
+		ContextWindowOverride: defaultContextWindowTokens,
 		ProviderOverrides: permconfig.ProviderOverrides{
 			providerOpenRouter: {BaseURL: srv.URL + "/v1"},
 			providerOpenAI:     {BaseURL: srv.URL + "/v1"},
@@ -191,9 +192,10 @@ func TestOpenRouterRouteE2ECacheHit(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	built, err := Build(ctx, Config{
-		Workspace: workspace,
-		NoSoul:    true,
+	built, err := buildIsolated(t, ctx, Config{
+		Workspace:             workspace,
+		NoSoul:                true,
+		ContextWindowOverride: defaultContextWindowTokens,
 		ProviderOverrides: permconfig.ProviderOverrides{
 			providerOpenRouter: {BaseURL: srv.URL + "/v1"},
 		},

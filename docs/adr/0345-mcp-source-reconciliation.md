@@ -1,4 +1,4 @@
-# ADR 0342 — Reconcile direct MCP through durable bindings and leased generations
+# ADR 0345 — Reconcile direct MCP through durable bindings and leased generations
 
 - Status: Proposed
 - Date: 2026-09-14

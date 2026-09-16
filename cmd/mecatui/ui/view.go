@@ -99,7 +99,7 @@ func (m Model) renderBody() string {
 	case m.showHelp:
 		return renderHelpOverlay(m.deps.Theme, m.caps, m.width, m.vp.Height(), m.helpScroll, m.helpKeyMarkings())
 	case m.team.view != teamNone:
-		return renderAgentsOverlay(m.deps.Theme, m.agentsTab, m.subagents, m.parallel, m.team, m.conv.latestTeamBlock(), m.conv.subagentFleet, m.conv.parallelGroups, m.helpKeyMarkings(), m.width, m.vp.Height())
+		return renderAgentsOverlay(m.deps.Theme, m.agentsTab, m.subagents, m.parallel, m.team, m.conv.latestTeamBlock(), m.conv.subagentFleet, m.conv.parallelGroups, m.helpKeyMarkings(), m.width, m.vp.Height(), m.height)
 	case m.agentsInv.view != agentsInvNone:
 		return renderAgentsInvOverlay(m.deps.Theme, m.agentsInv, m.caps, m.helpKeyMarkings(), m.width, m.vp.Height())
 	case m.modal != nil:
@@ -172,6 +172,7 @@ func (m Model) renderHeader() string {
 		if lineSurface := m.generatedStatusLine.Header; m.deps.DebugTarget == "" && lineSurface.Present && statusSurfaceFits(lineSurface, m.statusLineGeometry().headerAvailable) {
 			line = renderStatusSurface(m.deps.Theme, lineSurface, m.statusLineGeometry().headerAvailable, false)
 			line = m.fitHeader(line, badge, badgeW, tail, m.widthOr())
+			line = m.appendDebugPrivacyNotice(line)
 			return m.deps.Theme.Style("header").Width(m.widthOr()).Render(line)
 		}
 		if m.deps.DebugTarget == "" && m.deps.StatusSource != nil {
@@ -184,8 +185,23 @@ func (m Model) renderHeader() string {
 	} else if m.deps.DebugTarget == "" && m.deps.StatusSource != nil {
 		line = ""
 	}
-	header := m.deps.Theme.Style("header").Width(m.widthOr()).Render(line)
+	header := m.deps.Theme.Style("header").Width(m.widthOr()).Render(m.appendDebugPrivacyNotice(line))
 	return header
+}
+
+// appendDebugPrivacyNotice keeps the debugger's consent disclosure inside the
+// Bubble Tea view. The pre-launch stderr warning is lost when the default
+// alternate screen starts, so the in-TUI notice is the durable user-visible
+// disclosure while invocation remains the consent gesture.
+func (m Model) appendDebugPrivacyNotice(line string) string {
+	if m.deps.DebugTarget == "" {
+		return line
+	}
+	notice := "PRIVACY: target evidence sent to the configured model may include prompts, assistant output, tool arguments/results, file paths, and secrets"
+	if len(m.deps.DebugMCP) > 0 {
+		notice += " Selected reporting servers available: " + strings.Join(m.deps.DebugMCP, ", ") + "; availability does not authorize publication or sending."
+	}
+	return line + "\n" + m.deps.Theme.Style("warning").Render(notice)
 }
 
 func (m Model) debugHeaderTarget() string {

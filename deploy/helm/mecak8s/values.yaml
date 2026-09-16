@@ -3,10 +3,10 @@ fullnameOverride: ""
 
 image:
   repository: ghcr.io/stacklok/mecatl/mecak8s
-  # Leave both selectors empty to use v<chart-version>. Set a signed release
-  # tag or digest to override that default.
+  # Release PRs keep this signed tag aligned with Chart.yaml. A digest overrides
+  # it; clearing both selectors falls back to v<chart-version>.
   digest: ""
-  tag: ""
+  tag: "v0.0.38"
   pullPolicy: IfNotPresent
 
 # imagePullSecrets projects Secret(s) of type kubernetes.io/dockerconfigjson
@@ -128,15 +128,30 @@ security:
   # gateway/mesh-only plaintext backend reachability.
   tlsTerminatedUpstream: false
 
-# Full pod shutdown budget. This must exceed preStop (3s) plus the configured
-# mecak8s drain, gRPC, HTTP, resource-close, and telemetry bounds.
+# Full pod shutdown budget. The schema minimum of 44s is the first whole second
+# above preStop (3s) plus the default mecak8s drain, gRPC, HTTP, resource-close,
+# and telemetry bounds (43s total). Increase this when extraArgs raises any
+# runtime shutdown bound.
 terminationGracePeriodSeconds: 60
 
-# Optional Kubernetes scheduling controls. Empty values render no pod fields.
-topologySpreadConstraints: []
+# Prefer replicas on separate nodes without making single-node clusters
+# unschedulable. Each constraint without an explicit labelSelector is scoped to
+# this release's agent pods by the Deployment template. Production deployments
+# can replace this soft default with DoNotSchedule and add zone-level spreading.
+topologySpreadConstraints:
+  - maxSkew: 1
+    topologyKey: kubernetes.io/hostname
+    whenUnsatisfiable: ScheduleAnyway
 affinity: {}
 nodeSelector: {}
 tolerations: []
+
+# Omitted for a single replica. maxUnavailable accepts a non-negative integer or
+# a percentage; the default ensures voluntary disruptions remove at most one
+# replica as the Deployment scales.
+podDisruptionBudget:
+  enabled: true
+  maxUnavailable: 1
 
 # workspace is the operator-mounted agent filesystem root (e.g. a PVC mount
 # path). Empty (the default) is a FILE-LESS deployment: every session is no-FS.

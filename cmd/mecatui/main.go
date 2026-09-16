@@ -295,6 +295,7 @@ func runWithOptions(argv []string, options runOptions) error {
 		Conv:                   cl,
 		MCP:                    cl,
 		Cmds:                   cl,
+		ServerInfo:             cl,
 		Skills:                 cl,
 		Agents:                 cl,
 		Soul:                   cl,
@@ -368,6 +369,7 @@ func runWithOptions(argv []string, options runOptions) error {
 		// one-shot — the TUI stays open for follow-ups). Empty = no seed.
 		InitialPrompt: initialPromptForConfig(cfg),
 		DebugTarget:   cfg.debugTarget,
+		DebugMCP:      append([]string(nil), cfg.debugMCP...),
 	})
 	applyDebugConfig(cfg, &deps)
 	deps.ServerImpl = mecatuiServerImplementation
@@ -1159,7 +1161,7 @@ func embeddedConfig(cfg config, diag port.Diagnostics) app.Config {
 		// models.router: taxonomy. Idempotent: safe to compute on both calls.
 		RouterDisabled:        cfg.subagentModelRouterSet && !cfg.subagentModelRouter,
 		UseMock:               cfg.mock,
-		Shell:                 "/bin/sh",
+		Shell:                 cfg.shell,
 		NoShell:               cfg.noShell,
 		Compaction:            "heuristic",
 		Tokenizer:             "heuristic",

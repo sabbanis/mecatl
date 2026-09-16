@@ -10,7 +10,7 @@
       "required": ["repository", "digest", "tag", "pullPolicy"],
       "properties": {
         "repository": {"type": "string", "minLength": 1},
-        "digest": {"type": "string"},
+        "digest": {"type": "string", "pattern": "^(|sha256:[0-9a-f]{64})$"},
         "tag": {"type": "string"},
         "pullPolicy": {"type": "string", "enum": ["Always", "IfNotPresent", "Never"]}
       }
@@ -100,7 +100,21 @@
         }
       }
     },
-    "terminationGracePeriodSeconds": {"type": "integer", "minimum": 1},
+    "terminationGracePeriodSeconds": {"type": "integer", "minimum": 44},
+    "podDisruptionBudget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "maxUnavailable"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "maxUnavailable": {
+          "oneOf": [
+            {"type": "integer", "minimum": 0},
+            {"type": "string", "pattern": "^(100|[1-9]?[0-9])%$"}
+          ]
+        }
+      }
+    },
     "workspace": {"type": "string"},
     "imagePullSecrets": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["name"], "properties": {"name": {"type": "string", "minLength": 1}}}},
     "mcp": {

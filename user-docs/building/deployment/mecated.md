@@ -28,7 +28,7 @@ mecatui providers
 |`mecatui providers add NAME`|Define a custom HTTPS provider, API flavor, default model, and authentication.|
 |`mecatui providers login NAME`|Enter or replace the provider's credential.|
 |`mecatui providers logout NAME`|Remove its local OIDC enrollment.|
-|`mecatui providers set-default NAME [MODEL]`|Select the deployment default.|
+|`mecatui providers set-default NAME [MODEL]`|Select the deployment default. A supplied concrete model ID is saved without a live inventory check; availability is verified when the provider is used.|
 |`mecatui providers remove NAME`|Remove a custom provider.|
 |`mecatui providers` or `mecatui providers status`|Show configuration state without credentials.|
 
@@ -90,8 +90,7 @@ for no-PVC pod deployments, with Redis-backed state when you configure
 
 ## Quick start
 
-Install with `brew install stacklok/tap/mecatl` or a signed release archive. See
-[Install Mecatl](/install.md). Then start the server:
+Install with `brew install stacklok/tap/mecatl`. Then start the server:
 
 ```sh
 mecated serve
@@ -145,6 +144,8 @@ default or the `no-fs` profile, but cannot submit a path. `ListWorktrees`
 returns short-lived selectors for `ClearSession` and `ForkSession`; selectors
 expire when the server restarts. Mecatl stores the exact placement privately and
 reattaches it before each run. See
+[Execution environments](/features/execution-environments.md) for the shared
+placement and reattachment model. For the underlying design, see
 [ADR 0291](https://github.com/stacklok/mecatl/blob/main/docs/adr/0291-server-owned-session-placement.md).
 
 ## Operator-defined providers
