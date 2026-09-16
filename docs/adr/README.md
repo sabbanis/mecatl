@@ -209,6 +209,7 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0312 — Confidential ToolHive broker client credentials](./0312-confidential-toolhive-broker-client.md)
 - [0314 — Dynamic Client Registration for MCP broker upstreams](./0314-mcp-broker-dcr-client.md)
 - [0325 — Durable Dynamic Client Registration for direct MCP profiles](./0325-direct-mcp-dcr.md)
+- [0345 — Host-local direct MCP onboarding and credential custody](./0345-direct-mcp-onboarding.md) *(proposed)*
 - [0326 — Lazy ToolHive grants refresh declared metadata](./0326-lazy-toolhive-metadata-refresh.md)
 
 ### Performance & diagnostics
@@ -270,6 +271,7 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0346 — Studio's chat list is the daemon's session store](./0346-studio-server-backed-chats.md)
 - [0247 — mecatui generated status lines](./0247-mecatui-status-line.md) *(superseded by 0289)*
 - [0289 — Hardened status-command output and environment extension](./0289-hardened-status-command-boundary.md)
+- [0344 — Mecatui-owned terminal titles](./0344-mecatui-terminal-title-controller.md) *(proposed)*
 - [0280 — Automatic light theme selection in mecatui](./0280-mecatui-light-theme-autodetect.md)
 - [0291 — Server-owned session placement](./0291-server-owned-session-placement.md)
 - [0294 — End-to-end session correlation and affinity](./0294-session-correlation-and-affinity.md) *(proposed)*
