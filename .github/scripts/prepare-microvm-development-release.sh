@@ -10,7 +10,9 @@ source_build_identity=$1
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
 case "$(uname -s)-$(uname -m)" in
   Linux-x86_64) platform=linux-amd64 ;;
-  *) echo "microVM development releases require Linux amd64" >&2; exit 1 ;;
+  Linux-aarch64|Linux-arm64) platform=linux-arm64 ;;
+  Darwin-arm64) platform=darwin-arm64 ;;
+  *) echo "microVM development releases require Linux amd64/arm64 or macOS arm64" >&2; exit 1 ;;
 esac
 
 "$repo_root/environment/microvm/e2e/prepare.sh"
@@ -20,8 +22,10 @@ rm -rf "$output"
 mkdir -p "$output"
 bundle="$output/mecatl-microvm-development-$platform.tar.gz"
 members="$output/bundle-members"
-find "$prepared/package" -mindepth 1 -printf '%P\0' | LC_ALL=C sort -z >"$members"
-tar --no-recursion -C "$prepared/package" --null --verbatim-files-from --files-from="$members" -cf - | gzip -n >"$bundle"
+# ponytail: -printf is GNU-find-only (missing on macOS/BSD find); cd + relative
+# find + sed strip works on both and the package dir is flat (no subdirs/spaces).
+(cd "$prepared/package" && find . -mindepth 1 -type f) | sed 's#^\./##' | LC_ALL=C sort >"$members"
+tar -C "$prepared/package" -T "$members" -cf - | gzip -n >"$bundle"
 rm -f "$members"
 chmod 0600 "$bundle"
 key="$output/publisher.pub"
@@ -34,12 +38,12 @@ sha256_file() {
 bundle_sha=$(sha256_file "$bundle")
 key_sha=$(sha256_file "$key")
 descriptor="$output/release.json"
-python3 - "$descriptor" "$source_build_identity" "$bundle" "$bundle_sha" "$key" "$key_sha" <<'PY'
+python3 - "$descriptor" "$platform" "$source_build_identity" "$bundle" "$bundle_sha" "$key" "$key_sha" <<'PY'
 import json, sys
-path, source, bundle, bundle_sha, key, key_sha = sys.argv[1:]
+path, platform, source, bundle, bundle_sha, key, key_sha = sys.argv[1:]
 value = {
     "schema": "mecatl-microvm-development-release/v1",
-    "platform": "linux-amd64",
+    "platform": platform,
     "source_build_identity": source,
     "bundle_path": bundle,
     "bundle_sha256": bundle_sha,

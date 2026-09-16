@@ -43,10 +43,12 @@ func TestDefaultOperationsPreflightInvokesAndPropagatesUserNamespaceProbe(t *tes
 }
 
 func TestMicroVMLivePlatformBoundary(t *testing.T) {
-	if !supportedPlatform("linux", "amd64") {
-		t.Fatal("Linux amd64 live platform was rejected")
+	for _, platform := range [][2]string{{"linux", "amd64"}, {"linux", "arm64"}, {"darwin", "arm64"}} {
+		if !supportedPlatform(platform[0], platform[1]) {
+			t.Fatalf("supported live platform rejected: %s/%s", platform[0], platform[1])
+		}
 	}
-	for _, platform := range [][2]string{{"linux", "arm64"}, {"darwin", "arm64"}, {"windows", "amd64"}} {
+	for _, platform := range [][2]string{{"darwin", "amd64"}, {"windows", "amd64"}} {
 		if supportedPlatform(platform[0], platform[1]) {
 			t.Fatalf("unsupported live platform accepted: %s/%s", platform[0], platform[1])
 		}

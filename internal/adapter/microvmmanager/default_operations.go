@@ -76,7 +76,7 @@ func (o *DefaultOperations) platform() (string, string) {
 func (o *DefaultOperations) Preflight(ctx context.Context, _ Paths) error {
 	goos, goarch := o.platform()
 	if !supportedPlatform(goos, goarch) {
-		return fmt.Errorf("%w: microvm-local supports Linux amd64 with KVM only; use host-local on this host", ErrUnsupportedPlatform)
+		return fmt.Errorf("%w: microvm-local supports Linux amd64/arm64 with KVM, or macOS 15+ Apple Silicon with Hypervisor.framework; use host-local on this host", ErrUnsupportedPlatform)
 	}
 	if _, err := exec.LookPath("git"); err != nil {
 		return errors.New("git is required for microVM worktrees")
@@ -110,7 +110,7 @@ func (o *DefaultOperations) Preflight(ctx context.Context, _ Paths) error {
 }
 
 func supportedPlatform(goos, goarch string) bool {
-	return goos == "linux" && goarch == "amd64"
+	return (goos == "linux" && (goarch == "amd64" || goarch == "arm64")) || (goos == "darwin" && goarch == "arm64")
 }
 
 func darwinMajor(version string) int {

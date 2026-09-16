@@ -408,7 +408,7 @@ func ClassifyReadinessFailure(err error, fallback ReadinessStage) ReadinessFailu
 	switch {
 	case errors.Is(err, ErrUnsupportedPlatform):
 		failure.Category = "unsupported_platform"
-		failure.Cause = "microvm-local requires Linux amd64 with KVM, use host-local on this host"
+		failure.Cause = "microvm-local requires Linux amd64/arm64 with KVM, or macOS 15+ Apple Silicon with Hypervisor.framework; use host-local on this host"
 	case errors.Is(err, ErrKVMUnavailable):
 		failure.Category = "host_prerequisite"
 		failure.Cause = "KVM is unavailable to the current user, run microvm doctor for host remediation"
@@ -654,7 +654,7 @@ func (m *Manager) Doctor(ctx context.Context) (string, error) {
 	}
 
 	if errors.Is(preflightErr, ErrUnsupportedPlatform) {
-		_, _ = fmt.Fprintln(&report, "next: microvm-local is supported only on Linux amd64 with KVM; use host-local on this host")
+		_, _ = fmt.Fprintln(&report, "next: microvm-local is supported only on Linux amd64/arm64 with KVM, or macOS 15+ Apple Silicon with Hypervisor.framework; use host-local on this host")
 	} else if preflightErr != nil {
 		_, _ = fmt.Fprintln(&report, "next: fix the failed host prerequisite, then rerun doctor")
 	} else if !configured && !running && runningErr == nil {

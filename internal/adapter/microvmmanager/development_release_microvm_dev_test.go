@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"testing"
@@ -295,7 +296,7 @@ func TestPreparedDevelopmentReleaseBundleIsImportable(t *testing.T) {
 func validDevelopmentDescriptor(t *testing.T, bundle, key string) []byte {
 	t.Helper()
 	value := DevelopmentReleaseDescriptor{
-		Schema: DevelopmentReleaseSchema, Platform: "linux-amd64", SourceBuildIdentity: "source-test",
+		Schema: DevelopmentReleaseSchema, Platform: runtime.GOOS + "-" + runtime.GOARCH, SourceBuildIdentity: "source-test",
 		BundlePath: bundle, BundleSHA256: fileDigest(t, bundle), PublicKeyPath: key,
 		PublicKeyIdentity: "sha256:" + fileDigest(t, key), PolicyRevision: "development-test",
 	}

@@ -353,7 +353,7 @@ func TestDoctorReportsFreshAndFailureStatesWithoutMutation(t *testing.T) {
 		{name: "healthy", configured: true, ops: &fakeOps{running: true}, want: []string{"host preflight: passed", "backend: healthy", "PASS hypervisor ready"}},
 		{name: "daemon unhealthy", configured: true, ops: &fakeOps{running: true, doctorErr: errors.New("guest transport unavailable")}, want: []string{"backend: unhealthy", "guest transport unavailable"}},
 		{name: "host preflight failed", ops: &fakeOps{failAt: "preflight"}, want: []string{"host preflight: failed", "backend: ready to configure on first use"}},
-		{name: "unsupported platform", ops: &fakeOps{preflightErr: ErrUnsupportedPlatform}, want: []string{"supported only on Linux amd64 with KVM", "use host-local on this host"}},
+		{name: "unsupported platform", ops: &fakeOps{preflightErr: ErrUnsupportedPlatform}, want: []string{"supported only on Linux amd64/arm64 with KVM", "use host-local on this host"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
