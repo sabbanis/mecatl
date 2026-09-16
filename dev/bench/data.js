@@ -220730,6 +220730,40 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789385374248,
         "tool": "customBiggerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "danbarr@users.noreply.github.com",
+            "name": "Dan Barr",
+            "username": "danbarr"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6c75a42d9cad502685a42f5418f2bc99b9ae6376",
+          "message": "fix(perf): compact long-horizon trend history (#1640)\n\nCo-authored-by: Dan Barr <6922515+danbarr@users.noreply.github.com>",
+          "timestamp": "2026-09-16T16:24:20-04:00",
+          "tree_id": "19be91a70a3190061c42d18e8e199e44d3b60dbf",
+          "url": "https://github.com/stacklok/mecatl/commit/6c75a42d9cad502685a42f5418f2bc99b9ae6376"
+        },
+        "date": 1789590991070,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
       }
     ],
     "mecatl scenarios (render allocs, advisory)": [
@@ -320373,6 +320407,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789590987033,
+  "lastUpdate": 1789590992415,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
