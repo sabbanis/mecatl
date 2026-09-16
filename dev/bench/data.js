@@ -244331,6 +244331,45 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789385382612,
         "tool": "customSmallerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "danbarr@users.noreply.github.com",
+            "name": "Dan Barr",
+            "username": "danbarr"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6c75a42d9cad502685a42f5418f2bc99b9ae6376",
+          "message": "fix(perf): compact long-horizon trend history (#1640)\n\nCo-authored-by: Dan Barr <6922515+danbarr@users.noreply.github.com>",
+          "timestamp": "2026-09-16T16:24:20-04:00",
+          "tree_id": "19be91a70a3190061c42d18e8e199e44d3b60dbf",
+          "url": "https://github.com/stacklok/mecatl/commit/6c75a42d9cad502685a42f5418f2bc99b9ae6376"
+        },
+        "date": 1789590995979,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3311.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 102.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1155,
+            "unit": "allocs/op"
+          }
+        ]
       }
     ],
     "mecatl scenarios (smaller-is-better)": [
@@ -320407,6 +320446,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789590992415,
+  "lastUpdate": 1789590997332,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
