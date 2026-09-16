@@ -952,14 +952,29 @@ func lockManager(stateDir string) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+	if err := flockRetryEINTR(int(lock.Fd()), syscall.LOCK_EX); err != nil {
 		_ = lock.Close()
 		return nil, err
 	}
 	return func() {
-		_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+		_ = flockRetryEINTR(int(lock.Fd()), syscall.LOCK_UN)
 		_ = lock.Close()
 	}, nil
+}
+
+// flockRetryEINTR retries a raw syscall.Flock on EINTR. Unlike os/net file
+// descriptors, a raw Flock call is not wrapped by internal/poll's automatic
+// EINTR retry, so a blocking LOCK_EX can spuriously fail if the calling
+// thread receives a signal (notably Go's SIGURG async-preemption signal)
+// while parked in the kernel wait. Observed as an intermittent EnsureReady
+// failure under concurrent load on darwin/arm64.
+func flockRetryEINTR(fd int, how int) error {
+	for {
+		err := syscall.Flock(fd, how)
+		if err != syscall.EINTR {
+			return err
+		}
+	}
 }
 
 func secureMkdirAll(path string) error {
@@ -985,6 +1000,19 @@ func secureMkdirAll(path string) error {
 	return nil
 }
 
+// refuseSymlinkAncestors guards the directories this manager is about to
+// create (via MkdirAll) or write under against a symlink swapped in ahead of
+// that creation: MkdirAll silently follows a symlink for any ancestor that
+// already exists, so a component planted where we expect a fresh directory
+// could redirect the write outside the intended state/data tree.
+//
+// It climbs from path up to, and including, the first ancestor that already
+// exists, refusing if that ancestor is a symlink, then stops. Ancestors above
+// that point predate this operation and are outside the subtree the manager
+// creates, so they are the host's ordinary layout, not an attacker foothold
+// specific to this call — notably macOS, where /var is itself a symlink to
+// /private/var (also true of TMPDIR-derived paths such as those from
+// t.TempDir(), which land under /var/folders on macOS).
 func refuseSymlinkAncestors(path string) error {
 	clean := filepath.Clean(path)
 	for current := clean; current != filepath.Dir(current); current = filepath.Dir(current) {
@@ -998,6 +1026,7 @@ func refuseSymlinkAncestors(path string) error {
 		if info.Mode()&os.ModeSymlink != 0 {
 			return fmt.Errorf("refusing symlink path %s", current)
 		}
+		return nil
 	}
 	return nil
 }
