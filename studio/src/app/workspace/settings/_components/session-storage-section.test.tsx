@@ -65,6 +65,7 @@ function controlStatus(
     workspace: "/repo",
     permissions: null,
     storage,
+    retention: null,
   };
 }
 
@@ -86,6 +87,7 @@ function fakeRuntime(overrides: Partial<Runtime> = {}): Runtime {
     saveRouter: vi.fn(async () => {}),
     savePermissions: vi.fn(async () => {}),
     saveStorage,
+    saveRetention: vi.fn(async () => {}),
     ...overrides,
   };
 }

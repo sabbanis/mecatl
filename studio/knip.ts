@@ -24,7 +24,6 @@ const config: KnipConfig = {
     "react-hook-form",
     // Used by shadcn/ui components (in src/components/ui/ which knip ignores)
     "@radix-ui/react-avatar",
-    "@radix-ui/react-checkbox",
     "@radix-ui/react-popover",
     "@radix-ui/react-progress",
     "@radix-ui/react-separator",

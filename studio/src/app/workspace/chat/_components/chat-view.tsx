@@ -16,7 +16,6 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Pencil,
-  RotateCcw,
   Trash2,
   Wrench,
 } from "lucide-react";
@@ -54,6 +53,7 @@ import {
   type QueuePause,
 } from "@/features/agent/hooks/use-agent-chat";
 import { isMockTourSession } from "@/features/agent/mock-tour";
+import type { StatusMessage } from "@/features/agent/stop-reason";
 import { cacheHitRate, formatPercent } from "@/features/agent/turn-stats";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { formatTokens } from "@/lib/formatters";
@@ -87,6 +87,11 @@ import {
 } from "../../_components/chat-input";
 import { ApprovalPanel } from "./approval-panel";
 import { AuthorizationPanel } from "./authorization-panel";
+import {
+  type AwaitingPhase,
+  awaitingPhaseLabel,
+  streamingSpinnerLabel,
+} from "./chat-view-phase";
 import { ClarificationPanel } from "./clarification-panel";
 import { ContextMeter } from "./context-meter";
 import { FilePreview } from "./file-preview";
@@ -96,7 +101,10 @@ import { MessageBubble } from "./message-bubble";
 import { MockProviderNotice } from "./mock-provider-notice";
 import { QueuedMessageStrip } from "./queued-message-strip";
 import { SidePanel } from "./side-panel";
+import { StatusLine } from "./status-line";
+import { streamingPhaseLabel } from "./streaming-phase";
 import { ToolCallPanel } from "./tool-call-panel";
+import { TurnErrorStrip } from "./turn-error-strip";
 
 /** The authorization card's fallback when a caller wires no handler. */
 const noAuthorizationAction = async () => {};
@@ -113,7 +121,14 @@ type ActivePanel =
  * staggered pulsing dots, a phase label derived from the streaming
  * assistant message (thinking / running tools / writing), and elapsed time.
  */
-function StreamingIndicator({ message }: { message?: AgentMessage }) {
+function StreamingIndicator({
+  message,
+  awaiting,
+}: {
+  message?: AgentMessage;
+  /** The run is parked on a permission ask: the phase names the wait. */
+  awaiting?: AwaitingPhase;
+}) {
   const [elapsed, setElapsed] = useState(0);
   const startedAt = message?.timestamp;
   useEffect(() => {
@@ -125,14 +140,9 @@ function StreamingIndicator({ message }: { message?: AgentMessage }) {
     return () => clearInterval(timer);
   }, [startedAt]);
 
-  const runningTool = message?.toolCalls?.some(
-    (call) => call.status === "running",
-  );
-  const phase = runningTool
-    ? "Running tools"
-    : message?.content
-      ? "Writing"
-      : "Thinking";
+  // Names the running tool ("Running Read"), like the TUI footer — unless
+  // the run is parked on the operator, when the wait is what to say.
+  const phase = awaitingPhaseLabel(awaiting) ?? streamingPhaseLabel(message);
   const time =
     elapsed >= 60
       ? `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`
@@ -405,12 +415,14 @@ function ThreadPanel({
     takeQueued,
     steerQueued,
     pendingApproval,
+    approvalQueueLength,
     respondToApproval,
     pendingAuthorization,
     openAuthorization,
     copyAuthorizationLink,
     recheckAuthorization,
     cancelAuthorization,
+    statusMessage,
   } = useAgentChat(initialThreadId);
 
   // The thread session's history starts with the seeded parent conversation;
@@ -566,6 +578,11 @@ function ThreadPanel({
             <ApprovalPanel
               approval={pendingApproval}
               onRespond={respondToApproval}
+              queuePosition={
+                approvalQueueLength
+                  ? { index: 1, total: approvalQueueLength }
+                  : undefined
+              }
             />
           )}
           {pendingAuthorization && (
@@ -579,12 +596,16 @@ function ThreadPanel({
           )}
           {isStreaming && !pendingAuthorization && (
             <StreamingIndicator
+              awaiting={pendingApproval ? "approval" : undefined}
               message={
                 replies[replies.length - 1]?.role === "assistant"
                   ? replies[replies.length - 1]
                   : undefined
               }
             />
+          )}
+          {!isStreaming && statusMessage && (
+            <StatusLine status={statusMessage} />
           )}
           <div ref={endRef} />
         </div>
@@ -824,12 +845,18 @@ export function ChatView({
   live = false,
   usage,
   contextOccupancy = 0,
+  statusMessage = null,
   error,
   onRetry,
+  lastFailurePermanent = false,
+  onNewChat,
+  recoverDraft = null,
+  onRecoverDraftConsumed,
   sidebarOpen,
   sidebarSide,
   onToggleSidebar,
   pendingApproval,
+  approvalQueueLength,
   onRespondApproval,
   pendingClarification,
   onRespondClarification,
@@ -878,10 +905,20 @@ export function ChatView({
   /** The last turn failed with this text; rendered as an inline strip. */
   error?: string | null;
   onRetry?: () => void;
+  /** The daemon typed that failure PERMANENT: the strip withholds Retry (the
+      identical request is rejected) and offers New chat instead. */
+  lastFailurePermanent?: boolean;
+  onNewChat?: () => void;
+  /** A text-only prompt a transport fault dropped: seeded into the composer
+      for edit-before-resend, then reported consumed. */
+  recoverDraft?: ComposerSeed | null;
+  onRecoverDraftConsumed?: () => void;
   sidebarOpen: boolean;
   sidebarSide: SessionListSide;
   onToggleSidebar: () => void;
   pendingApproval: ApprovalRequest | null;
+  /** Asks queued behind the daemon, head included: the panel's "1 of N". */
+  approvalQueueLength?: number;
   onRespondApproval: (choice: ApprovalChoice) => void;
   pendingClarification: ClarificationRequest | null;
   onRespondClarification: (response: string) => void;
@@ -942,6 +979,9 @@ export function ChatView({
   contextInfo?: { modelLabel: string; contextWindow: number } | null;
   /** The latest turn's input tokens (turn.end): the meter's occupancy. */
   contextOccupancy?: number;
+  /** The transient status line under the transcript (a no-progress nudge,
+      the recover notice, how the last run stopped); null = nothing to say. */
+  statusMessage?: StatusMessage | null;
   /** Disables the composer and shows this placeholder instead (the Labs
       mock chat is read-only demo content). */
   readOnlyPlaceholder?: string;
@@ -979,6 +1019,13 @@ export function ChatView({
   // text and staged files alike. Edit all merges the whole queue; Retract
   // pulls the never-applied steer bundle back the same way.
   const [editSeed, setEditSeed] = useState<ComposerSeed | null>(null);
+  // A prompt recovered from a transport fault rides the same seed: the
+  // composer takes it back for edit-before-resend (the TUI's recoverPrompt).
+  useEffect(() => {
+    if (!recoverDraft) return;
+    setEditSeed(recoverDraft);
+    onRecoverDraftConsumed?.();
+  }, [recoverDraft, onRecoverDraftConsumed]);
   const handleEditQueued = (id: string) => {
     const hit = onTakeQueued?.(id);
     if (hit) setEditSeed(hit);
@@ -1178,7 +1225,9 @@ export function ChatView({
           {sidebarSide === "left" && sidebarToggle}
           {isStreaming && (
             <Loader2
-              aria-label="Generating a response"
+              aria-label={streamingSpinnerLabel(
+                pendingApproval ? "approval" : undefined,
+              )}
               className="size-4 shrink-0 animate-spin text-brand"
             />
           )}
@@ -1286,16 +1335,25 @@ export function ChatView({
                 <ApprovalPanel
                   approval={pendingApproval}
                   onRespond={onRespondApproval}
+                  queuePosition={
+                    approvalQueueLength
+                      ? { index: 1, total: approvalQueueLength }
+                      : undefined
+                  }
                 />
               )}
               {isStreaming && !pendingAuthorization && (
                 <StreamingIndicator
+                  awaiting={pendingApproval ? "approval" : undefined}
                   message={
                     messages[messages.length - 1]?.role === "assistant"
                       ? messages[messages.length - 1]
                       : undefined
                   }
                 />
+              )}
+              {!isStreaming && statusMessage && (
+                <StatusLine status={statusMessage} />
               )}
               <div ref={messagesEndRef} />
             </div>
@@ -1343,23 +1401,12 @@ export function ChatView({
                 }
               />
               {error && (
-                <div className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-background bg-gradient-to-b from-destructive/5 to-destructive/5 px-3 py-2">
-                  <AlertCircle className="size-4 shrink-0 text-destructive" />
-                  <p className="min-w-0 flex-1 text-sm text-destructive break-words">
-                    {error}
-                  </p>
-                  {onRetry && (
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      className="h-7 shrink-0 border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                      onClick={onRetry}
-                    >
-                      <RotateCcw className="size-3.5" />
-                      Retry
-                    </Button>
-                  )}
-                </div>
+                <TurnErrorStrip
+                  error={error}
+                  permanent={lastFailurePermanent}
+                  onRetry={onRetry}
+                  onNewChat={onNewChat}
+                />
               )}
               <MockProviderNotice />
               {pendingClarification ? (

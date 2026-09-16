@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { validSkillName } from "./controller-security.mjs";
+import { requestIsAllowed, validSkillName } from "./controller-security.mjs";
 
 /**
  * The shared skill-name gate — the ONE grammar (mirroring the daemon's
@@ -51,5 +51,72 @@ describe("validSkillName", () => {
     ]) {
       expect(validSkillName(name), JSON.stringify(name)).toBe(false);
     }
+  });
+});
+
+/**
+ * The controller's request gate. Reads of the status-shaped documents
+ * (`/status`, `/model-router`, `/daemon-defaults`) are header-free so the
+ * runtime poll can read them; EVERY write — the daemon-defaults PUT
+ * included — still needs the server-set studio header on top of the
+ * loopback Host and allowlisted Origin (studio/CLAUDE.md rule 4).
+ */
+describe("requestIsAllowed", () => {
+  const options = {
+    allowedOrigins: new Set(["http://localhost:3000"]),
+    mcpProxyPrefix: "/mcp-proxy/",
+  };
+  const request = (
+    method: string,
+    headers: Record<string, string> = {},
+  ): { method: string; headers: Record<string, string> } => ({
+    method,
+    headers: { host: "127.0.0.1:8788", ...headers },
+  });
+  const url = (pathname: string) => new URL(`http://127.0.0.1:8788${pathname}`);
+
+  it("lets the read-only daemon-defaults GET through without the studio header", () => {
+    expect(
+      requestIsAllowed(request("GET"), url("/daemon-defaults"), options),
+    ).toBe(true);
+    expect(requestIsAllowed(request("GET"), url("/status"), options)).toBe(
+      true,
+    );
+    expect(
+      requestIsAllowed(request("GET"), url("/model-router"), options),
+    ).toBe(true);
+  });
+
+  it("refuses the daemon-defaults PUT (and every other write) without the header", () => {
+    expect(
+      requestIsAllowed(request("PUT"), url("/daemon-defaults"), options),
+    ).toBe(false);
+    expect(
+      requestIsAllowed(request("POST"), url("/providers/active"), options),
+    ).toBe(false);
+    expect(
+      requestIsAllowed(
+        request("PUT", { "x-mecatl-studio-request": "1" }),
+        url("/daemon-defaults"),
+        options,
+      ),
+    ).toBe(true);
+  });
+
+  it("still refuses a non-loopback Host or a foreign Origin on the read", () => {
+    expect(
+      requestIsAllowed(
+        request("GET", { host: "evil.example" }),
+        url("/daemon-defaults"),
+        options,
+      ),
+    ).toBe(false);
+    expect(
+      requestIsAllowed(
+        request("GET", { origin: "https://evil.example" }),
+        url("/daemon-defaults"),
+        options,
+      ),
+    ).toBe(false);
   });
 });

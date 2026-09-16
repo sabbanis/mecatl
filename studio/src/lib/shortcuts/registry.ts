@@ -141,10 +141,25 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     description: "Mention an agent",
     group: "Composer",
   },
+
+  // Scheduled (the /workspace/schedules list). Bare `/` never fires while the
+  // caret is in a text field (`comboFiresWhileTyping` is false for it), so
+  // typing a slash in the composer or the filter itself stays plain text.
+  {
+    id: "schedules.filter",
+    combo: "/",
+    description: "Filter scheduled tasks by name or schedule",
+    group: "Scheduled",
+  },
 ] as const;
 
 /** Groups in render order. */
-export const SHORTCUT_GROUPS = ["General", "Chats", "Composer"] as const;
+export const SHORTCUT_GROUPS = [
+  "General",
+  "Chats",
+  "Composer",
+  "Scheduled",
+] as const;
 
 const CAP_LABEL: Record<string, string> = {
   mod: "⌘",

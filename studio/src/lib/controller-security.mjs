@@ -27,7 +27,9 @@ export function requestIsAllowed(
   const internalMCP = requestURL.pathname.startsWith(mcpProxyPrefix);
   const readOnly =
     request.method === "GET" &&
-    ["/status", "/model-router"].includes(requestURL.pathname);
+    ["/status", "/model-router", "/daemon-defaults"].includes(
+      requestURL.pathname,
+    );
   return (
     callback ||
     internalMCP ||

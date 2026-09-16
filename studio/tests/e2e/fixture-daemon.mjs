@@ -104,7 +104,35 @@ const routes = {
     build_id: "fixture",
     server_implementation: "fixture-daemon",
   },
-  "GET /v1/storage/health": { status: "ok", store: "fixture" },
+  // Proto-JSON GetStorageHealthResponse: a healthy store (no banner) whose
+  // effective retention policy, sweep timestamps and family counts the
+  // Storage page's Retention card renders. int64s ride as JSON numbers.
+  "GET /v1/storage/health": {
+    available: true,
+    session_count: 3,
+    v2_count: 3,
+    main_count: 1,
+    child_count: 1,
+    scheduled_count: 1,
+    file_count: 7,
+    current_bytes: 20_480,
+    current_bytes_available: true,
+    reclaimable_bytes: 0,
+    reclaimable_bytes_available: true,
+    policy: {
+      main_max_age_seconds: 0,
+      main_max_count: 0,
+      child_max_age_seconds: 604_800,
+      child_max_count: 500,
+      scheduled_max_age_seconds: 604_800,
+      scheduled_max_count: 0,
+      sweep_cadence_seconds: 3600,
+    },
+    last_sweep_unix: 1_755_003_000,
+    last_sweep_available: true,
+    next_sweep_unix: 1_755_006_600,
+    next_sweep_available: true,
+  },
   "GET /v1/models": {
     models: [{ id: "fixture-model", provider_id: "fixture" }],
   },
@@ -138,7 +166,14 @@ const routes = {
           mode: 2,
           mutating: false,
         },
-        state: { enabled: true, fire_count: 3 },
+        // stdlib-JSON Timestamp shape (as the fires fixture below uses); the
+        // list's Last run / Runs columns read these.
+        state: {
+          enabled: true,
+          fire_count: 3,
+          last_fire_at: { seconds: 1_755_000_000 },
+          last_fire_session_id: "sched--nightly-fixture-digest-1",
+        },
       },
     ],
   },

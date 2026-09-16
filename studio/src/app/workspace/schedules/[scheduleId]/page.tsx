@@ -93,6 +93,18 @@ function fireDuration(fire: ScheduleFireRow): string {
   return ms === null ? "—" : formatDurationMs(ms);
 }
 
+/**
+ * The fire count against its cap: "None yet", "3", "3 of 10", or
+ * "10 of 10 — limit reached" once a capped cron has used up its fires (the
+ * daemon then reports no next fire, and this says why).
+ */
+function describeRuns(row: ScheduleRow): string {
+  if (row.fireCount === 0) return "None yet";
+  if (row.maxFires <= 0) return String(row.fireCount);
+  const base = `${row.fireCount} of ${row.maxFires}`;
+  return row.fireCount >= row.maxFires ? `${base} — limit reached` : base;
+}
+
 /** The text the Outcome column effectively shows, for sorting. */
 function fireOutcomeKey(fire: ScheduleFireRow): string {
   if (fire.inFlight) return fire.startedAt === null ? "claimed" : "in flight";
@@ -348,10 +360,18 @@ export default function ScheduleDetailPage() {
                 </span>
               </FactRow>
               <FactRow label="Last run" suppressHydrationWarning>
-                {row.lastFireAt
-                  ? `${formatRelativeTime(row.lastFireAt)} ago`
-                  : "Never"}
+                <span
+                  title={
+                    row.lastFireAt ? formatInstant(row.lastFireAt) : undefined
+                  }
+                >
+                  {row.lastFireAt
+                    ? `${formatRelativeTime(row.lastFireAt)} ago`
+                    : "Never"}
+                </span>
               </FactRow>
+              {/* The TUI inspect's fire_count + max_fires, as one fact. */}
+              <FactRow label="Runs">{describeRuns(row)}</FactRow>
               {!row.cron && (
                 <FactRow label="Retry">
                   {row.oneShotRetry

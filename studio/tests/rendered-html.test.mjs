@@ -155,6 +155,15 @@ test("external mode injects daemon auth server-side and disables local controls"
   // deployment's own spawn flag, so the mirror is null and the Storage card
   // renders the managed note instead of a form.
   assert.equal(status.storage, null);
+  // And its retention flags: the EFFECTIVE policy still reads off the
+  // daemon's own storage health, so the Retention card shows the table
+  // and the managed note instead of a form.
+  assert.equal(status.retention, null);
+  // And for the daemon defaults (default/subagent model, effort, caching,
+  // base URLs, ToolHive, aliases/slots, credentials path): spawn flags of
+  // the MANAGED daemon only, so the mirror is null and the card renders the
+  // managed note instead of a form.
+  assert.equal(status.daemonDefaults, null);
 
   const mutation = await fetch(
     `${studioBaseURL}/api/mecatl-control/model-router`,
@@ -186,6 +195,14 @@ test("external mode injects daemon auth server-side and disables local controls"
     // The session-store location / in-memory switch is a spawn flag of the
     // MANAGED daemon too.
     ["storage", "POST"],
+    // As are its retention limits / sweep cadence / main-deletion
+    // acknowledgement.
+    ["retention", "POST"],
+    // The daemon defaults (--default-model, --subagent-model, effort,
+    // caching, base URLs, ToolHive, aliases/slots, --api-key-file) are
+    // spawn flags of the MANAGED daemon: external owns them, read included.
+    ["daemon-defaults", "GET"],
+    ["daemon-defaults", "PUT"],
   ]) {
     const refused = await fetch(`${studioBaseURL}/api/mecatl-control/${path}`, {
       method,
@@ -311,6 +328,9 @@ test("controller policy rejects CSRF and DNS-rebinding requests", () => {
     // The session-store write relocates (or drops) the daemon's persistence;
     // another loopback-origin page must not be able to do that.
     ["POST", "/storage"],
+    // The retention write can switch on automatic deletion of the user's
+    // own chats; another loopback-origin page must never reach it.
+    ["POST", "/retention"],
   ]) {
     assert.equal(
       requestIsAllowed(

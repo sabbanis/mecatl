@@ -3,7 +3,7 @@
 import { CalendarClock, Ellipsis } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   directed,
   SortableHead,
@@ -26,6 +26,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { InputSearch } from "@/components/ui/input-search";
 import {
   Table,
   TableBody,
@@ -35,8 +36,13 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useAgentCron } from "@/features/agent";
-import { describeCron, formatUntilTime } from "@/lib/formatters";
+import {
+  describeCron,
+  formatRelativeTime,
+  formatUntilTime,
+} from "@/lib/formatters";
 import type { ScheduleRow } from "@/lib/protocol";
+import { useShortcut } from "@/lib/shortcuts/use-shortcuts";
 import { pageTitleClass } from "@/lib/typography";
 import { cn } from "@/lib/utils";
 import { CreateScheduleDialog } from "./_components/create-schedule-dialog";
@@ -79,15 +85,72 @@ function describeTrigger(row: ScheduleRow): string {
   return "—";
 }
 
+/**
+ * The in-list text filter (the TUI's `/` mode). The TUI matches the lowered
+ * name OR the lowered trigger summary (cmd/mecatui/ui/schedule.go
+ * `filterSchedules`); Studio additionally matches the prompt and the raw cron
+ * expression, so a word of the instruction or "0 9" also finds the row.
+ * Blank (or whitespace-only) matches everything.
+ */
+function matchesQuery(row: ScheduleRow, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  if (q === "") return true;
+  return (
+    row.name.toLowerCase().includes(q) ||
+    describeTrigger(row).toLowerCase().includes(q) ||
+    row.prompt.toLowerCase().includes(q) ||
+    row.cron.includes(q)
+  );
+}
+
+/** "3", or "3/10" while the spec caps the fire count. */
+function describeRunCount(row: ScheduleRow): string {
+  return row.maxFires > 0
+    ? `${row.fireCount}/${row.maxFires}`
+    : String(row.fireCount);
+}
+
+/** "Never", or how long ago the last fire happened. */
+function describeLastRun(row: ScheduleRow): string {
+  return row.lastFireAt ? `${formatRelativeTime(row.lastFireAt)} ago` : "Never";
+}
+
+/** The mobile cell's third line: run count and last fire in one phrase. */
+function describeRuns(row: ScheduleRow): string {
+  if (row.fireCount === 0 && !row.lastFireAt) return "never run";
+  const count = `${describeRunCount(row)} ${row.fireCount === 1 ? "run" : "runs"}`;
+  return row.lastFireAt
+    ? `${count} · last ${formatRelativeTime(row.lastFireAt)} ago`
+    : count;
+}
+
+type SortKey = "name" | "schedule" | "nextRun" | "lastRun" | "fires" | "status";
+
 export default function WorkspaceSchedulesPage() {
   const cron = useAgentCron();
   const [filter, setFilter] = useState<FilterValue>("all");
+  const [query, setQuery] = useState("");
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [editRow, setEditRow] = useState<ScheduleRow | null>(null);
+  const filterRef = useRef<HTMLInputElement>(null);
 
-  const sort = useTableSort<"name" | "schedule" | "nextRun" | "status">(
-    "status",
-  );
+  // `/` focuses the filter (the TUI binding). The dispatcher suppresses a bare
+  // `/` while typing and preventDefaults the matched key, so no slash lands in
+  // the freshly focused input. A no-op while the list is not rendered.
+  useShortcut("schedules.filter", () => filterRef.current?.focus());
+
+  // Two-stage Escape, as in the TUI: a non-empty query clears, an empty one
+  // leaves the field. preventDefault keeps it local — the global dispatcher
+  // skips `defaultPrevented` events, so a page-level Esc consumer (none
+  // today) could never also fire off this keystroke.
+  const onFilterKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key !== "Escape") return;
+    e.preventDefault();
+    if (query) setQuery("");
+    else e.currentTarget.blur();
+  };
+
+  const sort = useTableSort<SortKey>("status");
 
   const rows = useMemo(() => {
     // Paused/never-firing rows sort after everything with a real next fire.
@@ -103,30 +166,36 @@ export default function WorkspaceSchedulesPage() {
           return describeTrigger(a).localeCompare(describeTrigger(b));
         case "nextRun":
           return nextAt(a) - nextAt(b);
+        case "lastRun":
+          return (a.lastFireAt ?? 0) - (b.lastFireAt ?? 0);
+        case "fires":
+          return a.fireCount - b.fireCount;
         default:
           return statusRank(a) - statusRank(b);
       }
     };
     return cron.rows
-      .filter((row) => matchesFilter(row, filter))
+      .filter((row) => matchesFilter(row, filter) && matchesQuery(row, query))
       .sort(
         (a, b) =>
           directed(sort.dir, primary(a, b)) || a.name.localeCompare(b.name),
       );
-  }, [cron.rows, filter, sort.key, sort.dir]);
+  }, [cron.rows, filter, query, sort.key, sort.dir]);
 
   // The mobile list has no sortable headers: fixed status-rank-then-name
   // order (the desktop default), whatever the desktop sort state says.
   const mobileRows = useMemo(
     () =>
       cron.rows
-        .filter((row) => matchesFilter(row, filter))
+        .filter((row) => matchesFilter(row, filter) && matchesQuery(row, query))
         .sort(
           (a, b) =>
             statusRank(a) - statusRank(b) || a.name.localeCompare(b.name),
         ),
-    [cron.rows, filter],
+    [cron.rows, filter, query],
   );
+
+  const queryActive = query.trim() !== "";
 
   /** Kebab actions surface refusals via cron.error (rendered above the grid). */
   const act = (action: Promise<void>) => {
@@ -193,35 +262,60 @@ export default function WorkspaceSchedulesPage() {
           </div>
         ) : (
           <>
-            {/* Segmented control: a filled track with the active pill lifted. */}
-            <div className="inline-flex items-center gap-0.5 rounded-full bg-muted p-1">
-              {FILTERS.map((f) => (
-                <button
-                  key={f.value}
-                  type="button"
-                  onClick={() => setFilter(f.value)}
-                  className={cn(
-                    "h-7 rounded-full px-3.5 text-sm transition-colors",
-                    filter === f.value
-                      ? "bg-background font-medium text-foreground shadow-sm"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  {f.label}
-                </button>
-              ))}
+            <div className="flex flex-wrap items-center gap-3">
+              {/* Segmented control: a filled track with the active pill lifted. */}
+              <div className="inline-flex items-center gap-0.5 rounded-full bg-muted p-1">
+                {FILTERS.map((f) => (
+                  <button
+                    key={f.value}
+                    type="button"
+                    onClick={() => setFilter(f.value)}
+                    className={cn(
+                      "h-7 rounded-full px-3.5 text-sm transition-colors",
+                      filter === f.value
+                        ? "bg-background font-medium text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground",
+                    )}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+              {/* The in-list text filter; `/` focuses it, Esc clears then blurs. */}
+              <InputSearch
+                value={query}
+                onChange={setQuery}
+                placeholder="Filter by name or schedule"
+                aria-label="Filter scheduled tasks"
+                inputRef={filterRef}
+                onKeyDown={onFilterKeyDown}
+                className="w-full sm:w-64"
+              />
             </div>
 
             {rows.length === 0 ? (
-              <div className="rounded-lg border border-dashed py-12 text-center text-sm text-muted-foreground">
-                No scheduled tasks match this filter.
-              </div>
+              queryActive ? (
+                <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed py-12 text-center text-sm text-muted-foreground">
+                  <p>No scheduled tasks match &ldquo;{query.trim()}&rdquo;.</p>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setQuery("")}
+                  >
+                    Clear filter
+                  </Button>
+                </div>
+              ) : (
+                <div className="rounded-lg border border-dashed py-12 text-center text-sm text-muted-foreground">
+                  No scheduled tasks match this filter.
+                </div>
+              )
             ) : (
               <>
                 {/* Mobile list (<500px): one cell per row — status dot, name,
-                    prompt clamped below; no header, no kebab (actions live on
-                    the detail page the row navigates to). Fixed
-                    status-rank-then-name order. */}
+                    prompt clamped below, then run count + last fire; no
+                    header, no kebab (actions live on the detail page the row
+                    navigates to). Fixed status-rank-then-name order. */}
                 <div className="divide-y overflow-hidden rounded-lg border min-[500px]:hidden">
                   {mobileRows.map((row) => (
                     <Link
@@ -239,6 +333,12 @@ export default function WorkspaceSchedulesPage() {
                         <span className="line-clamp-2 text-xs text-muted-foreground">
                           {row.prompt}
                         </span>
+                        <span
+                          suppressHydrationWarning
+                          className="block text-[11px] text-muted-foreground tabular-nums"
+                        >
+                          {describeRuns(row)}
+                        </span>
                       </span>
                     </Link>
                   ))}
@@ -252,7 +352,7 @@ export default function WorkspaceSchedulesPage() {
                           label="Name"
                           sortKey="name"
                           sort={sort}
-                          className="w-1/2"
+                          className="w-2/5"
                         />
                         <SortableHead
                           label="Schedule"
@@ -263,6 +363,17 @@ export default function WorkspaceSchedulesPage() {
                           label="Next run"
                           sortKey="nextRun"
                           sort={sort}
+                        />
+                        <SortableHead
+                          label="Last run"
+                          sortKey="lastRun"
+                          sort={sort}
+                        />
+                        <SortableHead
+                          label="Runs"
+                          sortKey="fires"
+                          sort={sort}
+                          className="text-right"
                         />
                         <SortableHead
                           label="Status"
@@ -394,6 +505,25 @@ function ScheduleRowItem({
         className="text-muted-foreground tabular-nums"
       >
         {nextIn || "—"}
+      </TableCell>
+      <TableCell
+        suppressHydrationWarning
+        className="text-muted-foreground tabular-nums"
+        title={
+          row.lastFireAt ? new Date(row.lastFireAt).toLocaleString() : undefined
+        }
+      >
+        {describeLastRun(row)}
+      </TableCell>
+      <TableCell
+        className="text-right tabular-nums"
+        title={
+          row.maxFires > 0
+            ? `${row.fireCount} of ${row.maxFires} runs`
+            : undefined
+        }
+      >
+        {describeRunCount(row)}
       </TableCell>
       <TableCell>
         <span className="inline-flex items-center gap-2">

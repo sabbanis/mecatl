@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { formatVerdictNotice } from "../approval-queue";
 import { MAX_TRACE_ENTRIES } from "../delegation-fleet";
 import type { AgentMessage, StreamEvent } from "../types";
 import {
@@ -172,6 +173,19 @@ describe("reduceWatchEvent", () => {
     expect(messages[0].notices).toEqual(["Permission: Bash allowed once"]);
   });
 
+  it("renders the verdict line with the SAME formatter the live respond path records locally", () => {
+    const messages = run([
+      {
+        type: "approval_verdict",
+        approvalId: "a2",
+        toolName: "Edit",
+        verdict: "deny",
+      },
+    ]);
+    expect(messages[0].notices).toEqual([formatVerdictNotice("Edit", "deny")]);
+    expect(formatVerdictNotice("Edit", "deny")).toBe("Permission: Edit denied");
+  });
+
   it("marks a failed terminal on the trailing assistant, failing its running calls", () => {
     const messages = run([
       { type: "token", text: "trying" },
@@ -204,6 +218,73 @@ describe("reduceWatchEvent", () => {
       },
     ]);
     expect(messages[0].content).toBe("final");
+  });
+
+  it("stamps a non-error stop worth naming (budget) on the trailing assistant, and never a clean end_turn", () => {
+    const stopped = run([
+      { type: "token", text: "partial" },
+      {
+        type: "run_result",
+        stop: "budget",
+        text: "",
+        errorText: "",
+        permanent: false,
+      },
+    ]);
+    expect(stopped[0]).toMatchObject({
+      content: "partial",
+      stopReason: "budget",
+    });
+    expect(stopped[0].failed).toBeUndefined();
+
+    const clean = run([
+      { type: "token", text: "done" },
+      {
+        type: "run_result",
+        stop: "end_turn",
+        text: "",
+        errorText: "",
+        permanent: false,
+      },
+    ]);
+    expect(clean[0].stopReason).toBeUndefined();
+  });
+
+  it("opens a bubble for a limit stop with no assistant activity — a stopped turn never vanishes", () => {
+    const messages = run([
+      { type: "user_prompt", text: "do the thing" },
+      {
+        type: "run_result",
+        stop: "max_turns",
+        text: "",
+        errorText: "",
+        permanent: false,
+      },
+    ]);
+    expect(messages.at(-1)).toMatchObject({
+      role: "assistant",
+      content: "",
+      stopReason: "max_turns",
+    });
+  });
+
+  it("ignores the transient status event — a replay must not resurrect a status line", () => {
+    const before: AgentMessage[] = [
+      { id: "m1", role: "assistant", content: "hi", timestamp: 0 },
+    ];
+    expect(
+      reduceWatchEvent(
+        before,
+        {
+          type: "status",
+          text: "no progress after continuation attempts; ending run",
+          tone: "warn",
+          kind: "no_progress",
+        },
+        nextId,
+      ),
+    ).toBe(before);
+    expect(before[0].notices).toBeUndefined();
   });
 
   it("leaves the transcript untouched for hook-state kinds (asks, usage)", () => {

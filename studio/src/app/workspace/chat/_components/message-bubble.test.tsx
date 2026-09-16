@@ -94,3 +94,57 @@ describe("MessageBubble turn stat line", () => {
     expect(container).toBeEmptyDOMElement();
   });
 });
+
+/**
+ * The stop-reason chip: a non-error stop worth naming renders under the turn
+ * (even a text-less limit stop — a stopped turn never looks like a quiet
+ * success), a clean end_turn renders no chip, and a user message never gets
+ * one.
+ */
+describe("MessageBubble stop-reason chip", () => {
+  it("renders a text-less turn-limit stop with a warning chip", () => {
+    render(<MessageBubble message={assistant({ stopReason: "max_turns" })} />);
+    const chip = screen.getByTestId("stop-reason-chip");
+    expect(chip).toHaveTextContent("stopped · turn limit");
+    expect(chip).toHaveClass("text-warning");
+  });
+
+  it("renders a muted chip for a cancelled turn alongside its text", () => {
+    render(
+      <MessageBubble
+        message={assistant({
+          content: "got as far as",
+          stopReason: "cancelled",
+        })}
+      />,
+    );
+    expect(screen.getByText("got as far as")).toBeInTheDocument();
+    const chip = screen.getByTestId("stop-reason-chip");
+    expect(chip).toHaveTextContent("cancelled");
+    expect(chip).not.toHaveClass("text-warning");
+  });
+
+  it("renders no chip for a clean end_turn and nothing at all for an empty clean turn", () => {
+    render(
+      <MessageBubble
+        message={assistant({ content: "answer", stopReason: "end_turn" })}
+      />,
+    );
+    expect(screen.queryByTestId("stop-reason-chip")).toBeNull();
+    const { container } = render(
+      <MessageBubble
+        message={assistant({ id: "m2", stopReason: "end_turn" })}
+      />,
+    );
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("names an unknown daemon stop token rather than dropping it", () => {
+    render(
+      <MessageBubble message={assistant({ stopReason: "brand_new_stop" })} />,
+    );
+    expect(screen.getByTestId("stop-reason-chip")).toHaveTextContent(
+      "stopped · brand_new_stop",
+    );
+  });
+});

@@ -1,5 +1,45 @@
 import { describe, expect, it } from "vitest";
-import { describeCron, formatDurationMs } from "./formatters";
+import {
+  describeCron,
+  formatBytes,
+  formatDuration,
+  formatDurationMs,
+} from "./formatters";
+
+describe("formatDuration", () => {
+  it("humanises retention spans to their two largest units", () => {
+    expect(formatDuration(0)).toBe("0s");
+    expect(formatDuration(45)).toBe("45s");
+    expect(formatDuration(3600)).toBe("1h");
+    expect(formatDuration(5400)).toBe("1h 30m");
+    expect(formatDuration(86_400)).toBe("1d");
+    expect(formatDuration(604_800)).toBe("7d");
+    expect(formatDuration(129_600)).toBe("1d 12h");
+    // The third unit is dropped, not rounded into the second.
+    expect(formatDuration(90_061)).toBe("1d 1h");
+  });
+
+  it("clamps negatives and non-finite values to 0s", () => {
+    expect(formatDuration(-5)).toBe("0s");
+    expect(formatDuration(Number.NaN)).toBe("0s");
+    expect(formatDuration(Number.POSITIVE_INFINITY)).toBe("0s");
+  });
+});
+
+describe("formatBytes", () => {
+  it("renders binary units with one trimmed decimal", () => {
+    expect(formatBytes(0)).toBe("0 B");
+    expect(formatBytes(512)).toBe("512 B");
+    expect(formatBytes(1536)).toBe("1.5 KB");
+    expect(formatBytes(20 * 1024 * 1024)).toBe("20 MB");
+    expect(formatBytes(3.25 * 1024 ** 3)).toBe("3.3 GB");
+  });
+
+  it("clamps negatives and non-finite values to 0 B", () => {
+    expect(formatBytes(-1)).toBe("0 B");
+    expect(formatBytes(Number.NaN)).toBe("0 B");
+  });
+});
 
 describe("formatDurationMs", () => {
   it("renders sub-second spans in ms and longer spans in trimmed seconds", () => {

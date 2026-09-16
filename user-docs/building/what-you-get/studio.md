@@ -58,8 +58,13 @@ token on the server; the browser never sees a daemon address or credential.
   Settings → Appearance.
 - **Scheduled** — the schedule registry: create and edit schedules (cron with
   timezone, or one-shot), pause/resume/fire, and audit each schedule's fire
-  history down to the per-fire session transcript. Write-capable schedules
-  require an explicit opt-in; the default posture is read-only plan mode.
+  history down to the per-fire session transcript. The list shows each
+  schedule's trigger in plain English, its next and last run, and how many
+  times it has fired (against its cap, when the spec sets one); the detail
+  page repeats the count under **Runs**. A text filter narrows the list by
+  name, schedule, or prompt: press `/` to jump to it, Esc to clear it.
+  Write-capable schedules require an explicit opt-in; the default posture is
+  read-only plan mode.
 - **Skills** — the daemon's resolved skill inventory (name, summary,
   provenance). Read-only today; authoring is a follow-up.
 - **Memory** — the user model: durable facts the agent has stored about you.
@@ -68,7 +73,21 @@ token on the server; the browser never sees a daemon address or credential.
 - **Settings** — appearance and notifications, plus (managed mode) the
   provider status, the semantic model router, and the MCP gateway connection
   (bearer token or OAuth). Credentials are never typed into Studio: `mecated`
-  reads them from `~/.config/mecatl/auth.yaml`.
+  reads them from `~/.config/mecatl/auth.yaml`. The **Daemon defaults** card
+  on the Model provider page sets what `mecated` starts with — the active
+  provider's default and subagent model, the reasoning-effort tier, a
+  context-window override, provider-side prompt caching (and the Anthropic
+  cache TTL), and under Advanced the per-provider base-URL overrides, the
+  ToolHive LLM gateway, model aliases and slots, and the credentials-file
+  path. Each save restarts the daemon with the matching `mecated` flags
+  (`--default-model`, `--subagent-model`, `--reasoning-effort`,
+  `--context-window-override`, `--no-prompt-cache`, `--anthropic-cache-ttl`,
+  `--<provider>-base-url`, `--toolhive-llm*`, `--model-alias`,
+  `--model-slot`, `--api-key-file`); a default model the daemon does not
+  list is refused at startup and the previous defaults are restored. The
+  active provider chosen with "Set as active" or "Switch to offline mock"
+  is remembered across Studio restarts unless `MECATL_STUDIO_PROVIDER` is
+  set.
 
 ## Environment variables
 
@@ -79,7 +98,7 @@ token on the server; the browser never sees a daemon address or credential.
 | `MECATL_WORKSPACE` | Display-only label of the deployment's workspace in external mode; the daemon assigns session placement itself |
 | `MECATL_STUDIO_PUBLIC_ORIGIN` | Comma-separated origins Studio is served from (CSRF gate) |
 | `MECATL_STUDIO_ORIGINS` | Controller's Origin allowlist (managed mode) |
-| `MECATL_STUDIO_PROVIDER` | Managed provider: `mock`, `openrouter`, or `toolhive` |
+| `MECATL_STUDIO_PROVIDER` | Managed provider: `mock`, `toolhive`, or any provider named in `auth.yaml`; when set it overrides the provider remembered from Settings |
 | `MECATL_ALLOW_INSECURE_LOOPBACK_MCP` | `1` permits a loopback-HTTP MCP gateway |
 
 ## Limits worth knowing

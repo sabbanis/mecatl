@@ -16,9 +16,13 @@ const DELETE_WORDS = /\b(delete|remove|drop|revoke|destroy|purge|rm)\b/i;
 export function ApprovalPanel({
   approval,
   onRespond,
+  queuePosition,
 }: {
   approval: ApprovalRequest;
   onRespond: (choice: ApprovalChoice) => void;
+  /** This ask's place in the FIFO queue (1-based). The "1 of N" badge shows
+   *  only while more than one ask is waiting. */
+  queuePosition?: { index: number; total: number };
 }) {
   // ONE ask = ONE tool call. The pill names the tool; the args belong in the
   // preview block below, never badge-ified (a Write ask's args are a whole
@@ -29,6 +33,15 @@ export function ApprovalPanel({
     approval.description.replace(/ needs your approval\.?$/i, "").trim() ||
     "Tool";
   const destructive = DELETE_WORDS.test(toolName);
+  // A child's ask names who is asking. It offers no "Always allow": a
+  // persistent grant learned from a throwaway child would outlive it (the
+  // TUI withholds AllowAlways for child asks for the same reason).
+  const child = approval.child === true;
+  const description = child
+    ? `A subagent's ${toolName} needs your approval.`
+    : approval.description;
+  const queued =
+    queuePosition && queuePosition.total > 1 ? queuePosition : null;
 
   return (
     <div
@@ -54,8 +67,17 @@ export function ApprovalPanel({
         >
           Permission required
         </span>
+        {queued && (
+          <Badge
+            variant="outline"
+            aria-label={`Request ${queued.index} of ${queued.total}`}
+            className="tabular-nums text-xs"
+          >
+            {`${queued.index} of ${queued.total}`}
+          </Badge>
+        )}
       </div>
-      <p className="mb-2 text-sm">{approval.description}</p>
+      <p className="mb-2 text-sm">{description}</p>
       <div className="mb-2 flex flex-wrap gap-1.5">
         <Badge
           variant="secondary"
@@ -68,6 +90,11 @@ export function ApprovalPanel({
         >
           {toolName}
         </Badge>
+        {child && (
+          <Badge variant="outline" className="text-xs">
+            Subagent
+          </Badge>
+        )}
       </div>
       {destructive && (
         <p className="mb-3 text-xs font-medium text-destructive">
@@ -95,18 +122,20 @@ export function ApprovalPanel({
         >
           Allow once
         </Button>
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={() => onRespond("always")}
-          className={cn(
-            destructive
-              ? "border-destructive/30 hover:bg-destructive/5"
-              : "border-warning/30 hover:bg-warning/5",
-          )}
-        >
-          Always allow
-        </Button>
+        {!child && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => onRespond("always")}
+            className={cn(
+              destructive
+                ? "border-destructive/30 hover:bg-destructive/5"
+                : "border-warning/30 hover:bg-warning/5",
+            )}
+          >
+            Always allow
+          </Button>
+        )}
         <Button
           size="sm"
           variant="ghost"

@@ -34,6 +34,7 @@ const status = {
   workspace: "",
   permissions: null,
   storage: null,
+  retention: null,
 };
 
 function fakeRuntime(overrides: Partial<Runtime> = {}): Runtime {
@@ -63,6 +64,7 @@ function fakeRuntime(overrides: Partial<Runtime> = {}): Runtime {
     permissions: null,
     savePermissions: vi.fn(async () => {}),
     saveStorage: vi.fn(async () => {}),
+    saveRetention: vi.fn(async () => {}),
     ...overrides,
   };
 }
@@ -257,5 +259,54 @@ describe("provider management surface", () => {
     ).not.toBeInTheDocument();
     expect(screen.queryByText(/Test key/)).not.toBeInTheDocument();
     expect(document.querySelectorAll("input, textarea")).toHaveLength(0);
+    expect(
+      screen.queryByRole("button", { name: /Switch to offline mock/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("offers the explicit --mock switch, confirms the restart, then calls setActiveProvider('mock')", async () => {
+    // The daemon landed on the mock only implicitly before (no selection, or
+    // the last provider removed); this is the deliberate `--mock` control.
+    const user = userEvent.setup();
+    const setActiveProvider = vi.fn(async () => {});
+    const refresh = vi.fn(async () => {});
+    render(
+      <ProviderSection
+        runtime={fakeRuntime({ refresh })}
+        management={fakeManagement({ setActiveProvider })}
+      />,
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Switch to offline mock" }),
+    );
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent(/Switch to the offline mock\?/);
+    expect(dialog).toHaveTextContent(/die with the restart/);
+    expect(setActiveProvider).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Switch to mock" }));
+    expect(setActiveProvider).toHaveBeenCalledWith("mock");
+    // The status poll is refreshed so the card shows the mock as active.
+    expect(refresh).toHaveBeenCalled();
+    // Still no key-shaped input anywhere.
+    expect(document.querySelectorAll("input, textarea")).toHaveLength(0);
+  });
+
+  it("hides the mock switch while the offline mock is already active", () => {
+    render(
+      <ProviderSection
+        runtime={fakeRuntime({
+          status: {
+            ...status,
+            provider: "offline mock",
+            isMock: true,
+            selectedProvider: "mock",
+          },
+        })}
+        management={fakeManagement()}
+      />,
+    );
+    expect(
+      screen.queryByRole("button", { name: /Switch to offline mock/ }),
+    ).not.toBeInTheDocument();
   });
 });

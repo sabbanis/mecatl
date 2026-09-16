@@ -227,13 +227,16 @@ const SILENT_EVENT_KINDS = new Set([
   "provider.route",
 ]);
 
-/** Advisory kinds whose `text` is worth a one-line notice in the flow. */
-const ADVISORY_EVENT_KINDS = new Set([
-  "tool.progress",
-  "compaction",
-  "no_progress",
-  "recover_notice",
-]);
+/** Advisory kinds whose `text` is worth a DURABLE one-line notice in the flow. */
+const ADVISORY_EVENT_KINDS = new Set(["tool.progress", "compaction"]);
+
+/**
+ * Advisory kinds that are TRANSIENT status, not transcript: the no-progress
+ * nudge and the pre-flight recover notice. They render on the status line
+ * under the transcript until the next run and are never appended to a
+ * message's notices — a durable-log replay must not resurrect them.
+ */
+const TRANSIENT_STATUS_KINDS = new Set(["no_progress", "recover_notice"]);
 
 const unrenderedNotice = (kind: string): StreamEvent => ({
   type: "notice",
@@ -646,6 +649,23 @@ function translateEventBody(event: SdkEvent, sessionId: string): StreamEvent[] {
       if (SILENT_EVENT_KINDS.has(event.kind)) return [];
       if (ADVISORY_EVENT_KINDS.has(event.kind)) {
         return event.text ? [{ type: "notice", text: event.text }] : [];
+      }
+      if (TRANSIENT_STATUS_KINDS.has(event.kind)) {
+        // Both are warning-coloured: the model stalled, or the session just
+        // recovered from a permanent failure and may hit it again.
+        return event.text
+          ? [
+              {
+                type: "status",
+                text: event.text,
+                tone: "warn",
+                kind:
+                  event.kind === "no_progress"
+                    ? "no_progress"
+                    : "recover_notice",
+              },
+            ]
+          : [];
       }
       return [unrenderedNotice(event.kind)];
   }

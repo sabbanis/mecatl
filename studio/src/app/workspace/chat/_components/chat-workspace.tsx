@@ -50,11 +50,12 @@ import {
   useAgentDisplayName,
   useMockFeatures,
   useSessionListSide,
+  useShowStarterPrompts,
+  useWelcomeDismissed,
 } from "@/lib/profile-preferences";
 import type { SessionPermissionMode } from "@/lib/protocol";
 import { useShortcut } from "@/lib/shortcuts/use-shortcuts";
 import { useThreadSessionIds } from "@/lib/thread-map";
-import { pageTitleClass } from "@/lib/typography";
 import { cn } from "@/lib/utils";
 import {
   ChatInput,
@@ -62,6 +63,7 @@ import {
 } from "../../_components/chat-input";
 import { ResizeHandle } from "../../_components/resize-handle";
 import { ChatView } from "./chat-view";
+import { DraftGreeting } from "./draft-greeting";
 import {
   AgentList,
   MockProjectList,
@@ -73,14 +75,6 @@ import {
 /** Route for a chat, or the base (a new draft) when none is selected. */
 const chatHref = (id?: string) =>
   id ? `/workspace/chat/${id}` : "/workspace/chat";
-
-/** One-click prompts on the draft state, to seed the first message. */
-const STARTER_PROMPTS = [
-  "Summarise what changed in the repo this week",
-  "Draft a plan for a new feature",
-  "Review my open pull requests",
-  "Find and explain a bug in the codebase",
-] as const;
 
 const DAY_MS = 86_400_000;
 
@@ -248,6 +242,9 @@ function DraftView({
   seed,
   onSeedConsumed,
   onPickSeed,
+  showWelcome,
+  onDismissWelcome,
+  showStarterPrompts,
   error,
   showSidebarButton,
   sidebarSide,
@@ -263,6 +260,11 @@ function DraftView({
   seed: string | null;
   onSeedConsumed: () => void;
   onPickSeed: (text: string) => void;
+  /** First-run welcome card (caller gates it on connected + not dismissed). */
+  showWelcome: boolean;
+  onDismissWelcome: () => void;
+  /** Starter-prompt chips — hideable in Settings (the --no-banner analogue). */
+  showStarterPrompts: boolean;
   error: string | null;
   showSidebarButton: boolean;
   sidebarSide: SessionListSide;
@@ -306,25 +308,12 @@ function DraftView({
       <div className="relative min-h-0 flex-1">
         <div className="flex h-full flex-col items-center justify-center gap-6 overflow-y-auto px-4 pb-40 max-[499px]:pb-24 lg:px-8">
           <div className="w-full max-w-xl space-y-4">
-            <h1
-              className={pageTitleClass(
-                "pb-0 text-center text-3xl leading-tight",
-              )}
-            >
-              What can I help you with?
-            </h1>
-            <div className="flex flex-wrap justify-center gap-2">
-              {STARTER_PROMPTS.map((p) => (
-                <button
-                  key={p}
-                  type="button"
-                  onClick={() => onPickSeed(p)}
-                  className="rounded-full border border-border bg-background px-3.5 py-1.5 text-sm text-muted-foreground transition-colors hover:border-foreground/20 hover:text-foreground"
-                >
-                  {p}
-                </button>
-              ))}
-            </div>
+            <DraftGreeting
+              showWelcome={showWelcome}
+              onDismissWelcome={onDismissWelcome}
+              showStarterPrompts={showStarterPrompts}
+              onPickSeed={onPickSeed}
+            />
           </div>
         </div>
         <div className="absolute bottom-0 left-0 right-0 px-3 lg:px-4 pb-4 max-[499px]:px-0 max-[499px]:pb-0">
@@ -381,6 +370,16 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   // mock UNCONDITIONALLY below (never handed to the daemon) — the toggle
   // only controls whether the row is offered.
   const { enabled: mockFeatures } = useMockFeatures();
+  // First-run welcome card + hideable starter prompts (Settings → Personalize).
+  // Both browser-local; the card is additionally gated below on the daemon
+  // being connected (offline/connecting belongs to the OfflineBanner).
+  const { dismissed: welcomeDismissed, setDismissed: setWelcomeDismissed } =
+    useWelcomeDismissed();
+  const dismissWelcome = useCallback(
+    () => setWelcomeDismissed(true),
+    [setWelcomeDismissed],
+  );
+  const { show: showStarterPrompts } = useShowStarterPrompts();
   const isMobile = useIsMobile();
   const isCompact = useIsCompact();
   const { confirm, ConfirmDialog } = useConfirm();
@@ -538,11 +537,16 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     isStreaming,
     status,
     error: chatError,
+    statusMessage,
     harnessLive,
     sendMessage,
     retryLast,
+    lastFailurePermanent,
+    recoverDraft,
+    consumeRecoverDraft,
     refreshTranscript,
     pendingApproval,
+    approvalQueueLength,
     respondToApproval,
     pendingClarification,
     respondToClarification,
@@ -901,7 +905,12 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
           live={harnessLive}
           usage={usage}
           error={turnError}
+          statusMessage={statusMessage}
           onRetry={retryLast}
+          lastFailurePermanent={lastFailurePermanent}
+          onNewChat={handleNewChat}
+          recoverDraft={recoverDraft}
+          onRecoverDraftConsumed={consumeRecoverDraft}
           onSend={sendMessage}
           queuedMessages={queuedMessages}
           onQueueMessage={queueMessage}
@@ -935,6 +944,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
           sidebarSide={sidebarSide}
           onToggleSidebar={onToggle}
           pendingApproval={pendingApproval}
+          approvalQueueLength={approvalQueueLength}
           onRespondApproval={respondToApproval}
           pendingClarification={pendingClarification}
           onRespondClarification={respondToClarification}
@@ -984,6 +994,9 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
             seed={draftSeed}
             onSeedConsumed={clearDraftSeed}
             onPickSeed={setDraftSeed}
+            showWelcome={!welcomeDismissed && harnessLive && !mockFeatures}
+            onDismissWelcome={dismissWelcome}
+            showStarterPrompts={showStarterPrompts}
             error={turnError}
             showSidebarButton
             sidebarSide={sidebarSide}
@@ -1012,6 +1025,9 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
             seed={draftSeed}
             onSeedConsumed={clearDraftSeed}
             onPickSeed={setDraftSeed}
+            showWelcome={!welcomeDismissed && harnessLive && !mockFeatures}
+            onDismissWelcome={dismissWelcome}
+            showStarterPrompts={showStarterPrompts}
             error={turnError}
             showSidebarButton={!sidebarOpen}
             sidebarSide={sidebarSide}

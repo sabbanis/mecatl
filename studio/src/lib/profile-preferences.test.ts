@@ -1,31 +1,13 @@
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useShowToolCalls } from "./profile-preferences";
+import { memoryStorage } from "@/test/memory-storage";
+import {
+  useShowStarterPrompts,
+  useShowToolCalls,
+  useWelcomeDismissed,
+} from "./profile-preferences";
 
 const KEY = "mecatl-studio.show-tool-calls";
-
-/** This vitest environment ships a method-less localStorage shim (Node's
- *  --localstorage-file stub shadows jsdom's), so storage tests stub a real
- *  in-memory Storage; the global afterEach unstubs it. */
-function memoryStorage(): Storage {
-  let store = new Map<string, string>();
-  return {
-    get length() {
-      return store.size;
-    },
-    clear: () => {
-      store = new Map();
-    },
-    getItem: (key: string) => store.get(key) ?? null,
-    key: (index: number) => [...store.keys()][index] ?? null,
-    removeItem: (key: string) => {
-      store.delete(key);
-    },
-    setItem: (key: string, value: string) => {
-      store.set(key, value);
-    },
-  };
-}
 
 /**
  * The Show Tools preference is GLOBAL and persisted: it must round-trip
@@ -66,5 +48,76 @@ describe("useShowToolCalls", () => {
     act(() => thread.result.current.setShowToolCalls(true));
     expect(chat.result.current.showToolCalls).toBe(true);
     expect(thread.result.current.showToolCalls).toBe(true);
+  });
+});
+
+/**
+ * The first-run welcome card is a ONE-TIME decision: dismissing it persists
+ * (a reload — a fresh mount — must not bring it back), a fresh browser shows
+ * it (nothing stored), and Settings' "Show again" clears the key rather than
+ * storing "0".
+ */
+describe("useWelcomeDismissed", () => {
+  const WELCOME_KEY = "mecatl-studio.welcome-dismissed";
+
+  beforeEach(() => {
+    vi.stubGlobal("localStorage", memoryStorage());
+  });
+
+  it("defaults to not dismissed and stores nothing", () => {
+    const { result } = renderHook(() => useWelcomeDismissed());
+    expect(result.current.dismissed).toBe(false);
+    expect(window.localStorage.getItem(WELCOME_KEY)).toBeNull();
+  });
+
+  it("persists a dismissal across mounts and clears it on show-again", () => {
+    const first = renderHook(() => useWelcomeDismissed());
+    act(() => first.result.current.setDismissed(true));
+    expect(first.result.current.dismissed).toBe(true);
+    expect(window.localStorage.getItem(WELCOME_KEY)).toBe("1");
+    first.unmount();
+
+    // A reload (fresh mount) reads the dismissal back — the card stays gone.
+    const second = renderHook(() => useWelcomeDismissed());
+    expect(second.result.current.dismissed).toBe(true);
+
+    // "Show again" returns to the default by removing the key.
+    act(() => second.result.current.setDismissed(false));
+    expect(second.result.current.dismissed).toBe(false);
+    expect(window.localStorage.getItem(WELCOME_KEY)).toBeNull();
+  });
+});
+
+/**
+ * Starter prompts are SHOWN by default (the --no-banner analogue is an
+ * opt-out): the key exists only while hidden, and turning them back on
+ * removes it.
+ */
+describe("useShowStarterPrompts", () => {
+  const HIDE_KEY = "mecatl-studio.hide-starter-prompts";
+
+  beforeEach(() => {
+    vi.stubGlobal("localStorage", memoryStorage());
+  });
+
+  it("defaults to shown and stores nothing", () => {
+    const { result } = renderHook(() => useShowStarterPrompts());
+    expect(result.current.show).toBe(true);
+    expect(window.localStorage.getItem(HIDE_KEY)).toBeNull();
+  });
+
+  it("round-trips hidden across mounts and removes the key when shown again", () => {
+    const first = renderHook(() => useShowStarterPrompts());
+    act(() => first.result.current.setShow(false));
+    expect(first.result.current.show).toBe(false);
+    expect(window.localStorage.getItem(HIDE_KEY)).toBe("1");
+    first.unmount();
+
+    const second = renderHook(() => useShowStarterPrompts());
+    expect(second.result.current.show).toBe(false);
+
+    act(() => second.result.current.setShow(true));
+    expect(second.result.current.show).toBe(true);
+    expect(window.localStorage.getItem(HIDE_KEY)).toBeNull();
   });
 });

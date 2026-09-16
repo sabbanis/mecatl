@@ -1,14 +1,12 @@
 "use client";
 
 import {
-  AlertCircle,
   Bot,
   Copy,
   ExternalLink,
   FileCode2,
   FileSpreadsheet,
   FileText,
-  GitBranch,
   Image as ImageIcon,
   MessageSquareText,
   User,
@@ -16,7 +14,6 @@ import {
 import { useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Badge } from "@/components/ui/badge";
 import {
   Tooltip,
   TooltipContent,
@@ -27,13 +24,15 @@ import type {
   AgentMessage,
   Artifact,
   Attachment,
+  DelegationGroupInfo,
   DelegationInfo,
   ToolCallInfo,
 } from "@/features/agent";
 import { DeliveryNoteCard } from "@/features/agent/components/delivery-note-card";
+import { stopReasonLabel } from "@/features/agent/stop-reason";
 import { formatTurnStat, isTrivialTurn } from "@/features/agent/turn-stats";
 import { fileKindMeta } from "@/lib/file-meta";
-import { formatMessageTime, formatTokens } from "@/lib/formatters";
+import { formatMessageTime } from "@/lib/formatters";
 import {
   useAgentAvatar,
   useUserAvatar,
@@ -41,7 +40,10 @@ import {
 } from "@/lib/profile-preferences";
 import type { ThreadSummary } from "@/lib/thread-map";
 import { cn } from "@/lib/utils";
+import { DelegationCardRow } from "./delegation-card";
+import { FailedTurnCard } from "./failed-turn-card";
 import { mdComponents } from "./markdown-components";
+import { StopReasonChip } from "./stop-reason-chip";
 import { ToolCallList } from "./tool-call-list";
 
 function UserAvatar({ small = false }: { small?: boolean }) {
@@ -320,90 +322,6 @@ function AttachmentChip({
   );
 }
 
-/** Wall-clock child duration, humanized ("850ms", "12s", "3m 20s"). */
-function formatChildDuration(ms: number): string {
-  if (!Number.isFinite(ms) || ms <= 0) return "";
-  if (ms < 1000) return `${Math.round(ms)}ms`;
-  const seconds = Math.round(ms / 1000);
-  if (seconds < 60) return `${seconds}s`;
-  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
-}
-
-/**
- * One delegated child on a turn (D1): the start-time badge upgraded into a
- * live card. While the child runs it ticks cumulative tool/token counters
- * (fed by the redacted `subagent.tool` projection); on end it shows the stop
- * reason and duration — and a failed child renders its failure cause instead
- * of silently vanishing. `routingReason` (D2.1) rides the tooltip.
- */
-function DelegationCard({ delegation }: { delegation: DelegationInfo }) {
-  const running = delegation.childId !== undefined && !delegation.stop;
-  const failed = delegation.stop === "error";
-  const counters: string[] = [];
-  if (delegation.toolCount !== undefined && delegation.toolCount > 0) {
-    counters.push(
-      `${delegation.toolCount} ${delegation.toolCount === 1 ? "tool" : "tools"}`,
-    );
-  }
-  const totalTokens =
-    (delegation.inputTokens ?? 0) + (delegation.outputTokens ?? 0);
-  if (totalTokens > 0) counters.push(`${formatTokens(totalTokens)} tok`);
-  if (running && delegation.lastTool) counters.push(delegation.lastTool);
-  if (delegation.stop && !failed) {
-    const duration = formatChildDuration(delegation.durationMs ?? 0);
-    counters.push(
-      duration ? `done in ${duration}` : `done (${delegation.stop})`,
-    );
-  }
-  const tooltip = [
-    delegation.routingReason && `routing: ${delegation.routingReason}`,
-    delegation.detail,
-    failed && delegation.cause,
-  ]
-    .filter(Boolean)
-    .join(" · ");
-
-  return (
-    <div className="flex min-w-0 flex-col">
-      <Badge
-        variant="secondary"
-        title={tooltip || undefined}
-        className={cn(
-          "max-w-full gap-1 border-transparent text-xs font-normal text-muted-foreground",
-          failed && "bg-destructive/10 text-destructive",
-        )}
-      >
-        {running ? (
-          <span
-            role="status"
-            aria-label="running"
-            className="size-2 shrink-0 animate-pulse rounded-full bg-brand"
-          />
-        ) : failed ? (
-          <AlertCircle className="size-3 shrink-0" />
-        ) : (
-          <GitBranch className="size-3 shrink-0" />
-        )}
-        <span className="truncate">
-          {delegation.kind}: {delegation.label}
-          {delegation.background ? " · background" : ""}
-          {delegation.detail ? ` · ${delegation.detail}` : ""}
-          {counters.length > 0 ? ` · ${counters.join(" · ")}` : ""}
-          {failed ? " · failed" : ""}
-        </span>
-      </Badge>
-      {failed && delegation.cause && (
-        <p
-          className="mt-0.5 truncate pl-1 text-xs text-destructive/90"
-          title={delegation.cause}
-        >
-          {delegation.cause}
-        </p>
-      )}
-    </div>
-  );
-}
-
 function ArtifactCard({
   artifact,
   onClick,
@@ -450,6 +368,8 @@ export function MessageBubble({
   botName = "Mecatl",
   showActivity = true,
   streaming = false,
+  onOpenDelegation,
+  onCancelDelegation,
 }: {
   message: AgentMessage;
   onOpenArtifact?: (artifact: Artifact) => void;
@@ -463,6 +383,13 @@ export function MessageBubble({
   showActivity?: boolean;
   /** The turn is still in flight: the per-turn stat line waits for it to finish. */
   streaming?: boolean;
+  /** Opens one delegation card (its child trace / group tab) in the side panel. */
+  onOpenDelegation?: (
+    card: DelegationInfo,
+    group?: DelegationGroupInfo,
+  ) => void;
+  /** Cancels one live delegated child by its session id. */
+  onCancelDelegation?: (childId: string) => void;
 }) {
   const isUser = message.role === "user";
   const { name: userName } = useUserDisplayName();
@@ -519,13 +446,18 @@ export function MessageBubble({
     !isTrivialTurn(message.turnStats)
       ? formatTurnStat(message.turnStats)
       : null;
+  // A non-error stop worth naming (turn limit, budget, cancelled, …) renders
+  // as a chip, so a stopped turn never reads as a quiet success either.
+  const stopLabel = !isUser ? stopReasonLabel(message.stopReason) : null;
   // A failed turn must always render (never look like an empty success), as
-  // must one that only carries notices, delegation badges, or a stat line.
+  // must one that only carries notices, delegation badges, a stat line, or a
+  // stop-reason chip.
   const hasExtras =
     Boolean(message.failed) ||
     notices.length > 0 ||
     delegations.length > 0 ||
-    turnStat !== null;
+    turnStat !== null ||
+    stopLabel !== null;
 
   if (!isUser && !hasContent && !hasToolCalls && !hasExtras) return null;
   if (!isUser && !hasContent && hasToolCalls && !showActivity && !hasExtras)
@@ -607,11 +539,12 @@ export function MessageBubble({
           />
         )}
         {delegations.length > 0 && (
-          <div className="mt-1.5 flex flex-wrap gap-1.5">
-            {delegations.map((d) => (
-              <DelegationCard key={d.id} delegation={d} />
-            ))}
-          </div>
+          <DelegationCardRow
+            delegations={message.delegations ?? []}
+            groups={message.delegationGroups}
+            onOpen={onOpenDelegation}
+            onCancel={onCancelDelegation}
+          />
         )}
         {message.delivery && (
           // A start note has an empty body, so the card renders independent
@@ -685,18 +618,12 @@ export function MessageBubble({
             {turnStat}
           </p>
         )}
+        {stopLabel && <StopReasonChip label={stopLabel} />}
         {message.failed && (
-          <div className="mt-2 flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2">
-            <AlertCircle className="mt-0.5 size-4 shrink-0 text-destructive" />
-            <div className="min-w-0 text-sm">
-              <p className="font-medium text-destructive">This turn failed</p>
-              {message.failureDetail && (
-                <p className="mt-0.5 whitespace-pre-wrap break-words text-destructive/90">
-                  {message.failureDetail}
-                </p>
-              )}
-            </div>
-          </div>
+          <FailedTurnCard
+            detail={message.failureDetail}
+            permanent={message.failurePermanent}
+          />
         )}
         {message.artifact && (
           <ArtifactCard

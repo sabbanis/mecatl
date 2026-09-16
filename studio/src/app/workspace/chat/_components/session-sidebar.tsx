@@ -30,6 +30,7 @@ import {
 import { isMockTourSession } from "@/features/agent/mock-tour";
 import { formatRelativeTime } from "@/lib/formatters";
 import { cn } from "@/lib/utils";
+import { sessionActivity } from "./session-activity";
 
 export interface SessionActions {
   onRename: (id: string) => void;
@@ -293,7 +294,9 @@ function SessionRow({
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [sheetOpen, setSheetOpen] = useState(false);
-  const isRunning = session.isStreaming || session.state === "running";
+  // Running (pulsing brand dot) or awaiting approval (steady amber dot): a
+  // parked chat is findable from the list even when it is not selected.
+  const activity = sessionActivity(session);
   const longPress = useLongPress(() => setSheetOpen(true));
 
   return (
@@ -323,7 +326,7 @@ function SessionRow({
         {...longPress.handlers}
         aria-current={isSelected ? "true" : undefined}
         aria-label={`Open chat: ${session.title || "Untitled"}${
-          isRunning ? " (running)" : ""
+          activity ? ` (${activity.label.toLowerCase()})` : ""
         }`}
         className="flex-1 min-w-0 select-none text-left [-webkit-touch-callout:none]"
       >
@@ -360,12 +363,15 @@ function SessionRow({
         </span>
       </button>
       <div className="shrink-0 ml-2 grid w-8 items-center justify-items-center [grid-template-areas:'slot']">
-        {isRunning ? (
+        {activity ? (
           <span
             role="img"
-            aria-label="Running"
+            aria-label={activity.label}
             className={cn(
-              "[grid-area:slot] size-2 rounded-full bg-brand animate-pulse",
+              "[grid-area:slot] size-2 rounded-full",
+              activity.kind === "awaiting"
+                ? "bg-warning"
+                : "bg-brand animate-pulse",
               menuOpen
                 ? "min-[500px]:invisible"
                 : "min-[500px]:group-hover:invisible",

@@ -30,6 +30,14 @@ import {
   type SessionPermissionMode,
   type SessionTranscript,
 } from "@/lib/protocol";
+import {
+  enqueueAsk,
+  formatVerdictNotice,
+  isChildAsk,
+  resolveAsk,
+  retractAsk,
+  retractedAskNotice,
+} from "../approval-queue";
 import { refreshSlashCommands } from "../composer-capabilities";
 import {
   applyDelegationEvent,
@@ -49,6 +57,11 @@ import {
   reduceAuthorizationEvent,
 } from "../mcp-authorization-phase";
 import { useRuntimeStatus } from "../runtime-status";
+import {
+  type StatusMessage,
+  statusFromStopReason,
+  stopReasonLabel,
+} from "../stop-reason";
 import { accumulateTurnStats } from "../turn-stats";
 import type {
   AgentMessage,
@@ -60,8 +73,25 @@ import type {
   RetryDisposition,
   SteerEchoPart,
   StreamEvent,
+  StreamProgress,
   ToolCallInfo,
 } from "../types";
+import {
+  AUTO_RETRY_NOTICE,
+  type FailedRehydrate,
+  failedRehydrateState,
+  isPermanentFailure,
+  promptBelongsTo,
+  REHYDRATED_FAILURE_ERROR,
+  RETRY_INELIGIBLE_NO_PROMPT,
+  recoverableDraft,
+  retryFailureExplanation,
+  retryRoute,
+  retryStartFailure,
+  type ScopedPrompt,
+  shouldAutoRetry,
+  unmarkFailedRehydrate,
+} from "./failed-step-retry";
 
 type ChatStatus =
   | "idle"
@@ -310,13 +340,6 @@ function messagesFromTranscript(transcript: SessionTranscript): AgentMessage[] {
   return messages;
 }
 
-/** Quiet human framing for a durable-log approval verdict line. */
-const APPROVAL_VERDICT_LABELS: Record<string, string> = {
-  allow_once: "allowed once",
-  allow_always: "always allowed",
-  deny: "denied",
-};
-
 /**
  * Renders the steer drain echo's committed media bundle (ADR 0251) as
  * message-attachment chips: inline bytes become data: URLs the existing
@@ -465,17 +488,17 @@ export function reduceWatchEvent(
       }
       return messages;
     }
-    case "approval_verdict": {
-      // The verdict half of a permission ask, rendered as a quiet one-liner.
-      const label = APPROVAL_VERDICT_LABELS[event.verdict] ?? event.verdict;
+    case "approval_verdict":
+      // The verdict half of a permission ask, rendered as a quiet one-liner —
+      // the SAME line respondToApproval records locally, so a rebuilt
+      // transcript reads exactly as the live one did.
       return onAssistant((message) => ({
         ...message,
         notices: [
           ...(message.notices ?? []),
-          `Permission: ${event.toolName || "tool"} ${label || "resolved"}`,
+          formatVerdictNotice(event.toolName, event.verdict),
         ],
       }));
-    }
     case "notice":
       return onAssistant((message) => ({
         ...message,
@@ -536,6 +559,7 @@ export function reduceWatchEvent(
           failureDetail: event.permanent
             ? `${detail} (permanent — retrying the identical request cannot succeed)`
             : detail,
+          failurePermanent: isPermanentFailure(event),
           toolCalls: (message.toolCalls ?? []).map((call) =>
             call.status === "running"
               ? { ...call, status: "failed" as const }
@@ -543,14 +567,24 @@ export function reduceWatchEvent(
           ),
         }));
       }
-      if (event.text && last?.role === "assistant" && !last.content) {
-        // A run that streamed no deltas still carries its final text here.
-        return onAssistant((message) => ({ ...message, content: event.text }));
-      }
-      return messages;
+      // A non-error stop worth naming (turn limit, budget, cancelled, …)
+      // stamps the chip so a stopped turn never reads as a quiet success; a
+      // run that streamed no deltas still carries its final text here.
+      const stopLabel = stopReasonLabel(event.stop);
+      const backfill =
+        event.text && last?.role === "assistant" && !last.content
+          ? event.text
+          : "";
+      if (!stopLabel && !backfill) return messages;
+      return onAssistant((message) => ({
+        ...message,
+        content: message.content || backfill,
+        ...(stopLabel ? { stopReason: event.stop } : {}),
+      }));
     }
     default:
-      // Approval asks, retractions, and usage are hook state, not transcript.
+      // Approval asks, retractions, usage, and the transient status line are
+      // hook state, not transcript (a replay must not resurrect a status).
       return messages;
   }
 }
@@ -600,8 +634,33 @@ export function useAgentChat(
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [status, setStatus] = useState<ChatStatus>("idle");
   const [error, setError] = useState<string | null>(null);
-  const [pendingApproval, setPendingApproval] =
-    useState<ApprovalRequest | null>(null);
+  /** The transient status line (a no-progress nudge, the recover notice, how
+   *  the last run stopped): cleared by the next run and on chat open. */
+  const [statusMessage, setStatusMessage] = useState<StatusMessage | null>(
+    null,
+  );
+  /** Permission asks in arrival order (FIFO): the head is the one on screen,
+   *  later asks wait behind it (the panel's "1 of N"). Mirrored on a ref
+   *  because the stream handlers fold asks in synchronously and must read
+   *  the CURRENT queue (dedupe, advance-to-next) ahead of React's commit. */
+  const [approvalQueue, setApprovalQueue] = useState<ApprovalRequest[]>([]);
+  const approvalQueueRef = useRef<ApprovalRequest[]>([]);
+  const pendingApproval = approvalQueue[0] ?? null;
+  const replaceApprovalQueue = useCallback((next: ApprovalRequest[]) => {
+    approvalQueueRef.current = next;
+    setApprovalQueue(next);
+  }, []);
+  /** Lands a permission-ask notice (a verdict, a withdrawn child ask) on the
+   *  trailing assistant bubble — the turn the ask interrupted. */
+  const appendApprovalNotice = useCallback((text: string) => {
+    setMessages((prev) =>
+      reduceWatchEvent(
+        prev,
+        { type: "notice", text },
+        () => `notice-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      ),
+    );
+  }, []);
   const [pendingClarification] = useState<ClarificationRequest | null>(null);
   /** The MCP browser authorization the run is parked on, if any. Mirrored on
    *  a ref because the stream handlers fold events into it synchronously. */
@@ -648,11 +707,51 @@ export function useAgentChat(
   // while the parent navigates to the new id.
   const daemonIdRef = useRef<string | null>(sessionId);
   const abortRef = useRef<AbortController | null>(null);
-  const lastPromptRef = useRef<string | null>(null);
+  // The prompt this tab last sent — text AND files — scoped to the chat and
+  // the send it belongs to, cleared once a resend or a composer recovery
+  // consumed it: a stale prompt never replays across chats or runs.
+  const lastPromptRef = useRef<ScopedPrompt | null>(null);
+  const promptSerialRef = useRef(0);
   // The last failed terminal's typed disposition (ADR 0239), captured from
   // run_result frames: "retryable" routes retryLast through the retry
   // endpoint instead of re-sending the prompt. Cleared when a run starts.
   const lastDispositionRef = useRef<RetryDisposition | undefined>(undefined);
+  // How far that failed step's stream got (ADR 0239), captured with the
+  // disposition: retryable + precommit is the ONE shape the hook retries on
+  // its own, and a RETRY that ends precommit is explained as such.
+  const lastStreamProgressRef = useRef<StreamProgress | undefined>(undefined);
+  const lastPermanentRef = useRef(false);
+  // The single automatic retry a prompt gets has been spent (re-armed by the
+  // next prompt this tab sends, never by a retry — it cannot re-arm itself).
+  const autoRetriedRef = useRef(false);
+  // Runs this tab drove since the chat opened (prompt or retry): the
+  // failed-rehydrate marking below applies only while none has.
+  const localRunsRef = useRef(0);
+  // The latest authoritative transcript rebuild, and the failed-rehydrate
+  // marking applied to it (once per rebuild).
+  const rehydratedRef = useRef<{
+    id: string;
+    messages: AgentMessage[];
+  } | null>(null);
+  const [rehydrateSerial, setRehydrateSerial] = useState(0);
+  const failedMarkRef = useRef<{
+    rebuilt: { id: string; messages: AgentMessage[] };
+    mark: FailedRehydrate;
+  } | null>(null);
+  // The daemon typed the last failure PERMANENT: the strip withholds Retry.
+  const [lastFailurePermanent, setLastFailurePermanent] = useState(false);
+  // A text-only prompt a transport fault dropped, handed back to the
+  // composer for edit-before-resend (the TUI's recoverPrompt).
+  const [recoverDraft, setRecoverDraft] = useState<{ text: string } | null>(
+    null,
+  );
+  // The automatic retry armed by a retryable + precommit failure; fired by
+  // an effect once the error state has committed (retryLast reads status).
+  const [autoRetryPending, setAutoRetryPending] = useState(false);
+  // Set by that effect right before it calls retryLast, so the retried turn
+  // can say it was automatic (the strip's onClick calls in with a MouseEvent,
+  // so retryLast takes no parameter).
+  const autoRetryModeRef = useRef(false);
   // The active run's opaque identity (Event.run_id, ADR 0249), captured from
   // the first run-bearing event of the prompt stream — or the latest one a
   // watch delivered. Approve/cancel send it as expected_run_id so a stale
@@ -720,6 +819,10 @@ export function useAgentChat(
       }
     }
     setMessages(rebuilt);
+    // The failed-rehydrate effect below marks THIS rebuild (once) when the
+    // inventory says the session is failed.
+    rehydratedRef.current = { id, messages: rebuilt };
+    setRehydrateSerial((serial) => serial + 1);
   }, []);
 
   /**
@@ -770,13 +873,26 @@ export function useAgentChat(
     runIdRef.current = "";
     watchCursorRef.current = "";
     lastDispositionRef.current = undefined;
+    // Failed-step retry state is per chat: a prompt, disposition, or
+    // permanent verdict from the previous chat must never carry over.
+    lastPromptRef.current = null;
+    lastStreamProgressRef.current = undefined;
+    lastPermanentRef.current = false;
+    autoRetriedRef.current = false;
+    localRunsRef.current = 0;
+    rehydratedRef.current = null;
+    failedMarkRef.current = null;
+    setLastFailurePermanent(false);
+    setRecoverDraft(null);
+    setAutoRetryPending(false);
     setMessages([]);
     setFleet(emptyFleet());
-    setPendingApproval(null);
+    replaceApprovalQueue([]);
     setPendingAuthorization(null);
     pendingAuthorizationRef.current = null;
     authorizationIdsRef.current = null;
     setError(null);
+    setStatusMessage(null);
     setStatus("idle");
     // Usage is per-visit, per-chat: the context meter must not carry one
     // chat's spend into the next.
@@ -804,6 +920,54 @@ export function useAgentChat(
     return () => controller.abort();
   }, [sessionId, connected, rehydrate]);
 
+  // Durable failed-step retry (the TUI's "/retry is available for every
+  // bound idle session"): a chat whose inventory state reads `failed` gets its
+  // trailing turn marked failed and the error strip — with Retry — back, even
+  // though the transcript carries no error text and no disposition (Retry
+  // then asks the daemon first, which is authoritative). Applied once per
+  // transcript rebuild, whichever of the rebuild and the poll's `failed`
+  // lands second, and never once a run this tab drove has replaced the
+  // rebuilt view (a stale `failed` poll after a successful local retry must
+  // not re-mark the fresh turn). Leaving `failed` with no local run (another
+  // client moved the session on) reverses the marking.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: rehydrateSerial re-runs the check after each transcript rebuild (the ref holds the rebuild)
+  useEffect(() => {
+    if (!sessionId) return;
+    const rebuilt = rehydratedRef.current;
+    if (!rebuilt || rebuilt.id !== sessionId) return;
+    if (localRunsRef.current > 0) return;
+    if (sessionState === "failed") {
+      if (failedMarkRef.current?.rebuilt === rebuilt) return;
+      const mark = failedRehydrateState(rebuilt.messages);
+      if (!mark) return;
+      failedMarkRef.current = { rebuilt, mark };
+      setMessages(mark.messages);
+      lastPromptRef.current = mark.lastPrompt
+        ? {
+            sessionId,
+            serial: ++promptSerialRef.current,
+            text: mark.lastPrompt,
+          }
+        : null;
+      // Unknown disposition: retryLast routes through the daemon's retry
+      // endpoint, whose 409 falls back to re-sending the prompt above.
+      lastDispositionRef.current = undefined;
+      lastStreamProgressRef.current = undefined;
+      lastPermanentRef.current = false;
+      setLastFailurePermanent(false);
+      setError(REHYDRATED_FAILURE_ERROR);
+      setStatus("error");
+      return;
+    }
+    const marked = failedMarkRef.current;
+    if (!marked || marked.rebuilt !== rebuilt || !sessionState) return;
+    failedMarkRef.current = null;
+    lastPromptRef.current = null;
+    setMessages((prev) => unmarkFailedRehydrate(prev, marked.mark));
+    setError(null);
+    setStatus((current) => (current === "error" ? "idle" : current));
+  }, [sessionId, sessionState, rehydrateSerial]);
+
   // The durable session watch (ADR 0250): when this chat's run is being
   // driven ELSEWHERE (a schedule fire, another tab, a gRPC client) and the
   // daemon supports it, attach from the beginning — the replay rebuilds the
@@ -829,9 +993,10 @@ export function useAgentChat(
     let live = false;
     let frames = 0;
     let serial = 0;
-    // An ask seen in replay that no later verdict/retract resolved: surfaced
-    // at the boundary — exactly the parked-approval case (state "awaiting").
-    let parkedAsk: ApprovalRequest | null = null;
+    // Asks seen in replay that no later verdict/retract resolved, in arrival
+    // order: surfaced at the boundary — exactly the parked-approval case
+    // (state "awaiting"; a parent's and a surfaced child's ask can both park).
+    let parkedAsks: ApprovalRequest[] = [];
     // Likewise a browser authorization seen in replay that nothing resolved:
     // the run is parked on it, so the takeover card shows at the boundary.
     let parkedAuthorization: AuthorizationRequest | null = null;
@@ -859,19 +1024,26 @@ export function useAgentChat(
       setMessages(rebuilt);
       setFleet(rebuiltFleet);
     };
-    const resolveAsk = (approvalId: string) => {
-      if (parkedAsk?.approvalId === approvalId) parkedAsk = null;
-      if (!live) return;
-      setPendingApproval((current) =>
-        current?.approvalId === approvalId ? null : current,
-      );
-      setStatus((current) =>
-        current === "waiting_approval" ? "streaming" : current,
-      );
+    /** Shows the parked queue; the run streams again once it is empty. */
+    const showParkedAsks = () => {
+      replaceApprovalQueue(parkedAsks);
+      if (parkedAsks.length) {
+        setStatus("waiting_approval");
+      } else {
+        setStatus((current) =>
+          current === "waiting_approval" ? "streaming" : current,
+        );
+      }
+    };
+    /** A verdict settled the ask (here or on another client): drop it, and
+     *  the next queued ask — if any — takes the screen. */
+    const settleAsk = (approvalId: string) => {
+      parkedAsks = resolveAsk(parkedAsks, approvalId);
+      if (live) showParkedAsks();
     };
 
     setStatus("streaming");
-    setPendingApproval(null);
+    replaceApprovalQueue([]);
     setError(null);
 
     void watchSessionEvents(
@@ -885,10 +1057,7 @@ export function useAgentChat(
             // surface a still-unresolved ask (the parked-approval case).
             live = true;
             flush();
-            if (parkedAsk) {
-              setPendingApproval(parkedAsk);
-              setStatus("waiting_approval");
-            }
+            if (parkedAsks.length) showParkedAsks();
             if (parkedAuthorization) surfaceAuthorization(parkedAuthorization);
           }
           return;
@@ -898,21 +1067,37 @@ export function useAgentChat(
         if (event.runId) runIdRef.current = event.runId;
         switch (event.type) {
           case "approval":
-            parkedAsk = {
+            // A known askId is a re-surface, not a second ask; a new one
+            // queues behind whatever is already parked (FIFO).
+            parkedAsks = enqueueAsk(parkedAsks, {
               approvalId: event.approvalId,
               sessionId,
               toolName: event.toolName,
               description: event.description,
               details: event.details,
-            };
-            if (live) {
-              setPendingApproval(parkedAsk);
-              setStatus("waiting_approval");
+              // Against the DAEMON session id: a child's ask is prefixed with
+              // the CHILD session id, never this one.
+              child: isChildAsk(event.approvalId, sessionId),
+            });
+            if (live) showParkedAsks();
+            break;
+          case "retract": {
+            // Withdrawn (its child was cancelled); the run is still going. A
+            // vanished child ask leaves a notice on the turn — a silent
+            // disappearance reads as a glitch.
+            const retracted = retractAsk(parkedAsks, event.approvalId);
+            parkedAsks = retracted.queue;
+            if (retracted.removed?.child) {
+              rebuilt = reduceWatchEvent(
+                rebuilt,
+                { type: "notice", text: retractedAskNotice(retracted.wasHead) },
+                nextId,
+              );
+              if (live) flush();
             }
+            if (live) showParkedAsks();
             break;
-          case "retract":
-            resolveAsk(event.approvalId);
-            break;
+          }
           case "authorization":
           case "authorization_resolved": {
             // The parked-on-sign-in phase: a pending `authorization` with no
@@ -940,7 +1125,7 @@ export function useAgentChat(
           case "approval_verdict":
             // Another client resolved the ask; the quiet verdict line also
             // lands in the transcript via the reducer.
-            resolveAsk(event.approvalId);
+            settleAsk(event.approvalId);
             rebuilt = reduceWatchEvent(rebuilt, event, nextId);
             if (live) flush();
             break;
@@ -970,6 +1155,16 @@ export function useAgentChat(
               }));
             }
             break;
+          case "status":
+            // Transient: the status line only, never the transcript.
+            if (live) {
+              setStatusMessage({
+                text: event.text,
+                tone: event.tone,
+                kind: event.kind,
+              });
+            }
+            break;
           case "run_result":
             rebuilt = reduceWatchEvent(rebuilt, event, nextId);
             if (live) {
@@ -977,10 +1172,17 @@ export function useAgentChat(
               // completed-state flow takes over from here.
               flush();
               runIdRef.current = "";
+              setStatusMessage(statusFromStopReason(event.stop));
+              // An ask left over from the ended run is dead: never keep it.
+              parkedAsks = [];
+              replaceApprovalQueue([]);
               // The daemon's durable cumulative usage supersedes the sum.
               void loadSessionDetail(sessionId).catch(() => undefined);
               if (event.stop === "error") {
                 lastDispositionRef.current = event.retryDisposition;
+                lastStreamProgressRef.current = event.streamProgress;
+                lastPermanentRef.current = isPermanentFailure(event);
+                setLastFailurePermanent(lastPermanentRef.current);
                 setError(
                   event.errorText || "The run failed without a specific error.",
                 );
@@ -1009,7 +1211,7 @@ export function useAgentChat(
       // authoritative transcript: the codes differ, the recovery is the
       // same, and the latch stops a re-attach loop while the run continues.
       watchFaultedRef.current = sessionId;
-      setPendingApproval(null);
+      replaceApprovalQueue([]);
       // The pause lands BEFORE idle so the drain never fires into a run this
       // tab can no longer see.
       setQueuePaused({ reason: pauseReasonFor("transport") });
@@ -1037,6 +1239,7 @@ export function useAgentChat(
     watchable,
     rehydrate,
     loadSessionDetail,
+    replaceApprovalQueue,
   ]);
 
   const queueMessage = useCallback((text: string, files?: File[]) => {
@@ -1123,25 +1326,50 @@ export function useAgentChat(
             }));
             break;
           case "approval":
-            setPendingApproval({
-              approvalId: event.approvalId,
-              sessionId: daemonId,
-              toolName: event.toolName,
-              description: event.description,
-              details: event.details,
-            });
+            // FIFO: a second ask (a surfaced child's, a parallel read
+            // batch's) queues behind the one on screen instead of replacing
+            // it; a known askId is a re-surface, not a new ask.
+            replaceApprovalQueue(
+              enqueueAsk(approvalQueueRef.current, {
+                approvalId: event.approvalId,
+                sessionId: daemonId,
+                toolName: event.toolName,
+                description: event.description,
+                details: event.details,
+                // Against the DAEMON session id (never Studio's route id):
+                // a child's ask is prefixed with the CHILD session id.
+                child: isChildAsk(event.approvalId, daemonId),
+              }),
+            );
             setStatus("waiting_approval");
             break;
-          case "retract":
-            // The ask was withdrawn (e.g. its child was cancelled); the
-            // run is still going.
-            setPendingApproval((current) =>
-              current?.approvalId === event.approvalId ? null : current,
+          case "retract": {
+            // The ask was withdrawn (its child was cancelled); the run is
+            // still going. A vanished child ask leaves a notice on the turn
+            // — a silent disappearance reads as a glitch. The next queued
+            // ask, if any, takes the screen; streaming resumes only once
+            // nothing is left.
+            const retracted = retractAsk(
+              approvalQueueRef.current,
+              event.approvalId,
             );
-            setStatus((current) =>
-              current === "waiting_approval" ? "streaming" : current,
-            );
+            replaceApprovalQueue(retracted.queue);
+            if (retracted.removed?.child) {
+              patch((message) => ({
+                ...message,
+                notices: [
+                  ...(message.notices ?? []),
+                  retractedAskNotice(retracted.wasHead),
+                ],
+              }));
+            }
+            if (!retracted.queue.length) {
+              setStatus((current) =>
+                current === "waiting_approval" ? "streaming" : current,
+              );
+            }
             break;
+          }
           case "steer": {
             // The daemon drained the pending steer bundle into the run.
             // The accepted steers are already optimistic user bubbles;
@@ -1206,6 +1434,15 @@ export function useAgentChat(
               ...message,
               notices: [...(message.notices ?? []), event.text],
             }));
+            break;
+          case "status":
+            // Transient (no-progress nudge, recover notice): the status line
+            // under the transcript, never the bubble's durable notices.
+            setStatusMessage({
+              text: event.text,
+              tone: event.tone,
+              kind: event.kind,
+            });
             break;
           case "authorization": {
             // The daemon parked the tool call on a browser sign-in and will
@@ -1297,13 +1534,26 @@ export function useAgentChat(
             }));
             break;
           case "run_result":
-            // The run is over; a control scoped to it would be stale.
+            // The run is over; a control scoped to it would be stale — and
+            // so would an ask left over from it (the daemon retracts
+            // pre-seal, but a dead ask must never stay on screen).
             runIdRef.current = "";
+            replaceApprovalQueue([]);
             // The daemon's durable cumulative usage supersedes the sum.
             void loadSessionDetail(daemonId).catch(() => undefined);
+            // How the run ended, on the status line: a limit stop or cancel
+            // is named; a clean end_turn (or the error bar's error) clears it.
+            setStatusMessage(statusFromStopReason(event.stop));
             if (event.stop === "error") {
               // The typed disposition routes the Retry button (ADR 0239).
               lastDispositionRef.current = event.retryDisposition;
+              // Stream progress decides the one automatic retry (retryable
+              // + precommit) and explains a retry that never reached the
+              // model; a PERMANENT verdict withholds Retry altogether.
+              lastStreamProgressRef.current = event.streamProgress;
+              const permanent = isPermanentFailure(event);
+              lastPermanentRef.current = permanent;
+              setLastFailurePermanent(permanent);
               const detail =
                 event.errorText || "The run failed without a specific error.";
               patch((message) => ({
@@ -1312,6 +1562,7 @@ export function useAgentChat(
                 failureDetail: event.permanent
                   ? `${detail} (permanent — retrying the identical request cannot succeed)`
                   : detail,
+                failurePermanent: permanent,
                 toolCalls: (message.toolCalls ?? []).map((call) =>
                   call.status === "running"
                     ? { ...call, status: "failed" as const }
@@ -1321,13 +1572,18 @@ export function useAgentChat(
               setError(detail);
               setQueuePaused({ reason: pauseReasonFor("error") });
               setStatus("error");
-            } else if (event.text) {
+            } else {
               // A run that produced no deltas (a rehydrated approve, a
-              // recovered run) still carries its final text here.
-              patch((message) => ({
-                ...message,
-                content: message.content || event.text,
-              }));
+              // recovered run) still carries its final text here; a non-error
+              // stop worth naming stamps the turn's stop-reason chip.
+              const stopLabel = stopReasonLabel(event.stop);
+              if (event.text || stopLabel) {
+                patch((message) => ({
+                  ...message,
+                  content: message.content || event.text,
+                  ...(stopLabel ? { stopReason: event.stop } : {}),
+                }));
+              }
             }
             break;
           case "user_prompt": {
@@ -1354,7 +1610,7 @@ export function useAgentChat(
         }
       };
     },
-    [loadSessionDetail],
+    [loadSessionDetail, replaceApprovalQueue],
   );
 
   // The run starter proper. Internal callers (the queue drain, Retry's
@@ -1424,7 +1680,24 @@ export function useAgentChat(
         void saveSentAttachments(daemonIdRef.current, log);
       }
       setError(null);
-      lastPromptRef.current = content;
+      setStatusMessage(null);
+      // Scoped to this chat (null for a draft minted on this very send) and
+      // this send; files ride along so a resend never drops attachments.
+      lastPromptRef.current = {
+        sessionId: daemonIdRef.current,
+        serial: ++promptSerialRef.current,
+        text: content,
+        files,
+      };
+      // A fresh prompt daemon-side: a fresh one-retry budget, a fresh
+      // permanent verdict, nothing left to recover, and the rehydrated
+      // failed marking (if any) no longer owns the view.
+      autoRetriedRef.current = false;
+      lastStreamProgressRef.current = undefined;
+      lastPermanentRef.current = false;
+      localRunsRef.current += 1;
+      setLastFailurePermanent(false);
+      setRecoverDraft(null);
 
       const ids = { assistant: `assistant-${Date.now()}` };
       setMessages((prev) => [
@@ -1495,6 +1768,21 @@ export function useAgentChat(
           controller.signal,
           { onRunStarted: adoptRunId },
         );
+        // The ONE automatic, prompt-free retry (TUI parity): the daemon typed
+        // the failure retryable and the stream died before anything was
+        // committed, so re-driving the step duplicates nothing. Armed here,
+        // fired by the effect below once the error state has committed.
+        if (
+          shouldAutoRetry({
+            disposition: lastDispositionRef.current,
+            streamProgress: lastStreamProgressRef.current,
+            alreadyRetried: autoRetriedRef.current,
+            permanent: lastPermanentRef.current,
+          })
+        ) {
+          autoRetriedRef.current = true;
+          setAutoRetryPending(true);
+        }
         // A parked approval keeps its own status: the stream ends while the
         // run is still waiting on the operator, and flipping to idle here
         // would hide the pending prompt. So does a parked browser
@@ -1520,6 +1808,12 @@ export function useAgentChat(
         setError(message);
         setQueuePaused({ reason: pauseReasonFor("transport") });
         setStatus("error");
+        // No terminal frame reached this tab, so nothing says whether the
+        // daemon recorded the prompt: hand a text-only prompt back to the
+        // composer for edit-before-resend (media is never replayed
+        // implicitly — the Retry button's resend still carries it).
+        const draft = recoverableDraft({ text: content, files });
+        if (draft) setRecoverDraft(draft);
         patch((current) => ({
           ...current,
           failed: true,
@@ -1564,11 +1858,15 @@ export function useAgentChat(
     void refreshSlashCommands(id);
   }, []);
 
-  /** Re-sends the last prompt after a failure — the legacy Retry path, kept
-   *  for permanent/unknown dispositions and older daemons. */
-  const resendLast = useCallback(async () => {
+  /** Re-sends the last prompt — text AND files — after a failure: the
+   *  fallback when the daemon has no failed step to re-drive (a 409 from the
+   *  retry endpoint, a permanent verdict, a cancel). The held prompt is
+   *  consumed so it can never replay twice; false when none was held for
+   *  THIS chat. */
+  const resendLast = useCallback(async (): Promise<boolean> => {
     const prompt = lastPromptRef.current;
-    if (!prompt) return;
+    if (!promptBelongsTo(prompt, daemonIdRef.current)) return false;
+    lastPromptRef.current = null;
     // Drop the failed exchange so the retry replaces it instead of stacking.
     setMessages((prev) => {
       const trimmed = [...prev];
@@ -1578,7 +1876,7 @@ export function useAgentChat(
           trimmed.pop();
           continue;
         }
-        if (last.role === "user" && last.content === prompt) {
+        if (last.role === "user" && last.content === prompt.text) {
           trimmed.pop();
         }
         break;
@@ -1589,22 +1887,33 @@ export function useAgentChat(
     setStatus("idle");
     // startRun, not sendMessage: a retry re-drives the failed turn and
     // leaves the held queue paused for the user to resume.
-    await startRun(prompt);
+    await startRun(prompt.text, prompt.files);
+    return true;
   }, [startRun]);
 
   /**
-   * The error banner's Retry. When the failed terminal was typed RETRYABLE
-   * (ADR 0239), this drives `POST .../retry`: the daemon re-drives the
-   * recorded failed step itself and relays the run as SSE — no user message
-   * is re-sent, which is exactly the duplicate-effects path the endpoint
-   * exists to prevent. A 409 `failed_step_retry_ineligible` (the intent
-   * raced away) falls back to the resend path; a PERMANENT or untyped
-   * failure keeps the resend path (and the composer's edit-and-resend).
+   * The error strip's Retry (and the one automatic retry). For every failed
+   * turn the daemon might re-drive — typed RETRYABLE, typed UNKNOWN, or
+   * untyped (an older daemon, a transport fault, a chat reopened after a
+   * reload) — this drives `POST .../retry` (ADR 0239): the daemon decides
+   * eligibility from durable state, re-drives the recorded failed step
+   * itself and relays the run as SSE — no user message is re-sent, which is
+   * exactly the duplicate-effects path the endpoint exists to prevent. Its
+   * 409 `failed_step_retry_ineligible` falls back to re-sending the held
+   * prompt. Only a PERMANENT verdict (the identical request is rejected) and
+   * a turn that did not fail (a cancel) skip the daemon and resend directly.
    */
   const retryLast = useCallback(async () => {
+    // Read-and-clear first: only the hook's own automatic retry arms it.
+    const automatic = autoRetryModeRef.current;
+    autoRetryModeRef.current = false;
     if (status === "streaming") return;
     const daemonId = daemonIdRef.current;
-    if (lastDispositionRef.current !== "retryable" || !daemonId || !connected) {
+    if (
+      retryRoute(lastDispositionRef.current, status === "error") === "resend" ||
+      !daemonId ||
+      !connected
+    ) {
       await resendLast();
       return;
     }
@@ -1624,6 +1933,12 @@ export function useAgentChat(
     });
     setError(null);
     setStatus("streaming");
+    // A run this tab drives: the rehydrated failed marking no longer owns
+    // the view, and the retry's own terminal decides the verdict afresh.
+    localRunsRef.current += 1;
+    lastStreamProgressRef.current = undefined;
+    lastPermanentRef.current = false;
+    setLastFailurePermanent(false);
 
     const ids = { assistant: `assistant-${Date.now()}` };
     setMessages((prev) => [
@@ -1633,8 +1948,16 @@ export function useAgentChat(
         role: "assistant",
         content: "",
         timestamp: Date.now(),
+        // The automatic retry says so on the turn it streams into.
+        notices: automatic ? [AUTO_RETRY_NOTICE] : undefined,
       },
     ]);
+    const patch = (apply: (message: AgentMessage) => AgentMessage) =>
+      setMessages((prev) =>
+        prev.map((message) =>
+          message.id === ids.assistant ? apply(message) : message,
+        ),
+      );
     const controller = new AbortController();
     abortRef.current = controller;
     // This tab drives the retried run: the watch must not attach on top.
@@ -1649,6 +1972,17 @@ export function useAgentChat(
         controller.signal,
         { onRunStarted: adoptRunId },
       );
+      // A retry that failed again `precommit` never reached the model: say
+      // so, instead of the bare provider text (the TUI's "retry stopped
+      // before the model was called").
+      if (lastStreamProgressRef.current === "precommit") {
+        setError((current) =>
+          retryFailureExplanation({
+            streamProgress: "precommit",
+            error: current ?? "",
+          }),
+        );
+      }
       setStatus((current) =>
         current === "waiting_approval" ||
         current === "waiting_authorization" ||
@@ -1667,12 +2001,21 @@ export function useAgentChat(
         (caught.code === "failed_step_retry_ineligible" ||
           caught.status === 409)
       ) {
-        // The retry intent is gone daemon-side (another client acted, or
-        // the state moved on): quietly fall back to re-sending the prompt.
+        // The daemon has no eligible failed step (another client acted, the
+        // state moved on, or the failure was never a recorded step): fall
+        // back to re-sending the prompt.
         ineligible = true;
       } else {
-        const message =
-          caught instanceof Error ? caught.message : String(caught);
+        // The retry never started (transport, a refusal that is not a 409):
+        // non-destructive — the strip names it and keeps Retry available.
+        const message = retryStartFailure(
+          caught instanceof Error ? caught.message : String(caught),
+        );
+        patch((current) => ({
+          ...current,
+          failed: true,
+          failureDetail: message,
+        }));
         setError(message);
         setQueuePaused({ reason: pauseReasonFor("transport") });
         setStatus("error");
@@ -1681,8 +2024,36 @@ export function useAgentChat(
       abortRef.current = null;
       if (drivingRef.current === daemonId) drivingRef.current = null;
     }
-    if (ineligible) await resendLast();
+    if (ineligible && !(await resendLast())) {
+      // Nothing held to re-send either (the prompt was recovered into the
+      // composer, or the failed run was driven elsewhere): say what is left.
+      patch((current) => ({
+        ...current,
+        failed: true,
+        failureDetail: RETRY_INELIGIBLE_NO_PROMPT,
+      }));
+      setError(RETRY_INELIGIBLE_NO_PROMPT);
+      setStatus("error");
+    }
   }, [status, connected, resendLast, makeStreamHandler, adoptRunId]);
+
+  // Fires the automatic retry armed by startRun once the failed terminal has
+  // committed to state: retryLast reads `status`, so it must run from a
+  // render that already sees "error" — never from the stream's continuation.
+  useEffect(() => {
+    if (!autoRetryPending) return;
+    setAutoRetryPending(false);
+    if (status !== "error") return;
+    autoRetryModeRef.current = true;
+    void retryLast();
+  }, [autoRetryPending, status, retryLast]);
+
+  /** The composer took the recovered prompt: it is the user's draft now, and
+   *  the resend fallback must not replay the same text behind it. */
+  const consumeRecoverDraft = useCallback(() => {
+    setRecoverDraft(null);
+    lastPromptRef.current = null;
+  }, []);
 
   /** A message typed while a run was active, held client-side: the daemon is
    *  strictly one-run-at-a-time (a mid-run prompt answers 412), so the queue
@@ -1952,8 +2323,11 @@ export function useAgentChat(
       // session's NEXT run is left untouched — exactly what "cancel" meant.
       await cancelHarnessRun(daemonIdRef.current, runIdRef.current);
     }
+    // The daemon retracts a cancelled run's asks pre-seal, but the client
+    // must not keep a dead ask on screen either way.
+    replaceApprovalQueue([]);
     setStatus("idle");
-  }, [cancelAuthorization]);
+  }, [cancelAuthorization, replaceApprovalQueue]);
 
   // Steer is capability-gated (C1.2): the live `capabilities.steer` off
   // /v1/compatibility, or the `http_steer` feature-registry row a rebuilt
@@ -2191,11 +2565,21 @@ export function useAgentChat(
     void startRun(merged.text, merged.files);
   }, [queuedMessages, startRun]);
 
+  /**
+   * Answers one queued ask — by default the head (the one on screen). The
+   * queue advances: the next ask, if any, takes the screen and the run stays
+   * `waiting_approval`; only an emptied queue returns it to streaming.
+   */
   const respondToApproval = useCallback(
-    async (choice: ApprovalChoice) => {
+    async (choice: ApprovalChoice, askId?: string) => {
       const daemonId = daemonIdRef.current;
-      const approvalId = pendingApproval?.approvalId;
-      setPendingApproval(null);
+      const queue = approvalQueueRef.current;
+      const answered =
+        (askId ? queue.find((ask) => ask.approvalId === askId) : queue[0]) ??
+        null;
+      const approvalId = answered?.approvalId;
+      const remaining = approvalId ? resolveAsk(queue, approvalId) : queue;
+      replaceApprovalQueue(remaining);
       // The verdict resumes the SAME run — the prompt stream stays open and
       // keeps delivering (the daemon acks the approve; only the run's end
       // closes the stream). Mirror the retract handler: back to streaming,
@@ -2203,22 +2587,34 @@ export function useAgentChat(
       // drain effects fire against the still-live run (a pending steer got
       // re-sent as a prompt that 412s). The stream's own end handler owns
       // the eventual idle.
-      setStatus((current) =>
-        current === "waiting_approval" ? "streaming" : current,
-      );
+      if (!remaining.length) {
+        setStatus((current) =>
+          current === "waiting_approval" ? "streaming" : current,
+        );
+      }
       if (!daemonId || !approvalId) return;
+      // The daemon's verdict is three-way. "session" and "always" both map
+      // to allow_always — the daemon models one persistent grant scope, and
+      // splitting hairs the backend does not model would be a lie in the UI.
+      const verdict =
+        choice === "deny"
+          ? ("deny" as const)
+          : choice === "once"
+            ? ("allow_once" as const)
+            : ("allow_always" as const);
+      // EvApproval is log-only — it never rides the live prompt stream — so
+      // a session THIS tab drives would show no record of what was decided
+      // until a reload. Record it locally, in the very words the durable
+      // watch's approval_verdict arm renders. No duplicate can arise: the
+      // watch REBUILDS the transcript from the log (this line is replaced
+      // by its twin, never joined by it), and a run this tab drives is never
+      // watched at the same time.
+      appendApprovalNotice(formatVerdictNotice(answered?.toolName, verdict));
       try {
-        // The daemon's verdict is three-way. "session" and "always" both map
-        // to allow_always — the daemon models one persistent grant scope, and
-        // splitting hairs the backend does not model would be a lie in the UI.
         await respondToHarnessApproval(
           daemonId,
           approvalId,
-          choice === "deny"
-            ? "deny"
-            : choice === "once"
-              ? "allow_once"
-              : "allow_always",
+          verdict,
           runIdRef.current,
         );
       } catch (caught) {
@@ -2228,8 +2624,10 @@ export function useAgentChat(
         ) {
           // The run this dialog belonged to already ended (e.g. another
           // client answered, or a schedule fire replaced it). Not an error:
+          // every ask of that run is dead with it — drop the whole queue,
           // refresh quietly and let the transcript show what happened.
           runIdRef.current = "";
+          replaceApprovalQueue([]);
           setStatus("idle");
           void rehydrate(daemonId).catch(() => undefined);
           return;
@@ -2238,7 +2636,7 @@ export function useAgentChat(
         setStatus("error");
       }
     },
-    [pendingApproval, rehydrate],
+    [appendApprovalNotice, rehydrate, replaceApprovalQueue],
   );
 
   const respondToClarification = useCallback(async (_response: string) => {
@@ -2279,10 +2677,21 @@ export function useAgentChat(
     cancelPendingSteers,
     status,
     error,
+    /** The transient status line under the transcript: a no-progress nudge or
+     *  the recover notice while a run is live, or how the last run stopped
+     *  (null once a fresh run starts or nothing needs saying). */
+    statusMessage,
     harnessLive: connected,
     sendMessage,
     adoptSession,
     retryLast,
+    /** The daemon typed the last failure PERMANENT: the identical request
+     *  is rejected, so the strip withholds Retry and offers a new chat. */
+    lastFailurePermanent,
+    /** A text-only prompt a transport fault dropped, for the composer to
+     *  take back (edit-before-resend); null when nothing is recoverable. */
+    recoverDraft,
+    consumeRecoverDraft,
     refreshTranscript,
     cancelChat,
     /** The MCP browser authorization the run is parked on (null = none). */
@@ -2291,7 +2700,10 @@ export function useAgentChat(
     copyAuthorizationLink,
     recheckAuthorization,
     cancelAuthorization,
+    /** The head of the FIFO permission-ask queue (null = none pending). */
     pendingApproval,
+    /** Asks queued, head included — the panel's "1 of N" (0 = none). */
+    approvalQueueLength: approvalQueue.length,
     pendingClarification,
     respondToApproval,
     respondToClarification,

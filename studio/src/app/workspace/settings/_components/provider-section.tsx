@@ -21,6 +21,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import type { useDaemonDefaults } from "@/features/agent/hooks/use-daemon-defaults";
 import type { useHarnessRuntime } from "@/features/agent/hooks/use-harness-runtime";
 import type {
   ProviderKeyHealth,
@@ -35,9 +36,11 @@ import {
   OfflineNote,
   SettingsCard,
 } from "./settings-card";
+import { SwitchToMockButton } from "./switch-to-mock-button";
 
 type Runtime = ReturnType<typeof useHarnessRuntime>;
 type Management = ReturnType<typeof useProviderManagement>;
+type DaemonDefaults = ReturnType<typeof useDaemonDefaults>;
 
 /** Dot color + label for a row's key health. Green = a test passed, red =
  *  the provider rejected the key, amber = the test could not complete, gray
@@ -85,12 +88,34 @@ function healthPresentation(
 export function ProviderSection({
   runtime,
   management,
+  daemonDefaults,
 }: {
   runtime: Runtime;
   management: Management;
+  /** The shared daemon-defaults hook (the provider page's), so the Add
+   *  dialog can SAVE a base-URL override as a spawn flag instead of only
+   *  rendering the settings.yaml snippet. Optional: without it the dialog
+   *  falls back to copy-only. */
+  daemonDefaults?: DaemonDefaults;
 }) {
   const status = runtime.status;
   const [removing, setRemoving] = useState<HarnessProviderInfo | null>(null);
+  // Writes ONE provider's base-URL override into the saved daemon defaults
+  // (the rest of the document is kept as saved). Managed mode only.
+  const saveBaseURL =
+    daemonDefaults?.manageable && daemonDefaults.defaults
+      ? async (kind: string, url: string) => {
+          const current = daemonDefaults.defaults;
+          if (!current) return false;
+          const { activeProvider: _owned, ...rest } = current;
+          const ok = await daemonDefaults.save({
+            ...rest,
+            baseUrls: { ...rest.baseUrls, [kind]: url },
+          });
+          if (ok) await runtime.refresh();
+          return ok;
+        }
+      : undefined;
 
   const modelsFor = (name: string) =>
     runtime.models.filter((model) => model.providerId === name).length;
@@ -143,16 +168,28 @@ export function ProviderSection({
                   />
                 ))}
               </ul>
-              <div className="flex justify-start">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <AddProviderDialog
                   known={management.known}
                   configured={management.providers.map((p) => p.name)}
                   authFile={status.authFile}
+                  settingsFile={status.settingsFile}
                   operatorSettings={status.operatorSettings}
                   reload={management.reload}
                   restartDaemon={management.restartDaemon}
                   restarting={management.busy === "restart"}
+                  savedBaseUrls={daemonDefaults?.defaults?.baseUrls}
+                  saveBaseURL={saveBaseURL}
+                  savingBaseURL={daemonDefaults?.busy ?? false}
                 />
+                {/* The explicit `--mock` control (hidden while the mock is
+                    already the active provider). */}
+                {!status.isMock && (
+                  <SwitchToMockButton
+                    busy={management.busy === "activate:mock"}
+                    onSwitch={() => activateProvider("mock")}
+                  />
+                )}
               </div>
             </>
           )}

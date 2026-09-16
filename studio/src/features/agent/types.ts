@@ -105,6 +105,18 @@ export interface AgentMessage {
    */
   failed?: boolean;
   failureDetail?: string;
+  /**
+   * The daemon typed the failure PERMANENT (ADR 0239): the identical
+   * request is rejected, so the failed card says retrying won't help and
+   * the error strip withholds Retry.
+   */
+  failurePermanent?: boolean;
+  /**
+   * How a NON-error run ended when that is worth saying (`max_turns`,
+   * `budget`, `cancelled`, …): the stop-reason chip under the turn. Unset
+   * for a clean `end_turn`; a failed turn uses `failed` instead.
+   */
+  stopReason?: string;
   /** A user message that reached the run as a mid-run steer (the daemon's
    *  drain echo landed): renders a small "steered" marker. */
   steered?: boolean;
@@ -383,6 +395,18 @@ type StreamEventBody =
   /** A one-line advisory (tool progress, compaction, unrendered event kinds). */
   | { type: "notice"; text: string }
   /**
+   * A TRANSIENT advisory (the no-progress nudge, the pre-flight recover
+   * notice): shown on the status line under the transcript until the next
+   * run, never appended to a message's notices — a replay must not
+   * resurrect it.
+   */
+  | {
+      type: "status";
+      text: string;
+      tone: "muted" | "warn";
+      kind: "no_progress" | "recover_notice";
+    }
+  /**
    * A recorded user message from the durable-log replay (EvUserPrompt): the
    * watch's record of what the user asked. Log-only — the live prompt stream
    * never carries it (the client already holds its own optimistic bubble).
@@ -644,6 +668,13 @@ export interface ApprovalRequest {
   toolName?: string;
   description: string;
   details: string;
+  /**
+   * True when a CHILD (subagent / team member / parallel branch) is asking,
+   * classified from the ask id against the daemon session id (the TUI
+   * heuristic, `isChildAsk`). A child ask offers no "Always allow": a
+   * persistent grant learned from a throwaway child would outlive it.
+   */
+  child?: boolean;
 }
 
 // ── Clarifications ──────────────────────────────────────────────────────────

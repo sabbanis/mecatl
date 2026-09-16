@@ -373,16 +373,59 @@ describe("translateEvent", () => {
     ]);
   });
 
-  it("passes advisory text through as a notice and keeps lifecycle markers silent", () => {
+  it("passes durable advisory text through as a notice and keeps lifecycle markers silent", () => {
+    expect(
+      translate(
+        sdkEvent("tool.progress", undefined, { text: "read 3 of 9 files" }),
+      ),
+    ).toEqual([{ type: "notice", text: "read 3 of 9 files" }]);
+    expect(
+      translate(
+        sdkEvent("compaction", undefined, {
+          text: "[conversation compacted] older turns summarised",
+        }),
+      ),
+    ).toEqual([
+      {
+        type: "notice",
+        text: "[conversation compacted] older turns summarised",
+      },
+    ]);
+    expect(translate(sdkEvent("turn.start"))).toEqual([]);
+    expect(translate(sdkEvent("session.init"))).toEqual([]);
+  });
+
+  it("routes the no-progress nudge and the recover notice to the TRANSIENT status line, not the transcript", () => {
     expect(
       translate(
         sdkEvent("recover_notice", undefined, {
           text: "resumed after a retry",
         }),
       ),
-    ).toEqual([{ type: "notice", text: "resumed after a retry" }]);
-    expect(translate(sdkEvent("turn.start"))).toEqual([]);
-    expect(translate(sdkEvent("session.init"))).toEqual([]);
+    ).toEqual([
+      {
+        type: "status",
+        text: "resumed after a retry",
+        tone: "warn",
+        kind: "recover_notice",
+      },
+    ]);
+    expect(
+      translate(
+        sdkEvent("no_progress", undefined, {
+          text: "no progress after continuation attempts; ending run",
+        }),
+      ),
+    ).toEqual([
+      {
+        type: "status",
+        text: "no progress after continuation attempts; ending run",
+        tone: "warn",
+        kind: "no_progress",
+      },
+    ]);
+    // A text-less advisory has nothing to say on the status line either.
+    expect(translate(sdkEvent("no_progress"))).toEqual([]);
   });
 
   it("translates turn.end into a per-turn stat event (bigint → number), never silent", () => {

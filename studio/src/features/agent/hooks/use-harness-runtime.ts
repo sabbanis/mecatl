@@ -9,11 +9,13 @@ import {
   type HarnessControlStatus,
   type HarnessPermissionsConfig,
   type HarnessPermissionsState,
+  type HarnessRetentionSettings,
   type HarnessRouterCategory,
   type HarnessRouterConfig,
   type HarnessStorageSettings,
   listHarnessModels,
   saveHarnessPermissions,
+  saveHarnessRetention,
   saveHarnessRouter,
   saveHarnessStorageSettings,
   startHarnessGatewayOAuth,
@@ -210,6 +212,24 @@ export function useHarnessRuntime() {
     [runWrite],
   );
 
+  /**
+   * Saves the retention document (family age/count limits, sweep cadence,
+   * main-deletion acknowledgement). The controller restarts the daemon on
+   * the new flags; flags mecated refuses are rolled back there and land in
+   * `error`.
+   */
+  const saveRetention = useCallback(
+    async (settings: HarnessRetentionSettings) =>
+      runWrite(
+        "retention",
+        async () => {
+          await saveHarnessRetention(settings);
+        },
+        "Retention saved. The daemon restarted and will sweep on the new policy.",
+      ),
+    [runWrite],
+  );
+
   return {
     live: connected,
     /** "external": config is owned by the deployment; writes answer 409. */
@@ -230,5 +250,6 @@ export function useHarnessRuntime() {
     saveRouter,
     savePermissions,
     saveStorage,
+    saveRetention,
   };
 }

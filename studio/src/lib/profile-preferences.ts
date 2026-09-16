@@ -174,6 +174,57 @@ export function useMockFeatures() {
   return { enabled, setEnabled };
 }
 
+const WELCOME_DISMISSED_KEY = "mecatl-studio.welcome-dismissed";
+
+/**
+ * Whether the first-run welcome card on a new chat has been dismissed. A
+ * one-time decision, browser-local (the TUI's welcome splash is likewise a
+ * per-terminal moment, not an operator setting): the key stores "1" only
+ * once dismissed, so a fresh browser shows the card. Settings → Personalize
+ * can bring it back ("Show again" clears the key). Hydrates on mount, so the
+ * SSR frame reads "not dismissed" — callers gate the card on the daemon
+ * being connected anyway, which is false on that frame.
+ */
+export function useWelcomeDismissed() {
+  const [dismissed, setDismissedState] = useState(false);
+  useEffect(() => {
+    if (readLocalStorage(WELCOME_DISMISSED_KEY) === "1") {
+      setDismissedState(true);
+    }
+  }, []);
+
+  const setDismissed = useCallback((next: boolean) => {
+    setDismissedState(next);
+    writeLocalStorage(WELCOME_DISMISSED_KEY, next ? "1" : null);
+  }, []);
+
+  return { dismissed, setDismissed };
+}
+
+const HIDE_STARTER_PROMPTS_KEY = "mecatl-studio.hide-starter-prompts";
+
+/**
+ * Whether a new chat offers the suggested starter prompts — the web analogue
+ * of the TUI's `--no-banner`. Default SHOWN; the key stores "1" only while
+ * hidden, so turning the prompts back on removes it. Browser-local like the
+ * other Personalize preferences.
+ */
+export function useShowStarterPrompts() {
+  const [show, setShowState] = useState(true);
+  useEffect(() => {
+    if (readLocalStorage(HIDE_STARTER_PROMPTS_KEY) === "1") {
+      setShowState(false);
+    }
+  }, []);
+
+  const setShow = useCallback((next: boolean) => {
+    setShowState(next);
+    writeLocalStorage(HIDE_STARTER_PROMPTS_KEY, next ? null : "1");
+  }, []);
+
+  return { show, setShow };
+}
+
 const SHOW_TOOL_CALLS_KEY = "mecatl-studio.show-tool-calls";
 
 const showToolCallsListeners = new Set<() => void>();

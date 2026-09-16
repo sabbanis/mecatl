@@ -20,6 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { BASE_URL_KINDS } from "@/lib/daemon-defaults.mjs";
 import type {
   HarnessProviderInfo,
   KnownHarnessProvider,
@@ -64,15 +65,22 @@ export function AddProviderDialog({
   known,
   configured,
   authFile,
+  settingsFile,
   operatorSettings,
   reload,
   restartDaemon,
   restarting,
+  savedBaseUrls,
+  saveBaseURL,
+  savingBaseURL = false,
 }: {
   known: KnownHarnessProvider[];
   configured: string[];
   /** The auth.yaml path on the controller's machine (from /status). */
   authFile: string;
+  /** Where a `provider_overrides:` / `providers:` block lands (from
+   *  /status.settingsFile); derived from authFile when absent. */
+  settingsFile?: string;
   /** True when an imported operator-settings.yaml drives the daemon — its
    *  providers: section, if any, wins over the user-global settings file. */
   operatorSettings: boolean;
@@ -81,6 +89,12 @@ export function AddProviderDialog({
   /** Restarts the daemon so the new block takes effect. */
   restartDaemon: () => Promise<void>;
   restarting: boolean;
+  /** The base-URL overrides already saved as daemon defaults, by kind. */
+  savedBaseUrls?: Record<string, string>;
+  /** Saves one kind's base-URL override as the `--<kind>-base-url` spawn
+   *  flag (RESTARTS the daemon). Managed mode only; absent = copy-only. */
+  saveBaseURL?: (kind: string, url: string) => Promise<boolean>;
+  savingBaseURL?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [kind, setKind] = useState("");
@@ -98,16 +112,23 @@ export function AddProviderDialog({
   const [customAuth, setCustomAuth] = useState<"api_key" | "none">("api_key");
   // Optional base-URL override for a BUILT-IN provider (provider_overrides).
   const [overrideURL, setOverrideURL] = useState("");
+  // Whether the override was just SAVED as a spawn flag (managed mode).
+  const [overrideSaved, setOverrideSaved] = useState(false);
 
   const selected = known.find((provider) => provider.name === kind) ?? null;
   const isCustom = kind === CUSTOM_KIND;
   const alreadyConfigured = new Set(configured);
   const path = authFile || "~/.config/mecatl/auth.yaml";
-  // settings.yaml lives beside auth.yaml under the same XDG rule, so the
-  // guided-copy destination is derivable without another status field.
-  const settingsPath = path.endsWith("auth.yaml")
-    ? `${path.slice(0, -"auth.yaml".length)}settings.yaml`
-    : "~/.config/mecatl/settings.yaml";
+  // The controller reports where a settings block lands (/status
+  // .settingsFile — the imported operator file when active). The suffix
+  // derivation is only the fallback for an older controller: the auth file
+  // can now be any .yaml under the config dir (--api-key-file), so its name
+  // no longer implies the settings file's.
+  const settingsPath =
+    settingsFile ||
+    (path.endsWith("auth.yaml")
+      ? `${path.slice(0, -"auth.yaml".length)}settings.yaml`
+      : "~/.config/mecatl/settings.yaml");
 
   const customIdValid = validCustomProviderId(customId);
   const customURLValid = validCustomProviderBaseURL(customBaseURL);
@@ -144,6 +165,8 @@ export function AddProviderDialog({
       setCustomBaseURL("");
       setCustomModel("");
       setCustomAuth("api_key");
+      setOverrideURL("");
+      setOverrideSaved(false);
     }
   }
 
@@ -426,13 +449,60 @@ export function AddProviderDialog({
                   <Input
                     id="add-provider-override"
                     value={overrideURL}
-                    onChange={(event) => setOverrideURL(event.target.value)}
+                    onChange={(event) => {
+                      setOverrideURL(event.target.value);
+                      setOverrideSaved(false);
+                    }}
                     placeholder="https://gateway.example/v1"
                     autoComplete="off"
                     spellCheck={false}
                   />
+                  {selected && savedBaseUrls?.[selected.name] && (
+                    <p className="text-xs text-muted-foreground">
+                      Saved override in effect:{" "}
+                      <code className="font-mono">
+                        {savedBaseUrls[selected.name]}
+                      </code>{" "}
+                      (Daemon defaults → Advanced clears it).
+                    </p>
+                  )}
                   {overrideSnippet && (
                     <>
+                      {saveBaseURL &&
+                        BASE_URL_KINDS.includes(selected.name) &&
+                        (overrideSaved ? (
+                          <p className="text-sm">
+                            Override saved ✓ — the daemon restarted with{" "}
+                            <code className="font-mono">
+                              --{selected.name}-base-url
+                            </code>
+                            .
+                          </p>
+                        ) : (
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Button
+                              size="sm"
+                              variant="action"
+                              className="rounded-full"
+                              disabled={savingBaseURL}
+                              onClick={async () => {
+                                const ok = await saveBaseURL(
+                                  selected.name,
+                                  overrideURL.trim(),
+                                );
+                                setOverrideSaved(ok);
+                              }}
+                            >
+                              {savingBaseURL
+                                ? "Saving…"
+                                : "Save override (restarts the daemon)"}
+                            </Button>
+                            <span className="text-xs text-muted-foreground">
+                              Saved as a spawn flag — no settings.yaml edit
+                              needed. Or paste the snippet below instead:
+                            </span>
+                          </div>
+                        ))}
                       <p className="text-xs text-muted-foreground">
                         Add to <code className="font-mono">{settingsPath}</code>
                         {operatorSettings &&

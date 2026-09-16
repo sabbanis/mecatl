@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Ellipsis } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useMemo } from "react";
@@ -9,6 +9,14 @@ import {
   SortableHead,
   useTableSort,
 } from "@/components/sortable-head";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Switch } from "@/components/ui/switch";
 import {
   Table,
@@ -18,13 +26,19 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { useDaemonDefaults } from "@/features/agent/hooks/use-daemon-defaults";
 import {
   type HarnessModel,
   useHarnessRuntime,
 } from "@/features/agent/hooks/use-harness-runtime";
+import { useConfirm } from "@/hooks/use-confirm";
 import { useDisabledModels } from "@/lib/model-preferences";
 import { pageTitleClass } from "@/lib/typography";
 import { cn } from "@/lib/utils";
+import {
+  modelDefaultsKind,
+  RESTART_WARNING,
+} from "../../settings/_components/daemon-defaults-card";
 import {
   Note,
   OfflineNote,
@@ -53,6 +67,42 @@ export default function ProviderModelsPage() {
   const runtime = useHarnessRuntime();
   const { disabled, setModelEnabled } = useDisabledModels();
   const sort = useTableSort<"name" | "id" | "context" | "enabled">("name");
+  // `providers set-default PROVIDER [MODEL]`: the daemon defaults' per-
+  // provider model pair. The kebab writes THIS provider's --default-model
+  // when it is the active provider (mecated validates the flag against the
+  // current default provider fail-fast, so a default for an inactive
+  // provider would only be stored for later).
+  const daemonDefaults = useDaemonDefaults();
+  const { confirm, ConfirmDialog } = useConfirm();
+  const activeKind = modelDefaultsKind(runtime.status);
+  const isActiveProvider = activeKind === providerName;
+  const savedDefaultModel =
+    daemonDefaults.defaults?.models[providerName]?.defaultModel ?? "";
+  const canSetDefault =
+    daemonDefaults.manageable && daemonDefaults.defaults !== null;
+
+  const makeDaemonDefault = async (model: HarnessModel) => {
+    const current = daemonDefaults.defaults;
+    if (!current) return;
+    const confirmed = await confirm({
+      title: `Make ${model.displayName} the daemon default?`,
+      description: `Every session on ${providerName} that does not pick a model inherits ${model.id} (--default-model). ${RESTART_WARNING}`,
+      confirmText: "Set default and restart",
+    });
+    if (!confirmed) return;
+    const { activeProvider: _owned, ...rest } = current;
+    const ok = await daemonDefaults.save({
+      ...rest,
+      models: {
+        ...rest.models,
+        [providerName]: {
+          defaultModel: model.id,
+          subagentModel: rest.models[providerName]?.subagentModel ?? "",
+        },
+      },
+    });
+    if (ok) await runtime.refresh();
+  };
 
   const models = useMemo(
     () =>
@@ -129,6 +179,11 @@ export default function ProviderModelsPage() {
                       sort={sort}
                       className="w-px whitespace-nowrap"
                     />
+                    {canSetDefault && (
+                      <TableHead className="w-px whitespace-nowrap">
+                        <span className="sr-only">Actions</span>
+                      </TableHead>
+                    )}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -140,8 +195,13 @@ export default function ProviderModelsPage() {
                         className={cn(!enabled && "opacity-60")}
                       >
                         <TableCell className="max-w-0">
-                          <p className="truncate text-sm font-medium">
-                            {model.displayName}
+                          <p className="flex items-center gap-2 truncate text-sm font-medium">
+                            <span className="truncate">
+                              {model.displayName}
+                            </span>
+                            {model.id === savedDefaultModel && (
+                              <Badge variant="info">daemon default</Badge>
+                            )}
                           </p>
                           <p className="truncate font-mono text-xs text-muted-foreground">
                             {model.id}
@@ -167,6 +227,45 @@ export default function ProviderModelsPage() {
                             aria-label={`Show ${model.displayName} in Studio's model pickers`}
                           />
                         </TableCell>
+                        {canSetDefault && (
+                          <TableCell className="whitespace-nowrap">
+                            <DropdownMenu modal={false}>
+                              <DropdownMenuTrigger asChild>
+                                <Button
+                                  variant="ghost"
+                                  size="icon"
+                                  className="size-8"
+                                  aria-label={`Actions for ${model.displayName}`}
+                                >
+                                  <Ellipsis className="size-4" />
+                                </Button>
+                              </DropdownMenuTrigger>
+                              <DropdownMenuContent align="end">
+                                <DropdownMenuItem
+                                  disabled={
+                                    !isActiveProvider ||
+                                    daemonDefaults.busy ||
+                                    model.id === savedDefaultModel
+                                  }
+                                  title={
+                                    isActiveProvider
+                                      ? model.id === savedDefaultModel
+                                        ? "Already the daemon default"
+                                        : undefined
+                                      : "Set this provider as active first"
+                                  }
+                                  onClick={() => void makeDaemonDefault(model)}
+                                >
+                                  {isActiveProvider
+                                    ? model.id === savedDefaultModel
+                                      ? "Daemon default"
+                                      : "Make daemon default"
+                                    : "Make daemon default (set this provider as active first)"}
+                                </DropdownMenuItem>
+                              </DropdownMenuContent>
+                            </DropdownMenu>
+                          </TableCell>
+                        )}
                       </TableRow>
                     );
                   })}
@@ -175,7 +274,19 @@ export default function ProviderModelsPage() {
             </div>
           )}
         </SettingsCard>
+        {canSetDefault && (daemonDefaults.error || daemonDefaults.notice) && (
+          <p
+            className={
+              daemonDefaults.error
+                ? "whitespace-pre-wrap text-sm text-destructive"
+                : "text-sm text-muted-foreground"
+            }
+          >
+            {daemonDefaults.error ?? daemonDefaults.notice}
+          </p>
+        )}
       </div>
+      {ConfirmDialog}
     </div>
   );
 }

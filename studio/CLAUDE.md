@@ -39,10 +39,14 @@ the usual reason it fails mysteriously.
 - `scripts/local-controller.mjs` — managed-mode sidecar (supervises `mecated`,
   owns model-router/MCP-gateway config + OAuth, the permissions document
   — operator posture / project trust / shell-less mode — as mecated spawn
-  flags via `GET|POST /permissions`, and the session-store location via
-  `POST /storage`); policy helpers in
-  `src/lib/controller-security.mjs`, the flag grammar in
-  `src/lib/controller-permissions.mjs`.
+  flags via `GET|POST /permissions`, the session-store location via
+  `POST /storage`, the retention policy via `POST /retention`, and the
+  daemon defaults — default/subagent model per provider, reasoning effort,
+  context window, prompt caching, base-URL overrides, ToolHive LLM gateway,
+  aliases/slots, credentials-file path, plus the durable active-provider
+  choice — as spawn flags via `GET|PUT /daemon-defaults`); policy helpers in
+  `src/lib/controller-security.mjs`, the flag grammars in
+  `src/lib/controller-permissions.mjs` and `src/lib/daemon-defaults.mjs`.
 - `src/features/agent/` — runtime-status provider + the daemon-backed hooks;
   `src/app/workspace/**` — the five surfaces.
 
@@ -119,6 +123,48 @@ Each rule is backed by a test; break the rule and its test names you.
     older controller did not report. (`src/lib/storage-settings.test.ts`,
     `store-location.test.ts`, `session-storage-section.test.tsx`, hermetic
     409 + CSRF rows.)
+15. **Retention is spawn FLAGS too, and main-chat deletion needs the
+    acknowledgement — in Studio AND in mecated.** Settings → Storage →
+    Retention saves a Studio-owned `retention.json`; the controller turns
+    each SET field into its mecated flag (`--main-retention`,
+    `--child-retention`, `--schedule-fire-retention`, their count caps,
+    `--child-gc-interval` for the sweep cadence, `--acknowledge-main-retention`)
+    and a null field into NO flag (mecated's default stands). Durations are
+    Go grammar — no `d`. A non-zero main age/count without
+    `acknowledgeMainDeletion: true` is refused by the controller (400) before
+    the restart mecated would fail; child/scheduled limits need no
+    acknowledgement. No flags at all while an imported operator settings
+    file is active (`managedBy: "operator-settings"`, `POST /retention` 400).
+    The EFFECTIVE policy the card shows is the daemon's own
+    `GET /v1/storage/health` (`policy`, `last/next_sweep_unix`), never the
+    saved document. External mode: `retention: null`, `POST /retention` 409.
+    (`src/lib/retention-settings.test.ts`, `harness/retention.test.ts`,
+    `harness/storage.test.ts`, `retention-section.test.tsx`, hermetic 409 +
+    CSRF rows.)
+16. **Daemon defaults are spawn FLAGS, keyed per provider, and the active
+    provider is durable.** Settings → Model provider → "Daemon defaults" (and
+    the provider page's "Make daemon default" kebab, the Add dialog's "Save
+    override") save a Studio-owned `daemon-defaults.json`; the controller
+    turns it into `--default-model`/`--subagent-model` (the pair saved for
+    the SPAWN kind only — mecated validates them against the current default
+    provider fail-fast, so a stale pair must never ride a provider switch;
+    never for `--mock`), `--reasoning-effort`, `--context-window-override`,
+    `--no-prompt-cache`, `--anthropic-cache-ttl`, `--<kind>-base-url`,
+    `--toolhive-llm=false`/`--toolhive-llm-base-url`/`--toolhive-llm-mode`,
+    repeated `--model-alias`/`--model-slot` (the `router` slot stays the
+    Model router page's), and `--api-key-file` (a `.yaml` INSIDE the mecatl
+    config dir — the controller reads and rewrites that file for the
+    provider routes, so the path is confined). A refused start rolls the
+    previous document back and returns mecated's own refusal. `POST
+    /providers/active` persists the choice (`MECATL_STUDIO_PROVIDER` still
+    wins at boot; a saved kind that is no longer selectable is dropped, and
+    `DELETE /providers/{name}` clears it); "Switch to offline mock" is the
+    explicit `--mock`. `GET /daemon-defaults` is header-free read-only like
+    `/status`; the PUT is not. External mode: `daemonDefaults: null`, both
+    verbs 409. (`src/lib/daemon-defaults.test.ts`,
+    `controller-security.test.ts`, `harness/daemon-defaults.test.ts`,
+    `use-daemon-defaults.test.ts`, `daemon-defaults-card.test.tsx`,
+    `provider-section.test.tsx`, hermetic 409 rows.)
 
 ## Gotchas
 

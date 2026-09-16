@@ -12,12 +12,19 @@
  */
 
 import { validSkillName } from "@/lib/controller-security.mjs";
+import {
+  type HarnessDaemonDefaults,
+  readDaemonDefaults,
+} from "./daemon-defaults";
 import { apiError } from "./errors";
+import { type HarnessRetentionState, readRetentionState } from "./retention";
 import { type HarnessStorageState, readStorageState } from "./store-location";
 
+export * from "./daemon-defaults";
 export { HarnessApiError } from "./errors";
 export * from "./inventory";
 export * from "./mcp-authorization";
+export * from "./retention";
 export * from "./schedules";
 export * from "./sessions";
 export * from "./store-location";
@@ -35,7 +42,12 @@ export interface HarnessControlStatus {
   isMock: boolean;
   running: boolean;
   gateway: { name: string; url: string } | null;
-  toolhiveGateway: { available: boolean; active: boolean } | null;
+  toolhiveGateway: {
+    available: boolean;
+    active: boolean;
+    /** The loopback proxy URL the controller probes (display only). */
+    baseURL?: string;
+  } | null;
   modelRouter: { enabled: boolean; categories: number } | null;
   operatorSettings: boolean;
   skillsDir: string;
@@ -67,6 +79,25 @@ export interface HarnessControlStatus {
    * external mode and against an older controller that does not report it.
    */
   storage: HarnessStorageState | null;
+  /**
+   * The RETENTION document the managed daemon was spawned with (family
+   * age/count limits, sweep cadence, main-deletion acknowledgement — spawn
+   * flags the controller owns) plus who manages it. Null in external mode
+   * and against an older controller that does not report it.
+   */
+  retention: HarnessRetentionState | null;
+  /** Where a custom `providers:` block / a `provider_overrides:` snippet
+   *  lands on the controller's machine (the imported operator settings when
+   *  active, else the user-global settings.yaml). Absent on an older
+   *  controller. Display only. */
+  settingsFile?: string;
+  /**
+   * The saved DAEMON DEFAULTS the managed daemon was spawned with (spawn
+   * flags — default/subagent model per provider, effort, context window,
+   * prompt caching, base URLs, ToolHive, aliases/slots, the credentials
+   * PATH). Null in external mode and against an older controller.
+   */
+  daemonDefaults?: HarnessDaemonDefaults | null;
 }
 
 /** The controller's saved permissions document (POST /permissions body). */
@@ -117,7 +148,11 @@ export async function fetchHarnessControlStatus(
       isMock?: boolean;
       running?: boolean;
       gateway?: { name?: string; url?: string } | null;
-      toolhiveGateway?: { available?: boolean; active?: boolean } | null;
+      toolhiveGateway?: {
+        available?: boolean;
+        active?: boolean;
+        baseURL?: string;
+      } | null;
       modelRouter?: { enabled?: boolean; categories?: number } | null;
       operatorSettings?: boolean;
       skills?: { dir?: string };
@@ -128,6 +163,9 @@ export async function fetchHarnessControlStatus(
       workspace?: string;
       permissions?: unknown;
       storage?: unknown;
+      retention?: unknown;
+      settingsFile?: string;
+      daemonDefaults?: unknown;
     };
     return {
       mode: body.mode === "external" ? "external" : "managed",
@@ -141,6 +179,10 @@ export async function fetchHarnessControlStatus(
         ? {
             available: Boolean(body.toolhiveGateway.available),
             active: Boolean(body.toolhiveGateway.active),
+            baseURL:
+              typeof body.toolhiveGateway.baseURL === "string"
+                ? body.toolhiveGateway.baseURL
+                : undefined,
           }
         : null,
       modelRouter: body.modelRouter
@@ -162,6 +204,10 @@ export async function fetchHarnessControlStatus(
       workspace: typeof body.workspace === "string" ? body.workspace : "",
       permissions: readPermissions(body.permissions),
       storage: readStorageState(body.storage),
+      retention: readRetentionState(body.retention),
+      settingsFile:
+        typeof body.settingsFile === "string" ? body.settingsFile : undefined,
+      daemonDefaults: readDaemonDefaults(body.daemonDefaults),
     };
   } catch {
     return null;

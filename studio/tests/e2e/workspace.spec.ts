@@ -67,6 +67,29 @@ test("schedules render the registry with humanized triggers", async ({
   ).toBeVisible();
 });
 
+test("schedules show fire count and last run, and the text filter narrows the list", async ({
+  page,
+}) => {
+  await page.goto("/workspace/schedules");
+  // The fixture state carries fire_count 3 and a last_fire_at; both land as
+  // columns on the desktop table (the mobile cell is CSS-hidden here).
+  await expect(page.getByRole("button", { name: "Runs" })).toBeVisible();
+  await expect(
+    page.getByRole("cell", { name: "3", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Last run" })).toBeVisible();
+  await expect(page.getByRole("cell", { name: /^\d+d ago$/ })).toBeVisible();
+
+  // A query nothing matches names itself in the empty state.
+  await page.getByPlaceholder("Filter by name or schedule").fill("zzz");
+  await expect(page.getByText("No scheduled tasks match “zzz”.")).toBeVisible();
+  await expect(page.getByRole("table")).toHaveCount(0);
+  await page.getByRole("button", { name: "Clear filter" }).click();
+  await expect(
+    page.getByText("nightly-fixture-digest").filter({ visible: true }),
+  ).toBeVisible();
+});
+
 test("skills render the resolved inventory", async ({ page }) => {
   await page.goto("/workspace/skills");
   await expect(
@@ -149,4 +172,34 @@ test("a scheduled task's delivery note renders as an attributed card", async ({
   await expect(page.getByText("[scheduled task", { exact: false })).toHaveCount(
     0,
   );
+});
+
+test("the first-run welcome card shows once and stays dismissed across reloads", async ({
+  page,
+}) => {
+  // A fresh browser context (no localStorage) on a connected daemon: the
+  // card renders on the draft chat, with its way out.
+  await page.goto("/workspace/chat");
+  await expect(
+    page.getByRole("heading", { name: "Welcome to Mecatl Studio" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Keyboard shortcuts & features" }),
+  ).toHaveAttribute("href", "/workspace/shortcuts");
+  await page.getByRole("button", { name: "Dismiss welcome" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Welcome to Mecatl Studio" }),
+  ).toBeHidden();
+  // The greeting and its starter prompts stay — only the card is one-time.
+  await expect(
+    page.getByRole("heading", { name: "What can I help you with?" }),
+  ).toBeVisible();
+  // Dismissal is persisted browser-locally, so a reload does not bring it back.
+  await page.reload();
+  await expect(
+    page.getByRole("heading", { name: "What can I help you with?" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Welcome to Mecatl Studio" }),
+  ).toHaveCount(0);
 });

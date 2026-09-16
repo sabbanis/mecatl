@@ -53,6 +53,17 @@ describe("shortcut registry", () => {
     // page can't intercept it, so "New chat" stays on the preventable ⌘⇧O.
     expect(byId.get("chat.new")).toBe("mod+shift+o");
   });
+
+  it("binds the schedules list filter to a bare slash in its own group", () => {
+    const def = SHORTCUTS.find((s) => s.id === "schedules.filter");
+    expect(def?.combo).toBe("/");
+    expect(def?.group).toBe("Scheduled");
+    expect(SHORTCUT_GROUPS).toContain("Scheduled");
+    // A bare slash must stay plain text inside the filter (and the composer):
+    // the dispatcher suppresses it while typing, so focusing the filter with
+    // `/` never inserts a slash into it.
+    expect(comboFiresWhileTyping("/")).toBe(false);
+  });
 });
 
 describe("keycaps", () => {

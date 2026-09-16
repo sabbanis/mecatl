@@ -25,6 +25,11 @@ import {
   validSkillName,
 } from "../src/lib/controller-security.mjs";
 import {
+  DAEMON_DEFAULTS_EMPTY,
+  daemonDefaultArgs,
+  normalizeDaemonDefaults,
+} from "../src/lib/daemon-defaults.mjs";
+import {
   customProviderProbeURL,
   KNOWN_AUTH_PROVIDERS,
   listAuthFileProviders,
@@ -32,6 +37,10 @@ import {
   removeAuthFileProvider,
   validProviderName,
 } from "../src/lib/provider-auth.mjs";
+import {
+  normalizeRetentionSettings,
+  retentionArgs,
+} from "../src/lib/retention-settings.mjs";
 import {
   normalizeStorageSettings,
   resolveStoreDir,
@@ -63,6 +72,18 @@ const permissionsStateFile = resolve(studioStateDir, "permissions.json");
 // permissions it becomes a spawn flag — `--store-dir <abs>` or no flag at all
 // — never a settings.yaml key; see src/lib/storage-settings.mjs.
 const storageStateFile = resolve(studioStateDir, "storage-settings.json");
+// The Studio-owned retention document (per-family age/count limits, sweep
+// cadence, main-deletion acknowledgement). Spawn flags that out-rank a
+// settings file per field — never a settings.yaml `retention:` key; see
+// src/lib/retention-settings.mjs.
+const retentionStateFile = resolve(studioStateDir, "retention.json");
+// The Studio-owned DAEMON DEFAULTS (default/subagent model per provider,
+// reasoning effort, context window, prompt caching, base-URL overrides, the
+// ToolHive LLM gateway, aliases/slots, the credentials-file path) plus the
+// durable active-provider choice. Every value becomes a mecated spawn flag
+// (src/lib/daemon-defaults.mjs) — never a settings.yaml key — so the CLI
+// tier wins even under an imported operator-settings.yaml.
+const daemonDefaultsFile = resolve(studioStateDir, "daemon-defaults.json");
 // Project-scoped skills only. A SKILL.md steers the model the same way AGENTS.md
 // does, so discovery is deliberately pinned to the workspace and we never pass
 // --skills-conventional (which would also pull in ~/.claude/skills and the
@@ -79,9 +100,18 @@ const disabledSkillsDir = resolve(skillsDir, ".disabled");
 // store is per-project by design, so it lives beside the session store rather than
 // in a shared location. Consolidation stays off: it spends tokens in the background.
 const memoryDir = resolve(workspace, ".scratch/studio-memory");
-const authFile = process.env.XDG_CONFIG_HOME
-  ? resolve(process.env.XDG_CONFIG_HOME, "mecatl/auth.yaml")
-  : resolve(homedir(), ".config/mecatl/auth.yaml");
+// mecated's user-global config directory (XDG). The daemon defaults'
+// `apiKeyFile` is confined to it: the controller reads AND rewrites the
+// credentials file for the provider inventory/removal routes, so a
+// browser-settable path must never reach outside this directory.
+const mecatlConfigDir = process.env.XDG_CONFIG_HOME
+  ? resolve(process.env.XDG_CONFIG_HOME, "mecatl")
+  : resolve(homedir(), ".config/mecatl");
+const defaultAuthFile = resolve(mecatlConfigDir, "auth.yaml");
+// The EFFECTIVE credentials file: the default above, or the saved
+// `--api-key-file` path (reassigned by applyDaemonDefaults) so the
+// inventory, key-test and removal routes read the same file the daemon does.
+let authFile = defaultAuthFile;
 // The user-global operator settings file, same XDG convention as auth.yaml.
 // mecated always reads it at the operator tier; it is where a hand-added
 // custom `providers:` block (ADR 0238) lives unless an imported
@@ -523,6 +553,25 @@ let permissionsConfig = normalizePermissions({});
 // modelRouterConfig, so a failed restart can roll back to "no file".
 let storageSettings = null;
 const effectiveStorage = () => storageSettings ?? storageDefaults;
+// The SAVED retention document (POST /retention), or null while mecated's
+// own defaults apply (no flags passed) — the same null-means-unsaved shape
+// as storageSettings, so a failed restart can roll back to "no file".
+let retentionSettings = null;
+const effectiveRetention = () =>
+  retentionSettings ?? normalizeRetentionSettings({});
+// The `/status.retention` projection. An imported operator settings file
+// suspends the flags entirely (its own retention: block, if any, then
+// stands), which the UI reports as "operator-settings".
+const retentionStatus = () => ({
+  settings: effectiveRetention(),
+  managedBy: operatorSettingsActive ? "operator-settings" : "studio",
+});
+// The saved daemon-defaults document (PUT /daemon-defaults, plus the
+// active-provider choice POST /providers/active persists), loaded from
+// daemonDefaultsFile before the first spawn; the empty document means every
+// flag is omitted and the command line is byte-identical to the pre-feature
+// one. Always the NORMALISED shape — never a raw body.
+let daemonDefaults = DAEMON_DEFAULTS_EMPTY;
 // A this-process-only trust grant: `--trust-project` on the next spawns
 // without persisting it, for a "trust once" answer to a trust prompt. Never
 // written to disk, so it dies with the controller.
@@ -684,17 +733,24 @@ async function detectToolhiveGateway() {
 // copied through a browser form or patched into the child's environment here.
 // MECATL_STUDIO_PROVIDER / the /providers/active switch select a provider
 // without carrying its credential.
+// The ToolHive gateway is offerable only while it answers AND the saved
+// daemon defaults have not passed `--toolhive-llm=false` (a disabled
+// detection means mecated never registers the provider, so naming it as the
+// default would fail startup).
+const toolhiveOfferable = () =>
+  toolhiveReady && daemonDefaults.toolhive.enabled;
 const preferredKind = () =>
-  activeProviderOverride || (toolhiveReady ? "toolhive" : "mock");
+  activeProviderOverride || (toolhiveOfferable() ? "toolhive" : "mock");
 
 /** Whether `kind` is safe to hand to startMecatl right now: the two
- *  synthetic kinds (mock always, toolhive only while the gateway answers), a
- *  provider that actually has a block in auth.yaml, or a settings-defined
- *  custom provider (ADR 0238) — never an arbitrary string, so a typo can't
- *  reach mecated's fail-fast --default-provider check and crash the child. */
+ *  synthetic kinds (mock always, toolhive only while the gateway answers and
+ *  detection is not disabled), a provider that actually has a block in
+ *  auth.yaml, or a settings-defined custom provider (ADR 0238) — never an
+ *  arbitrary string, so a typo can't reach mecated's fail-fast
+ *  --default-provider check and crash the child. */
 function isSelectableProviderKind(kind, selectableNames) {
   if (kind === "mock") return true;
-  if (kind === "toolhive") return toolhiveReady;
+  if (kind === "toolhive") return toolhiveOfferable();
   return selectableNames.includes(kind);
 }
 
@@ -833,6 +889,41 @@ async function loadPermissions() {
   }
 }
 
+/** Atomic (tmp + rename), owner-only. Flags only — no settings.yaml key. */
+async function persistDaemonDefaults(config) {
+  await mkdir(studioStateDir, { recursive: true, mode: 0o700 });
+  const temp = `${daemonDefaultsFile}.tmp`;
+  await writeFile(temp, `${JSON.stringify(config, null, 2)}\n`, {
+    mode: 0o600,
+  });
+  await rename(temp, daemonDefaultsFile);
+}
+
+/** The saved daemon defaults, or the empty document when none were saved.
+ *  A corrupt or out-of-grammar file is logged and ignored, never honoured
+ *  (a stale --default-model would otherwise wedge every restart). */
+async function loadDaemonDefaults() {
+  try {
+    return normalizeDaemonDefaults(
+      JSON.parse(await readFile(daemonDefaultsFile, "utf8")),
+      { configDir: mecatlConfigDir },
+    );
+  } catch (error) {
+    if (error?.code !== "ENOENT")
+      process.stderr.write(
+        `[daemon-defaults] saved configuration ignored: ${error.message || error}\n`,
+      );
+    return DAEMON_DEFAULTS_EMPTY;
+  }
+}
+
+/** Makes `next` the live document: the effective credentials file follows
+ *  its `apiKeyFile` so every auth.yaml route reads what the daemon reads. */
+function applyDaemonDefaults(next) {
+  daemonDefaults = next;
+  authFile = next.apiKeyFile || defaultAuthFile;
+}
+
 /** Atomic (tmp + rename), owner-only. A spawn flag — no settings.yaml key. */
 async function persistStorageSettings(config) {
   await mkdir(studioStateDir, { recursive: true, mode: 0o700 });
@@ -855,6 +946,33 @@ async function loadStorageSettings() {
     if (error?.code !== "ENOENT")
       process.stderr.write(
         `[storage] saved configuration ignored: ${error.message || error}\n`,
+      );
+    return null;
+  }
+}
+
+/** Atomic (tmp + rename), owner-only. Spawn flags — no settings.yaml key. */
+async function persistRetentionSettings(config) {
+  await mkdir(studioStateDir, { recursive: true, mode: 0o700 });
+  const temp = `${retentionStateFile}.tmp`;
+  await writeFile(temp, `${JSON.stringify(config, null, 2)}\n`, {
+    mode: 0o600,
+  });
+  await rename(temp, retentionStateFile);
+}
+
+/** The saved retention document, or null when none was saved yet (mecated's
+ *  own defaults then apply). A corrupt file — including one that enables
+ *  main deletion without the acknowledgement — is logged and ignored. */
+async function loadRetentionSettings() {
+  try {
+    return normalizeRetentionSettings(
+      JSON.parse(await readFile(retentionStateFile, "utf8")),
+    );
+  } catch (error) {
+    if (error?.code !== "ENOENT")
+      process.stderr.write(
+        `[retention] saved configuration ignored: ${error.message || error}\n`,
       );
     return null;
   }
@@ -1148,11 +1266,22 @@ async function startMecatl(kind) {
   args.push("--skills-dir", skillsDir);
   await mkdir(memoryDir, { recursive: true });
   args.push("--memory-dir", memoryDir);
+  // The saved daemon defaults as spawn flags: the model pair is emitted for
+  // THIS kind only (mecated validates --default-model against the current
+  // default provider fail-fast), the rest is global. An empty document adds
+  // nothing, so the pre-feature command line is byte-identical.
+  args.push(...daemonDefaultArgs(daemonDefaults, kind));
   // Operator posture / project trust / shell-less mode as CLI flags. This
   // spawn is deliberately NOT --headless: on an interactive root mecated
   // raises the project-trust floor for trusted/auto/yolo, which is what the
   // Permissions page tells the user (controller-permissions.test.ts pins it).
   args.push(...permissionArgs(permissionsConfig, { trustOnce }));
+  // Retention limits + sweep cadence as CLI flags (they out-rank a settings
+  // file per field), but ONLY when no imported operator settings file is
+  // active: that file's own retention: block, if any, then stands untouched
+  // and POST /retention is refused.
+  if (!operatorSettingsActive)
+    args.push(...retentionArgs(effectiveRetention()));
   if (kind === "mock") {
     args.push("--mock");
   } else if (kind === "toolhive") {
@@ -1652,6 +1781,15 @@ const server = http.createServer(async (request, response) => {
         // (resolved) or in-memory, plus the default the form falls back to.
         // Paths only — the store's CONTENTS never cross here.
         storage: storageStatus(effectiveStorage(), workspace, storageDefaults),
+        // The retention flags the daemon was spawned with (or that mecated's
+        // defaults apply) and who manages them. The EFFECTIVE policy is the
+        // daemon's own GET /v1/storage/health.
+        retention: retentionStatus(),
+        // The saved daemon defaults the child was spawned with (spawn
+        // flags: default/subagent model per provider, effort, context
+        // window, prompt caching, base URLs, ToolHive, aliases/slots, the
+        // credentials-file PATH — never a key) — one poll for the UI.
+        daemonDefaults,
       }),
     );
     return;
@@ -1730,7 +1868,9 @@ const server = http.createServer(async (request, response) => {
         throw Object.assign(
           new Error(
             kind === "toolhive"
-              ? "The ToolHive LLM gateway is not reachable right now"
+              ? daemonDefaults.toolhive.enabled
+                ? "The ToolHive LLM gateway is not reachable right now"
+                : "ToolHive gateway detection is switched off in Daemon defaults — enable it there first"
               : `"${kind || "(empty)"}" is not mock, toolhive, a provider configured in ${authFile}, or a custom provider defined in the operator settings`,
           ),
           { statusCode: 400 },
@@ -1745,6 +1885,19 @@ const server = http.createServer(async (request, response) => {
           activeProviderOverride = previous;
           await startMecatl(preferredKind());
           throw error;
+        }
+        // The choice is DURABLE from here: it is re-read at the next
+        // controller boot (MECATL_STUDIO_PROVIDER, when set, still wins).
+        // Persisting only after a successful start keeps a kind that could
+        // not start out of the file. A failed write is logged, not fatal —
+        // the daemon IS running on the new provider.
+        try {
+          applyDaemonDefaults({ ...daemonDefaults, activeProvider: kind });
+          await persistDaemonDefaults(daemonDefaults);
+        } catch (error) {
+          process.stderr.write(
+            `[daemon-defaults] active provider not persisted: ${error.message || error}\n`,
+          );
         }
       });
       response.end(
@@ -1867,6 +2020,29 @@ const server = http.createServer(async (request, response) => {
           const temp = `${authFile}.tmp`;
           await writeFile(temp, text, { mode: 0o600 });
           await rename(temp, authFile);
+          // A DURABLE active-provider choice naming the removed provider
+          // would wedge every later boot on a fail-fast --default-provider,
+          // so it is cleared (and so is its saved model pair). The
+          // this-process override falls back too — unless
+          // MECATL_STUDIO_PROVIDER pins it, which the UI's confirm warns
+          // about and which the operator must change by hand.
+          if (
+            daemonDefaults.activeProvider === name ||
+            Object.hasOwn(daemonDefaults.models, name)
+          ) {
+            const { [name]: _dropped, ...models } = daemonDefaults.models;
+            applyDaemonDefaults({
+              ...daemonDefaults,
+              models,
+              activeProvider:
+                daemonDefaults.activeProvider === name
+                  ? null
+                  : daemonDefaults.activeProvider,
+            });
+            await persistDaemonDefaults(daemonDefaults);
+          }
+          if (activeProviderOverride === name && configuredProvider !== name)
+            activeProviderOverride = null;
           await startMecatl(preferredKind());
         });
         response.end(JSON.stringify({ ok: true, restarted: true }));
@@ -2318,6 +2494,119 @@ const server = http.createServer(async (request, response) => {
     }
     return;
   }
+  // Daemon defaults: GET reads the saved document (header-free read-only,
+  // like /status and /model-router); PUT replaces it whole, restarts mecated
+  // on the new flags and rolls back to the previous document when the new
+  // ones refuse to start (mecated validates --default-model /
+  // --subagent-model fail-fast; its stderr excerpt is the 400 body). The
+  // active provider is NOT settable here — POST /providers/active owns it
+  // with its selectable-kind check — so the body's activeProvider is
+  // replaced by the current one before normalisation.
+  if (request.method === "GET" && requestURL.pathname === "/daemon-defaults") {
+    response.end(
+      JSON.stringify({ defaults: daemonDefaults, managedBy: "studio" }),
+    );
+    return;
+  }
+  if (request.method === "PUT" && requestURL.pathname === "/daemon-defaults") {
+    try {
+      if (
+        !String(request.headers["content-type"] || "")
+          .toLowerCase()
+          .startsWith("application/json")
+      )
+        throw Object.assign(
+          new Error("Content-Type must be application/json"),
+          { statusCode: 415 },
+        );
+      const input = JSON.parse(
+        (await readBody(request, 16_384)).toString("utf8"),
+      );
+      const next = normalizeDaemonDefaults(
+        {
+          ...(input && typeof input === "object" && !Array.isArray(input)
+            ? input
+            : {}),
+          activeProvider: daemonDefaults.activeProvider,
+        },
+        { configDir: mecatlConfigDir },
+      );
+      await queueRestart(async () => {
+        const previous = daemonDefaults;
+        applyDaemonDefaults(next);
+        await persistDaemonDefaults(next);
+        try {
+          await startMecatl(preferredKind());
+        } catch (error) {
+          applyDaemonDefaults(previous);
+          await persistDaemonDefaults(previous);
+          await startMecatl(preferredKind());
+          throw error;
+        }
+      });
+      response.end(JSON.stringify({ ok: true, defaults: daemonDefaults }));
+    } catch (error) {
+      jsonError(
+        response,
+        error.statusCode || 400,
+        error.message || "Could not save the daemon defaults",
+      );
+    }
+    return;
+  }
+  // Retention: POST /retention {main, child, scheduled: {maxAge?, maxCount?},
+  // sweepCadence?, acknowledgeMainDeletion?} (see
+  // src/lib/retention-settings.mjs). Header-gated like every write. The
+  // document becomes mecated CLI flags on the restart; a start mecated refuses
+  // (it re-checks the main-deletion acknowledgement itself) rolls the previous
+  // document back — "no file" included — restarts on it, and surfaces the
+  // failure as the 400 body. Refused while an imported operator settings file
+  // is active: the controller passes no retention flags alongside that file.
+  // /status.retention is the read half.
+  if (request.method === "POST" && requestURL.pathname === "/retention") {
+    try {
+      if (
+        !String(request.headers["content-type"] || "")
+          .toLowerCase()
+          .startsWith("application/json")
+      )
+        throw Object.assign(
+          new Error("Content-Type must be application/json"),
+          { statusCode: 415 },
+        );
+      if (operatorSettingsActive)
+        throw new Error(
+          "Retention is managed by the imported operator settings file while it is active. Edit its retention: block instead.",
+        );
+      const next = normalizeRetentionSettings(
+        JSON.parse((await readBody(request, 16_384)).toString("utf8")),
+      );
+      await queueRestart(async () => {
+        const previous = retentionSettings;
+        retentionSettings = next;
+        await persistRetentionSettings(next);
+        try {
+          await startMecatl(preferredKind());
+        } catch (error) {
+          retentionSettings = previous;
+          if (previous) await persistRetentionSettings(previous);
+          else await rm(retentionStateFile, { force: true });
+          await startMecatl(preferredKind());
+          throw new Error(
+            `${error.message || error} (previous retention policy restored)`,
+          );
+        }
+      });
+      response.end(JSON.stringify({ ok: true, retention: retentionStatus() }));
+    } catch (error) {
+      jsonError(
+        response,
+        error.statusCode || 400,
+        error.message || "Could not update the retention policy",
+      );
+    }
+    return;
+  }
   if (request.method === "GET" && requestURL.pathname === "/model-router") {
     response.end(
       JSON.stringify({
@@ -2421,12 +2710,30 @@ server.listen(8788, "127.0.0.1", async () => {
   modelRouterConfig = await loadModelRouter();
   permissionsConfig = await loadPermissions();
   storageSettings = await loadStorageSettings();
+  retentionSettings = await loadRetentionSettings();
+  applyDaemonDefaults(await loadDaemonDefaults());
   toolhiveReady = await detectToolhiveGateway();
   process.stdout.write(
     toolhiveReady
       ? `ToolHive LLM gateway detected at ${toolhiveGatewayURL}\n`
       : `ToolHive LLM gateway not reachable at ${toolhiveGatewayURL} (start it with "thv llm proxy start"); falling back to the offline mock\n`,
   );
+  // The DURABLE active-provider choice seeds the live selection unless
+  // MECATL_STUDIO_PROVIDER pins one (env stays authoritative). A saved kind
+  // that is not selectable right now (its auth.yaml block removed, its
+  // gateway down) is dropped rather than handed to a fail-fast boot, so the
+  // daemon comes up on the fallback instead of not at all.
+  if (!configuredProvider && daemonDefaults.activeProvider) {
+    const saved = daemonDefaults.activeProvider;
+    if (isSelectableProviderKind(saved, await listSelectableProviderNames())) {
+      activeProviderOverride = saved;
+    } else {
+      process.stderr.write(
+        `[daemon-defaults] saved active provider "${saved}" is not selectable right now; falling back\n`,
+      );
+      applyDaemonDefaults({ ...daemonDefaults, activeProvider: null });
+    }
+  }
   try {
     await startMecatl(preferredKind());
   } catch (error) {

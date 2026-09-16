@@ -125,6 +125,13 @@ export async function proxyControl(request: Request, path: string[]) {
         // The session store is likewise the deployment's spawn flag: Studio
         // neither knows its location nor whether it is in-memory.
         storage: null,
+        // And its retention flags: the effective policy still reads off the
+        // daemon's own storage health.
+        retention: null,
+        // And the daemon defaults (default/subagent model, effort, caching,
+        // base URLs, ToolHive, aliases/slots, credentials path): the
+        // deployment's own spawn flags, unknown to Studio.
+        daemonDefaults: null,
       });
     }
     return Response.json(

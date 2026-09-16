@@ -17,13 +17,16 @@ import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { Switch } from "@/components/ui/switch";
 import {
   type EnterSendBehavior,
   UI_SCALE_MAX,
   UI_SCALE_MIN,
   useEnterSendBehavior,
   useSessionListSide,
+  useShowStarterPrompts,
   useUiScale,
+  useWelcomeDismissed,
 } from "@/lib/profile-preferences";
 import { OptionField } from "../_components/option-field";
 import { SettingsCard, SettingsRow } from "../_components/settings-card";
@@ -49,6 +52,10 @@ export default function AppearanceSettingsPage() {
   const { side, setSide } = useSessionListSide();
   const { scale, setScale } = useUiScale();
   const { behavior, setBehavior } = useEnterSendBehavior();
+  const { show: showStarterPrompts, setShow: setShowStarterPrompts } =
+    useShowStarterPrompts();
+  const { dismissed: welcomeDismissed, setDismissed: setWelcomeDismissed } =
+    useWelcomeDismissed();
 
   // Browser notifications: permission mirrored into state so the row reflects
   // granted / denied / not-yet-asked; "unsupported" hides the row's actions.
@@ -166,6 +173,33 @@ export default function AppearanceSettingsPage() {
             options={ENTER_BEHAVIOR_OPTIONS}
             onChange={(next) => setBehavior(next as EnterSendBehavior)}
           />
+        </SettingsRow>
+
+        <SettingsRow
+          label="Starter prompts"
+          htmlFor="starter-prompts"
+          description="Suggested prompts on a new chat."
+        >
+          <Switch
+            id="starter-prompts"
+            checked={showStarterPrompts}
+            onCheckedChange={setShowStarterPrompts}
+            aria-label="Starter prompts"
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          label="Welcome card"
+          description="The first-run introduction on a new chat."
+        >
+          <Button
+            variant="outline"
+            className="w-44 rounded-full"
+            onClick={() => setWelcomeDismissed(false)}
+            disabled={!welcomeDismissed}
+          >
+            {welcomeDismissed ? "Show again" : "Showing"}
+          </Button>
         </SettingsRow>
 
         {notifyPermission !== "unsupported" && (
