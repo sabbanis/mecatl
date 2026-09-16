@@ -184,6 +184,10 @@ test("packed tarball carries dist and license only", () => {
   const expectedFiles = [
     "package/LICENSE",
     "package/README.md",
+    "package/dist/authorization.d.ts",
+    "package/dist/authorization.d.ts.map",
+    "package/dist/authorization.js",
+    "package/dist/authorization.js.map",
     "package/dist/client.d.ts",
     "package/dist/client.d.ts.map",
     "package/dist/client.js",

@@ -72,6 +72,20 @@ echoes as the drained bundle's watermark; `cancelSteer` retracts the pending bun
 `client.server.compatibility()` reports whether the server advertises the `http_steer` feature
 these two controls require.
 
+## MCP authorization, connectors, and workspace enrollment
+
+When a tool call parks on `authorization.required`, `session.mcpAuthorization(id)`
+returns the controls for that one authorization: `presentation()` reads the live
+browser URL, `recheck()` asks the daemon to re-inspect it and streams the outcome
+(and the resumed run when it succeeds), and `cancel()` abandons it with the same
+stream shape. `session.mcpConnectors()` inspects the session's broker-local MCP
+connector catalogue without probing upstreams, and `session.workspaceEnrollment`
+(`connect()`, `retry(id)`, `cancel(id)`) drives the pre-prompt workspace-services
+enrollment. `session.cancelChild(childId)` stops one running subagent, parallel
+branch, or team member without cancelling the whole run. All are HTTP controls;
+gate the first three on the `mcp_connector_status` and `workspace_enrollment`
+server capabilities.
+
 ## Node and Bun local daemon
 
 Node/Bun callers can import `spawn` from `@stacklok-oss/mecatl-sdk/node`. It resolves an existing

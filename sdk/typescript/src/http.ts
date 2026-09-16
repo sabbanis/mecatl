@@ -130,6 +130,17 @@ function normalizeUnaryResponse(
   return raw;
 }
 
+function wrapsEvent(output: DescMessage): boolean {
+  if (output.fields.length !== 1) return false;
+  const field = output.fields[0];
+  return (
+    field !== undefined &&
+    field.name === "event" &&
+    field.fieldKind === "message" &&
+    field.message.typeName === "mecatl.v1.Event"
+  );
+}
+
 function timeoutSignal(
   signal: AbortSignal | undefined,
   timeoutMs: number | undefined,
@@ -395,7 +406,12 @@ class HttpTransport implements Transport {
     const effectiveSignal = timeoutSignal(signal, timeoutMs);
     let route: Route;
     let body: JsonRecord = {};
-    let wrapEvent = false;
+    // The daemon streams BARE Event frames on every SSE route whose response
+    // message is a single-field `event` envelope (Converse, the MCP
+    // authorization controls). Wrap those so fromJson sees the envelope; a
+    // response that already is the frame (WatchSessionEvents' {event,cursor,
+    // phase}, ApprovePlan's bare Event) passes through untouched.
+    const wrapEvent = wrapsEvent(method.output);
     let startControls: (() => Promise<never>) | undefined;
     let controlFailure: Promise<never> = new Promise(() => undefined);
 
@@ -408,7 +424,6 @@ class HttpTransport implements Transport {
         });
       }
       const sessionId = start.value.sessionId;
-      wrapEvent = true;
       if (start.case === "prompt") {
         route = sessionControlRoute("prompt", sessionId);
         body = {

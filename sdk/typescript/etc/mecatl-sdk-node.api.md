@@ -634,6 +634,43 @@ export const MAX_PROMPT_MEDIA_BYTES: number;
 export const MAX_PROMPT_MEDIA_PARTS = 16;
 
 // @public
+export interface McpAuthorization {
+    // (undocumented)
+    readonly authorizationId: string;
+    cancel(options?: RequestOptions): McpAuthorizationStream;
+    presentation(options?: RequestOptions): Promise<McpAuthorizationPresentation>;
+    recheck(options?: RequestOptions): McpAuthorizationStream;
+    // (undocumented)
+    readonly sessionId: string;
+}
+
+// @public
+export interface McpAuthorizationOutcome {
+    readonly result?: RunResult;
+}
+
+// @public
+export interface McpAuthorizationPresentation {
+    readonly url: string;
+}
+
+// @public
+export interface McpAuthorizationStream extends AsyncIterable<Event_2> {
+    close(): Promise<void>;
+    result(): Promise<McpAuthorizationOutcome>;
+}
+
+// @public
+export interface McpConnectorStatus {
+    // (undocumented)
+    readonly catalogueState: string;
+    // (undocumented)
+    readonly name: string;
+    // (undocumented)
+    readonly toolCount: number;
+}
+
+// @public
 export interface McpInventory {
     // Warning: (ae-forgotten-export) The symbol "GetMcpPromptRequest" needs to be exported by the entry point node.d.ts
     // Warning: (ae-forgotten-export) The symbol "GetMcpPromptResponse" needs to be exported by the entry point node.d.ts
@@ -1166,6 +1203,7 @@ export type ServerPosture = (typeof ServerPosture)[keyof typeof ServerPosture];
 export interface Session {
     activity(options?: AttachOptions): Promise<SessionActivity>;
     attach(runId?: string, options?: AttachOptions): Promise<AttachedRun>;
+    cancelChild(childId: string, options?: RequestOptions): Promise<void>;
     clear(options?: ClearSessionOptions, requestOptions?: RequestOptions): Promise<Session>;
     close(options?: RequestOptions): Promise<void>;
     compact(options?: RequestOptions): Promise<boolean>;
@@ -1173,6 +1211,8 @@ export interface Session {
     delete(options?: RequestOptions): Promise<void>;
     // (undocumented)
     readonly id: string;
+    mcpAuthorization(authorizationId: string): McpAuthorization;
+    mcpConnectors(options?: RequestOptions): Promise<SessionMcpConnectors>;
     rename(title: string, options?: RequestOptions): Promise<SessionSnapshot>;
     resolvePlan(verdict?: PlanApprovalVerdict): PlanResolution;
     retry(options?: RunOptions, requestOptions?: RequestOptions): Promise<Run>;
@@ -1180,6 +1220,7 @@ export interface Session {
     setMode(mode: SessionMode, options?: RequestOptions): Promise<SessionSnapshot>;
     snapshot(options?: RequestOptions): Promise<SessionSnapshot>;
     transcript(options?: RequestOptions): Promise<SessionTranscript>;
+    readonly workspaceEnrollment: WorkspaceEnrollmentControls;
 }
 
 // @public
@@ -1219,6 +1260,20 @@ export interface SessionLimits {
     maxConsecutiveFailures?: number;
     maxToolCalls?: number;
     maxTurns?: number;
+}
+
+// @public
+export interface SessionMcpConnectors {
+    // (undocumented)
+    readonly availability: string;
+    // (undocumented)
+    readonly connectors: readonly McpConnectorStatus[];
+    // (undocumented)
+    readonly enrollmentState: string;
+    // (undocumented)
+    readonly totalConnectors: number;
+    // (undocumented)
+    readonly truncated: boolean;
 }
 
 // @public
@@ -1940,6 +1995,24 @@ export interface WatchGapEnvelope {
 
 // @public
 export function withSessionAffinity(sessionId: string, options?: CallOptions): CallOptions;
+
+// @public
+export interface WorkspaceEnrollmentControls {
+    cancel(enrollmentId: string, options?: RequestOptions): Promise<WorkspaceEnrollmentState>;
+    connect(options?: RequestOptions): Promise<WorkspaceEnrollmentState>;
+    retry(enrollmentId: string, options?: RequestOptions): Promise<WorkspaceEnrollmentState>;
+}
+
+// @public
+export interface WorkspaceEnrollmentState {
+    // (undocumented)
+    readonly enrollmentId: string;
+    readonly presentationUrl: string;
+    // (undocumented)
+    readonly requiredServices: number;
+    // (undocumented)
+    readonly status: string;
+}
 
 // @public
 export interface Worktrees {

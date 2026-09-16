@@ -8,6 +8,15 @@ import type {
 } from "@bufbuild/protobuf";
 import { create } from "@bufbuild/protobuf";
 import type { CallOptions, Transport } from "@connectrpc/connect";
+import {
+  type AuthorizationOperations,
+  createMcpAuthorization,
+  createWorkspaceEnrollmentControls,
+  type McpAuthorization,
+  projectMcpConnectors,
+  type SessionMcpConnectors,
+  type WorkspaceEnrollmentControls,
+} from "./authorization.js";
 import { createRunControls, type RunControls } from "./controls.js";
 import {
   AuthenticationError,
@@ -293,6 +302,31 @@ export interface Session {
    * @returns Controls that resolve asks, cancel, steer, and retract a steer.
    */
   controls(runId: string): RunControls;
+  /**
+   * Cancels one running child (subagent, parallel branch, or team member) of this session's live run.
+   *
+   * @param childId - The child session id carried by `subagent.start`, `parallel.branch`, or `team.member`.
+   * @param options - Request headers, cancellation signal, and deadline.
+   * @returns A promise that resolves after the daemon accepts the cancellation.
+   * @throws `ServerError` with code `not_found` when the child is unknown or already finished.
+   */
+  cancelChild(childId: string, options?: RequestOptions): Promise<void>;
+  /**
+   * Inspects the session's broker-local MCP connector catalogue (no upstream probe).
+   *
+   * @param options - Request headers, cancellation signal, and deadline.
+   * @returns Availability, enrollment state, and the connector rows.
+   */
+  mcpConnectors(options?: RequestOptions): Promise<SessionMcpConnectors>;
+  /**
+   * Returns the controls for one pending per-tool MCP authorization.
+   *
+   * @param authorizationId - The id carried by the `authorization.required` event.
+   * @returns Presentation, recheck, and cancel controls bound to that authorization.
+   */
+  mcpAuthorization(authorizationId: string): McpAuthorization;
+  /** Pre-prompt workspace-services enrollment controls for this session. */
+  readonly workspaceEnrollment: WorkspaceEnrollmentControls;
   /**
    * Releases runtime resources without removing the durable session.
    *
@@ -783,6 +817,48 @@ class SessionImpl implements Session {
       this.#busy = false;
       throw error;
     }
+  }
+
+  async cancelChild(childId: string, options?: RequestOptions): Promise<void> {
+    this.#operations.assertOpen();
+    if (childId === "") {
+      throw new InvalidStateError("cancelChild requires a child id", {
+        transport: this.#operations.transportKind,
+      });
+    }
+    await this.#operations.control(
+      this.id,
+      { kind: { case: "cancelChild", value: { childId } } },
+      options,
+    );
+  }
+
+  async mcpConnectors(options?: RequestOptions): Promise<SessionMcpConnectors> {
+    this.#operations.assertOpen();
+    const response = await this.#operations.unary(
+      HarnessService.method.listSessionMcpConnectors,
+      { sessionId: this.id },
+      options,
+    );
+    return projectMcpConnectors(response);
+  }
+
+  mcpAuthorization(authorizationId: string): McpAuthorization {
+    return createMcpAuthorization(this.id, authorizationId, this.#authorizationOperations());
+  }
+
+  get workspaceEnrollment(): WorkspaceEnrollmentControls {
+    return createWorkspaceEnrollmentControls(this.id, this.#authorizationOperations());
+  }
+
+  #authorizationOperations(): AuthorizationOperations {
+    return {
+      assertOpen: () => this.#operations.assertOpen(),
+      registerRun: (cancel) => this.#operations.registerRun(cancel),
+      stream: (method, input, options) => this.#operations.stream(method, input, options),
+      transportKind: this.#operations.transportKind,
+      unary: (method, input, options) => this.#operations.unary(method, input, options),
+    };
   }
 
   controls(runId: string): RunControls {

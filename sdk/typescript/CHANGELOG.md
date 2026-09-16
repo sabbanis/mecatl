@@ -6,6 +6,16 @@ For installation and API entry points, see the [TypeScript SDK README](./README.
 
 ## Unreleased
 
+- Added `session.mcpAuthorization(id)` (`presentation()`, `recheck()`, `cancel()`)
+  for the per-tool MCP authorization flow, `session.mcpConnectors()` for the
+  broker-local connector catalogue, `session.workspaceEnrollment`
+  (`connect()`, `retry()`, `cancel()`) for pre-prompt workspace-services
+  enrollment, and `session.cancelChild(childId)` to stop one running subagent,
+  branch, or team member — every daemon route is now reachable through a typed
+  method.
+- The HTTP transport now wraps the daemon's bare SSE events for every stream
+  whose response is a single-field `event` envelope, not only `Converse`, so
+  the authorization control streams decode.
 - Added `session.controls(runId)`: strict, run-id-addressed HTTP controls
   (`resolveAsk`, `cancel`, `steer`, `cancelSteer`) that need no event stream,
   so a client can act on a run it re-attached to or observes through a durable

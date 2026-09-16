@@ -6,6 +6,16 @@
 
 export type { Transport } from "@connectrpc/connect";
 export type {
+  McpAuthorization,
+  McpAuthorizationOutcome,
+  McpAuthorizationPresentation,
+  McpAuthorizationStream,
+  McpConnectorStatus,
+  SessionMcpConnectors,
+  WorkspaceEnrollmentControls,
+  WorkspaceEnrollmentState,
+} from "./authorization.js";
+export type {
   ClearSessionOptions,
   Client,
   ConnectionStatus,
