@@ -81,11 +81,17 @@ beforeEach(() => {
   harness.identity.mockResolvedValue({
     id: "s1",
     title: "Chat",
+    titleProvenance: "",
     state: "idle",
+    kind: "main",
     mode: "default",
     resolvedModel: null,
     placement: null,
     createdAtUnix: 0,
+    turns: 0,
+    toolCalls: 0,
+    limits: null,
+    relationship: null,
   });
   harness.serverInfo.mockReset();
   harness.serverInfo.mockResolvedValue({
@@ -295,6 +301,41 @@ describe("useBuiltinSlashCommands", () => {
           expect.any(AbortSignal),
         ),
       );
+    });
+
+    it("opens the same dialog from the menu item / ⌘I, carrying the row extras", async () => {
+      const { result } = renderHook(() =>
+        useBuiltinSlashCommands(
+          makeDeps({
+            sessionDetails: { canCopyId: false, copyIdReason: "inspect_only" },
+          }),
+        ),
+      );
+      const view = render(result.current.sessionDetailsDialog);
+      act(() => result.current.openSessionDetails());
+      view.rerender(result.current.sessionDetailsDialog);
+      expect(await screen.findByRole("dialog")).toBeInTheDocument();
+      await waitFor(() =>
+        expect(harness.identity).toHaveBeenCalledWith(
+          "s1",
+          expect.any(AbortSignal),
+        ),
+      );
+      // The inventory row's copy_id denial reaches the dialog's Copy button.
+      expect(
+        screen.getByRole("button", { name: "Copy session ID" }),
+      ).toBeDisabled();
+    });
+
+    it("says there is no session yet when opened on a draft", () => {
+      const { result } = renderHook(() =>
+        useBuiltinSlashCommands(makeDeps({ sessionId: null })),
+      );
+      render(result.current.sessionDetailsDialog);
+      act(() => result.current.openSessionDetails());
+      expect(toast.info).toHaveBeenCalledWith(SESSION_NONE_YET);
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(harness.identity).not.toHaveBeenCalled();
     });
   });
 });

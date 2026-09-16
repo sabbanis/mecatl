@@ -71,6 +71,15 @@ describe("describeCron", () => {
     expect(describeCron("0 */2 * * *")).toBe("Every 2 hours");
   });
 
+  it("reads a step of one as the plain unit", () => {
+    expect(describeCron("*/1 * * * *")).toBe("Every minute");
+    expect(describeCron("0 * * * *")).toBe("Every hour");
+    expect(describeCron("0 */1 * * *")).toBe("Every hour");
+    // Only a top-of-the-hour minute reads as hourly; "*" minute is not.
+    expect(describeCron("* * * * *")).toBe("* * * * *");
+    expect(describeCron("30 * * * *")).toBe("30 * * * *");
+  });
+
   it("falls back to the raw expression for anything it does not recognise", () => {
     for (const raw of [
       "0 9 * * 1,3,5", // day list

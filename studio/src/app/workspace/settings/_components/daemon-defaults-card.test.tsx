@@ -21,7 +21,8 @@ type DefaultsHook = ReturnType<typeof useDaemonDefaults>;
 /**
  * Settings → Model provider → "Daemon defaults": the web analogue of
  * mecated's --default-model / --subagent-model / --reasoning-effort /
- * --context-window-override / --no-prompt-cache / --anthropic-cache-ttl /
+ * --context-window-override / --llm-per-attempt-timeout /
+ * --llm-stream-idle-timeout / --no-prompt-cache / --anthropic-cache-ttl /
  * --*-base-url / --toolhive-llm* / --model-alias / --model-slot /
  * --api-key-file. Pins that (1) the controls render from the saved document
  * for the ACTIVE provider, (2) Save stays disabled until the draft differs,
@@ -225,6 +226,79 @@ describe("DaemonDefaultsCard", () => {
     });
     // The status poll is refreshed so the top card reads the new spawn.
     expect(refresh).toHaveBeenCalled();
+  });
+
+  it("renders the LLM stream timeouts from the saved document with mecated's defaults filled in", () => {
+    render(
+      <DaemonDefaultsCard runtime={fakeRuntime()} defaults={fakeDefaults()} />,
+    );
+    // The empty document holds mecated's own bounds, shown as real values
+    // (not blanks) so the operator sees what the daemon actually runs with.
+    expect(
+      screen.getByRole("textbox", { name: "LLM connect timeout" }),
+    ).toHaveValue("300");
+    expect(
+      screen.getByRole("textbox", { name: "LLM idle timeout" }),
+    ).toHaveValue("180");
+    expect(screen.getByText(/--llm-per-attempt-timeout/)).toBeInTheDocument();
+    expect(screen.getByText(/--llm-stream-idle-timeout/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+  });
+
+  it("edits the idle timeout, confirms the restart, and PUTs whole-second llmTimeouts", async () => {
+    const user = userEvent.setup();
+    render(
+      <DaemonDefaultsCard runtime={fakeRuntime()} defaults={fakeDefaults()} />,
+    );
+    const idle = screen.getByRole("textbox", { name: "LLM idle timeout" });
+    await user.clear(idle);
+    await user.type(idle, "600");
+    const saveButton = screen.getByRole("button", { name: "Save" });
+    expect(saveButton).toBeEnabled();
+    await user.click(saveButton);
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent(/The daemon restarts/);
+    await user.click(
+      within(dialog).getByRole("button", { name: "Save and restart" }),
+    );
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(save.mock.calls[0][0]).toMatchObject({
+      llmTimeouts: { perAttemptSeconds: 300, streamIdleSeconds: 600 },
+    });
+    // The untouched connect bound stays mecated's default, the rest of the
+    // document rides along unchanged.
+    expect(save.mock.calls[0][0]).toMatchObject({
+      reasoningEffort: "high",
+      aliases: { fast: "openai/gpt-4o-mini" },
+    });
+  });
+
+  it("disables a bound with 0 and refuses a fractional or suffixed timeout before any confirm", async () => {
+    const user = userEvent.setup();
+    render(
+      <DaemonDefaultsCard runtime={fakeRuntime()} defaults={fakeDefaults()} />,
+    );
+    const connect = screen.getByRole("textbox", {
+      name: "LLM connect timeout",
+    });
+    await user.clear(connect);
+    await user.type(connect, "1.5");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      /LLM connect timeout must be a whole number of seconds/,
+    );
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(save).not.toHaveBeenCalled();
+
+    await user.clear(connect);
+    await user.type(connect, "0");
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.click(
+      await screen.findByRole("button", { name: "Save and restart" }),
+    );
+    expect(save.mock.calls[0][0]).toMatchObject({
+      llmTimeouts: { perAttemptSeconds: 0, streamIdleSeconds: 180 },
+    });
   });
 
   it("switches caching off, shows the ADR 0100 note, and sends promptCache.disabled", async () => {
@@ -469,6 +543,27 @@ describe("draftFromDefaults / defaultsFromDraft", () => {
     expect(document.aliases).toEqual({ fast: "openai/gpt-4o-mini" });
     // A null kind (the mock) leaves every saved pair alone.
     expect(document.models).toEqual(saved.models);
+  });
+
+  it("renders the LLM timeouts as digit strings and reads a blanked field as mecated's default", () => {
+    const draft = draftFromDefaults(
+      {
+        ...saved,
+        llmTimeouts: { perAttemptSeconds: 0, streamIdleSeconds: 45 },
+      },
+      null,
+    );
+    expect(draft.llmPerAttemptTimeout).toBe("0");
+    expect(draft.llmStreamIdleTimeout).toBe("45");
+    const document = defaultsFromDraft(
+      { ...draft, llmPerAttemptTimeout: "", llmStreamIdleTimeout: " 45 " },
+      saved,
+      null,
+    );
+    expect(document.llmTimeouts).toEqual({
+      perAttemptSeconds: 300,
+      streamIdleSeconds: 45,
+    });
   });
 });
 

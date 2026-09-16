@@ -149,6 +149,10 @@ Each rule is backed by a test; break the rule and its test names you.
     the SPAWN kind only — mecated validates them against the current default
     provider fail-fast, so a stale pair must never ride a provider switch;
     never for `--mock`), `--reasoning-effort`, `--context-window-override`,
+    the two LLM stream bounds `--llm-per-attempt-timeout` /
+    `--llm-stream-idle-timeout` (Go durations, `"600s"`; emitted ONLY when
+    they differ from mecated's own 300 s / 180 s — 0 is a real "disabled",
+    never "unset"; `LLM_TIMEOUT_DEFAULTS` in `daemon-defaults.mjs`),
     `--no-prompt-cache`, `--anthropic-cache-ttl`, `--<kind>-base-url`,
     `--toolhive-llm=false`/`--toolhive-llm-base-url`/`--toolhive-llm-mode`,
     repeated `--model-alias`/`--model-slot` (the `router` slot stays the
@@ -181,7 +185,16 @@ Each rule is backed by a test; break the rule and its test names you.
     `=true`: the controller's env opt-out — `DO_NOT_TRACK`,
     `MECATL_PRODUCT_METRICS` — stays the operator's and is reported as
     `productMetrics.source: "environment"`); `quiet` only gates the
-    controller's stderr mirror and restarts nothing. Names are deliberately
+    controller's stderr mirror and restarts nothing. The controller is
+    also the daemon's LOG FILE (mecatui's embedded-server log, ported):
+    mecated has no log-file flag, so the process holding its stderr appends
+    it to `studio/.scratch/mecated.log` (0600, ONE rotated generation
+    `mecated.log.1` at mecatui's 10 MiB bound, `src/lib/controller-log.mjs`)
+    and a bounded in-memory ring; `GET /logs?lines=` serves the tail + file
+    facts + `startupError`, `GET /logs/download` streams the file (both
+    studio-header-gated, 409 in external mode). The content is
+    model-influenced, so `daemon-log-card.tsx` renders it as plain text
+    only. Names are deliberately
     distinct from the (separate) daemon-options document:
     `diagnosticsOptions`, `diagnosticsOptionArgs`. External mode: both verbs
     409. (`src/lib/controller-diagnostics-options.test.ts`,

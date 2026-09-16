@@ -1,12 +1,14 @@
 import { render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { PERMISSION_MODES, type ScheduleSpecDraft } from "@/lib/protocol";
 import {
+  describePhraseOutcome,
   draftFromForm,
   emptyScheduleForm,
   formFromDraft,
+  PHRASE_HINT,
   ScheduleFormFields,
   type ScheduleFormValue,
   WRITE_ACCESS_OFF_NOTE,
@@ -218,5 +220,247 @@ describe("ScheduleFormFields write access control", () => {
     expect(writes).toBeChecked();
     await user.keyboard(" ");
     expect(writes).not.toBeChecked();
+  });
+});
+
+/**
+ * The natural-language trigger (the TUI Create form's phrase input): a phrase
+ * compiles INTO the cron/one-shot value the wire carries, the structured
+ * controls re-derive from it, and a phrase the table does not know leaves the
+ * value alone and says so.
+ */
+/**
+ * Open a Radix Select and choose an option. user-event leaves a typed input
+ * focused; opening a Radix Select straight from that state makes its focus
+ * hand-off land outside `act` in jsdom (it does for the Name field too), so
+ * the helper first parks focus on the body — what a click on the dialog's
+ * chrome does for a real user.
+ */
+async function pickOption(
+  user: UserEvent,
+  combobox: HTMLElement,
+  option: string,
+) {
+  await user.click(document.body);
+  await user.click(combobox);
+  await user.click(await screen.findByRole("option", { name: option }));
+}
+
+describe("ScheduleFormFields phrase input", () => {
+  const phraseBox = () =>
+    screen.getByRole("textbox", { name: "Describe the schedule" });
+  const repeatBox = () => screen.getByRole("combobox", { name: "Repeat" });
+
+  it("compiles a recurring phrase into the cron and lands the builder on Every…", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<Harness onChange={onChange} />);
+
+    await user.type(phraseBox(), "every 30 minutes");
+
+    expect(onChange).toHaveBeenCalledWith({
+      triggerKind: "cron",
+      cron: "*/30 * * * *",
+    });
+    expect(repeatBox()).toHaveTextContent("Every…");
+    expect(screen.getByRole("spinbutton", { name: "Every" })).toHaveValue(30);
+    expect(screen.getByRole("combobox", { name: "Unit" })).toHaveTextContent(
+      "Minutes",
+    );
+    // The interval shapes have no "At" time; the preview says what compiled.
+    expect(screen.queryByLabelText("At")).toBeNull();
+    expect(screen.getByText("Every 30 minutes")).toBeInTheDocument();
+    expect(phraseBox()).toHaveAccessibleDescription("Every 30 minutes");
+  });
+
+  it("compiles a fixed-time phrase onto the matching builder shape", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<Harness onChange={onChange} />);
+
+    await user.type(phraseBox(), "every weekday at 9:15pm");
+
+    expect(onChange).toHaveBeenLastCalledWith({
+      triggerKind: "cron",
+      cron: "15 21 * * 1-5",
+    });
+    expect(repeatBox()).toHaveTextContent("Weekdays");
+    expect(screen.getByLabelText("At")).toHaveValue("21:15");
+    expect(screen.getByText("Weekdays at 9:15 PM")).toBeInTheDocument();
+  });
+
+  it("compiles a one-shot phrase and switches to Run once", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<Harness onChange={onChange} />);
+
+    await user.type(phraseBox(), "tomorrow at 8am");
+
+    const oneShot = onChange.mock.calls
+      .map(([patch]) => patch as Partial<ScheduleFormValue>)
+      .findLast((patch) => patch.triggerKind === "one-shot");
+    expect(oneShot?.oneShotAt).toMatch(/^\d{4}-\d{2}-\d{2}T08:00$/);
+    expect(screen.getByRole("tab", { name: "Run once" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByLabelText("Time")).toHaveValue("08:00");
+    expect(screen.getByText(/^Once at /)).toBeInTheDocument();
+  });
+
+  it("treats unmatched five-field input as the raw cron, landing on Custom", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<Harness onChange={onChange} />);
+
+    await user.type(phraseBox(), "0 9 * * 1,3,5");
+
+    expect(onChange).toHaveBeenLastCalledWith({
+      triggerKind: "cron",
+      cron: "0 9 * * 1,3,5",
+    });
+    expect(repeatBox()).toHaveTextContent("Custom");
+    expect(screen.getByLabelText("Cron expression")).toHaveValue(
+      "0 9 * * 1,3,5",
+    );
+    expect(
+      screen.getByText("Cron expression 0 9 * * 1,3,5"),
+    ).toBeInTheDocument();
+  });
+
+  it("leaves the value alone and shows the hint for a phrase it does not know", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<Harness onChange={onChange} />);
+
+    await user.type(phraseBox(), "gibberish");
+
+    expect(onChange).not.toHaveBeenCalled();
+    expect(repeatBox()).toHaveTextContent("Daily");
+    expect(screen.getByText(PHRASE_HINT)).toBeInTheDocument();
+    expect(phraseBox()).toHaveAccessibleDescription(PHRASE_HINT);
+  });
+
+  it("shows no hint while the phrase box is empty", () => {
+    render(<Harness />);
+    expect(screen.queryByText(PHRASE_HINT)).toBeNull();
+    expect(phraseBox()).not.toHaveAttribute("aria-describedby");
+  });
+
+  it("clears the phrase and its preview once a builder control is edited", async () => {
+    const user = userEvent.setup();
+    render(<Harness />);
+
+    await user.type(phraseBox(), "every 30 minutes");
+    expect(screen.getByText("Every 30 minutes")).toBeInTheDocument();
+
+    await pickOption(user, repeatBox(), "Daily");
+
+    // The structured control now owns the trigger: no stale phrase remains
+    // to contradict it.
+    expect(phraseBox()).toHaveValue("");
+    expect(screen.queryByText("Every 30 minutes")).toBeNull();
+    expect(repeatBox()).toHaveTextContent("Daily");
+  });
+
+  it("clears the phrase when the trigger tab is switched", async () => {
+    const user = userEvent.setup();
+    render(<Harness />);
+
+    await user.type(phraseBox(), "tomorrow at 8am");
+    expect(phraseBox()).toHaveValue("tomorrow at 8am");
+
+    await user.click(screen.getByRole("tab", { name: "Recurring" }));
+    expect(phraseBox()).toHaveValue("");
+    expect(screen.queryByText(/^Once at /)).toBeNull();
+  });
+});
+
+describe("describePhraseOutcome", () => {
+  it("reads each outcome in plain English", () => {
+    expect(describePhraseOutcome({ kind: "cron", cron: "0 9 * * *" })).toBe(
+      "Daily at 9:00 AM",
+    );
+    expect(
+      describePhraseOutcome({ kind: "raw-cron", cron: "0 9 * * 1,3,5" }),
+    ).toBe("Cron expression 0 9 * * 1,3,5");
+    // A five-field fallback the describer CAN read gets the English.
+    expect(
+      describePhraseOutcome({ kind: "raw-cron", cron: "*/5 * * * *" }),
+    ).toBe("Every 5 minutes");
+    const at = new Date(2026, 8, 17, 8, 0).getTime();
+    expect(describePhraseOutcome({ kind: "one-shot", at })).toBe(
+      `Once at ${new Date(at).toLocaleString()}`,
+    );
+    expect(describePhraseOutcome({ kind: "none" })).toBeNull();
+  });
+});
+
+describe("CronBuilderFields interval controls", () => {
+  const repeatBox = () => screen.getByRole("combobox", { name: "Repeat" });
+
+  it("seeds Every…/step/unit from an interval cron and hides the At time", () => {
+    render(<Harness initial={{ cron: "0 */2 * * *" }} />);
+    expect(repeatBox()).toHaveTextContent("Every…");
+    expect(screen.getByRole("spinbutton", { name: "Every" })).toHaveValue(2);
+    expect(screen.getByRole("combobox", { name: "Unit" })).toHaveTextContent(
+      "Hours",
+    );
+    expect(screen.queryByLabelText("At")).toBeNull();
+    expect(screen.queryByLabelText("Cron expression")).toBeNull();
+  });
+
+  it("picking Every… derives the default every-30-minutes cron", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<Harness onChange={onChange} />);
+
+    await pickOption(user, repeatBox(), "Every…");
+
+    expect(onChange).toHaveBeenCalledWith({ cron: "*/30 * * * *" });
+    expect(screen.getByRole("spinbutton", { name: "Every" })).toHaveValue(30);
+  });
+
+  it("retyping the step and switching the unit re-derive the cron", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<Harness initial={{ cron: "*/15 * * * *" }} onChange={onChange} />);
+
+    const every = screen.getByRole("spinbutton", { name: "Every" });
+    await user.clear(every);
+    await user.type(every, "5");
+    expect(onChange).toHaveBeenLastCalledWith({ cron: "*/5 * * * *" });
+
+    await pickOption(
+      user,
+      screen.getByRole("combobox", { name: "Unit" }),
+      "Hours",
+    );
+    expect(onChange).toHaveBeenLastCalledWith({ cron: "0 */5 * * *" });
+    expect(every).toHaveAttribute("max", "23");
+  });
+
+  it("clamps an over-range step and snaps the field to it on blur", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<Harness initial={{ cron: "*/15 * * * *" }} onChange={onChange} />);
+
+    const every = screen.getByRole("spinbutton", { name: "Every" });
+    await user.clear(every);
+    await user.type(every, "90");
+    expect(onChange).toHaveBeenLastCalledWith({ cron: "*/59 * * * *" });
+    // The draft shows what was typed until focus leaves.
+    expect(every).toHaveValue(90);
+    await user.tab();
+    expect(every).toHaveValue(59);
+  });
+
+  it("a one-hour interval reads back as Every… 1 Hours", () => {
+    render(<Harness initial={{ cron: "0 * * * *" }} />);
+    expect(repeatBox()).toHaveTextContent("Every…");
+    expect(screen.getByRole("spinbutton", { name: "Every" })).toHaveValue(1);
+    expect(screen.getByRole("combobox", { name: "Unit" })).toHaveTextContent(
+      "Hours",
+    );
   });
 });

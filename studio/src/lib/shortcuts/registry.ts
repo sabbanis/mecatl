@@ -18,6 +18,13 @@ export interface ShortcutDef {
   readonly combo: string;
   readonly description: string;
   readonly group: string;
+  /**
+   * Documentation-only: the binding is owned by a component (or the browser
+   * itself) and is never dispatched by the global listener — no component
+   * registers a handler for it, so the key keeps its native meaning
+   * everywhere else. Not user-rebindable.
+   */
+  readonly fixed?: true;
 }
 
 export const SHORTCUTS: readonly ShortcutDef[] = [
@@ -58,7 +65,8 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
   {
     id: "close.esc",
     combo: "esc",
-    description: "Close the side panel — or stop the running turn",
+    description:
+      "Clear the selection, close the side panel — or stop the running turn",
     group: "General",
   },
   // The Agents panel (the TUI's f6 overlay). ⌘⇧L is preventable in Chrome,
@@ -100,6 +108,17 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     description: "Previous chat (vim-style)",
     group: "Chats",
   },
+  // The `/session` details dialog (exact id + copy, state, placement…). ⌘I /
+  // Ctrl+I is unbound in Chrome and Edge, and Firefox's Page Info and
+  // Safari's Mail Link both yield to a page handler that prevents it. NOT
+  // ⌘⇧I: that is DevTools on Windows/Linux and cannot be intercepted. The
+  // composer disables TipTap's italic mark, so ⌘I is free while typing too.
+  {
+    id: "chat.details",
+    combo: "mod+i",
+    description: "Session details (exact ID, state, model, placement)",
+    group: "Chats",
+  },
 
   // Conversation — keyboard scrolling of the transcript (the TUI's
   // PgUp/PgDn/Home/End). PgUp/PgDn never insert text, so these also fire
@@ -132,6 +151,29 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     description: "Jump to the bottom and resume auto-follow",
     group: "Conversation",
   },
+  // Transcript-scoped select-all (the TUI's ctrl+g). Handled by the
+  // transcript container's own keydown, so it fires only while the
+  // conversation has focus (click into it); in the composer ⌘A keeps its
+  // native meaning. Documentation-only here — the dispatcher never claims it.
+  {
+    id: "transcript.selectAll",
+    combo: "mod+a",
+    description:
+      "Select the whole conversation — when the conversation has focus",
+    group: "Conversation",
+    fixed: true,
+  },
+
+  // The model + effort picker (the TUI's F7). Dispatched: the composer's
+  // picker registers a handler and opens. ⌘⇧F is unbound in Chrome, Firefox,
+  // Safari and Edge on every platform — the mnemonic ⌘⇧M is Chrome's profile
+  // switcher and Firefox's responsive-design mode, so it stays off it.
+  {
+    id: "composer.model",
+    combo: "mod+shift+f",
+    description: "Open the model and effort picker",
+    group: "Composer",
+  },
 
   // Composer (behaviour lives in the composer; documentation-only here)
   {
@@ -140,6 +182,7 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     description:
       "Send — while the agent is replying: queue or steer, per Settings → Personalize",
     group: "Composer",
+    fixed: true,
   },
   {
     id: "composer.newline",
@@ -147,6 +190,7 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     description:
       "Insert a new line — while the agent is replying: the opposite of your Enter preference",
     group: "Composer",
+    fixed: true,
   },
   // The held-queue gestures: only on an EMPTY composer with queued messages
   // (a cancelled or failed run pauses the queue until one of these).
@@ -156,6 +200,7 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     description:
       "On an empty composer with a held queue: send the queued messages",
     group: "Composer",
+    fixed: true,
   },
   {
     id: "composer.queue.edit",
@@ -163,12 +208,14 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     description:
       "On an empty composer: pull the queued messages back for editing",
     group: "Composer",
+    fixed: true,
   },
   {
     id: "composer.queue.clear",
     combo: "esc",
     description: "On an empty idle composer: clear the queue",
     group: "Composer",
+    fixed: true,
   },
   {
     id: "composer.slash",
@@ -176,12 +223,14 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     description:
       "Slash commands — built-ins (/clear /help /session /retry /diagnostics /compact) and workspace commands",
     group: "Composer",
+    fixed: true,
   },
   {
     id: "composer.mention",
     combo: "@",
     description: "Mention an agent",
     group: "Composer",
+    fixed: true,
   },
 
   // Scheduled (the /workspace/schedules list). Bare `/` never fires while the

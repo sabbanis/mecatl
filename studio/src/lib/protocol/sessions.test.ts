@@ -59,6 +59,31 @@ describe("sessionInventoryFromResponse", () => {
       canRename: false,
       canDelete: false,
       canViewTranscript: false,
+      canCopyId: false,
+      copyIdReason: "",
+    });
+  });
+
+  it("takes the copy-id offer and its denial reason from the row's capabilities", () => {
+    const page = sessionInventoryFromResponse(
+      inventory([
+        { sessionId: "s1", capabilities: { copyId: true, reasons: {} } },
+        {
+          sessionId: "s2",
+          capabilities: {
+            copyId: false,
+            reasons: { copyId: "inspect_only_kind" },
+          },
+        },
+      ]),
+    );
+    expect(page.sessions[0]).toMatchObject({
+      canCopyId: true,
+      copyIdReason: "",
+    });
+    expect(page.sessions[1]).toMatchObject({
+      canCopyId: false,
+      copyIdReason: "inspect_only_kind",
     });
   });
 

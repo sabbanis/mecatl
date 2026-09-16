@@ -184,6 +184,31 @@ describe("translateEvent", () => {
     expect(events[1]).toMatchObject({ type: "run_result", stop: "end_turn" });
   });
 
+  it("carries an ask's reason and raw args verbatim alongside the flattened details", () => {
+    const args = JSON.stringify({ command: "go test ./...", timeout_ms: 5000 });
+    expect(
+      translate(
+        sdkEvent("permission.ask", {
+          askId: "a2",
+          tool: "Shell",
+          reason: "runs a command",
+          args,
+        }),
+      ),
+    ).toEqual([
+      {
+        type: "approval",
+        approvalId: "a2",
+        sessionId: "session-1",
+        toolName: "Shell",
+        description: "Shell needs your approval.",
+        details: "runs a command\n\ncommand: go test ./... · timeout_ms: 5000",
+        reason: "runs a command",
+        args,
+      },
+    ]);
+  });
+
   it("surfaces a permission ask and its retraction", () => {
     expect(
       translate(
@@ -202,6 +227,8 @@ describe("translateEvent", () => {
         toolName: "bash",
         description: "bash needs your approval.",
         details: "runs a command",
+        reason: "runs a command",
+        args: "",
       },
     ]);
     expect(
@@ -766,6 +793,7 @@ describe("translateEvent", () => {
         callId: "c1",
         name: "bash",
         input: "command: ls · timeout: 5",
+        rawArgs: '{"command":"ls","timeout":5}',
         file: undefined,
       },
     ]);

@@ -1,11 +1,14 @@
-import { render, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AttachmentPill,
   commandMenuItems,
+  ModelEffortSelector,
   resolveComposerAction,
   resolveComposerSubmission,
 } from "./chat-input";
+import { EFFORT_SWITCH_NOTE, NO_REASONING_WARNING } from "./effort-picker";
 
 // The composer's `/` menu reads the daemon's command list through this
 // module-level getter; the local-command tests swap it for a fixed roster
@@ -247,5 +250,190 @@ describe("AttachmentPill", () => {
     expect(createObjectURL).not.toHaveBeenCalled();
     expect(container.querySelector('[aria-label="PDF"]')).toBeTruthy();
     expect(container.textContent).toContain("report.pdf");
+  });
+});
+
+/**
+ * The combined model + effort picker: the Effort submenu is real in BOTH
+ * modes — a draft's pick is reported for the create body, a live chat's pick
+ * forks (like a model switch) and the checkmark follows the daemon's
+ * EFFECTIVE tier — and it hides with the model list when the daemon's
+ * model_selection capability is off.
+ */
+describe("ModelEffortSelector", () => {
+  const models = [
+    { id: "m1", label: "Model One", providerId: "p", reasoning: false },
+    { id: "m2", label: "Model Two", providerId: "p", reasoning: true },
+  ];
+
+  /** The trigger is the only button before the menu opens. */
+  const trigger = () => screen.getByRole("button");
+
+  /** Opens the root menu (a real pointer on the trigger), then the Effort
+   *  submenu. The sub is opened and its rows picked with plain clicks: jsdom
+   *  reports zero-size rects, so a simulated pointer MOVE onto a sub row
+   *  reads to Radix as leaving the submenu and closes it. */
+  async function openEffort(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(trigger());
+    fireEvent.click(await screen.findByRole("menuitem", { name: /^Effort/ }));
+    return screen.findAllByRole("menuitemradio");
+  }
+
+  const pick = (name: string) =>
+    fireEvent.click(screen.getByRole("menuitemradio", { name }));
+
+  it("live chat: labels the trigger {model} · {effort} from the resolved tier and offers the Effort submenu", async () => {
+    const user = userEvent.setup();
+    const onSwitchEffort = vi.fn();
+    render(
+      <ModelEffortSelector
+        models={models}
+        onSwitchModel={() => {}}
+        onSwitchEffort={onSwitchEffort}
+        currentModelId="m2"
+        currentEffort="medium"
+      />,
+    );
+    expect(trigger()).toHaveAttribute("title", "Model Two · Medium");
+    const rows = await openEffort(user);
+    expect(rows.map((r) => r.textContent)).toEqual([
+      "Auto",
+      "Low",
+      "Medium",
+      "High",
+      "Extra high",
+      "Max",
+    ]);
+    expect(
+      screen.getByRole("menuitemradio", { name: "Medium" }),
+    ).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByText(EFFORT_SWITCH_NOTE)).toBeInTheDocument();
+    // A reasoning model: no warning.
+    expect(screen.queryByRole("note")).toBeNull();
+    // Picking a different tier forks with the WIRE value.
+    pick("High");
+    expect(onSwitchEffort).toHaveBeenCalledWith("high");
+  });
+
+  it("live chat: re-picking the current tier is a no-op, auto forks with the empty value", async () => {
+    const user = userEvent.setup();
+    const onSwitchEffort = vi.fn();
+    render(
+      <ModelEffortSelector
+        models={models}
+        onSwitchModel={() => {}}
+        onSwitchEffort={onSwitchEffort}
+        currentModelId="m2"
+        currentEffort="medium"
+      />,
+    );
+    await openEffort(user);
+    pick("Medium");
+    expect(onSwitchEffort).not.toHaveBeenCalled();
+    // Radix closes the menu on select, so the trigger is reachable again.
+    await openEffort(user);
+    pick("Auto");
+    expect(onSwitchEffort).toHaveBeenCalledWith("");
+  });
+
+  it("live chat: warns when the session's model reports no reasoning support", async () => {
+    const user = userEvent.setup();
+    render(
+      <ModelEffortSelector
+        models={models}
+        onSwitchModel={() => {}}
+        onSwitchEffort={() => {}}
+        currentModelId="m1"
+        currentEffort=""
+      />,
+    );
+    // No tier echoed = auto.
+    expect(trigger()).toHaveAttribute("title", "Model One · Auto");
+    await openEffort(user);
+    expect(screen.getByRole("note")).toHaveTextContent(NO_REASONING_WARNING);
+  });
+
+  it("live chat: the caller's reasoning flag wins over the option lookup", async () => {
+    const user = userEvent.setup();
+    render(
+      <ModelEffortSelector
+        models={models}
+        onSwitchModel={() => {}}
+        onSwitchEffort={() => {}}
+        currentModelId="m2"
+        currentEffort="low"
+        currentModelReasoning={false}
+      />,
+    );
+    await openEffort(user);
+    expect(screen.getByRole("note")).toHaveTextContent(NO_REASONING_WARNING);
+  });
+
+  it("draft: reports the pending pick as a wire value, relabels the trigger, and reset returns to auto", async () => {
+    const user = userEvent.setup();
+    const onEffortChange = vi.fn();
+    const onModelChange = vi.fn();
+    render(
+      <ModelEffortSelector
+        models={models}
+        onEffortChange={onEffortChange}
+        onModelChange={onModelChange}
+      />,
+    );
+    expect(trigger()).toHaveAttribute("title", "Default model · Auto");
+    expect(screen.queryByText(EFFORT_SWITCH_NOTE)).toBeNull();
+    await openEffort(user);
+    expect(screen.queryByText(EFFORT_SWITCH_NOTE)).toBeNull();
+    pick("Extra high");
+    expect(onEffortChange).toHaveBeenCalledWith("xhigh");
+    // Radix closes the menu on select; the trigger reflects the pick.
+    await waitFor(() =>
+      expect(trigger()).toHaveAttribute("title", "Default model · Extra high"),
+    );
+    await user.click(trigger());
+    fireEvent.click(
+      await screen.findByRole("menuitem", { name: "Reset to default" }),
+    );
+    expect(onEffortChange).toHaveBeenLastCalledWith("");
+    expect(onModelChange).toHaveBeenCalledWith("");
+    await waitFor(() =>
+      expect(trigger()).toHaveAttribute("title", "Default model · Auto"),
+    );
+  });
+
+  it("draft: a controlled effort value drives the checkmark and the label", async () => {
+    const user = userEvent.setup();
+    render(
+      <ModelEffortSelector
+        models={models}
+        effort="max"
+        onEffortChange={() => {}}
+        onModelChange={() => {}}
+      />,
+    );
+    expect(trigger()).toHaveAttribute("title", "Default model · Max");
+    await openEffort(user);
+    expect(screen.getByRole("menuitemradio", { name: "Max" })).toHaveAttribute(
+      "aria-checked",
+      "true",
+    );
+  });
+
+  it("hides the Effort submenu, and the effort label, when model selection is off", async () => {
+    const user = userEvent.setup();
+    render(
+      <ModelEffortSelector
+        models={models}
+        onSwitchModel={() => {}}
+        onSwitchEffort={() => {}}
+        currentModelId="m2"
+        currentEffort="medium"
+        effortSupported={false}
+      />,
+    );
+    expect(trigger()).toHaveAttribute("title", "Model Two");
+    await user.click(trigger());
+    await screen.findByRole("menuitem", { name: /^Model/ });
+    expect(screen.queryByRole("menuitem", { name: /^Effort/ })).toBeNull();
   });
 });

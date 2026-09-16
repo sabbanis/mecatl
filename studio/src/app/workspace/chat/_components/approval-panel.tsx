@@ -1,10 +1,11 @@
 "use client";
 
-import { ShieldAlert } from "lucide-react";
+import { Fullscreen, ShieldAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { ApprovalChoice, ApprovalRequest } from "@/features/agent";
 import { cn } from "@/lib/utils";
+import { AskArgsView } from "./ask-args-view";
 
 const DELETE_WORDS = /\b(delete|remove|drop|revoke|destroy|purge|rm)\b/i;
 
@@ -17,12 +18,16 @@ export function ApprovalPanel({
   approval,
   onRespond,
   queuePosition,
+  onExpand,
 }: {
   approval: ApprovalRequest;
   onRespond: (choice: ApprovalChoice) => void;
   /** This ask's place in the FIFO queue (1-based). The "1 of N" badge shows
    *  only while more than one ask is waiting. */
   queuePosition?: { index: number; total: number };
+  /** Opens the ask's full-height view (the side panel); omitted = the card
+   *  offers no Expand button (the thread panel keeps it inline). */
+  onExpand?: (approval: ApprovalRequest) => void;
 }) {
   // ONE ask = ONE tool call. The pill names the tool; the args belong in the
   // preview block below, never badge-ified (a Write ask's args are a whole
@@ -76,6 +81,19 @@ export function ApprovalPanel({
             {`${queued.index} of ${queued.total}`}
           </Badge>
         )}
+        {onExpand && (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className="ml-auto size-7 text-muted-foreground hover:text-foreground"
+            aria-label="Expand permission details"
+            title="Expand permission details"
+            onClick={() => onExpand(approval)}
+          >
+            <Fullscreen className="size-4" />
+          </Button>
+        )}
       </div>
       <p className="mb-2 text-sm">{description}</p>
       <div className="mb-2 flex flex-wrap gap-1.5">
@@ -101,14 +119,11 @@ export function ApprovalPanel({
           This action modifies or deletes data.
         </p>
       )}
-      <pre
-        className={cn(
-          "mb-4 max-h-56 overflow-y-auto whitespace-pre-wrap rounded-lg border bg-background px-3 py-2.5 font-mono text-xs leading-relaxed",
-          destructive ? "border-destructive/20" : "border-warning/20",
-        )}
-      >
-        {approval.details}
-      </pre>
+      <AskArgsView
+        approval={approval}
+        destructive={destructive}
+        className="mb-4"
+      />
       <div className="flex flex-wrap gap-2">
         <Button
           size="sm"

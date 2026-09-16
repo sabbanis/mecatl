@@ -58,7 +58,14 @@ token on the server; the browser never sees a daemon address or credential.
   Settings → Appearance.
 - **Scheduled** — the schedule registry: create and edit schedules (cron with
   timezone, or one-shot), pause/resume/fire, and audit each schedule's fire
-  history down to the per-fire session transcript. The list shows each
+  history down to the per-fire session transcript. The form's **Describe the
+  schedule** box takes a phrase — `every 30 minutes`, `daily at 9am`, `every
+  weekday at 9am`, `next monday 3pm`, `in 2 hours`, `tomorrow at noon` — and
+  compiles it into the trigger the structured controls then show (daily,
+  weekdays, weekly, monthly, every N minutes or hours, or a raw cron
+  expression under Custom); a five-field expression typed there is taken as
+  the cron itself. The daemon still validates grammar and cadence floors on
+  save. The list shows each
   schedule's trigger in plain English, its next and last run, and how many
   times it has fired (against its cap, when the spec sets one); the detail
   page repeats the count under **Runs**. A text filter narrows the list by

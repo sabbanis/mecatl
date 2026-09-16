@@ -92,6 +92,7 @@ import {
   ChatInput,
   type ComposerModelOption,
 } from "../../_components/chat-input";
+import { ApprovalDetailPanel } from "./approval-detail-panel";
 import { ApprovalPanel } from "./approval-panel";
 import { AuthorizationPanel } from "./authorization-panel";
 import {
@@ -108,6 +109,7 @@ import {
   focusForDelegationCard,
   preferredDelegationTab,
 } from "./delegation-panel";
+import { resolveEscapeAction } from "./escape-layering";
 import { FilePreview } from "./file-preview";
 import { HelpMenuItem, HelpSheetItem } from "./help-menu-item";
 import { MarkdownCanvasPanel } from "./markdown-canvas-panel";
@@ -116,10 +118,25 @@ import { MockProviderNotice } from "./mock-provider-notice";
 import { QueuedMessageStrip } from "./queued-message-strip";
 import { PAGE_FRACTION, scrollPositionPercent } from "./scroll-position";
 import { ScrollToBottomPill } from "./scroll-to-bottom-pill";
+import {
+  SessionDetailsMenuItem,
+  SessionDetailsSheetItem,
+} from "./session-details-menu-item";
 import { SidePanel } from "./side-panel";
 import { StatusLine } from "./status-line";
 import { streamingPhaseLabel } from "./streaming-phase";
 import { ToolCallPanel } from "./tool-call-panel";
+import {
+  CopyTranscriptMenuItem,
+  type TranscriptActionProps,
+  TranscriptMenuItems,
+  TranscriptSheetItems,
+} from "./transcript-actions";
+import {
+  isSelectAllChord,
+  selectElementContents,
+  selectionInside,
+} from "./transcript-text";
 import { TurnErrorStrip } from "./turn-error-strip";
 
 /** The authorization card's fallback when a caller wires no handler. */
@@ -131,6 +148,8 @@ type ActivePanel =
   | { kind: "attachment"; attachment: Attachment }
   | { kind: "thread"; message: AgentMessage }
   | { kind: "toolcall"; call: ToolCallInfo }
+  // The full-height view of the pending ask (the TUI's ctrl+t args view).
+  | { kind: "approval"; approval: ApprovalRequest }
   // The Agents panel reads the live `fleet` prop; it keeps only its tab and
   // the child/group/view it is drilled into (Esc steps a focus back first).
   | { kind: "delegation"; tab: DelegationTab; focus: DelegationFocus | null };
@@ -245,19 +264,25 @@ function MobileChatMenu({
   onToggleActivity,
   onRename,
   onDelete,
+  onOpenDetails,
   onCompact,
   compactDisabled,
   usage,
+  transcript,
 }: {
   showActivity: boolean;
   onToggleActivity: () => void;
   onRename?: () => void;
   onDelete?: () => void;
+  /** Opens the session details dialog (the `/session` built-in's). */
+  onOpenDetails?: () => void;
   /** Manual compaction (B1.2): present only when the daemon supports it. */
   onCompact?: () => void;
   /** True while a run streams — the daemon 412s a mid-run compact. */
   compactDisabled?: boolean;
   usage?: UsageFigures | null;
+  /** Select / copy the whole conversation (the TUI's ctrl+g / ctrl+y). */
+  transcript?: TranscriptActionProps;
 }) {
   const [open, setOpen] = useState(false);
 
@@ -300,6 +325,18 @@ function MobileChatMenu({
                 <FoldVertical className="size-4 text-muted-foreground" />
                 Compact conversation
               </button>
+            )}
+            {transcript && (
+              <TranscriptSheetItems
+                {...transcript}
+                onDone={() => setOpen(false)}
+              />
+            )}
+            {onOpenDetails && (
+              <SessionDetailsSheetItem
+                onSelect={onOpenDetails}
+                onDone={() => setOpen(false)}
+              />
             )}
             <HelpSheetItem onSelect={() => setOpen(false)} />
             {onRename && (
@@ -565,6 +602,12 @@ function ThreadPanel({
             >
               Open as full chat
             </DropdownMenuItem>
+            <CopyTranscriptMenuItem
+              messages={[rootMessage, ...replies]}
+              botName={botName}
+              label="Copy thread"
+              successMessage="Thread copied"
+            />
           </DropdownMenuContent>
         </DropdownMenu>
       }
@@ -886,6 +929,7 @@ export function ChatView({
   onCancelAuthorization,
   onRename,
   onDelete,
+  onOpenDetails,
   onSidePanelOpenChange,
   initialDraft,
   onInitialDraftConsumed,
@@ -911,6 +955,10 @@ export function ChatView({
   models,
   autoModelLabel,
   onSwitchModel,
+  onSwitchEffort,
+  currentEffort,
+  currentModelReasoning,
+  effortSupported,
   onLocalCommand,
   builtinGates,
   fleet,
@@ -954,6 +1002,10 @@ export function ChatView({
   onCancelAuthorization?: () => Promise<unknown>;
   onRename?: () => void;
   onDelete?: () => void;
+  /** Opens the session details dialog (exact id + Copy, state, model,
+      placement…) — the `/session` built-in's dialog, owned by the workspace.
+      Offered for every real (non-mock) selected session. */
+  onOpenDetails?: () => void;
   /** Fires when the right-hand side panel (artifact/attachment) opens or
       closes, so the parent can collapse the chat list while it's open. */
   onSidePanelOpenChange?: (open: boolean) => void;
@@ -999,7 +1051,12 @@ export function ChatView({
   onCompact?: () => void;
   /** The session's effective model + context window (B1.1): feeds the slim
       approximate context meter near the composer. */
-  contextInfo?: { modelLabel: string; contextWindow: number } | null;
+  contextInfo?: {
+    modelLabel: string;
+    contextWindow: number;
+    /** resolved_model.reasoning_effort; "" / absent = none echoed. */
+    effort?: string;
+  } | null;
   /** The latest turn's input tokens (turn.end): the meter's occupancy. */
   contextOccupancy?: number;
   /** The transient status line under the transcript (a no-progress nudge,
@@ -1018,6 +1075,14 @@ export function ChatView({
   autoModelLabel?: string;
   /** Picking a model forks this chat onto it (daemon fixes model at create). */
   onSwitchModel?: (option: ComposerModelOption | null) => void;
+  /** Picking an effort tier forks this chat onto it (wire value; "" = auto). */
+  onSwitchEffort?: (wire: string) => void;
+  /** The session's EFFECTIVE tier (resolved_model.reasoning_effort). */
+  currentEffort?: string;
+  /** The session's model `reasoning` flag (false → the picker's warning). */
+  currentModelReasoning?: boolean;
+  /** False when the daemon's model_selection capability is off. */
+  effortSupported?: boolean;
   /** Answers a Studio built-in slash command typed in the composer (`/clear
       /help /session /retry /diagnostics /compact`) instead of sending it; a
       refusal keeps the text and shows its warning. */
@@ -1044,6 +1109,9 @@ export function ChatView({
   const [atBottom, setAtBottom] = useState(true);
   const atBottomRef = useRef(true);
   const messagesContainerRef = useRef<HTMLElement>(null);
+  // The messages column alone (no selection toolbar, no composer): the
+  // target of the transcript-scoped select-all.
+  const transcriptRef = useRef<HTMLDivElement>(null);
   // The TUI's `↑ NN%` cue: how far through the conversation the view sits.
   // Tracked only while unpinned — the floating pill is its sole reader, and
   // re-rendering on every streaming scroll while pinned would be churn.
@@ -1138,6 +1206,13 @@ export function ChatView({
     [],
   );
 
+  // Expand from the approval card to the ask's full-height view in the side
+  // panel (reason + decoded args + raw toggle, verdicts pinned at the foot).
+  const handleExpandApproval = useCallback(
+    (approval: ApprovalRequest) => setPanel({ kind: "approval", approval }),
+    [],
+  );
+
   // The Agents panel (the TUI's f6 overlay): opened from the header button,
   // the agents.toggle shortcut, or an inline delegation card, which lands on
   // the child/group/member it names. The default tab is context-sensitive
@@ -1204,6 +1279,15 @@ export function ChatView({
     return panel;
   }, [panel, messages]);
 
+  // The expanded ask view tracks the ask on screen: once that ask is
+  // answered or retracted (the head ask's id no longer matches), it closes.
+  useEffect(() => {
+    if (panel?.kind !== "approval") return;
+    if (pendingApproval?.approvalId !== panel.approval.approvalId) {
+      closeSidePanel();
+    }
+  }, [panel, pendingApproval, closeSidePanel]);
+
   // Jump to the latest message whenever the active chat changes so users
   // always land at the bottom (most-recent) of the conversation.
   // biome-ignore lint/correctness/useExhaustiveDependencies: scrolling is intentionally driven by session.id changes
@@ -1223,25 +1307,53 @@ export function ChatView({
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
+  // Transcript-scoped select-all (the TUI's ctrl+g): the messages column
+  // only — never the sidebar and navigation a page-level ⌘A would take.
+  // Reached from ⌘A/Ctrl+A with the transcript focused and from the ···
+  // menus' "Select conversation".
+  const selectTranscript = () => {
+    const el = transcriptRef.current;
+    if (el) selectElementContents(el);
+  };
+
   // Esc, layered (close.esc): an open Radix dialog/menu — and the composer's
   // autocomplete — consume their own Escape before the dispatcher sees it
   // (`defaultPrevented`), so by the time this fires nothing transient is
-  // open. Close the side panel if one is up; otherwise interrupt a streaming
-  // run (the Claude Code convention: Esc cancels). On mobile the panel lives
-  // in a Radix Sheet that owns its own Escape, so only the cancel arm fires
-  // there.
+  // open. `resolveEscapeAction` picks exactly ONE arm: drop a transcript
+  // selection first (an Esc meant to clear a selection can never stop a
+  // run), else close the side panel if one is up, else interrupt a
+  // streaming run (the Claude Code convention: Esc cancels). On mobile the
+  // panel lives in a Radix Sheet that owns its own Escape, so only the
+  // selection and cancel arms fire there.
   useShortcut("close.esc", () => {
-    if (panel !== null) {
-      // Inside the Agents panel a drilled-into child/group/view steps back
-      // to its roster first (the TUI's esc layering); the next Esc closes.
-      if (panel.kind === "delegation" && panel.focus !== null) {
-        setPanel({ ...panel, focus: null });
+    switch (
+      resolveEscapeAction({
+        hasSelection: selectionInside(messagesContainerRef.current),
+        panelOpen: panel !== null,
+        isStreaming,
+        hasDraft: false,
+      })
+    ) {
+      case "clear-selection":
+        window.getSelection()?.removeAllRanges();
         return;
-      }
-      closeSidePanel();
-      return;
+      case "close-panel":
+        // Inside the Agents panel a drilled-into child/group/view steps back
+        // to its roster first (the TUI's esc layering); the next Esc closes.
+        if (
+          panel !== null &&
+          panel.kind === "delegation" &&
+          panel.focus !== null
+        ) {
+          setPanel({ ...panel, focus: null });
+          return;
+        }
+        closeSidePanel();
+        return;
+      case "cancel-run":
+        onCancelRun?.();
+        return;
     }
-    if (isStreaming) onCancelRun?.();
   });
 
   // Keyboard paging of the transcript (the TUI's PgUp/PgDn/Home/End). These
@@ -1430,6 +1542,14 @@ export function ChatView({
                     Compact conversation
                   </DropdownMenuItem>
                 )}
+                <TranscriptMenuItems
+                  messages={messages}
+                  botName={botName}
+                  onSelectTranscript={selectTranscript}
+                />
+                {onOpenDetails && (
+                  <SessionDetailsMenuItem onSelect={onOpenDetails} />
+                )}
                 <HelpMenuItem />
                 {onRename && (
                   <DropdownMenuItem onClick={onRename}>
@@ -1452,9 +1572,15 @@ export function ChatView({
               onToggleActivity={() => setShowToolCalls(!showActivity)}
               onRename={onRename}
               onDelete={onDelete}
+              onOpenDetails={onOpenDetails}
               onCompact={onCompact}
               compactDisabled={isStreaming}
               usage={usage}
+              transcript={{
+                messages,
+                botName,
+                onSelectTranscript: selectTranscript,
+              }}
             />
           )}
         </div>
@@ -1485,6 +1611,15 @@ export function ChatView({
             // named so that focus target is announced.
             aria-label="Conversation"
             tabIndex={-1}
+            // ⌘A / Ctrl+A with the transcript focused selects ONLY the
+            // conversation (the TUI's ctrl+g). In the composer — or a text
+            // field rendered inside the transcript — the key keeps its
+            // native meaning; the global dispatcher never claims mod+a.
+            onKeyDown={(event) => {
+              if (!isSelectAllChord(event)) return;
+              event.preventDefault();
+              selectTranscript();
+            }}
             className="h-full overflow-y-auto px-3 pt-1 pb-48 max-[499px]:pb-24 lg:px-6 lg:pt-2 lg:pb-56"
           >
             <TextSelectionToolbar
@@ -1492,7 +1627,10 @@ export function ChatView({
               onAddToChat={(text) => setAppendText(text)}
               onAskInSideChat={(text) => setAppendText(text)}
             />
-            <div className="flex-1 min-w-0 flex flex-col gap-0 w-full max-w-[768px]">
+            <div
+              ref={transcriptRef}
+              className="flex-1 min-w-0 flex flex-col gap-0 w-full max-w-[768px]"
+            >
               {messages.map((msg) => (
                 <MessageBubble
                   key={msg.id}
@@ -1517,6 +1655,7 @@ export function ChatView({
                 <ApprovalPanel
                   approval={pendingApproval}
                   onRespond={onRespondApproval}
+                  onExpand={handleExpandApproval}
                   queuePosition={
                     approvalQueueLength
                       ? { index: 1, total: approvalQueueLength }
@@ -1559,6 +1698,7 @@ export function ChatView({
                   shows the bare current size instead of hiding. */}
               <ContextMeter
                 modelLabel={contextInfo?.modelLabel ?? ""}
+                effort={contextInfo?.effort}
                 contextWindow={contextInfo?.contextWindow ?? 0}
                 occupancyTokens={contextOccupancy}
                 usage={usage}
@@ -1622,6 +1762,10 @@ export function ChatView({
                   autoModelLabel={autoModelLabel}
                   onSwitchModel={live ? onSwitchModel : undefined}
                   currentModelId={session.model ?? ""}
+                  onSwitchEffort={live ? onSwitchEffort : undefined}
+                  currentEffort={currentEffort}
+                  currentModelReasoning={currentModelReasoning}
+                  effortSupported={effortSupported}
                   mode={mode}
                   onModeChange={onModeChange}
                   isStreaming={isStreaming}
@@ -1670,6 +1814,7 @@ export function ChatView({
           onCancelChild={onCancelChild}
           onDelegationTabChange={handleDelegationTabChange}
           onDelegationFocus={handleDelegationFocus}
+          onRespondApproval={onRespondApproval}
         />
       )}
       {/* On mobile the same panels render as a full-height bottom sheet: the
@@ -1690,9 +1835,11 @@ export function ChatView({
                   ? activePanel.attachment.name
                   : activePanel.kind === "toolcall"
                     ? activePanel.call.name
-                    : activePanel.kind === "delegation"
-                      ? "Agents"
-                      : activePanel.artifact.name}
+                    : activePanel.kind === "approval"
+                      ? `${activePanel.approval.toolName || "Tool"} — permission ask`
+                      : activePanel.kind === "delegation"
+                        ? "Agents"
+                        : activePanel.artifact.name}
             </SheetTitle>
             <div className="flex min-h-0 flex-1 flex-col">
               <SidePanelForKind
@@ -1709,6 +1856,7 @@ export function ChatView({
                 onCancelChild={onCancelChild}
                 onDelegationTabChange={handleDelegationTabChange}
                 onDelegationFocus={handleDelegationFocus}
+                onRespondApproval={onRespondApproval}
               />
             </div>
           </SheetContent>
@@ -1733,6 +1881,7 @@ function SidePanelForKind({
   onCancelChild,
   onDelegationTabChange,
   onDelegationFocus,
+  onRespondApproval,
 }: {
   panel: ActivePanel;
   parentSessionId: string;
@@ -1747,6 +1896,8 @@ function SidePanelForKind({
   onCancelChild?: (childId: string) => void | Promise<void>;
   onDelegationTabChange: (tab: DelegationTab) => void;
   onDelegationFocus: (focus: DelegationFocus | null) => void;
+  /** Answers the expanded ask from the approval detail panel's foot. */
+  onRespondApproval?: (choice: ApprovalChoice) => void;
 }) {
   const shared = { onClose, maximized, onToggleMaximize, windowControls };
   switch (panel.kind) {
@@ -1769,6 +1920,14 @@ function SidePanelForKind({
       return <AttachmentPanel attachment={panel.attachment} {...shared} />;
     case "toolcall":
       return <ToolCallPanel call={panel.call} {...shared} />;
+    case "approval":
+      return (
+        <ApprovalDetailPanel
+          approval={panel.approval}
+          onRespond={(choice) => onRespondApproval?.(choice)}
+          {...shared}
+        />
+      );
     case "thread":
       // Mock chat threads stay local: read-only replies, no daemon session.
       if (isMockTourSession(parentSessionId)) {

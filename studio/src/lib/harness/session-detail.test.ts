@@ -1,100 +1,148 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { resetHarnessClient } from "./sdk";
-import { sessionSnapshot, stubHarnessFetch } from "./sdk-test-stub";
-import { fetchHarnessSessionDetail } from "./sessions";
+import { SessionMode, type SessionSnapshot } from "@stacklok-oss/mecatl-sdk";
+import { describe, expect, it } from "vitest";
+import { sessionIdentityFromSnapshot } from "./sessions";
 
 /**
- * Pins the GET-session projections the context meter and usage facets read:
- * the durable session-cumulative `token_usage["main"].total` bucket (bigint
- * counters → numbers), the `resolved_model.reasoning_effort` echo, and the
- * honest null when a daemon omits the usage map or the main bucket.
+ * Pins the pure projection behind the `/session` details dialog: every row
+ * the dialog renders is read off ONE GET-session snapshot (id, title and its
+ * provenance, lifecycle state, kind, mode, resolved model, placement DISPLAY
+ * metadata, creation time, turn/tool-call counts, limits, relationship), and
+ * an older daemon that omits the newer blocks projects to nulls rather than
+ * throwing or inventing values.
  */
 
-afterEach(async () => {
-  vi.unstubAllGlobals();
-  await resetHarnessClient();
-});
+/** Only the fields the projection reads are populated, hence the cast. */
+const snapshot = (fields: Record<string, unknown>): SessionSnapshot =>
+  ({
+    sessionId: "s1",
+    state: "idle",
+    mode: SessionMode.Default,
+    kind: "main",
+    tokenUsage: {},
+    turns: 0,
+    toolCalls: 0,
+    createdAtUnix: BigInt(0),
+    debugMcpServers: [],
+    debugMcpTools: [],
+    ...fields,
+  }) as unknown as SessionSnapshot;
 
-const snapshotRoute =
-  (extra: Record<string, unknown>) =>
-  (request: { path: string }): unknown =>
-    request.path === "/v1/sessions/s1"
-      ? sessionSnapshot("s1", extra)
-      : undefined;
-
-describe("fetchHarnessSessionDetail token usage", () => {
-  it("projects token_usage.main.total and the reasoning-effort echo", async () => {
-    stubHarnessFetch(
-      snapshotRoute({
-        resolved_model: {
-          provider_id: "anthropic",
-          model_id: "claude-sonnet",
-          context_window: "200000",
-          reasoning_effort: "high",
+describe("sessionIdentityFromSnapshot", () => {
+  it("projects every dialog row from one snapshot", () => {
+    const identity = sessionIdentityFromSnapshot(
+      snapshot({
+        sessionId: "session-abc",
+        state: "awaiting",
+        kind: "debug",
+        mode: SessionMode.AcceptEdits,
+        title: { value: "Fix the flaky test", provenance: "operator" },
+        createdAtUnix: BigInt(1755000000),
+        turns: 7,
+        toolCalls: 12,
+        limits: { maxTurns: 50, maxToolCalls: 200, maxConsecutiveFailures: 3 },
+        resolvedModel: {
+          providerId: "openrouter",
+          modelId: "openai/gpt-5",
+          contextWindow: BigInt(400000),
+          reasoningEffort: "high",
         },
-        token_usage: {
-          main: {
-            total: {
-              input_tokens: "120",
-              output_tokens: "40",
-              cache_read_tokens: "30",
-              cache_write_tokens: "5",
-              reasoning_tokens: "12",
-            },
-            models: {},
-          },
+        placement: {
+          kind: "worktree",
+          label: "feature-x",
+          branch: "feature/x",
+          revision: "abc123",
         },
-      }),
-    );
-    const detail = await fetchHarnessSessionDetail("s1");
-    expect(detail.resolvedModel).toEqual({
-      providerId: "anthropic",
-      modelId: "claude-sonnet",
-      contextWindow: 200000,
-      reasoningEffort: "high",
-    });
-    expect(detail.tokenUsage).toEqual({
-      inputTokens: 120,
-      outputTokens: 40,
-      cacheReadTokens: 30,
-      cacheWriteTokens: 5,
-      reasoningTokens: 12,
-    });
-  });
-
-  it("returns null tokenUsage when the snapshot omits the usage map", async () => {
-    stubHarnessFetch(snapshotRoute({}));
-    const detail = await fetchHarnessSessionDetail("s1");
-    expect(detail.tokenUsage).toBeNull();
-  });
-
-  it("returns null tokenUsage when only non-main buckets are reported", async () => {
-    stubHarnessFetch(
-      snapshotRoute({
-        token_usage: {
-          subagent: { total: { input_tokens: "9" }, models: {} },
+        relationship: {
+          debugTargetSessionId: "session-target",
+          parentSessionId: "",
+          branchIndex: 0,
         },
       }),
     );
-    const detail = await fetchHarnessSessionDetail("s1");
-    expect(detail.tokenUsage).toBeNull();
+    expect(identity).toEqual({
+      id: "session-abc",
+      title: "Fix the flaky test",
+      titleProvenance: "operator",
+      state: "awaiting",
+      kind: "debug",
+      mode: "acceptEdits",
+      resolvedModel: {
+        providerId: "openrouter",
+        modelId: "openai/gpt-5",
+        contextWindow: 400000,
+        reasoningEffort: "high",
+      },
+      placement: {
+        kind: "worktree",
+        label: "feature-x",
+        branch: "feature/x",
+        revision: "abc123",
+      },
+      createdAtUnix: 1755000000,
+      turns: 7,
+      toolCalls: 12,
+      limits: { maxTurns: 50, maxToolCalls: 200, maxConsecutiveFailures: 3 },
+      // Only the fields the daemon set: the empty parent id and the zero
+      // branch index are omitted rather than rendered as blank rows.
+      relationship: { debugTargetSessionId: "session-target" },
+    });
   });
 
-  it("zero-fills counters the main total leaves out", async () => {
-    stubHarnessFetch(
-      snapshotRoute({
-        token_usage: {
-          main: { total: { input_tokens: "7" }, models: {} },
+  it("keeps every relationship kind the daemon can set", () => {
+    const identity = sessionIdentityFromSnapshot(
+      snapshot({
+        relationship: {
+          parentSessionId: "parent-1",
+          callId: "call-9",
+          branchIndex: 2,
+          scheduleName: "nightly",
+          originSessionId: "origin-1",
+          teamId: "team-1",
+          memberName: "reviewer",
         },
       }),
     );
-    const detail = await fetchHarnessSessionDetail("s1");
-    expect(detail.tokenUsage).toEqual({
-      inputTokens: 7,
-      outputTokens: 0,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-      reasoningTokens: 0,
+    expect(identity.relationship).toEqual({
+      parentSessionId: "parent-1",
+      callId: "call-9",
+      branchIndex: 2,
+      scheduleName: "nightly",
+      originSessionId: "origin-1",
+      teamId: "team-1",
+      memberName: "reviewer",
     });
+  });
+
+  it("tolerates an older daemon that omits the newer blocks", () => {
+    const identity = sessionIdentityFromSnapshot(
+      snapshot({ sessionId: "", kind: undefined, state: undefined }),
+      "fallback-id",
+    );
+    expect(identity).toEqual({
+      id: "fallback-id",
+      title: "",
+      titleProvenance: "",
+      state: "",
+      kind: "",
+      mode: "default",
+      resolvedModel: null,
+      placement: null,
+      createdAtUnix: 0,
+      turns: 0,
+      toolCalls: 0,
+      limits: null,
+      relationship: null,
+    });
+  });
+
+  it("drops a placement with neither label nor kind, and an empty relationship", () => {
+    const identity = sessionIdentityFromSnapshot(
+      snapshot({
+        placement: { kind: "", label: "", branch: "main", revision: "" },
+        relationship: {},
+      }),
+    );
+    expect(identity.placement).toBeNull();
+    expect(identity.relationship).toBeNull();
   });
 });

@@ -27,6 +27,17 @@ export function formatToolInput(input: unknown): string {
   }
 }
 
+/**
+ * The panel's input text: the verbatim args JSON when the live stream
+ * carried it (pretty-printed), else the call's `input` — which hydrated
+ * history passes raw but the live reducer flattens to a one-line preview.
+ */
+export function toolPanelInput(
+  call: Pick<ToolCallInfo, "input" | "rawArgs">,
+): string {
+  return formatToolInput(call.rawArgs || call.input);
+}
+
 function SectionLabel({ children }: { children: React.ReactNode }) {
   return (
     <p className="mt-4 mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
@@ -54,7 +65,7 @@ export function ToolCallPanel({
   onToggleMaximize: () => void;
   windowControls?: boolean;
 }) {
-  const input = formatToolInput(call.input);
+  const input = toolPanelInput(call);
   return (
     <SidePanel
       icon={Plug}

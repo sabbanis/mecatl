@@ -2,9 +2,9 @@
 
 import { Copy } from "lucide-react";
 import { useEffect, useState } from "react";
-import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { useRuntimeStatus } from "@/features/agent/runtime-status";
+import { copyToClipboard } from "@/lib/clipboard";
 import {
   fetchHarnessServerInfo,
   type HarnessServerInfo,
@@ -73,12 +73,7 @@ export function AboutDaemonCard({
             variant="outline"
             size="sm"
             className="rounded-full"
-            onClick={() => {
-              void navigator.clipboard
-                .writeText(debugBlob)
-                .then(() => toast.success("Debug info copied"))
-                .catch(() => toast.error("Couldn't copy — clipboard blocked"));
-            }}
+            onClick={() => void copyToClipboard(debugBlob, "Debug info")}
           >
             <Copy className="size-4" />
             Copy debug info

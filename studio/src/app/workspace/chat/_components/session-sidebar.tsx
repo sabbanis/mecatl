@@ -31,6 +31,12 @@ import { isMockTourSession } from "@/features/agent/mock-tour";
 import { formatRelativeTime } from "@/lib/formatters";
 import { cn } from "@/lib/utils";
 import { sessionActivity } from "./session-activity";
+import {
+  CopyDebugTargetMenuItem,
+  CopyDebugTargetSheetItem,
+  CopySessionIdMenuItem,
+  CopySessionIdSheetItem,
+} from "./session-copy-menu-items";
 
 export interface SessionActions {
   onRename: (id: string) => void;
@@ -97,6 +103,8 @@ function SessionContextMenu({
             <span className="min-w-0">Debug with AI</span>
           </DropdownMenuItem>
         )}
+        <CopySessionIdMenuItem session={session} />
+        <CopyDebugTargetMenuItem session={session} />
         <DropdownMenuItem
           disabled={!canRename}
           onClick={() => actions.onRename(session.id)}
@@ -237,6 +245,8 @@ function SessionActionsSheet({
               <span className="min-w-0 text-left">Debug with AI</span>
             </button>
           )}
+          <CopySessionIdSheetItem session={session} onDone={onClose} />
+          <CopyDebugTargetSheetItem session={session} onDone={onClose} />
           <button
             type="button"
             className={row}

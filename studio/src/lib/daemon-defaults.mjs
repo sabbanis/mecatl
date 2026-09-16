@@ -3,9 +3,9 @@ import { validProviderName } from "./provider-auth.mjs";
 /**
  * The controller's DAEMON DEFAULTS document — the mecated spawn flags an
  * operator would otherwise pass on the command line (default/subagent model,
- * reasoning effort, context window, prompt caching, provider base URLs, the
- * ToolHive LLM gateway, model aliases and slots, the credentials-file path)
- * plus the durable active-provider choice. Normalised here and turned into
+ * reasoning effort, context window, the two LLM stream timeouts, prompt
+ * caching, provider base URLs, the ToolHive LLM gateway, model aliases and
+ * slots, the credentials-file path) plus the durable active-provider choice. Normalised here and turned into
  * the argv fragment `startMecatl` appends. Shared by the controller
  * (`scripts/local-controller.mjs`), the browser client and both vitest
  * suites — the same dual-import pattern as controller-permissions.mjs and
@@ -49,6 +49,28 @@ export const BASE_URL_KINDS = Object.freeze([
  *  fight it. */
 export const RESERVED_SLOTS = Object.freeze(["router"]);
 
+/**
+ * mecated's OWN defaults for the two LLM stream bounds (`cmd/mecated`
+ * `--llm-per-attempt-timeout` 300s / `--llm-stream-idle-timeout` 180s), in
+ * whole seconds. A document holding exactly these emits NO flag, so an
+ * untouched install spawns the byte-identical command line; 0 disables a
+ * bound (mecated: "≤0 disables"), which is why "not set" cannot ride 0 here
+ * the way the context window does.
+ */
+export const LLM_TIMEOUT_DEFAULTS = Object.freeze({
+  perAttemptSeconds: 300,
+  streamIdleSeconds: 180,
+});
+
+/** The keys `llmTimeouts` may carry — a stranger is refused, not dropped. */
+const LLM_TIMEOUT_KEYS = Object.freeze([
+  "perAttemptSeconds",
+  "streamIdleSeconds",
+]);
+
+/** One day: longer than any turn a stream watchdog could sensibly bound. */
+const maxTimeoutSeconds = 86_400;
+
 /** Alias / slot key grammar: a lower-case identifier, 1-40 chars. */
 const MODEL_KEY_PATTERN = /^[a-z][a-z0-9_-]{0,39}$/;
 const maxModelIdLength = 200;
@@ -61,6 +83,7 @@ export const DAEMON_DEFAULTS_EMPTY = Object.freeze({
   models: Object.freeze({}),
   reasoningEffort: "",
   contextWindowOverride: 0,
+  llmTimeouts: LLM_TIMEOUT_DEFAULTS,
   promptCache: Object.freeze({ disabled: false, anthropicTtl: "" }),
   baseUrls: Object.freeze({
     openrouter: "",
@@ -286,6 +309,64 @@ function credentialsFile(raw, configDir) {
 }
 
 /**
+ * One LLM stream bound in whole seconds: absent/blank reads as mecated's
+ * own default for that flag, otherwise a non-negative integer (a digit
+ * string is accepted — the form sends the field as typed) up to one day.
+ * 0 is a real value (the bound disabled), never "unset". Fractions,
+ * negatives, unit suffixes and junk are refused with the message the form
+ * shows — nothing is clamped silently.
+ * @param {unknown} raw
+ * @param {number} fallback
+ * @param {string} what
+ * @returns {number}
+ */
+function timeoutSeconds(raw, fallback, what) {
+  if (raw === undefined || raw === null || raw === "") return fallback;
+  const parsed =
+    typeof raw === "number"
+      ? raw
+      : typeof raw === "string" && /^\s*\d+\s*$/.test(raw)
+        ? Number(raw)
+        : Number.NaN;
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > maxTimeoutSeconds)
+    throw badRequest(
+      `${what} must be a whole number of seconds between 0 and ${maxTimeoutSeconds} (0 = disabled)`,
+    );
+  return parsed;
+}
+
+/**
+ * The `llmTimeouts` block: `--llm-per-attempt-timeout` (connect + first
+ * chunk) and `--llm-stream-idle-timeout` (the longest mid-stream silence).
+ * An absent block is mecated's defaults; an unknown key is refused.
+ * @param {unknown} raw
+ * @returns {{perAttemptSeconds: number, streamIdleSeconds: number}}
+ */
+function llmTimeoutBounds(raw) {
+  if (raw === undefined || raw === null) return { ...LLM_TIMEOUT_DEFAULTS };
+  if (!isRecord(raw)) throw badRequest("llmTimeouts must be an object");
+  const block = /** @type {Record<string, unknown>} */ (raw);
+  for (const key of Object.keys(block)) {
+    if (!LLM_TIMEOUT_KEYS.includes(key))
+      throw badRequest(
+        `mecated has no LLM timeout flag for "${key}" — supported: ${LLM_TIMEOUT_KEYS.join(", ")}`,
+      );
+  }
+  return {
+    perAttemptSeconds: timeoutSeconds(
+      block.perAttemptSeconds,
+      LLM_TIMEOUT_DEFAULTS.perAttemptSeconds,
+      "The LLM connect timeout",
+    ),
+    streamIdleSeconds: timeoutSeconds(
+      block.streamIdleSeconds,
+      LLM_TIMEOUT_DEFAULTS.streamIdleSeconds,
+      "The LLM idle timeout",
+    ),
+  };
+}
+
+/**
  * Validates and fills a daemon-defaults document (a saved state file or a
  * PUT /daemon-defaults body). Unknown enum tokens THROW rather than fall
  * back — the UI only ever offers the closed sets, so a stranger is a bug
@@ -298,6 +379,7 @@ function credentialsFile(raw, configDir) {
  *   models: Record<string, {defaultModel: string, subagentModel: string}>,
  *   reasoningEffort: string,
  *   contextWindowOverride: number,
+ *   llmTimeouts: {perAttemptSeconds: number, streamIdleSeconds: number},
  *   promptCache: {disabled: boolean, anthropicTtl: string},
  *   baseUrls: Record<string, string>,
  *   toolhive: {enabled: boolean, baseUrl: string, mode: string},
@@ -341,6 +423,8 @@ export function normalizeDaemonDefaults(input, options = {}) {
       );
     contextWindowOverride = parsed;
   }
+
+  const llmTimeouts = llmTimeoutBounds(source.llmTimeouts);
 
   const cache = isRecord(source.promptCache)
     ? /** @type {Record<string, unknown>} */ (source.promptCache)
@@ -429,6 +513,7 @@ export function normalizeDaemonDefaults(input, options = {}) {
     models,
     reasoningEffort,
     contextWindowOverride,
+    llmTimeouts,
     promptCache,
     baseUrls,
     toolhive,
@@ -463,6 +548,25 @@ export function daemonDefaultArgs(defaults, kind) {
     args.push(
       "--context-window-override",
       String(defaults.contextWindowOverride),
+    );
+  // Go durations ("300s"), and ONLY when they differ from mecated's own
+  // default for that flag — the defaults are a real value here (0 means
+  // disabled), so "unchanged" is the flag-omitted state, not 0.
+  if (
+    defaults.llmTimeouts.perAttemptSeconds !==
+    LLM_TIMEOUT_DEFAULTS.perAttemptSeconds
+  )
+    args.push(
+      "--llm-per-attempt-timeout",
+      `${defaults.llmTimeouts.perAttemptSeconds}s`,
+    );
+  if (
+    defaults.llmTimeouts.streamIdleSeconds !==
+    LLM_TIMEOUT_DEFAULTS.streamIdleSeconds
+  )
+    args.push(
+      "--llm-stream-idle-timeout",
+      `${defaults.llmTimeouts.streamIdleSeconds}s`,
     );
   if (defaults.promptCache.disabled) args.push("--no-prompt-cache");
   if (defaults.promptCache.anthropicTtl)

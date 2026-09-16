@@ -81,6 +81,13 @@ before(async () => {
         body: Buffer.concat(chunks).toString() || null,
       });
       response.setHeader("Content-Type", "application/json");
+      // The proxy forwards Content-Disposition (the controller's daemon-log
+      // download names its file with it); the fake sets one everywhere so
+      // the external-mode test can pin that it survives the hop.
+      response.setHeader(
+        "Content-Disposition",
+        'inline; filename="from-upstream.json"',
+      );
       if (request.url === "/v1/sessions") {
         response.end(JSON.stringify({ session_id: "session-from-upstream" }));
         return;
@@ -133,6 +140,10 @@ test("server-renders Mecatl Studio", async () => {
 test("external mode injects daemon auth server-side and disables local controls", async () => {
   const models = await fetch(`${studioBaseURL}/api/mecatl/v1/models`);
   assert.equal(models.status, 200);
+  assert.equal(
+    models.headers.get("content-disposition"),
+    'inline; filename="from-upstream.json"',
+  );
   assert.deepEqual(await models.json(), {
     models: [{ id: "test-model", provider_id: "test" }],
   });
@@ -201,6 +212,11 @@ test("external mode injects daemon auth server-side and disables local controls"
     // As are its retention limits / sweep cadence / main-deletion
     // acknowledgement.
     ["retention", "POST"],
+    // The daemon log is the MANAGED controller's file of its child's
+    // stderr; an external deployment writes its diagnostics wherever it
+    // configured them, and Studio has no access to a remote daemon's log.
+    ["logs", "GET"],
+    ["logs/download", "GET"],
     // The daemon defaults (--default-model, --subagent-model, effort,
     // caching, base URLs, ToolHive, aliases/slots, --api-key-file) are
     // spawn flags of the MANAGED daemon: external owns them, read included.
@@ -343,6 +359,11 @@ test("controller policy rejects CSRF and DNS-rebinding requests", () => {
     // The retention write can switch on automatic deletion of the user's
     // own chats; another loopback-origin page must never reach it.
     ["POST", "/retention"],
+    // The daemon log carries model-influenced text (prompt fragments,
+    // provider error bodies): another loopback-origin page must not read
+    // or download it.
+    ["GET", "/logs"],
+    ["GET", "/logs/download"],
   ]) {
     assert.equal(
       requestIsAllowed(

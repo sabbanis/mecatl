@@ -143,4 +143,22 @@ describe("ShortcutsProvider dispatch while typing", () => {
     expect(pageUp).not.toHaveBeenCalled();
     expect(notPrevented).toBe(true);
   });
+
+  it("never claims ⌘A / Ctrl+A globally — the transcript select-all is component-owned", () => {
+    // `transcript.selectAll` is a FIXED registry row: no handler is ever
+    // registered for it, so a select-all in the composer (or anywhere else)
+    // keeps the browser's native meaning even with other handlers live.
+    const esc = vi.fn();
+    const search = vi.fn();
+    mount({ "close.esc": esc, "search.open": search });
+    const composer = focusComposer();
+
+    expect(fireEvent.keyDown(composer, { key: "a", metaKey: true })).toBe(true);
+    (document.activeElement as HTMLElement | null)?.blur();
+    expect(fireEvent.keyDown(document.body, { key: "a", ctrlKey: true })).toBe(
+      true,
+    );
+    expect(esc).not.toHaveBeenCalled();
+    expect(search).not.toHaveBeenCalled();
+  });
 });

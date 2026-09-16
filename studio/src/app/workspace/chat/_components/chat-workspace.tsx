@@ -45,6 +45,7 @@ import { usePrompt } from "@/hooks/use-prompt";
 import {
   compactHarnessSession,
   forkHarnessSessionToModel,
+  forkHarnessSessionToSelection,
   ThreadSourceBusyError,
 } from "@/lib/harness/client";
 import { createHarnessDebugSession } from "@/lib/harness/debug";
@@ -58,6 +59,7 @@ import {
   useWelcomeDismissed,
 } from "@/lib/profile-preferences";
 import type { SessionPermissionMode } from "@/lib/protocol";
+import { effortLabel } from "@/lib/reasoning-effort";
 import { useShortcut } from "@/lib/shortcuts/use-shortcuts";
 import { useThreadSessionIds } from "@/lib/thread-map";
 import { cn } from "@/lib/utils";
@@ -259,6 +261,8 @@ function DraftView({
   models,
   autoModelLabel,
   onModelChange,
+  onEffortChange,
+  effortSupported,
   onLocalCommand,
   builtinGates,
 }: {
@@ -282,6 +286,11 @@ function DraftView({
   models: ComposerModelOption[];
   autoModelLabel: string;
   onModelChange: (id: string) => void;
+  /** Pending reasoning-effort tier (wire value; "" = auto), applied when the
+   *  first send mints the session. */
+  onEffortChange: (wire: string) => void;
+  /** False when the daemon's model_selection capability is off. */
+  effortSupported: boolean;
   /** Answers a Studio built-in typed in the draft composer (`/help`,
       `/diagnostics`, a draft `/clear`; the session-bound ones refuse). */
   onLocalCommand?: (
@@ -341,6 +350,8 @@ function DraftView({
               models={models}
               autoModelLabel={autoModelLabel}
               onModelChange={onModelChange}
+              onEffortChange={onEffortChange}
+              effortSupported={effortSupported}
               onLocalCommand={onLocalCommand}
               builtinGates={builtinGates}
             />
@@ -514,6 +525,8 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
           label: m.displayName || m.id,
           // The daemon requires provider_id whenever model_id rides a create.
           providerId: m.providerId,
+          // The Effort list warns when the picked model reports no reasoning.
+          reasoning: m.reasoning,
         })),
     [liveModels, disabledModels],
   );
@@ -536,6 +549,14 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
       ? { modelId: id, providerId: option.providerId }
       : null;
   }, []);
+  // The composer's pending reasoning-effort tier (wire value; "" = auto, the
+  // field is omitted so the operator's --reasoning-effort default applies).
+  // Like the model pick: a ref read when the first send mints the session.
+  const draftEffortRef = useRef("");
+  const handleDraftEffortChange = useCallback((wire: string) => {
+    draftEffortRef.current = wire;
+  }, []);
+  const getCreateEffort = useCallback(() => draftEffortRef.current, []);
 
   const {
     messages,
@@ -573,6 +594,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     pendingSteers,
     cancelPendingSteers,
     cancelChat,
+    cancelChild,
     pendingAuthorization,
     openAuthorization,
     copyAuthorizationLink,
@@ -582,6 +604,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     onSessionCreated: handleSessionCreated,
     createMode: getCreateMode,
     createModel: getCreateModel,
+    createEffort: getCreateEffort,
     // The inventory poll's lifecycle state: running/awaiting attaches the
     // durable watch so an externally-driven run renders live (ADR 0250).
     sessionState: hookSessionId
@@ -840,25 +863,37 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   // /diagnostics /compact`), dispatched here where the chat state lives. The
   // same dispatcher serves the draft composer: the session-bound built-ins
   // refuse there with a warning, `/clear` just drops the draft's queue.
-  const { builtinGates, handleSlashBuiltin, sessionDetailsDialog } =
-    useBuiltinSlashCommands({
-      sessionId: isMockSelected ? null : selectedId || null,
-      isStreaming,
-      // Live or rehydrated (`failed` inventory state), the only state with a
-      // failed step for the daemon to re-drive.
-      hasFailedStep: status === "error",
-      compactSupported,
-      onCompact: () => void handleCompact(),
-      onRetry: () => void retryLast(),
-      onSend: (content) => void sendMessage(content),
-      onClearQueue: clearQueue,
-      onSessionCleared: async (successorId) => {
-        await refreshSessions();
-        handleSelectSession(successorId);
-      },
-      resolvedModel,
-      permissionMode: mode,
-    });
+  const {
+    builtinGates,
+    handleSlashBuiltin,
+    sessionDetailsDialog,
+    openSessionDetails,
+  } = useBuiltinSlashCommands({
+    sessionId: isMockSelected ? null : selectedId || null,
+    isStreaming,
+    // Live or rehydrated (`failed` inventory state), the only state with a
+    // failed step for the daemon to re-drive.
+    hasFailedStep: status === "error",
+    compactSupported,
+    onCompact: () => void handleCompact(),
+    onRetry: () => void retryLast(),
+    onSend: (content) => void sendMessage(content),
+    onClearQueue: clearQueue,
+    onSessionCleared: async (successorId) => {
+      await refreshSessions();
+      handleSelectSession(successorId);
+    },
+    resolvedModel,
+    permissionMode: mode,
+    // The inventory row's copy_id capability and last write, which the
+    // snapshot the dialog reads does not carry.
+    sessionDetails: {
+      canCopyId: selectedSession?.canCopyId,
+      copyIdReason: selectedSession?.copyIdReason,
+      updatedAt: selectedSession?.updatedAt,
+    },
+  });
+  useShortcut("chat.details", openSessionDetails);
 
   const dialogs = (
     <>
@@ -904,6 +939,50 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     },
     [selectedSession, refreshSessions, handleSelectSession],
   );
+
+  // Mid-chat effort switch: the same handoff as a model switch — the daemon
+  // fixes a session's reasoning-effort tier at create, so a pick FORKS the
+  // chat onto the tier (model unchanged, title carried) and the UI moves
+  // there. "" = back to the operator default (the field is omitted).
+  const handleSwitchEffort = useCallback(
+    async (wire: string) => {
+      const source = selectedSession;
+      if (!source) return;
+      try {
+        const newId = await forkHarnessSessionToSelection(
+          source.id,
+          { reasoningEffort: wire },
+          source.title || "",
+        );
+        await refreshSessions();
+        handleSelectSession(newId);
+        toast.success(
+          `Continuing at ${effortLabel(wire)} effort in a copy of this chat`,
+        );
+      } catch (caught) {
+        toast.error(
+          caught instanceof ThreadSourceBusyError
+            ? "Wait for the current response to finish, then switch effort."
+            : caught instanceof Error
+              ? caught.message
+              : String(caught),
+        );
+      }
+    },
+    [selectedSession, refreshSessions, handleSelectSession],
+  );
+
+  // The picked/effective model's `reasoning` flag for the Effort list's
+  // warning: keyed on the daemon's resolved model (an auto-routed session
+  // has "" for its own model), undefined when the inventory lacks it.
+  const currentModelReasoning = useMemo(() => {
+    const id = resolvedModel?.modelId || selectedSession?.model || "";
+    if (!id) return undefined;
+    return liveModels.find((m) => m.id === id)?.reasoning;
+  }, [resolvedModel, selectedSession, liveModels]);
+  // The effort picker follows the model picker's gate: a daemon with model
+  // selection off lists no models, so it takes no tier either.
+  const effortSupported = serverCapabilities.model_selection !== false;
 
   const chatView = (open: boolean, onToggle: () => void) =>
     selectedSession ? (
@@ -966,11 +1045,13 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
           // capability (absent on a daemon that never enabled teams).
           fleet={fleet}
           teamsSupported={serverCapabilities.teams === true}
+          onCancelChild={cancelChild}
           contextInfo={
             resolvedModel
               ? {
                   modelLabel: resolvedModel.modelId,
                   contextWindow: resolvedModel.contextWindow,
+                  effort: resolvedModel.reasoningEffort,
                 }
               : null
           }
@@ -989,6 +1070,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
           onCopyAuthorizationLink={copyAuthorizationLink}
           onRecheckAuthorization={recheckAuthorization}
           onCancelAuthorization={cancelAuthorization}
+          onOpenDetails={openSessionDetails}
           onRename={
             selectedSession.canRename === true
               ? () => sessionActions.onRename(selectedSession.id)
@@ -1007,6 +1089,10 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
           models={modelOptions}
           autoModelLabel={routingEnabled ? "Auto-routed" : "Default model"}
           onSwitchModel={handleSwitchModel}
+          onSwitchEffort={handleSwitchEffort}
+          currentEffort={resolvedModel?.reasoningEffort ?? ""}
+          currentModelReasoning={currentModelReasoning}
+          effortSupported={effortSupported}
         />
       )
     ) : null;
@@ -1026,6 +1112,8 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
             models={modelOptions}
             autoModelLabel={routingEnabled ? "Auto-routed" : "Default model"}
             onModelChange={handleDraftModelChange}
+            onEffortChange={handleDraftEffortChange}
+            effortSupported={effortSupported}
             onSend={sendMessage}
             seed={draftSeed}
             onSeedConsumed={clearDraftSeed}
@@ -1058,6 +1146,8 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
             models={modelOptions}
             autoModelLabel={routingEnabled ? "Auto-routed" : "Default model"}
             onModelChange={handleDraftModelChange}
+            onEffortChange={handleDraftEffortChange}
+            effortSupported={effortSupported}
             onSend={sendMessage}
             seed={draftSeed}
             onSeedConsumed={clearDraftSeed}

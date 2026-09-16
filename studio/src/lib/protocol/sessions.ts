@@ -52,8 +52,14 @@ export type SessionSummary = {
   canRename: boolean;
   canDelete: boolean;
   canViewTranscript: boolean;
+  /**
+   * Whether the daemon offers the exact id for copying (the TUI's `c` key on
+   * the `/session` overlay). Omitted reads as denied, like every capability.
+   */
+  canCopyId: boolean;
   renameReason: string;
   deleteReason: string;
+  copyIdReason: string;
 };
 
 export type SessionInventoryPage = {
@@ -171,8 +177,10 @@ export function sessionInventoryFromResponse(
       canRename: capabilities?.rename === true,
       canDelete: capabilities?.delete === true,
       canViewTranscript: capabilities?.viewTranscript === true,
+      canCopyId: capabilities?.copyId === true,
       renameReason: reasons?.rename ?? "",
       deleteReason: reasons?.delete ?? "",
+      copyIdReason: reasons?.copyId ?? "",
     });
   }
   return { sessions, nextCursor: response.nextCursor ?? "" };

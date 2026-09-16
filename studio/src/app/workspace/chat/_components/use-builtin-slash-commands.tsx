@@ -23,7 +23,10 @@ import {
 import { fetchHarnessServerInfo } from "@/lib/harness/server-info";
 import { clearHarnessSession } from "@/lib/harness/sessions";
 import { HELP_ROUTE } from "./help-menu-item";
-import { SessionDetailsDialog } from "./session-details-dialog";
+import {
+  SessionDetailsDialog,
+  type SessionDetailsExtras,
+} from "./session-details-dialog";
 
 /** The chat-workspace state the built-ins act on. */
 export interface BuiltinSlashDeps {
@@ -48,6 +51,9 @@ export interface BuiltinSlashDeps {
   resolvedModel: { providerId: string; modelId: string } | null;
   /** The composer's permission mode (Studio vocabulary). */
   permissionMode: string;
+  /** Inventory-row facts the `/session` dialog shows beyond the snapshot:
+   *  the `copy_id` capability and the row's last-write time. */
+  sessionDetails?: SessionDetailsExtras;
 }
 
 export const CLEAR_WHILE_STREAMING =
@@ -83,6 +89,9 @@ export function useBuiltinSlashCommands(deps: BuiltinSlashDeps): {
   handleSlashBuiltin: (name: StudioBuiltinCommand) => BuiltinOutcome;
   /** Render inside the workspace so `/session` has somewhere to open. */
   sessionDetailsDialog: ReactElement;
+  /** Opens the same dialog from a menu item or the ⌘I shortcut; on a draft
+   *  (no daemon session yet) it says so in a toast instead. */
+  openSessionDetails: () => void;
 } {
   const router = useRouter();
   const { mode: serverMode, deployment } = useRuntimeStatus();
@@ -180,13 +189,31 @@ export function useBuiltinSlashCommands(deps: BuiltinSlashDeps): {
     [router],
   );
 
+  // The menu item and ⌘I share `/session`'s dialog; unlike the built-in they
+  // have no composer to leave a warning in, so a draft gets a toast.
+  const openSessionDetails = useCallback(() => {
+    const d = depsRef.current;
+    if (!d.sessionId) {
+      toast.info(SESSION_NONE_YET);
+      return;
+    }
+    setDetailsSessionId(d.sessionId);
+    setDetailsOpen(true);
+  }, []);
+
   const sessionDetailsDialog = (
     <SessionDetailsDialog
       sessionId={detailsSessionId}
       open={detailsOpen}
       onOpenChange={setDetailsOpen}
+      extras={deps.sessionDetails}
     />
   );
 
-  return { builtinGates, handleSlashBuiltin, sessionDetailsDialog };
+  return {
+    builtinGates,
+    handleSlashBuiltin,
+    sessionDetailsDialog,
+    openSessionDetails,
+  };
 }

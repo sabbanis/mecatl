@@ -354,6 +354,7 @@ function RosterRow({
   onClick,
   failed = false,
   children,
+  actions,
 }: {
   glyph: React.ReactNode;
   /** The accessible name ("Open subagent explore"). */
@@ -364,6 +365,9 @@ function RosterRow({
   failed?: boolean;
   /** Extra inline markers between the glyph and the text (a read-write cue). */
   children?: React.ReactNode;
+  /** Controls beside the row (a cancel button): siblings of the row button,
+   *  never nested inside it, so activating one never opens the focus pane. */
+  actions?: React.ReactNode;
 }) {
   const body = (
     <>
@@ -373,18 +377,21 @@ function RosterRow({
     </>
   );
   const className = cn(
-    "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs",
+    "flex min-w-0 flex-1 items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs",
     failed ? "text-destructive" : "text-foreground/90",
   );
   if (!onClick) {
     return (
-      <li className={className} title={title}>
-        {body}
+      <li className="flex items-center gap-1">
+        <div className={className} title={title}>
+          {body}
+        </div>
+        {actions}
       </li>
     );
   }
   return (
-    <li>
+    <li className="flex items-center gap-1">
       <button
         type="button"
         aria-label={label}
@@ -397,6 +404,7 @@ function RosterRow({
       >
         {body}
       </button>
+      {actions}
     </li>
   );
 }
@@ -518,6 +526,87 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
+/** Why a cancel control is disabled, or "" when it is live. */
+function cancelDisabledReason(card: DelegationInfo): string {
+  if (card.cancelling) return "cancelling…";
+  if (!card.childId) {
+    const noun =
+      card.kind === "team"
+        ? "Member"
+        : card.kind === "parallel"
+          ? "Branch"
+          : "Child";
+    return `${noun} id not known yet`;
+  }
+  return "";
+}
+
+/**
+ * The per-child cancel control (the TUI's `x`): rendered only while the
+ * child runs and a handler exists; a team member idle between rounds still
+ * counts while its team is live. Disabled — with the reason in its tooltip —
+ * while a cancel is in flight, or before the daemon has named the child (a
+ * team lane has no session id until its first `team.member` frame, a
+ * parallel branch none until its branch_start). Never nested inside the row
+ * button, and the click never bubbles, so cancelling does not open a pane.
+ * `compact` is the roster row's icon-only form; the default is the focus
+ * pane's labelled button.
+ */
+function CancelChildButton({
+  card,
+  label,
+  running,
+  onCancel,
+  compact = false,
+}: {
+  card: DelegationInfo;
+  label: string;
+  running: boolean;
+  onCancel?: (childId: string) => void;
+  compact?: boolean;
+}) {
+  if (!onCancel || !running) return null;
+  const reason = cancelDisabledReason(card);
+  const childId = card.childId;
+  const name = `Cancel ${card.kind} ${label}`;
+  const handleClick = (event: React.MouseEvent) => {
+    event.stopPropagation();
+    if (!reason && childId) onCancel(childId);
+  };
+  const control = compact ? (
+    <button
+      type="button"
+      aria-label={name}
+      title={reason ? undefined : "Cancel this child"}
+      disabled={reason !== ""}
+      onClick={handleClick}
+      className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+    >
+      <X className="size-3.5" aria-hidden="true" />
+    </button>
+  ) : (
+    <Button
+      variant="outline"
+      size="sm"
+      className="h-7 gap-1 text-xs text-destructive"
+      aria-label={name}
+      disabled={reason !== ""}
+      onClick={handleClick}
+    >
+      <X className="size-3.5" aria-hidden="true" />
+      {card.cancelling ? "Cancelling…" : "Cancel"}
+    </Button>
+  );
+  if (!reason) return control;
+  // A disabled button swallows pointer events, so the explanation rides a
+  // wrapping span's tooltip (the same trick the disabled Teams tab uses).
+  return (
+    <span className="inline-flex shrink-0" title={reason}>
+      {control}
+    </span>
+  );
+}
+
 /** Open transcript + the cancel slot, shared by every focus pane. */
 function ChildActions({
   card,
@@ -533,32 +622,28 @@ function ChildActions({
   onCancel?: (childId: string) => void;
 }) {
   const childId = card.childId;
-  const cancellable =
-    onCancel !== undefined && running && Boolean(childId) && !card.cancelling;
-  if (!childId) return null;
+  // Without a session id there is no transcript to open; the cancel control
+  // still renders (disabled, naming why) so a live lane never looks inert.
+  if (!childId && (!onCancel || !running)) return null;
   return (
     <div className="mt-3 flex flex-wrap gap-2">
-      <Button
-        variant="outline"
-        size="sm"
-        className="h-7 gap-1 text-xs"
-        onClick={() => onOpenTranscript(childId, label)}
-      >
-        <ScrollText className="size-3.5" aria-hidden="true" />
-        Open transcript
-      </Button>
-      {cancellable && (
+      {childId && (
         <Button
           variant="outline"
           size="sm"
-          className="h-7 gap-1 text-xs text-destructive"
-          aria-label={`Cancel ${card.kind} ${label}`}
-          onClick={() => onCancel(childId)}
+          className="h-7 gap-1 text-xs"
+          onClick={() => onOpenTranscript(childId, label)}
         >
-          <X className="size-3.5" aria-hidden="true" />
-          Cancel
+          <ScrollText className="size-3.5" aria-hidden="true" />
+          Open transcript
         </Button>
       )}
+      <CancelChildButton
+        card={card}
+        label={label}
+        running={running}
+        onCancel={onCancel}
+      />
     </div>
   );
 }
@@ -581,9 +666,11 @@ function subagentRowText(card: DelegationInfo): string {
 function SubagentRoster({
   fleet,
   onFocus,
+  onCancel,
 }: {
   fleet: DelegationFleet;
   onFocus: (focus: DelegationFocus) => void;
+  onCancel?: (childId: string) => void;
 }) {
   const counts = fleetCounts(fleet).subagents;
   if (fleet.subagents.length === 0) {
@@ -614,6 +701,15 @@ function SubagentRoster({
                         childId: card.childId ?? "",
                       })
                   : undefined
+              }
+              actions={
+                <CancelChildButton
+                  card={card}
+                  label={card.label || "subagent"}
+                  running={running}
+                  onCancel={onCancel}
+                  compact
+                />
               }
             />
           );
@@ -954,9 +1050,11 @@ function memberRowText(card: DelegationInfo, team: TeamBoardState): string {
 function TeamRoster({
   team,
   onFocus,
+  onCancel,
 }: {
   team: TeamBoardState;
   onFocus: (focus: DelegationFocus) => void;
+  onCancel?: (childId: string) => void;
 }) {
   if (team.lanes.length === 0) {
     return <EmptyState>No members have joined this team yet.</EmptyState>;
@@ -988,6 +1086,15 @@ function TeamRoster({
                 teamId: team.teamId || undefined,
                 member,
               })
+            }
+            actions={
+              <CancelChildButton
+                card={card}
+                label={card.label || member || "member"}
+                running={running}
+                onCancel={onCancel}
+                compact
+              />
             }
           >
             {card.mutating && (
@@ -1063,11 +1170,13 @@ function TeamSection({
   view,
   onView,
   onFocus,
+  onCancel,
 }: {
   team: TeamBoardState;
   view: TeamView;
   onView: (view: TeamView) => void;
   onFocus: (focus: DelegationFocus) => void;
+  onCancel?: (childId: string) => void;
 }) {
   return (
     <section className="flex flex-col" aria-label={teamHeaderText(team)}>
@@ -1099,7 +1208,7 @@ function TeamSection({
       ) : view === "findings" ? (
         <TeamFindings team={team} />
       ) : (
-        <TeamRoster team={team} onFocus={onFocus} />
+        <TeamRoster team={team} onFocus={onFocus} onCancel={onCancel} />
       )}
     </section>
   );
@@ -1243,6 +1352,7 @@ function TeamsTab({
               )
             }
             onFocus={onFocus}
+            onCancel={onCancel}
           />
         );
       })}
@@ -1352,7 +1462,11 @@ export function DelegationPanel({
               onCancel={cancel}
             />
           ) : (
-            <SubagentRoster fleet={resolved} onFocus={onFocus} />
+            <SubagentRoster
+              fleet={resolved}
+              onFocus={onFocus}
+              onCancel={cancel}
+            />
           )}
         </TabsContent>
         <TabsContent value="parallel" className={TAB_BODY_CLASS}>

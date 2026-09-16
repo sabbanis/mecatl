@@ -153,3 +153,97 @@ export async function saveHarnessDiagnosticsOptions(
   } | null;
   return readDiagnosticsOptions(answer?.options);
 }
+
+/**
+ * The managed daemon's DIAGNOSTICS LOG as the controller reports it
+ * (`GET /logs`): Studio's analogue of mecatui's embedded-server log file.
+ * mecated writes diagnostics to stderr and has no log-file flag, so the
+ * controller that holds that stream appends it to an owner-only file in
+ * studio/.scratch (one rotated generation at 10 MiB) and keeps a bounded
+ * in-memory tail. The content is MODEL-INFLUENCED (prompt fragments, file
+ * paths, provider error bodies): render it as plain text only.
+ */
+export interface HarnessDaemonLog {
+  /** The current generation's path on the controller's machine (display). */
+  path: string;
+  /** The one rotated generation kept beside it. */
+  rotatedPath: string;
+  /** The current generation's size; 0 when nothing has been written yet. */
+  sizeBytes: number;
+  /** The rotation bound (mecatui's 10 MiB, mirrored). */
+  maxBytes: number;
+  /** The most recent complete lines, oldest first. */
+  lines: string[];
+  /** True when the file holds more than `lines` shows. */
+  truncated: boolean;
+  /** The controller-side terminal mute (`quiet`), as saved. */
+  quiet: boolean;
+  /** mecated's `--log-level`, as saved. */
+  level: string;
+  /** Whether a mecated child is alive right now. */
+  running: boolean;
+  /** Why the last start failed, or "" — the crash-at-start the log exists
+   *  to explain. */
+  startupError: string;
+}
+
+/** How many tail lines the Diagnostics page asks for. */
+export const DAEMON_LOG_DEFAULT_LINES = 200;
+
+/**
+ * `GET /logs/download` through the same-origin proxy, streamed as
+ * `text/plain` with a `Content-Disposition: attachment` the proxy forwards.
+ * Rendered as `<a href download="mecated.log">` — a plain anchor
+ * navigation passes the proxy's trust check, and the `download` attribute
+ * names the file even where the header is lost.
+ */
+export const DAEMON_LOG_DOWNLOAD_URL = `${CONTROL_API}/logs/download`;
+
+/**
+ * The bounded tail plus the file facts. Null when the controller cannot
+ * answer — external mode's 409 (the deployment writes its daemon's
+ * diagnostics wherever it configured them), an older controller without
+ * the route, or an unreachable controller — so the caller renders the
+ * matching note rather than an empty viewer.
+ */
+export async function fetchHarnessDaemonLog(
+  lines: number = DAEMON_LOG_DEFAULT_LINES,
+  signal?: AbortSignal,
+): Promise<HarnessDaemonLog | null> {
+  const query = new URLSearchParams({ lines: String(lines) });
+  const response = await fetch(`${CONTROL_API}/logs?${query}`, {
+    signal,
+    cache: "no-store",
+  });
+  if (!response.ok) return null;
+  const body = (await response.json().catch(() => null)) as {
+    path?: unknown;
+    rotatedPath?: unknown;
+    sizeBytes?: unknown;
+    maxBytes?: unknown;
+    lines?: unknown;
+    truncated?: unknown;
+    quiet?: unknown;
+    level?: unknown;
+    running?: unknown;
+    startupError?: unknown;
+  } | null;
+  if (!body || typeof body.path !== "string") return null;
+  const size = Number(body.sizeBytes ?? 0);
+  const max = Number(body.maxBytes ?? 0);
+  return {
+    path: body.path,
+    rotatedPath: typeof body.rotatedPath === "string" ? body.rotatedPath : "",
+    sizeBytes: Number.isFinite(size) && size > 0 ? size : 0,
+    maxBytes: Number.isFinite(max) && max > 0 ? max : 0,
+    lines: Array.isArray(body.lines)
+      ? body.lines.filter((line): line is string => typeof line === "string")
+      : [],
+    truncated: body.truncated === true,
+    quiet: body.quiet === true,
+    level: typeof body.level === "string" ? body.level : "info",
+    running: body.running === true,
+    startupError:
+      typeof body.startupError === "string" ? body.startupError : "",
+  };
+}

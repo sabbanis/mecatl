@@ -103,8 +103,19 @@ describe("fetchHarnessSessionIdentity", () => {
         contextWindow: 400000,
         reasoningEffort: "",
       },
-      placement: { kind: "worktree", label: "feature-x", branch: "feature/x" },
+      placement: {
+        kind: "worktree",
+        label: "feature-x",
+        branch: "feature/x",
+        revision: "abc",
+      },
       createdAtUnix: 1755000000,
+      titleProvenance: "",
+      kind: "",
+      turns: 0,
+      toolCalls: 0,
+      limits: null,
+      relationship: null,
     });
   });
 

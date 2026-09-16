@@ -10,7 +10,16 @@
  * edited directly and preserved byte-for-byte.
  */
 
-export type CronRepeat = "daily" | "weekdays" | "weekly" | "monthly" | "custom";
+export type CronRepeat =
+  | "daily"
+  | "weekdays"
+  | "weekly"
+  | "monthly"
+  | "interval"
+  | "custom";
+
+/** The unit an `interval` repeat counts in. */
+export type CronIntervalUnit = "minutes" | "hours";
 
 /** The builder's parsed view of a cron string. */
 export interface CronBuilder {
@@ -21,6 +30,10 @@ export interface CronBuilder {
   weekday: number;
   /** Day of month for `monthly` (1–28 — the days every month has). */
   monthday: number;
+  /** Step for `interval` (1–59 minutes or 1–23 hours). */
+  every: number;
+  /** Unit for `interval`. */
+  unit: CronIntervalUnit;
 }
 
 /** What `builderToCron` needs; `custom` never derives (the raw string wins). */
@@ -29,6 +42,8 @@ export interface CronBuilderShape {
   time: string;
   weekday?: number;
   monthday?: number;
+  every?: number;
+  unit?: CronIntervalUnit;
 }
 
 /** The builder can never derive an empty cron: a blank time falls back here. */
@@ -66,6 +81,14 @@ export function builderToCron(shape: CronBuilderShape): string {
       const monthday = clampInt(shape.monthday ?? 1, 1, 28);
       return `${at} ${monthday} * *`;
     }
+    case "interval": {
+      // The "every N" shapes ignore the time control entirely.
+      if ((shape.unit ?? "minutes") === "hours") {
+        const every = clampInt(shape.every ?? 1, 1, 23);
+        return every === 1 ? "0 * * * *" : `0 */${every} * * *`;
+      }
+      return `*/${clampInt(shape.every ?? 30, 1, 59)} * * * *`;
+    }
   }
 }
 
@@ -79,19 +102,47 @@ const CUSTOM: CronBuilder = {
   time: "09:00",
   weekday: 1,
   monthday: 1,
+  every: 30,
+  unit: "minutes",
 };
 
 /**
- * Best-effort inverse of `builderToCron`, recognising exactly the four shapes
- * it emits (single numeric minute+hour, month always `*`). Anything else —
- * steps, lists, ranges beyond `1-5`, multiple fields — maps to `custom` with
- * neutral defaults for the unused controls; the caller keeps the raw string.
+ * Best-effort inverse of `builderToCron`, recognising exactly the shapes it
+ * emits: the interval steps (`*\/N * * * *`, `0 *\/N * * *`, `0 * * * *`) and
+ * the single numeric minute+hour shapes (month always `*`). Anything else —
+ * other steps, lists, ranges beyond `1-5`, multiple fields — maps to `custom`
+ * with neutral defaults for the unused controls; the caller keeps the raw
+ * string.
  */
 export function cronToBuilder(cron: string): CronBuilder {
   const parts = cron.trim().split(/\s+/);
   if (parts.length !== 5) return CUSTOM;
   const [min, hour, dom, mon, dow] = parts;
   if (mon !== "*") return CUSTOM;
+
+  // Interval shapes come first: their minute/hour fields are steps, not
+  // numerics, so the fixed-time parse below would file them under custom.
+  if (dom === "*" && dow === "*") {
+    const minuteStep = /^\*\/(\d{1,2})$/.exec(min);
+    if (minuteStep && hour === "*") {
+      const every = Number(minuteStep[1]);
+      if (every >= 1 && every <= 59)
+        return { ...CUSTOM, repeat: "interval", every, unit: "minutes" };
+      return CUSTOM;
+    }
+    if (min === "0") {
+      if (hour === "*")
+        return { ...CUSTOM, repeat: "interval", every: 1, unit: "hours" };
+      const hourStep = /^\*\/(\d{1,2})$/.exec(hour);
+      if (hourStep) {
+        const every = Number(hourStep[1]);
+        if (every >= 1 && every <= 23)
+          return { ...CUSTOM, repeat: "interval", every, unit: "hours" };
+        return CUSTOM;
+      }
+    }
+  }
+
   if (!/^\d{1,2}$/.test(min) || !/^\d{1,2}$/.test(hour)) return CUSTOM;
   const minute = Number(min);
   const hourNum = Number(hour);

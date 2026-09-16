@@ -58,6 +58,11 @@ describe("shortcut registry", () => {
     expect(SHORTCUTS.find((s) => s.id === "agents.toggle")?.group).toBe(
       "General",
     );
+    // The `/session` details dialog: ⌘I is preventable everywhere; ⌘⇧I is
+    // DevTools on Windows/Linux and would never reach the page.
+    expect(byId.get("chat.details")).toBe("mod+i");
+    expect(SHORTCUTS.find((s) => s.id === "chat.details")?.group).toBe("Chats");
+    expect(comboFiresWhileTyping("mod+i")).toBe(true);
   });
 
   it("binds the schedules list filter to a bare slash in its own group", () => {
@@ -102,6 +107,51 @@ describe("shortcut registry", () => {
     );
     expect(firstMatch(ev("PageUp"))).toBe("transcript.pageUp");
     expect(firstMatch(ev("PageDown"))).toBe("transcript.pageDown");
+  });
+
+  it("documents the transcript select-all as a fixed ⌘A in the Conversation group", () => {
+    const def = SHORTCUTS.find((s) => s.id === "transcript.selectAll");
+    expect(def?.combo).toBe("mod+a");
+    expect(def?.group).toBe("Conversation");
+    // Fixed: the transcript container owns the keydown, so the chord fires
+    // only while the conversation has focus; the dispatcher never claims
+    // mod+a (no component registers a handler for this id).
+    expect(def?.fixed).toBe(true);
+    expect(keycaps("mod+a")).toEqual(["⌘", "A"]);
+  });
+
+  it("binds the model + effort picker opener (the TUI's F7) to a preventable, browser-free chord", () => {
+    const def = SHORTCUTS.find((s) => s.id === "composer.model");
+    // Off ⌘⇧M: Chrome's profile switcher / Firefox's responsive-design mode.
+    expect(def?.combo).toBe("mod+shift+f");
+    expect(def?.group).toBe("Composer");
+    expect(def?.description).toBe("Open the model and effort picker");
+    // Dispatched (the picker registers a handler), so NOT documentation-only.
+    expect(def?.fixed).toBeUndefined();
+    expect(comboFiresWhileTyping("mod+shift+f")).toBe(true);
+    expect(
+      matchCombo("mod+shift+f", ev("F", { meta: true, shift: true })),
+    ).toBe(true);
+    expect(matchCombo("mod+shift+f", ev("f", { ctrl: true }))).toBe(false);
+  });
+
+  it("marks every composer binding fixed (component-owned, documentation-only)", () => {
+    // The picker opener is the one dispatched composer shortcut.
+    const composer = SHORTCUTS.filter(
+      (s) => s.id.startsWith("composer.") && s.id !== "composer.model",
+    );
+    expect(composer.length).toBeGreaterThan(0);
+    for (const def of composer) expect(def.fixed).toBe(true);
+    // The dispatched bindings are NOT fixed — they have handlers.
+    for (const id of ["close.esc", "search.open", "transcript.pageUp"]) {
+      expect(SHORTCUTS.find((s) => s.id === id)?.fixed).toBeUndefined();
+    }
+  });
+
+  it("phrases Esc's layering: selection, then the side panel, then the run", () => {
+    expect(SHORTCUTS.find((s) => s.id === "close.esc")?.description).toBe(
+      "Clear the selection, close the side panel — or stop the running turn",
+    );
   });
 });
 

@@ -117,7 +117,14 @@ async function withRunnableSession<T>(
  */
 export async function createHarnessSession(
   mode: "default" | "plan" | "accept_edits" = "default",
-  options?: { modelId?: string; providerId?: string; signal?: AbortSignal },
+  options?: {
+    modelId?: string;
+    providerId?: string;
+    /** A reasoning-effort tier (low…max); ""/absent omits the field so the
+     *  operator's `--reasoning-effort` default applies. */
+    reasoningEffort?: string;
+    signal?: AbortSignal;
+  },
 ): Promise<string> {
   const session = await harness(() =>
     getHarnessClient().sessions.create(
@@ -131,6 +138,9 @@ export async function createHarnessSession(
               modelId: options.modelId,
               ...(options.providerId ? { providerId: options.providerId } : {}),
             }
+          : {}),
+        ...(options?.reasoningEffort
+          ? { reasoningEffort: options.reasoningEffort }
           : {}),
       },
       { signal: options?.signal },
@@ -155,7 +165,14 @@ export class ThreadSourceBusyError extends Error {
 /** Forks `sourceSessionId` (`POST /v1/sessions/{id}/fork`), typing the 412. */
 async function forkHarnessSession(
   sourceSessionId: string,
-  options: { title?: string; modelId?: string; providerId?: string },
+  options: {
+    title?: string;
+    modelId?: string;
+    providerId?: string;
+    /** A reasoning-effort tier for the fork; ""/absent omits the field. A
+     *  fork accepts an effort WITHOUT a model (the source's model carries). */
+    reasoningEffort?: string;
+  },
   signal?: AbortSignal,
 ): Promise<string> {
   let session: Session;
@@ -166,6 +183,9 @@ async function forkHarnessSession(
         ...(options.title ? { title: options.title } : {}),
         ...(options.modelId
           ? { modelId: options.modelId, providerId: options.providerId }
+          : {}),
+        ...(options.reasoningEffort
+          ? { reasoningEffort: options.reasoningEffort }
           : {}),
       },
       { signal },
@@ -193,9 +213,45 @@ export async function forkHarnessSessionToModel(
   title: string,
   signal?: AbortSignal,
 ): Promise<string> {
+  return forkHarnessSessionToSelection(
+    sourceSessionId,
+    { model },
+    title,
+    signal,
+  );
+}
+
+/**
+ * What a mid-chat switch changes: the model (null/absent = the daemon's own
+ * routing/default), the reasoning-effort tier (""/absent = the operator
+ * default), or both. An effort switch alone keeps the source's model.
+ */
+export interface HarnessForkSelection {
+  model?: { modelId: string; providerId: string } | null;
+  reasoningEffort?: string;
+}
+
+/**
+ * Continues an existing chat on a different model and/or reasoning-effort
+ * tier — the same FORK as `forkHarnessSessionToModel` (the daemon fixes both
+ * at create), carrying the source's title. A running/awaiting source answers
+ * 412 (ThreadSourceBusyError).
+ */
+export async function forkHarnessSessionToSelection(
+  sourceSessionId: string,
+  selection: HarnessForkSelection,
+  title: string,
+  signal?: AbortSignal,
+): Promise<string> {
   return forkHarnessSession(
     sourceSessionId,
-    { title, ...(model ? model : {}) },
+    {
+      title,
+      ...(selection.model ? selection.model : {}),
+      ...(selection.reasoningEffort
+        ? { reasoningEffort: selection.reasoningEffort }
+        : {}),
+    },
     signal,
   );
 }
@@ -446,6 +502,41 @@ export async function cancelHarnessRun(
     await session.controls(runId).cancel();
   } catch {
     // Fire-and-forget by contract.
+  }
+}
+
+/** The outcome of a per-child cancel: the daemon accepted it, or the child
+ *  was already gone (finished, or never known to this run). */
+export type HarnessChildCancelOutcome = "cancelled" | "not_found";
+
+/**
+ * Cancels ONE running delegated child — a subagent, a parallel branch, or a
+ * team member — by its child session id, while the parent run keeps
+ * streaming (`POST /v1/sessions/{id}/cancel-child`, mirroring `/approve`).
+ * The daemon retracts any permission ask the child had surfaced; the
+ * stream's `retract` frame then dismisses it client-side.
+ *
+ * NOT fire-and-forget, unlike `cancelHarnessRun`: the UI reports the outcome.
+ * A 404 `child_not_found` (an unknown or already-finished child) or a bare
+ * `not_found` reads as "already finished"; a 409 `no_active_run` and every
+ * transport fault propagate as the typed HarnessApiError.
+ */
+export async function cancelHarnessChild(
+  sessionId: string,
+  childId: string,
+): Promise<HarnessChildCancelOutcome> {
+  const session = await harnessSession(sessionId);
+  try {
+    await harness(() => session.cancelChild(childId));
+    return "cancelled";
+  } catch (error) {
+    if (
+      error instanceof HarnessApiError &&
+      (error.code === "child_not_found" || error.code === "not_found")
+    ) {
+      return "not_found";
+    }
+    throw error;
   }
 }
 
@@ -706,25 +797,82 @@ export async function fetchHarnessSessionDetail(
 export interface HarnessSessionIdentity {
   id: string;
   title: string;
+  /** "operator" / "first-prompt" / "generated"; "" on an older daemon. */
+  titleProvenance: string;
   state: string;
+  /** The daemon's session kind (main/subagent/team_member/scheduled/debug…);
+   *  "" when an older daemon omits it. */
+  kind: string;
   mode: SessionPermissionMode;
   resolvedModel: HarnessResolvedModel | null;
-  placement: { kind: string; label: string; branch: string } | null;
+  placement: {
+    kind: string;
+    label: string;
+    branch: string;
+    revision: string;
+  } | null;
   /** Unix seconds; 0 when the daemon reports none. */
   createdAtUnix: number;
+  turns: number;
+  toolCalls: number;
+  /** Null when the daemon echoes no limits block (older daemon). */
+  limits: {
+    maxTurns: number;
+    maxToolCalls: number;
+    maxConsecutiveFailures: number;
+  } | null;
+  /** How this session relates to others (ADR 0254 and the delegation
+   *  families): only the fields the daemon set; null when it set none. */
+  relationship: HarnessSessionRelationship | null;
 }
 
-export async function fetchHarnessSessionIdentity(
-  sessionId: string,
-  signal?: AbortSignal,
-): Promise<HarnessSessionIdentity> {
-  const snapshot = await fetchSnapshot(sessionId, signal);
+interface HarnessSessionRelationship {
+  parentSessionId?: string;
+  callId?: string;
+  branchIndex?: number;
+  scheduleName?: string;
+  originSessionId?: string;
+  teamId?: string;
+  memberName?: string;
+  debugTargetSessionId?: string;
+}
+
+function relationshipFromSnapshot(
+  value: SessionSnapshot["relationship"],
+): HarnessSessionRelationship | null {
+  if (!value) return null;
+  const out: HarnessSessionRelationship = {};
+  if (value.parentSessionId) out.parentSessionId = value.parentSessionId;
+  if (value.callId) out.callId = value.callId;
+  if (value.branchIndex !== undefined && value.branchIndex > 0)
+    out.branchIndex = value.branchIndex;
+  if (value.scheduleName) out.scheduleName = value.scheduleName;
+  if (value.originSessionId) out.originSessionId = value.originSessionId;
+  if (value.teamId) out.teamId = value.teamId;
+  if (value.memberName) out.memberName = value.memberName;
+  if (value.debugTargetSessionId)
+    out.debugTargetSessionId = value.debugTargetSessionId;
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+/**
+ * The pure projection behind `fetchHarnessSessionIdentity`: everything the
+ * details dialog shows, read off one GET-session snapshot. Tolerates an
+ * older daemon that omits placement, relationship, limits, kind or title.
+ */
+export function sessionIdentityFromSnapshot(
+  snapshot: SessionSnapshot,
+  fallbackId = "",
+): HarnessSessionIdentity {
   const resolved = snapshot.resolvedModel;
   const placement = snapshot.placement;
+  const limits = snapshot.limits;
   return {
-    id: snapshot.sessionId || sessionId,
+    id: snapshot.sessionId || fallbackId,
     title: snapshot.title?.value ?? "",
+    titleProvenance: snapshot.title?.provenance ?? "",
     state: snapshot.state ?? "",
+    kind: snapshot.kind ?? "",
     mode: sessionPermissionModeFromSdk(snapshot.mode),
     resolvedModel: resolved
       ? {
@@ -740,10 +888,29 @@ export async function fetchHarnessSessionIdentity(
             kind: placement.kind,
             label: placement.label,
             branch: placement.branch,
+            revision: placement.revision ?? "",
           }
         : null,
     createdAtUnix: Number(snapshot.createdAtUnix) || 0,
+    turns: Number(snapshot.turns) || 0,
+    toolCalls: Number(snapshot.toolCalls) || 0,
+    limits: limits
+      ? {
+          maxTurns: Number(limits.maxTurns) || 0,
+          maxToolCalls: Number(limits.maxToolCalls) || 0,
+          maxConsecutiveFailures: Number(limits.maxConsecutiveFailures) || 0,
+        }
+      : null,
+    relationship: relationshipFromSnapshot(snapshot.relationship),
   };
+}
+
+export async function fetchHarnessSessionIdentity(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<HarnessSessionIdentity> {
+  const snapshot = await fetchSnapshot(sessionId, signal);
+  return sessionIdentityFromSnapshot(snapshot, sessionId);
 }
 
 // ── Clear (the /clear built-in) ─────────────────────────────────────────────

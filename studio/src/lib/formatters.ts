@@ -135,10 +135,23 @@ export function describeCron(expr: string): string {
   const numHour = /^\d+$/.test(hour);
 
   if (everyMin && hour === "*" && dom === "*" && mon === "*" && dow === "*") {
-    return `Every ${everyMin[1]} minutes`;
+    return Number(everyMin[1]) === 1
+      ? "Every minute"
+      : `Every ${everyMin[1]} minutes`;
+  }
+  if (
+    min === "0" &&
+    hour === "*" &&
+    dom === "*" &&
+    mon === "*" &&
+    dow === "*"
+  ) {
+    return "Every hour";
   }
   if (everyHour && numMin && dom === "*" && mon === "*" && dow === "*") {
-    return `Every ${everyHour[1]} hours`;
+    return Number(everyHour[1]) === 1
+      ? "Every hour"
+      : `Every ${everyHour[1]} hours`;
   }
   if (numMin && numHour && mon === "*") {
     const time = formatClock(Number(hour), Number(min));

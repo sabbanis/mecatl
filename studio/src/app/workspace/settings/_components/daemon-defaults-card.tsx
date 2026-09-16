@@ -30,6 +30,7 @@ import {
   validateDaemonDefaults,
 } from "@/lib/harness/client";
 import { KNOWN_AUTH_PROVIDERS } from "@/lib/provider-auth.mjs";
+import { LlmTimeoutRows } from "./llm-timeout-rows";
 import {
   ExternalManagedNote,
   Note,
@@ -61,6 +62,9 @@ export interface DaemonDefaultsFormDraft {
   subagentModel: string;
   reasoningEffort: string;
   contextWindowOverride: string;
+  /** Whole seconds as typed; "" saves as mecated's own default. */
+  llmPerAttemptTimeout: string;
+  llmStreamIdleTimeout: string;
   promptCacheEnabled: boolean;
   anthropicTtl: string;
   baseUrls: Record<string, string>;
@@ -101,6 +105,8 @@ export function draftFromDefaults(
     contextWindowOverride: saved.contextWindowOverride
       ? String(saved.contextWindowOverride)
       : "",
+    llmPerAttemptTimeout: String(saved.llmTimeouts.perAttemptSeconds),
+    llmStreamIdleTimeout: String(saved.llmTimeouts.streamIdleSeconds),
     promptCacheEnabled: !saved.promptCache.disabled,
     anthropicTtl: saved.promptCache.anthropicTtl,
     baseUrls: Object.fromEntries(
@@ -138,6 +144,10 @@ export function defaultsFromDraft(
     models,
     reasoningEffort: draft.reasoningEffort,
     contextWindowOverride: draft.contextWindowOverride.trim() || 0,
+    llmTimeouts: {
+      perAttemptSeconds: draft.llmPerAttemptTimeout.trim(),
+      streamIdleSeconds: draft.llmStreamIdleTimeout.trim(),
+    },
     promptCache: {
       disabled: !draft.promptCacheEnabled,
       anthropicTtl: draft.anthropicTtl,
@@ -387,6 +397,19 @@ export function DaemonDefaultsCard({
               className="font-mono"
             />
           </SettingsRow>
+
+          <LlmTimeoutRows
+            value={{
+              perAttempt: view.llmPerAttemptTimeout,
+              streamIdle: view.llmStreamIdleTimeout,
+            }}
+            onChange={(next) =>
+              patch({
+                llmPerAttemptTimeout: next.perAttempt,
+                llmStreamIdleTimeout: next.streamIdle,
+              })
+            }
+          />
 
           <SettingsRow
             label="Provider-side prompt caching"

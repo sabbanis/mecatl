@@ -312,6 +312,33 @@ describe("MessageBubble delegation row", () => {
     expect(screen.getByRole("status", { name: "running" })).toBeInTheDocument();
   });
 
+  it("threads onCancelDelegation to a running card's cancel control and offers none on a done card", () => {
+    const onCancel = vi.fn();
+    render(
+      <MessageBubble
+        message={assistant({
+          delegations: [
+            card({ childId: "c-live" }),
+            card({
+              childId: "c-done",
+              label: "finished",
+              stop: "end_turn",
+              durationMs: 1000,
+            }),
+          ],
+        })}
+        onCancelDelegation={onCancel}
+      />,
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Cancel subagent explore" }),
+    );
+    expect(onCancel).toHaveBeenCalledWith("c-live");
+    expect(
+      screen.queryByRole("button", { name: "Cancel subagent finished" }),
+    ).toBeNull();
+  });
+
   it("threads onOpenDelegation and the message's groups to the cards", () => {
     const onOpen = vi.fn();
     const group: DelegationGroupInfo = {

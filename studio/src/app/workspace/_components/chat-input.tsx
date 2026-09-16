@@ -57,6 +57,7 @@ import {
   useEnterSendBehavior,
 } from "@/lib/profile-preferences";
 import type { SessionPermissionMode } from "@/lib/protocol";
+import { effortLabel } from "@/lib/reasoning-effort";
 import { cn } from "@/lib/utils";
 import {
   type ComposerMenuItem,
@@ -64,6 +65,12 @@ import {
   createComposerMentions,
   setComposerText,
 } from "./composer-mentions";
+import {
+  EffortSheetSection,
+  EffortSubmenu,
+  effortTriggerLabel,
+  ModelPickerShortcut,
+} from "./effort-picker";
 
 interface ProjectItem {
   id: string;
@@ -126,6 +133,22 @@ interface ChatInputProps {
   onSwitchModel?: (option: ComposerModelOption | null) => void;
   /** The live session's current model id ("" = auto). */
   currentModelId?: string;
+  /** Draft: the pending reasoning-effort tier as a WIRE value ("" = auto),
+   *  applied when the first send mints the session. */
+  effort?: string;
+  onEffortChange?: (wire: string) => void;
+  /** Live-chat effort switch: picking forks the chat onto the tier (the
+   *  daemon fixes a session's effort at create, like its model). */
+  onSwitchEffort?: (wire: string) => void;
+  /** The live session's EFFECTIVE tier (resolved_model.reasoning_effort;
+   *  "" = auto), for the checkmark and the trigger label. */
+  currentEffort?: string;
+  /** The live session's model `reasoning` flag; false shows the Effort
+   *  list's "a tier may be ignored" warning. */
+  currentModelReasoning?: boolean;
+  /** False when the daemon's model_selection capability is off: hides the
+   *  Effort list along with the model list. */
+  effortSupported?: boolean;
   /** The session's current permission mode, shown by the Mode selector. */
   mode?: SessionPermissionMode;
   /** Renders the Mode selector (first in the control bar) when provided.
@@ -204,7 +227,7 @@ const mobileViewport = () =>
 /** The daemon-picks sentinel (model_id omitted at create). Its label is
  *  supplied by the caller: "Auto-routed" only while the router is really on. */
 const AUTO_MODEL_ID = "";
-const autoModel = (label?: string) => ({
+const autoModel = (label?: string): ComposerModelOption => ({
   id: AUTO_MODEL_ID,
   label: label ?? "Default model",
 });
@@ -214,18 +237,15 @@ export interface ComposerModelOption {
   label: string;
   /** The daemon requires provider_id whenever model_id rides a create. */
   providerId?: string;
+  /** The inventory's `reasoning` flag: false → the Effort list warns that a
+   *  tier may be ignored; absent = unknown (no warning). */
+  reasoning?: boolean;
 }
 
-const EFFORT_LEVELS = [
-  { id: "light", label: "Light" },
-  { id: "medium", label: "Medium" },
-  { id: "high", label: "High" },
-  { id: "extra-high", label: "Extra High" },
-] as const;
-
-type EffortId = (typeof EFFORT_LEVELS)[number]["id"];
-
-const DEFAULT_EFFORT_ID: EffortId = "medium";
+/** The reasoning-effort sentinel as a WIRE value: "" = auto (the create/fork
+ *  body omits `reasoning_effort`, so the operator's default applies). The
+ *  tiers themselves live in `@/lib/reasoning-effort` (see ./effort-picker). */
+const DEFAULT_EFFORT = "";
 
 /** One tappable choice row inside a mobile picker sheet (MobileChatMenu's
  *  row idiom plus a trailing checkmark). */
@@ -282,13 +302,19 @@ function SheetSectionLabel({ children }: { children: React.ReactNode }) {
  * flattened into sections — it stays open across taps so model and effort
  * can be set in one visit.
  */
-function ModelEffortSelector({
+export function ModelEffortSelector({
   onModelChange,
   lockedLabel,
   onSwitchModel,
   currentModelId,
   models,
   autoModelLabel,
+  effort,
+  onEffortChange,
+  onSwitchEffort,
+  currentEffort,
+  currentModelReasoning,
+  effortSupported = true,
 }: {
   onModelChange?: (id: string) => void;
   lockedLabel?: string;
@@ -297,10 +323,24 @@ function ModelEffortSelector({
   currentModelId?: string;
   models?: ComposerModelOption[];
   autoModelLabel?: string;
+  /** Draft: the pending reasoning-effort WIRE value ("" = auto), controlled
+   *  by the caller; uncontrolled local state when absent. */
+  effort?: string;
+  onEffortChange?: (wire: string) => void;
+  /** Live-chat switch: picking forks the chat onto the effort tier. */
+  onSwitchEffort?: (wire: string) => void;
+  /** The live session's resolved_model.reasoning_effort ("" = auto). */
+  currentEffort?: string;
+  /** The live session's model `reasoning` flag (false → warning row). */
+  currentModelReasoning?: boolean;
+  /** False when the daemon's model_selection capability is off: the Effort
+   *  submenu is hidden with the model list. */
+  effortSupported?: boolean;
 }) {
   const modelOptions = [autoModel(autoModelLabel), ...(models ?? [])];
   const [model, setModel] = useState<string>(AUTO_MODEL_ID);
-  const [effort, setEffort] = useState<EffortId>(DEFAULT_EFFORT_ID);
+  const [localEffort, setLocalEffort] = useState<string>(DEFAULT_EFFORT);
+  const [menuOpen, setMenuOpen] = useState(false);
   const switchId = currentModelId ?? AUTO_MODEL_ID;
   const selectedModel = onSwitchModel
     ? (modelOptions.find((m) => m.id === switchId) ?? {
@@ -308,8 +348,25 @@ function ModelEffortSelector({
         label: switchId || autoModel(autoModelLabel).label,
       })
     : (modelOptions.find((m) => m.id === model) ?? modelOptions[0]);
-  const selectedEffort =
-    EFFORT_LEVELS.find((e) => e.id === effort) ?? EFFORT_LEVELS[1];
+  // Draft: the pending pick (caller-controlled when wired). Live: the
+  // daemon's EFFECTIVE tier — never the local pick.
+  const draftEffort = effort ?? localEffort;
+  const selectedEffort = onSwitchModel ? (currentEffort ?? "") : draftEffort;
+  const showEffort =
+    effortSupported && (onSwitchModel ? Boolean(onSwitchEffort) : true);
+  // The `reasoning` flag of the model the tier would apply to: the live
+  // session's (caller-supplied, else its listed option) or the draft's picked
+  // option; undefined (auto-routed / unlisted) renders no warning.
+  const pickedOption = modelOptions.find(
+    (m) => m.id === (onSwitchModel ? switchId : model),
+  );
+  const modelReasoning = onSwitchModel
+    ? (currentModelReasoning ?? pickedOption?.reasoning)
+    : pickedOption?.reasoning;
+  // The TUI's F7 analogue: only the picker wired to a session registers the
+  // shortcut (the thread panel's composer is not), so the main chat's picker
+  // always wins.
+  const shortcutWired = Boolean(onSwitchModel || onEffortChange);
 
   // The toolbar is a CSS container (@container on the footer row): below
   // ~28rem — a narrow side-panel composer, not just mobile viewports — the
@@ -330,23 +387,26 @@ function ModelEffortSelector({
   }
 
   return (
-    <DropdownMenu>
+    <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+      {shortcutWired && (
+        <ModelPickerShortcut onOpen={() => setMenuOpen(true)} />
+      )}
       <DropdownMenuTrigger asChild>
         <Button
           size="sm"
           className={GHOST_TRIGGER_CLASS}
           title={
-            onSwitchModel
-              ? selectedModel.label
-              : `${selectedModel.label} · ${selectedEffort.label}`
+            showEffort
+              ? effortTriggerLabel(selectedModel.label, selectedEffort)
+              : selectedModel.label
           }
         >
           <span className="max-w-40 truncate @max-md:hidden">
             {selectedModel.label}
           </span>
-          {!onSwitchModel && (
+          {showEffort && (
             <span className="max-w-24 truncate text-muted-foreground @max-md:hidden">
-              {selectedEffort.label}
+              {effortLabel(selectedEffort)}
             </span>
           )}
           <span className="hidden @max-md:inline">Model</span>
@@ -400,48 +460,33 @@ function ModelEffortSelector({
             })}
           </DropdownMenuSubContent>
         </DropdownMenuSub>
-        {!onSwitchModel && (
-          <DropdownMenuSub>
-            <DropdownMenuSubTrigger>
-              <span className="flex-1">Effort</span>
-              <span className="text-muted-foreground">
-                {selectedEffort.label}
-              </span>
-            </DropdownMenuSubTrigger>
-            <DropdownMenuSubContent className="w-72 p-2">
-              {EFFORT_LEVELS.map((e) => {
-                const isSelected = e.id === effort;
-                return (
-                  <DropdownMenuItem
-                    key={e.id}
-                    className={cn(
-                      "flex items-center gap-3 rounded-lg px-3 py-3 text-sm cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-800 justify-between",
-                      isSelected && "bg-zinc-100 dark:bg-zinc-800",
-                    )}
-                    onClick={() => setEffort(e.id)}
-                  >
-                    <span className="font-medium">{e.label}</span>
-                    <Check
-                      className={cn(
-                        "size-4 shrink-0",
-                        isSelected ? "text-foreground" : "text-transparent",
-                      )}
-                    />
-                  </DropdownMenuItem>
-                );
-              })}
-            </DropdownMenuSubContent>
-          </DropdownMenuSub>
+        {showEffort && (
+          <EffortSubmenu
+            value={selectedEffort}
+            live={Boolean(onSwitchModel)}
+            modelReasoning={modelReasoning}
+            onPick={(wire) => {
+              if (onSwitchModel) {
+                if (wire !== selectedEffort) onSwitchEffort?.(wire);
+                return;
+              }
+              setLocalEffort(wire);
+              onEffortChange?.(wire);
+            }}
+          />
         )}
         {!onSwitchModel && (
           <>
             <DropdownMenuSeparator />
             <DropdownMenuItem
-              disabled={model === AUTO_MODEL_ID && effort === DEFAULT_EFFORT_ID}
+              disabled={
+                model === AUTO_MODEL_ID && draftEffort === DEFAULT_EFFORT
+              }
               onClick={() => {
                 setModel(AUTO_MODEL_ID);
-                setEffort(DEFAULT_EFFORT_ID);
+                setLocalEffort(DEFAULT_EFFORT);
                 onModelChange?.(AUTO_MODEL_ID);
+                onEffortChange?.(DEFAULT_EFFORT);
               }}
             >
               <RotateCcw className="size-4 mr-2 text-muted-foreground" />
@@ -610,6 +655,12 @@ function MobileComposerMenu({
   modeDisabled,
   models,
   autoModelLabel,
+  effort,
+  onEffortChange,
+  onSwitchEffort,
+  currentEffort,
+  currentModelReasoning,
+  effortSupported = true,
 }: {
   onFilesSelected: (files: File[]) => void;
   onModelChange?: (id: string) => void;
@@ -624,11 +675,22 @@ function MobileComposerMenu({
   modeDisabled?: boolean;
   models?: ComposerModelOption[];
   autoModelLabel?: string;
+  /** Draft: the pending reasoning-effort WIRE value ("" = auto). */
+  effort?: string;
+  onEffortChange?: (wire: string) => void;
+  /** Live chat: picking forks the chat onto the effort tier. */
+  onSwitchEffort?: (wire: string) => void;
+  /** The live session's resolved_model.reasoning_effort ("" = auto). */
+  currentEffort?: string;
+  /** The live session's model `reasoning` flag (false → warning row). */
+  currentModelReasoning?: boolean;
+  /** False when the daemon's model_selection capability is off. */
+  effortSupported?: boolean;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [sub, setSub] = useState<"mode" | "model" | "memory" | null>(null);
   const [model, setModel] = useState<string>(AUTO_MODEL_ID);
-  const [effort, setEffort] = useState<EffortId>(DEFAULT_EFFORT_ID);
+  const [localEffort, setLocalEffort] = useState<string>(DEFAULT_EFFORT);
   const [memoryOn, setMemoryOn] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const modelOptions = [autoModel(autoModelLabel), ...(models ?? [])];
@@ -641,8 +703,18 @@ function MobileComposerMenu({
     id: switchId,
     label: switchId || autoModel(autoModelLabel).label,
   };
-  const selectedEffort =
-    EFFORT_LEVELS.find((e) => e.id === effort) ?? EFFORT_LEVELS[1];
+  // Same two-mode split as the desktop selector: the draft's pending pick
+  // (caller-controlled when wired) vs the live session's EFFECTIVE tier.
+  const draftEffort = effort ?? localEffort;
+  const selectedEffort = onSwitchModel ? (currentEffort ?? "") : draftEffort;
+  const showEffort =
+    effortSupported && (onSwitchModel ? Boolean(onSwitchEffort) : true);
+  const modelReasoning = onSwitchModel
+    ? (currentModelReasoning ??
+      modelOptions.find((m) => m.id === switchId)?.reasoning)
+    : selectedModel.reasoning;
+  const withEffort = (label: string) =>
+    showEffort ? effortTriggerLabel(label, selectedEffort) : label;
 
   const menuRow =
     "flex w-full items-center gap-3 px-4 py-3 text-sm transition-colors hover:bg-muted/50 disabled:opacity-50";
@@ -720,9 +792,8 @@ function MobileComposerMenu({
               <span className="flex-1 text-left">Model</span>
               <span className="text-muted-foreground">
                 {onSwitchModel
-                  ? switchSelected.label
-                  : (modelLockedLabel ??
-                    `${selectedModel.label} ${selectedEffort.label}`)}
+                  ? withEffort(switchSelected.label)
+                  : (modelLockedLabel ?? withEffort(selectedModel.label))}
               </span>
               {(!modelLockedLabel || onSwitchModel) && (
                 <ChevronRight className="size-4 text-muted-foreground/60" />
@@ -804,31 +875,44 @@ function MobileComposerMenu({
                 }}
               />
             ))}
-            {!onSwitchModel && <SheetSectionLabel>Effort</SheetSectionLabel>}
-            {!onSwitchModel &&
-              EFFORT_LEVELS.map((e) => (
-                <SheetOptionRow
-                  key={e.id}
-                  label={e.label}
-                  selected={e.id === effort}
-                  onSelect={() => setEffort(e.id)}
-                />
-              ))}
-            <div className="mx-4 my-1 h-px bg-border" />
-            <button
-              type="button"
-              disabled={model === AUTO_MODEL_ID && effort === DEFAULT_EFFORT_ID}
-              onClick={() => {
-                setModel(AUTO_MODEL_ID);
-                setEffort(DEFAULT_EFFORT_ID);
-                onModelChange?.(AUTO_MODEL_ID);
-                setSub(null);
-              }}
-              className={cn(menuRow, "text-muted-foreground")}
-            >
-              <RotateCcw className="size-4" />
-              Reset to default
-            </button>
+            {showEffort && (
+              <EffortSheetSection
+                value={selectedEffort}
+                live={Boolean(onSwitchModel)}
+                modelReasoning={modelReasoning}
+                onPick={(wire) => {
+                  if (onSwitchModel) {
+                    setSub(null);
+                    if (wire !== selectedEffort) onSwitchEffort?.(wire);
+                    return;
+                  }
+                  setLocalEffort(wire);
+                  onEffortChange?.(wire);
+                }}
+              />
+            )}
+            {!onSwitchModel && (
+              <>
+                <div className="mx-4 my-1 h-px bg-border" />
+                <button
+                  type="button"
+                  disabled={
+                    model === AUTO_MODEL_ID && draftEffort === DEFAULT_EFFORT
+                  }
+                  onClick={() => {
+                    setModel(AUTO_MODEL_ID);
+                    setLocalEffort(DEFAULT_EFFORT);
+                    onModelChange?.(AUTO_MODEL_ID);
+                    onEffortChange?.(DEFAULT_EFFORT);
+                    setSub(null);
+                  }}
+                  className={cn(menuRow, "text-muted-foreground")}
+                >
+                  <RotateCcw className="size-4" />
+                  Reset to default
+                </button>
+              </>
+            )}
           </div>
         </SheetContent>
       </Sheet>
@@ -1308,6 +1392,12 @@ export function ChatInput({
   modelLockedLabel,
   onSwitchModel,
   currentModelId,
+  effort,
+  onEffortChange,
+  onSwitchEffort,
+  currentEffort,
+  currentModelReasoning,
+  effortSupported,
   models,
   autoModelLabel,
   onPreviewAttachment,
@@ -1871,6 +1961,12 @@ export function ChatInput({
               modelLockedLabel={modelLockedLabel}
               onSwitchModel={onSwitchModel}
               currentModelId={currentModelId}
+              effort={effort}
+              onEffortChange={onEffortChange}
+              onSwitchEffort={onSwitchEffort}
+              currentEffort={currentEffort}
+              currentModelReasoning={currentModelReasoning}
+              effortSupported={effortSupported}
               mode={mode}
               onModeChange={onModeChange}
               modeDisabled={disabled || isStreaming}
@@ -1983,6 +2079,12 @@ export function ChatInput({
               lockedLabel={modelLockedLabel}
               onSwitchModel={onSwitchModel}
               currentModelId={currentModelId}
+              effort={effort}
+              onEffortChange={onEffortChange}
+              onSwitchEffort={onSwitchEffort}
+              currentEffort={currentEffort}
+              currentModelReasoning={currentModelReasoning}
+              effortSupported={effortSupported}
               onModelChange={(id) => {
                 onModelChange?.(id);
               }}

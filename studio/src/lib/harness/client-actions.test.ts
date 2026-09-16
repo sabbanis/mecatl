@@ -377,6 +377,23 @@ describe("fetchHarnessSessionDetail", () => {
     expect(detail.capabilities).toMatchObject({ manualCompaction: true });
   });
 
+  it("reads the EFFECTIVE reasoning-effort tier off resolved_model.reasoning_effort", async () => {
+    stubHarnessFetch((request) => {
+      if (request.path === "/v1/sessions/s1")
+        return snapshotFor("s1", {
+          resolved_model: {
+            provider_id: "openrouter",
+            model_id: "openai/gpt-5",
+            context_window: 400000,
+            reasoning_effort: "medium",
+          },
+        });
+      return undefined;
+    });
+    const detail = await fetchHarnessSessionDetail("s1");
+    expect(detail.resolvedModel?.reasoningEffort).toBe("medium");
+  });
+
   it("tolerates a daemon that echoes neither field", async () => {
     stubHarnessFetch((request) => {
       if (request.path === "/v1/sessions/s1")

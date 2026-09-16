@@ -1,12 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import {
   loadSentAttachments,
   saveSentAttachments,
 } from "@/lib/attachment-store";
 import { fileFromToolCall } from "@/lib/file-meta";
 import {
+  cancelHarnessChild,
   cancelHarnessRun,
   cancelHarnessSteer,
   cancelMcpAuthorization,
@@ -44,6 +46,8 @@ import {
   type DelegationFleet,
   emptyFleet,
   isDelegationEvent,
+  markCancelling,
+  markCardCancelling,
   reduceDelegationFleet,
 } from "../delegation-fleet";
 import { deliveryMessage, hasDeliveryNote } from "../delivery-message";
@@ -455,6 +459,7 @@ export function reduceWatchEvent(
             callId: event.callId,
             name: event.name,
             input: event.input,
+            rawArgs: event.rawArgs,
             file: event.file,
             status: "running" as const,
           },
@@ -622,6 +627,11 @@ export function useAgentChat(
     /** The composer's pending model pick ("" = auto-routed); read at mint
      *  time like createMode. */
     createModel?: () => { modelId: string; providerId: string } | null;
+    /** The composer's pending reasoning-effort tier ("" = the operator's
+     *  default, field omitted); read at mint time like createMode. Rides
+     *  the create independently of the model pick — an auto-routed session
+     *  can still ask for a tier. */
+    createEffort?: () => string;
     /**
      * The session's daemon lifecycle state from the inventory poll
      * (idle/running/awaiting/…). Reactive — when it reads running/awaiting
@@ -795,6 +805,8 @@ export function useAgentChat(
   createModeRef.current = options?.createMode;
   const createModelRef = useRef(options?.createModel);
   createModelRef.current = options?.createModel;
+  const createEffortRef = useRef(options?.createEffort);
+  createEffortRef.current = options?.createEffort;
 
   /**
    * Rebuilds the message list from the daemon's authoritative transcript,
@@ -1085,6 +1097,8 @@ export function useAgentChat(
               toolName: event.toolName,
               description: event.description,
               details: event.details,
+              reason: event.reason,
+              args: event.args,
               // Against the DAEMON session id: a child's ask is prefixed with
               // the CHILD session id, never this one.
               child: isChildAsk(event.approvalId, sessionId),
@@ -1311,6 +1325,7 @@ export function useAgentChat(
               callId: event.callId,
               name: event.name,
               input: event.input,
+              rawArgs: event.rawArgs,
               file: event.file,
               status: "running",
             };
@@ -1346,6 +1361,8 @@ export function useAgentChat(
                 toolName: event.toolName,
                 description: event.description,
                 details: event.details,
+                reason: event.reason,
+                args: event.args,
                 // Against the DAEMON session id (never Studio's route id):
                 // a child's ask is prefixed with the CHILD session id.
                 child: isChildAsk(event.approvalId, daemonId),
@@ -1736,14 +1753,18 @@ export function useAgentChat(
       try {
         if (!daemonId) {
           const createModel = createModelRef.current?.() ?? null;
+          const createEffort = createEffortRef.current?.() ?? "";
           daemonId = await createHarnessSession(
             encodeSessionPermissionMode(createModeRef.current?.() ?? "default"),
-            createModel
-              ? {
-                  modelId: createModel.modelId,
-                  providerId: createModel.providerId,
-                }
-              : {},
+            {
+              ...(createModel
+                ? {
+                    modelId: createModel.modelId,
+                    providerId: createModel.providerId,
+                  }
+                : {}),
+              ...(createEffort ? { reasoningEffort: createEffort } : {}),
+            },
           );
           daemonIdRef.current = daemonId;
           void refreshSlashCommands(daemonId);
@@ -2425,6 +2446,37 @@ export function useAgentChat(
     setStatus("idle");
   }, [cancelAuthorization, replaceApprovalQueue]);
 
+  /**
+   * Cancels ONE running delegated child (subagent, parallel branch, or team
+   * member) by its session id while the parent run keeps streaming. The
+   * fleet lane and the turn's card show `cancelling…` optimistically; the
+   * child's own terminal frame (`delegation_end`, or the team's `team_end`
+   * disposition) clears the flag. "Already finished" and a refusal clear it
+   * here and say so — a cancel that quietly did nothing reads as a glitch.
+   */
+  const cancelChild = useCallback(async (childId: string) => {
+    const daemonId = daemonIdRef.current;
+    if (!daemonId || !childId) return;
+    setFleet((prev) => markCancelling(prev, childId, true));
+    setMessages((prev) => markCardCancelling(prev, childId, true));
+    const clear = () => {
+      setFleet((prev) => markCancelling(prev, childId, false));
+      setMessages((prev) => markCardCancelling(prev, childId, false));
+    };
+    try {
+      const outcome = await cancelHarnessChild(daemonId, childId);
+      if (outcome === "not_found") {
+        clear();
+        toast.info("That agent already finished.");
+      }
+    } catch (caught) {
+      clear();
+      toast.error(
+        `Could not cancel the agent: ${caught instanceof Error ? caught.message : String(caught)}`,
+      );
+    }
+  }, []);
+
   // Steer is capability-gated (C1.2): the live `capabilities.steer` off
   // /v1/compatibility, or the `http_steer` feature-registry row a rebuilt
   // daemon serves. Absent both, mid-run sends queue instead.
@@ -2790,6 +2842,9 @@ export function useAgentChat(
     consumeRecoverDraft,
     refreshTranscript,
     cancelChat,
+    /** Cancels one live delegated child by its session id; the parent run
+     *  keeps going. Optimistic `cancelling…` on its lane/card until its end. */
+    cancelChild,
     /** The MCP browser authorization the run is parked on (null = none). */
     pendingAuthorization,
     openAuthorization,

@@ -4,6 +4,7 @@ import {
   BASE_URL_KINDS,
   DAEMON_DEFAULTS_EMPTY,
   daemonDefaultArgs,
+  LLM_TIMEOUT_DEFAULTS,
   normalizeDaemonDefaults,
   REASONING_EFFORTS,
   RESERVED_SLOTS,
@@ -43,6 +44,7 @@ const full = {
   },
   reasoningEffort: "High",
   contextWindowOverride: "200000",
+  llmTimeouts: { perAttemptSeconds: " 600 ", streamIdleSeconds: 0 },
   promptCache: { disabled: true, anthropicTtl: "1h" },
   baseUrls: {
     openrouter: "https://gw.example/v1 ",
@@ -102,6 +104,7 @@ describe("normalizeDaemonDefaults", () => {
       },
       reasoningEffort: "high",
       contextWindowOverride: 200_000,
+      llmTimeouts: { perAttemptSeconds: 600, streamIdleSeconds: 0 },
       promptCache: { disabled: true, anthropicTtl: "1h" },
       baseUrls: {
         openrouter: "https://gw.example/v1",
@@ -155,6 +158,74 @@ describe("normalizeDaemonDefaults", () => {
         String(bad),
       ).toMatch(/context window override must be a whole number/);
     }
+  });
+
+  it("reads an absent or blank LLM timeout as mecated's own default and 0 as disabled", () => {
+    expect(LLM_TIMEOUT_DEFAULTS).toEqual({
+      perAttemptSeconds: 300,
+      streamIdleSeconds: 180,
+    });
+    expect(normalizeDaemonDefaults({}).llmTimeouts).toEqual(
+      LLM_TIMEOUT_DEFAULTS,
+    );
+    expect(normalizeDaemonDefaults({ llmTimeouts: {} }).llmTimeouts).toEqual(
+      LLM_TIMEOUT_DEFAULTS,
+    );
+    expect(
+      normalizeDaemonDefaults({
+        llmTimeouts: { perAttemptSeconds: "", streamIdleSeconds: null },
+      }).llmTimeouts,
+    ).toEqual(LLM_TIMEOUT_DEFAULTS);
+    // 0 is a real value — the bound disabled — never "unset".
+    expect(
+      normalizeDaemonDefaults({
+        llmTimeouts: { perAttemptSeconds: 0, streamIdleSeconds: "0" },
+      }).llmTimeouts,
+    ).toEqual({ perAttemptSeconds: 0, streamIdleSeconds: 0 });
+    expect(
+      normalizeDaemonDefaults({
+        llmTimeouts: { perAttemptSeconds: " 900 ", streamIdleSeconds: 86_400 },
+      }).llmTimeouts,
+    ).toEqual({ perAttemptSeconds: 900, streamIdleSeconds: 86_400 });
+  });
+
+  it("refuses a fractional, negative, unit-suffixed, oversized or unknown LLM timeout", () => {
+    for (const bad of [
+      -1,
+      1.5,
+      "300s",
+      "5m",
+      "1e3",
+      Number.NaN,
+      86_401,
+      true,
+    ]) {
+      expect(
+        thrown(() =>
+          normalizeDaemonDefaults({ llmTimeouts: { perAttemptSeconds: bad } }),
+        ).message,
+        String(bad),
+      ).toMatch(
+        /LLM connect timeout must be a whole number of seconds between 0 and 86400/,
+      );
+      expect(
+        thrown(() =>
+          normalizeDaemonDefaults({ llmTimeouts: { streamIdleSeconds: bad } }),
+        ).message,
+        String(bad),
+      ).toMatch(/LLM idle timeout must be a whole number of seconds/);
+    }
+    const stranger = thrown(() =>
+      normalizeDaemonDefaults({ llmTimeouts: { perTurnSeconds: 5 } }),
+    );
+    expect(stranger.statusCode).toBe(400);
+    expect(stranger.message).toMatch(
+      /no LLM timeout flag for "perTurnSeconds"/,
+    );
+    expect(
+      thrown(() => normalizeDaemonDefaults({ llmTimeouts: [300, 180] }))
+        .message,
+    ).toMatch(/llmTimeouts must be an object/);
   });
 
   it("refuses a cache TTL other than 5m or 1h", () => {
@@ -368,6 +439,10 @@ describe("daemonDefaultArgs", () => {
       "high",
       "--context-window-override",
       "200000",
+      "--llm-per-attempt-timeout",
+      "600s",
+      "--llm-stream-idle-timeout",
+      "0s",
       "--no-prompt-cache",
       "--anthropic-cache-ttl",
       "1h",
@@ -403,6 +478,31 @@ describe("daemonDefaultArgs", () => {
     expect(daemonDefaultArgs(defaults, "mock")).not.toContain(
       "--default-model",
     );
+  });
+
+  it("emits an LLM timeout as a Go duration only when it differs from mecated's default", () => {
+    // mecated's own values, spelled out explicitly: still no flag.
+    expect(
+      daemonDefaultArgs(
+        normalizeDaemonDefaults({
+          llmTimeouts: { perAttemptSeconds: 300, streamIdleSeconds: 180 },
+        }),
+        "openai",
+      ),
+    ).toEqual([]);
+    expect(
+      daemonDefaultArgs(
+        normalizeDaemonDefaults({ llmTimeouts: { perAttemptSeconds: 600 } }),
+        "openai",
+      ),
+    ).toEqual(["--llm-per-attempt-timeout", "600s"]);
+    // Disabling a bound is a real 0s flag, not an omission.
+    expect(
+      daemonDefaultArgs(
+        normalizeDaemonDefaults({ llmTimeouts: { streamIdleSeconds: 0 } }),
+        "mock",
+      ),
+    ).toEqual(["--llm-stream-idle-timeout", "0s"]);
   });
 
   it("passes --toolhive-llm=false only when detection is disabled and omits the auto mode", () => {

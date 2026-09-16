@@ -15,11 +15,18 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import {
   builderToCron,
+  type CronIntervalUnit,
   type CronRepeat,
   cronToBuilder,
 } from "@/lib/cron-builder";
 import { describeCron, ordinal } from "@/lib/formatters";
 import { PERMISSION_MODES, type ScheduleSpecDraft } from "@/lib/protocol";
+import {
+  compileSchedulePhrase,
+  looksLikeCron,
+  type SchedulePhraseResult,
+  toLocalDateTimeInput,
+} from "@/lib/schedule-phrase";
 
 /**
  * Form state for authoring a schedule.
@@ -71,12 +78,6 @@ function browserTimezone(): string {
   } catch {
     return "";
   }
-}
-
-function toLocalDateTimeInput(ms: number): string {
-  const d = new Date(ms);
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 /**
@@ -203,6 +204,39 @@ function joinOneShot(date: string, time: string): string {
   return `${date || localDate(new Date())}T${time || "09:00"}`;
 }
 
+/** What the phrase input last produced — drives the line under it. */
+type PhraseOutcome =
+  | SchedulePhraseResult
+  | { kind: "raw-cron"; cron: string }
+  | { kind: "none" };
+
+const NO_PHRASE: PhraseOutcome = { kind: "none" };
+
+const PHRASE_PLACEHOLDER =
+  "every 30 minutes · daily at 9am · next monday 3pm · in 2 hours";
+export const PHRASE_HINT =
+  'Not recognised — try "every weekday at 9am" or a cron expression';
+
+/** The plain-English preview of what a phrase compiled to. */
+export function describePhraseOutcome(outcome: PhraseOutcome): string | null {
+  switch (outcome.kind) {
+    case "cron":
+      return describeCron(outcome.cron);
+    case "raw-cron": {
+      // A five-field fallback the describer cannot read is still a cron;
+      // say so rather than echo the raw string bare.
+      const described = describeCron(outcome.cron);
+      return described === outcome.cron
+        ? `Cron expression ${outcome.cron}`
+        : described;
+    }
+    case "one-shot":
+      return `Once at ${new Date(outcome.at).toLocaleString()}`;
+    case "none":
+      return null;
+  }
+}
+
 export function ScheduleFormFields({
   value,
   onChange,
@@ -210,6 +244,59 @@ export function ScheduleFormFields({
   value: ScheduleFormValue;
   onChange: (patch: Partial<ScheduleFormValue>) => void;
 }) {
+  // The phrase is an authoring aid (the TUI's natural-language trigger): it
+  // compiles INTO `value.cron` / `value.oneShotAt`, which stay the wire truth.
+  // Its text and preview are local; a successful compile bumps
+  // `phraseVersion`, which remounts the cron builder so its Custom pick
+  // re-derives from the new string instead of sticking.
+  const [phrase, setPhrase] = useState("");
+  const [phraseOutcome, setPhraseOutcome] = useState<PhraseOutcome>(NO_PHRASE);
+  const [phraseVersion, setPhraseVersion] = useState(0);
+
+  /**
+   * Trigger edits made through the structured controls (tabs, builder, the
+   * one-shot date/time) consume the phrase: left in place, its text would
+   * describe a trigger the form no longer holds.
+   */
+  const changeTrigger = (patch: Partial<ScheduleFormValue>) => {
+    if (phrase) {
+      setPhrase("");
+      setPhraseOutcome(NO_PHRASE);
+    }
+    onChange(patch);
+  };
+
+  const handlePhrase = (text: string) => {
+    setPhrase(text);
+    const compiled = compileSchedulePhrase(text);
+    let outcome: PhraseOutcome = NO_PHRASE;
+    let patch: Partial<ScheduleFormValue> | null = null;
+    if (compiled?.kind === "cron") {
+      outcome = compiled;
+      patch = { triggerKind: "cron", cron: compiled.cron };
+    } else if (compiled?.kind === "one-shot") {
+      outcome = compiled;
+      patch = {
+        triggerKind: "one-shot",
+        oneShotAt: toLocalDateTimeInput(compiled.at),
+      };
+    } else if (looksLikeCron(text)) {
+      // The TUI fallback: unmatched five-field input IS the cron, verbatim;
+      // the builder lands on Custom (or the shape it happens to parse as).
+      const cron = text.trim();
+      outcome = { kind: "raw-cron", cron };
+      patch = { triggerKind: "cron", cron };
+    }
+    setPhraseOutcome(outcome);
+    if (patch) {
+      setPhraseVersion((v) => v + 1);
+      onChange(patch);
+    }
+  };
+
+  const phrasePreview = describePhraseOutcome(phraseOutcome);
+  const phraseNote = phrasePreview ?? (phrase.trim() ? PHRASE_HINT : null);
+
   return (
     <div className="space-y-4">
       <div className="space-y-3">
@@ -237,10 +324,36 @@ export function ScheduleFormFields({
 
       <div className="space-y-3">
         <Label>Trigger</Label>
+        <div className="space-y-2">
+          <Label
+            htmlFor="schedule-phrase"
+            className="text-xs font-normal text-muted-foreground"
+          >
+            Describe the schedule
+          </Label>
+          <Input
+            id="schedule-phrase"
+            value={phrase}
+            onChange={(e) => handlePhrase(e.target.value)}
+            placeholder={PHRASE_PLACEHOLDER}
+            autoComplete="off"
+            aria-describedby={phraseNote ? "schedule-phrase-note" : undefined}
+          />
+          {phraseNote && (
+            <p
+              id="schedule-phrase-note"
+              className="text-xs text-muted-foreground"
+            >
+              {phraseNote}
+            </p>
+          )}
+        </div>
         <Tabs
           value={value.triggerKind}
           onValueChange={(v) =>
-            onChange({ triggerKind: v as ScheduleFormValue["triggerKind"] })
+            changeTrigger({
+              triggerKind: v as ScheduleFormValue["triggerKind"],
+            })
           }
         >
           <TabsList className="grid w-full grid-cols-2 rounded-full bg-muted p-1">
@@ -262,8 +375,9 @@ export function ScheduleFormFields({
         {value.triggerKind === "cron" ? (
           <div className="space-y-3">
             <CronBuilderFields
+              key={phraseVersion}
               cron={value.cron}
-              onCronChange={(cron) => onChange({ cron })}
+              onCronChange={(cron) => changeTrigger({ cron })}
             />
           </div>
         ) : (
@@ -279,7 +393,7 @@ export function ScheduleFormFields({
                   type="date"
                   value={oneShotParts(value.oneShotAt).date}
                   onChange={(e) =>
-                    onChange({
+                    changeTrigger({
                       oneShotAt: joinOneShot(
                         e.target.value,
                         oneShotParts(value.oneShotAt).time,
@@ -295,7 +409,7 @@ export function ScheduleFormFields({
                   value={oneShotParts(value.oneShotAt).time}
                   onChange={(e) => {
                     if (!e.target.value) return;
-                    onChange({
+                    changeTrigger({
                       oneShotAt: joinOneShot(
                         oneShotParts(value.oneShotAt).date,
                         e.target.value,
@@ -368,8 +482,20 @@ const REPEAT_OPTIONS: { value: CronRepeat; label: string }[] = [
   { value: "weekdays", label: "Weekdays" },
   { value: "weekly", label: "Weekly" },
   { value: "monthly", label: "Monthly" },
+  { value: "interval", label: "Every…" },
   { value: "custom", label: "Custom" },
 ];
+
+const INTERVAL_UNIT_OPTIONS: { value: CronIntervalUnit; label: string }[] = [
+  { value: "minutes", label: "Minutes" },
+  { value: "hours", label: "Hours" },
+];
+
+/** The daemon-independent step ceiling per unit (a cron field's own range). */
+const INTERVAL_MAX: Record<CronIntervalUnit, number> = {
+  minutes: 59,
+  hours: 23,
+};
 
 /** Cron day-of-week values, Monday-first for display (cron's 0 is Sunday). */
 const WEEKDAY_OPTIONS = [
@@ -406,6 +532,11 @@ function CronBuilderFields({
     () => parsed.repeat === "custom",
   );
   const repeat: CronRepeat = customPicked ? "custom" : parsed.repeat;
+  // The interval step as typed, while the field has focus: a controlled
+  // number input snaps back on every keystroke otherwise (clearing "30" to
+  // type "5" would read "305"). Blur drops the draft and shows the committed,
+  // clamped value.
+  const [everyDraft, setEveryDraft] = useState<string | null>(null);
 
   /** Re-derive the cron string from the builder with one control changed. */
   const rebuild = (patch: {
@@ -413,6 +544,8 @@ function CronBuilderFields({
     time?: string;
     weekday?: number;
     monthday?: number;
+    every?: number;
+    unit?: CronIntervalUnit;
   }) => {
     const next = { ...parsed, ...patch };
     if (next.repeat === "custom") return;
@@ -492,7 +625,50 @@ function CronBuilderFields({
           </div>
         )}
 
-        {repeat !== "custom" && (
+        {repeat === "interval" && (
+          <>
+            <div className="w-[90px] space-y-3">
+              <Label htmlFor="schedule-interval-every">Every</Label>
+              <Input
+                id="schedule-interval-every"
+                type="number"
+                inputMode="numeric"
+                min={1}
+                max={INTERVAL_MAX[parsed.unit]}
+                step={1}
+                value={everyDraft ?? String(parsed.every)}
+                onChange={(e) => {
+                  setEveryDraft(e.target.value);
+                  // The builder clamps an out-of-range step; an empty field
+                  // commits nothing until a number is typed.
+                  if (e.target.value)
+                    rebuild({ every: Number(e.target.value) });
+                }}
+                onBlur={() => setEveryDraft(null)}
+              />
+            </div>
+            <div className="min-w-[130px] flex-1 space-y-3">
+              <Label htmlFor="schedule-interval-unit">Unit</Label>
+              <Select
+                value={parsed.unit}
+                onValueChange={(v) => rebuild({ unit: v as CronIntervalUnit })}
+              >
+                <SelectTrigger id="schedule-interval-unit" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {INTERVAL_UNIT_OPTIONS.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </>
+        )}
+
+        {repeat !== "custom" && repeat !== "interval" && (
           <div className="w-[120px] space-y-3">
             <Label htmlFor="schedule-time">At</Label>
             <Input

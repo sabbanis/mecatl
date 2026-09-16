@@ -18,6 +18,22 @@ test("the chat list and transcript come from the daemon", async ({ page }) => {
   ).toBeVisible();
 });
 
+test("the live chat's model pill shows the daemon's effective reasoning-effort tier", async ({
+  page,
+}) => {
+  await page.goto("/workspace/chat");
+  await page.getByText("Fix the flaky scheduler test").first().click();
+  await expect(
+    page.getByText("the test races the claim sentinel", { exact: false }),
+  ).toBeVisible();
+  // The composer's model + effort trigger reads "{model} · {effort}" from
+  // the snapshot's resolved_model (the fixture echoes reasoning_effort
+  // "medium"); the ContextMeter needs counted tokens and is not the oracle.
+  await expect(
+    page.locator('button[title="fixture-model · Medium"]').first(),
+  ).toBeVisible();
+});
+
 test("a tool call parked on a browser sign-in shows the authorization card and re-check resumes the run", async ({
   page,
 }) => {
@@ -115,6 +131,24 @@ test("the new scheduled task form offers write access, off by default", async ({
   await expect(
     dialog.getByRole("combobox", { name: "Permission mode" }),
   ).toBeVisible();
+});
+
+test("the new scheduled task form compiles a natural-language phrase", async ({
+  page,
+}) => {
+  await page.goto("/workspace/schedules");
+  await page.getByRole("button", { name: "New scheduled task" }).click();
+  const dialog = page.getByRole("dialog");
+  // The TUI Create form's phrase input: the phrase compiles into the cron the
+  // builder then shows as an interval, with a plain-English preview.
+  await dialog.getByLabel("Describe the schedule").fill("every 30 minutes");
+  await expect(dialog.getByText("Every 30 minutes")).toBeVisible();
+  await expect(dialog.getByRole("combobox", { name: "Repeat" })).toHaveText(
+    "Every…",
+  );
+  await expect(dialog.getByRole("spinbutton", { name: "Every" })).toHaveValue(
+    "30",
+  );
 });
 
 test("skills render the resolved inventory", async ({ page }) => {

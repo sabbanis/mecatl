@@ -49,6 +49,8 @@ const session = {
     rename: true,
     delete: true,
     view_transcript: true,
+    // The `/session` dialog's Copy button is gated on this (omitted = denied).
+    copy_id: true,
     reasons: {},
   },
 };
@@ -83,6 +85,20 @@ const snapshot = {
   session_id: sessionID,
   mode: "default",
   state: "idle",
+  // The `/session` details dialog reads kind, title (+ provenance), creation
+  // time, turn/tool-call counts and limits off this same snapshot. The WIRE
+  // shape is the proto's `Session.title_metadata` (SessionTitle{title,
+  // provenance}); the SDK projects it to `{value, provenance}` — sending the
+  // projected shape here fails protobuf-es fromJson and poisons the snapshot.
+  kind: "main",
+  title_metadata: {
+    title: "Fix the flaky scheduler test",
+    provenance: "first-prompt",
+  },
+  created_at_unix: 1_755_000_000,
+  turns: 2,
+  tool_calls: 3,
+  limits: { max_turns: 50, max_tool_calls: 200, max_consecutive_failures: 3 },
   placement,
   // The proto field is `model_id` (SessionResolvedModel), and the context
   // meter needs the window to draw its bar.
@@ -90,6 +106,9 @@ const snapshot = {
     model_id: "fixture-model",
     provider_id: "fixture",
     context_window: 128000,
+    // The EFFECTIVE reasoning-effort tier: the live picker checkmarks it and
+    // the composer trigger reads "fixture-model · Medium".
+    reasoning_effort: "medium",
   },
   // The durable session-cumulative usage (engine/session/usage.go "main").
   token_usage: {
@@ -356,6 +375,9 @@ const routes = {
   },
   [`POST /v1/sessions/${sessionID}/approve`]: {},
   [`POST /v1/sessions/${sessionID}/cancel`]: {},
+  // Per-child cancel (subagent / parallel branch / team member): the real
+  // daemon answers 204; the SDK reads the fixture's empty JSON the same way.
+  [`POST /v1/sessions/${sessionID}/cancel-child`]: {},
   [`POST /v1/sessions/${sessionID}/steer`]: {
     outcome: "accepted",
     message_id: "steer-fixture-1",
@@ -526,7 +548,15 @@ function writeSSE(response, frame) {
 
 http
   .createServer((request, response) => {
-    const path = new URL(request.url, "http://fixture").pathname;
+    // Studio's proxy percent-encodes each path segment (server-proxy.ts), so a
+    // custom-method route such as `cleanup:plan` arrives as `cleanup%3Aplan`.
+    // The daemon's Go ServeMux unescapes per SEGMENT before matching its
+    // literal pattern; mirror that here (never the whole path — an encoded
+    // slash inside a segment must stay part of that segment, as it does live).
+    const path = new URL(request.url, "http://fixture").pathname
+      .split("/")
+      .map(decodeURIComponent)
+      .join("/");
     const key = `${request.method} ${path}`;
     // Retry re-drives the recorded failed step and streams exactly like a
     // prompt (ADR 0239), so both share the relay.

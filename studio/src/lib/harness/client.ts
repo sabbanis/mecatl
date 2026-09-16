@@ -42,6 +42,10 @@ export interface HarnessControlStatus {
    *  turns rather than calling a real model. */
   isMock: boolean;
   running: boolean;
+  /** Why the managed daemon's last start failed ("" when it started, or in
+   *  external mode). The Diagnostics page's daemon-log card shows it above
+   *  the log tail. Absent on an older controller. */
+  startupError?: string;
   gateway: { name: string; url: string } | null;
   toolhiveGateway: {
     available: boolean;
@@ -151,6 +155,7 @@ export async function fetchHarnessControlStatus(
       provider?: string;
       isMock?: boolean;
       running?: boolean;
+      startupError?: unknown;
       gateway?: { name?: string; url?: string } | null;
       toolhiveGateway?: {
         available?: boolean;
@@ -177,6 +182,8 @@ export async function fetchHarnessControlStatus(
       provider: body.provider ?? "unknown",
       isMock: Boolean(body.isMock),
       running: Boolean(body.running),
+      startupError:
+        typeof body.startupError === "string" ? body.startupError : undefined,
       gateway: body.gateway?.url
         ? { name: body.gateway.name ?? "gateway", url: body.gateway.url }
         : null,

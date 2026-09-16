@@ -22,6 +22,7 @@ import {
   TURN_STAT_CACHE_FLOOR,
 } from "@/features/agent/turn-stats";
 import { formatTokens } from "@/lib/formatters";
+import { effortLabel } from "@/lib/reasoning-effort";
 import { cn } from "@/lib/utils";
 
 /** The session-cumulative token figures the facets render. */
@@ -99,12 +100,16 @@ const FALLBACK_TITLE =
 
 export function ContextMeter({
   modelLabel,
+  effort,
   contextWindow,
   occupancyTokens,
   usage,
 }: {
   /** The effective model (resolved_model.model_id); "" when unknown. */
   modelLabel: string;
+  /** The effective reasoning-effort tier (resolved_model.reasoning_effort);
+   *  "" / absent when the daemon echoes none — then only the model shows. */
+  effort?: string;
   /** The resolved model's context window; <= 0 when unknown. */
   contextWindow: number;
   /** The latest turn's input tokens (turn.end); 0 before any turn this visit. */
@@ -125,7 +130,11 @@ export function ContextMeter({
       className="flex items-center gap-2 px-2 text-[11px] text-muted-foreground/80"
       title={occupancyTokens > 0 ? OCCUPANCY_TITLE : FALLBACK_TITLE}
     >
-      {modelLabel && <span className="truncate font-medium">{modelLabel}</span>}
+      {modelLabel && (
+        <span className="truncate font-medium">
+          {effort ? `${modelLabel} · ${effortLabel(effort)}` : modelLabel}
+        </span>
+      )}
       {fraction === null ? (
         <span className="whitespace-nowrap tabular-nums">
           {contextFallbackLabel(used)}

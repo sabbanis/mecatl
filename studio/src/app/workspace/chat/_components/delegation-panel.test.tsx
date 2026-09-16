@@ -443,6 +443,49 @@ describe("DelegationPanel — subagents", () => {
     // The background note reads as done, so the pane has no cancel.
   });
 
+  it("puts a cancel control on a running roster row that never opens the pane, disabled while a cancel is in flight", () => {
+    const onCancelChild = vi.fn();
+    const onFocus = vi.fn();
+    const { unmount } = render(
+      <Harness
+        fleet={fullFleet}
+        onCancelChild={onCancelChild}
+        onFocusSpy={onFocus}
+      />,
+    );
+    const rows = within(
+      screen.getByRole("list", { name: "Subagents" }),
+    ).getAllByRole("listitem");
+    fireEvent.click(
+      within(rows[0]).getByRole("button", {
+        name: "Cancel subagent explore auth",
+      }),
+    );
+    expect(onCancelChild).toHaveBeenCalledWith("subagent-abc123def");
+    // The control is a sibling of the row button: cancelling opens nothing.
+    expect(onFocus).not.toHaveBeenCalled();
+    expect(
+      within(rows[1]).queryByRole("button", { name: /^Cancel/ }),
+    ).toBeNull();
+    unmount();
+
+    render(
+      <Harness
+        fleet={fleetOf({
+          subagents: [{ ...runningSubagent, cancelling: true }],
+        })}
+        onCancelChild={onCancelChild}
+      />,
+    );
+    const row = within(
+      screen.getByRole("list", { name: "Subagents" }),
+    ).getAllByRole("listitem")[0];
+    expect(row).toHaveTextContent("cancelling…");
+    expect(
+      within(row).getByRole("button", { name: "Cancel subagent explore auth" }),
+    ).toBeDisabled();
+  });
+
   it("opens the child's transcript dialog on its session id", async () => {
     stubHarnessFetch((request) => {
       if (request.path === "/v1/sessions/subagent-zzz999") {
@@ -475,6 +518,47 @@ describe("DelegationPanel — subagents", () => {
 });
 
 describe("DelegationPanel — parallel", () => {
+  it("cancels a running branch from the group focus, and waits for a branch that has no child id yet", () => {
+    const onCancelChild = vi.fn();
+    const live = group({
+      branches: [
+        card({
+          kind: "parallel",
+          label: "slow",
+          branchIndex: 0,
+          parentCallId: "call-p",
+          childId: "parallel-1",
+        }),
+        card({
+          kind: "parallel",
+          label: "fast",
+          branchIndex: 1,
+          parentCallId: "call-p",
+        }),
+      ],
+    });
+    render(
+      <Harness
+        fleet={fleetOf({ parallelGroups: [live] })}
+        initialTab="parallel"
+        initialFocus={{ kind: "parallel-group", parentCallId: "call-p" }}
+        onCancelChild={onCancelChild}
+      />,
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Cancel parallel slow" }),
+    );
+    expect(onCancelChild).toHaveBeenCalledWith("parallel-1");
+    const pending = screen.getByRole("button", {
+      name: "Cancel parallel fast",
+    });
+    expect(pending).toBeDisabled();
+    expect(pending.parentElement).toHaveAttribute(
+      "title",
+      "Branch id not known yet",
+    );
+  });
+
   it("switches tabs and lists each fan-out group with join, tally and ★ winner", () => {
     render(<Harness fleet={fullFleet} />);
     // Radix tabs activate on pointer-down (and Enter/Space for a keyboard).
@@ -616,6 +700,75 @@ describe("DelegationPanel — teams", () => {
       screen.getByRole("button", { name: "Open team member tester" }),
     );
     expect(screen.getByText("provider 500")).toBeInTheDocument();
+  });
+
+  it("cancels a live member from the roster and its focus, waiting for the member id before enabling the control", () => {
+    const onCancelChild = vi.fn();
+    const onFocus = vi.fn();
+    render(
+      <Harness
+        fleet={fullFleet}
+        initialTab="teams"
+        onCancelChild={onCancelChild}
+        onFocusSpy={onFocus}
+      />,
+    );
+    const rows = within(
+      screen.getByRole("list", { name: "Team roster" }),
+    ).getAllByRole("listitem");
+    // The lead is idle between rounds yet its team is live, so it is
+    // cancellable — but no team.member frame has named its session yet.
+    const lead = within(rows[0]).getByRole("button", {
+      name: "Cancel team lead (lead)",
+    });
+    expect(lead).toBeDisabled();
+    expect(lead.parentElement).toHaveAttribute(
+      "title",
+      "Member id not known yet",
+    );
+    fireEvent.click(
+      within(rows[1]).getByRole("button", {
+        name: "Cancel team coder (implementer)",
+      }),
+    );
+    expect(onCancelChild).toHaveBeenCalledWith("team-t1-coder");
+    expect(onFocus).not.toHaveBeenCalled();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open team member lead" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Cancel team lead (lead)" }),
+    ).toBeDisabled();
+    // No session id → no transcript to open either.
+    expect(
+      screen.queryByRole("button", { name: "Open transcript" }),
+    ).toBeNull();
+  });
+
+  it("offers no member cancel once the team has ended", () => {
+    const finished = team({
+      done: true,
+      stop: "end_turn",
+      lanes: [
+        card({
+          kind: "team",
+          label: "tester",
+          memberName: "tester",
+          parentCallId: "call-t",
+          childId: "team-t1-tester",
+          stop: "end_turn",
+        }),
+      ],
+    });
+    render(
+      <Harness
+        fleet={fleetOf({ teams: [finished] })}
+        initialTab="teams"
+        onCancelChild={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole("button", { name: /^Cancel/ })).toBeNull();
   });
 
   it("disables the Teams tab when the daemon has teams off and none ran", () => {

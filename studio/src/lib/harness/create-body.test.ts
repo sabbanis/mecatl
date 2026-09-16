@@ -11,6 +11,7 @@ import {
   createHarnessSession,
   createThreadHarnessSession,
   forkHarnessSessionToModel,
+  forkHarnessSessionToSelection,
   ThreadSourceBusyError,
 } from "./sessions";
 
@@ -25,8 +26,18 @@ import {
  * server-owned, ADR 0291).
  */
 
-const CREATE_ALLOWED = new Set(["mode", "model_id", "provider_id"]);
-const FORK_ALLOWED = new Set(["title", "model_id", "provider_id"]);
+const CREATE_ALLOWED = new Set([
+  "mode",
+  "model_id",
+  "provider_id",
+  "reasoning_effort",
+]);
+const FORK_ALLOWED = new Set([
+  "title",
+  "model_id",
+  "provider_id",
+  "reasoning_effort",
+]);
 
 /** The debug create (ADR 0254) is pinned as its OWN exact set. */
 const DEBUG_ALLOWED = [
@@ -116,6 +127,91 @@ describe("session create bodies stay inside the daemon's strict field set", () =
       model_id: "m",
       provider_id: "openrouter",
     });
+  });
+
+  it("create carries the picked reasoning-effort tier as reasoning_effort", async () => {
+    const captured = captureCreates();
+    await createHarnessSession("default", {
+      modelId: "m",
+      providerId: "openrouter",
+      reasoningEffort: "high",
+    });
+    const body = captured.body();
+    expect(Object.keys(body).every((k) => CREATE_ALLOWED.has(k))).toBe(true);
+    expect(body).toEqual({
+      mode: "default",
+      model_id: "m",
+      provider_id: "openrouter",
+      reasoning_effort: "high",
+    });
+  });
+
+  it("an effort rides the create without a model pick (auto-routed session)", async () => {
+    const captured = captureCreates();
+    await createHarnessSession("default", { reasoningEffort: "low" });
+    expect(captured.body()).toEqual({
+      mode: "default",
+      reasoning_effort: "low",
+    });
+  });
+
+  it('auto effort ("") OMITS reasoning_effort so the operator default applies', async () => {
+    const captured = captureCreates();
+    await createHarnessSession("default", {
+      modelId: "m",
+      providerId: "openrouter",
+      reasoningEffort: "",
+    });
+    expect(Object.hasOwn(captured.body(), "reasoning_effort")).toBe(false);
+    expect(Object.keys(captured.body()).sort()).toEqual([
+      "mode",
+      "model_id",
+      "provider_id",
+    ]);
+  });
+
+  it("effort-switch fork carries reasoning_effort with NO model (the source's model carries)", async () => {
+    const captured = captureCreates();
+    await forkHarnessSessionToSelection(
+      "src-1",
+      { reasoningEffort: "xhigh" },
+      "Title",
+    );
+    expect(captured.requests[0].path).toBe("/v1/sessions/src-1/fork");
+    const keys = Object.keys(captured.body());
+    expect(keys.every((k) => FORK_ALLOWED.has(k))).toBe(true);
+    expect(captured.body()).toEqual({
+      title: "Title",
+      reasoning_effort: "xhigh",
+    });
+  });
+
+  it("a fork can switch model and effort together", async () => {
+    const captured = captureCreates();
+    await forkHarnessSessionToSelection(
+      "src-1",
+      {
+        model: { modelId: "m", providerId: "openrouter" },
+        reasoningEffort: "max",
+      },
+      "Title",
+    );
+    expect(captured.body()).toEqual({
+      title: "Title",
+      model_id: "m",
+      provider_id: "openrouter",
+      reasoning_effort: "max",
+    });
+  });
+
+  it("an auto-effort fork omits reasoning_effort (back to the operator default)", async () => {
+    const captured = captureCreates();
+    await forkHarnessSessionToSelection(
+      "src-1",
+      { reasoningEffort: "" },
+      "Title",
+    );
+    expect(captured.body()).toEqual({ title: "Title" });
   });
 
   it("a busy fork source (412) surfaces as ThreadSourceBusyError", async () => {

@@ -35,6 +35,15 @@ export interface HarnessDaemonDefaults {
   reasoningEffort: string;
   /** Tokens; 0 = off. */
   contextWindowOverride: number;
+  /** The two LLM stream bounds, whole seconds; 0 DISABLES a bound (it is a
+   *  real value, not "unset"). mecated's own defaults (300 / 180) emit no
+   *  flag. */
+  llmTimeouts: {
+    /** `--llm-per-attempt-timeout`: connect + first chunk only. */
+    perAttemptSeconds: number;
+    /** `--llm-stream-idle-timeout`: the longest mid-stream silence. */
+    streamIdleSeconds: number;
+  };
   promptCache: {
     /** `--no-prompt-cache`. */
     disabled: boolean;
@@ -91,9 +100,14 @@ export function readDaemonDefaults(raw: unknown): HarnessDaemonDefaults | null {
  */
 export type DaemonDefaultsInput = Omit<
   HarnessDaemonDefaults,
-  "activeProvider" | "contextWindowOverride"
+  "activeProvider" | "contextWindowOverride" | "llmTimeouts"
 > & {
   contextWindowOverride: number | string;
+  /** As typed too; "" reads as mecated's own default for that flag. */
+  llmTimeouts: {
+    perAttemptSeconds: number | string;
+    streamIdleSeconds: number | string;
+  };
   activeProvider?: string | null;
 };
 

@@ -13,6 +13,9 @@ const forwardedRequestHeaders = [
 ];
 const forwardedResponseHeaders = [
   "cache-control",
+  // The controller's daemon-log download (`GET /logs/download`) names its
+  // file through this header; nothing else the proxy fronts sets it.
+  "content-disposition",
   "content-type",
   "mcp-session-id",
   "www-authenticate",

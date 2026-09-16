@@ -279,6 +279,9 @@ function translateEventBody(event: SdkEvent, sessionId: string): StreamEvent[] {
           callId: call.id || `call-${event.seq}`,
           name,
           input: call.args ? prettyArgs(call.args) : "",
+          // The verbatim JSON rides alongside the flattened preview so the
+          // drill-down panel can pretty-print it during a live run.
+          rawArgs: call.args || undefined,
           file: fileFromToolCall(call.name, call.args || undefined),
         },
       ];
@@ -306,6 +309,11 @@ function translateEventBody(event: SdkEvent, sessionId: string): StreamEvent[] {
           details: [ask.reason, prettyArgs(ask.args)]
             .filter(Boolean)
             .join("\n\n"),
+          // The raw tier, verbatim: the card decodes `args` per tool (Shell
+          // command text, Edit diff) and offers the exact string as the
+          // "Raw" view — what is actually being approved.
+          reason: ask.reason,
+          args: ask.args,
         },
       ];
     }

@@ -1,6 +1,8 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
+import { createReadStream } from "node:fs";
 import {
+  appendFile,
   lstat,
   mkdir,
   open,
@@ -22,6 +24,15 @@ import {
   normalizeDiagnosticsOptions,
   productMetricsEnvOptOut,
 } from "../src/lib/controller-diagnostics-options.mjs";
+import {
+  createLogRing,
+  LOG_FILE_NAME,
+  MAX_LOG_FILE_BYTES,
+  parseTailLines,
+  ROTATED_LOG_FILE_NAME,
+  shouldRotate,
+  tailIsTruncated,
+} from "../src/lib/controller-log.mjs";
 import {
   normalizePermissions,
   permissionArgs,
@@ -145,6 +156,17 @@ const userSettingsFile = process.env.XDG_CONFIG_HOME
 // and deployment. Written only after every listener is up, never removed by
 // the daemon — the controller unlinks the stale one before each spawn.
 const readyFilePath = resolve(studioStateDir, "mecated-ready.json");
+// The managed daemon's diagnostics log — Studio's analogue of mecatui's
+// embedded-server log file ($XDG_STATE_HOME/mecatl/mecatui.log). mecated has
+// no log-file flag (its diagnostics go to stderr), so the controller holding
+// that stream appends it here: owner-only inside the 0700 state dir, ONE
+// rotated generation at mecatui's 10 MiB bound, plus a bounded in-memory
+// ring the Diagnostics page reads through GET /logs. Model-influenced
+// content (prompt fragments, provider error bodies) — never rendered as
+// markup, served only behind the studio header.
+const mecatedLogFile = resolve(studioStateDir, LOG_FILE_NAME);
+const rotatedLogFile = resolve(studioStateDir, ROTATED_LOG_FILE_NAME);
+const logRing = createLogRing();
 // The named FIFO backing --lifetime-pipe-fd. mecated fstat's the descriptor
 // and rejects anything that is not a real pipe (S_IFIFO) — and Node's stdio
 // "pipe" entries are AF_UNIX socketpairs — so the pipe is made with
@@ -797,6 +819,9 @@ function startupFailure(kind, message) {
     kind !== "mock" && kind !== "toolhive"
       ? `${providerLabel(kind)} could not start. Add providers.${kind}.api_key to ${authFile}, then switch to it again. mecated: ${message}`
       : message;
+  // Into the log file too (not echoed — every caller surfaces it), so a
+  // crash-at-start is diagnosable from the file alone.
+  recordDaemonLog(`[supervisor] ${startupError}\n`);
   return new Error(startupError);
 }
 
@@ -998,6 +1023,81 @@ async function loadDiagnosticsOptions() {
       );
     return normalizeDiagnosticsOptions({});
   }
+}
+
+// Bytes in the current log generation (null until the first write stat's
+// the file), and the ONE promise chain every append rides so chunk order
+// and the rotate-then-append step hold under a chatty daemon.
+let daemonLogSize = null;
+let daemonLogQueue = Promise.resolve();
+let daemonLogWriteWarned = false;
+
+/**
+ * Records one chunk of daemon diagnostics: into the in-memory ring at once,
+ * and onto the owner-only file through the serialised queue — rotating the
+ * current generation to `mecated.log.1` (overwriting the previous one) when
+ * the append would push it past the 10 MiB bound. A file that cannot be
+ * written is reported ONCE and never takes the relay down: the ring and
+ * the terminal mirror keep working without it.
+ */
+function recordDaemonLog(text) {
+  if (typeof text !== "string" || text === "") return;
+  logRing.append(text);
+  const bytes = Buffer.byteLength(text);
+  daemonLogQueue = daemonLogQueue
+    .then(async () => {
+      if (daemonLogSize === null) {
+        await mkdir(studioStateDir, { recursive: true, mode: 0o700 });
+        daemonLogSize = await stat(mecatedLogFile).then(
+          (info) => info.size,
+          () => 0,
+        );
+      }
+      if (shouldRotate(daemonLogSize, bytes)) {
+        await rename(mecatedLogFile, rotatedLogFile);
+        daemonLogSize = 0;
+      }
+      await appendFile(mecatedLogFile, text, { mode: 0o600 });
+      daemonLogSize += bytes;
+    })
+    .catch((error) => {
+      daemonLogSize = null;
+      if (daemonLogWriteWarned) return;
+      daemonLogWriteWarned = true;
+      process.stderr.write(
+        `[supervisor] daemon log file unavailable (${error.message || error}); continuing without it\n`,
+      );
+    });
+}
+
+/** The controller's own supervisor lines: always echoed (they are not the
+ *  mecated relay `quiet` mutes) AND recorded in the same file, so a restart
+ *  loop reads in order next to the daemon's last words. */
+function supervisorNote(line) {
+  process.stderr.write(line);
+  recordDaemonLog(line);
+}
+
+/** The `GET /logs` payload: file facts, the bounded tail, the two
+ *  controller-side knobs the card edits, liveness and the last startup
+ *  error. Paths and text only — nothing here is a credential. */
+async function daemonLogStatus(lines) {
+  const sizeBytes = await stat(mecatedLogFile).then(
+    (info) => info.size,
+    () => 0,
+  );
+  return {
+    path: mecatedLogFile,
+    rotatedPath: rotatedLogFile,
+    sizeBytes,
+    maxBytes: MAX_LOG_FILE_BYTES,
+    lines: logRing.lines(lines),
+    truncated: tailIsTruncated(logRing, lines),
+    quiet: diagnosticsOptions.quiet,
+    level: diagnosticsOptions.logLevel,
+    running: Boolean(child),
+    startupError,
+  };
 }
 
 /** The effective product-metrics verdict: the saved switch AND no opt-out
@@ -1251,7 +1351,7 @@ function queueRestart(operation) {
 function scheduleMecatlRestart() {
   if (shuttingDown || restartTimer || child) return;
   const wait = Math.min(10_000, 750 * 2 ** restartFailures);
-  process.stderr.write(
+  supervisorNote(
     `[supervisor] mecated stopped unexpectedly; restarting in ${wait}ms\n`,
   );
   restartTimer = setTimeout(() => {
@@ -1261,10 +1361,10 @@ function scheduleMecatlRestart() {
       try {
         await startMecatl(preferredKind());
         restartFailures = 0;
-        process.stderr.write("[supervisor] mecated restarted\n");
+        supervisorNote("[supervisor] mecated restarted\n");
       } catch (error) {
         restartFailures += 1;
-        process.stderr.write(
+        supervisorNote(
           `[supervisor] restart failed: ${error.message || error}\n`,
         );
         scheduleMecatlRestart();
@@ -1477,9 +1577,11 @@ async function startMecatl(kind) {
   proc.stderr.on("data", (chunk) => {
     const text = chunk.toString();
     startupLog = (startupLog + text).slice(-24_000);
-    // The controller-side `quiet` switch (POST /diagnostics-options): the
-    // startup classifier above always sees the text; only the mirror onto
-    // the controller's own stderr is optional.
+    // The file + the GET /logs ring always receive the text (that is what
+    // makes the diagnostics operator-recoverable); the controller-side
+    // `quiet` switch (POST /diagnostics-options) mutes ONLY the mirror onto
+    // the controller's own terminal — mecatui's --quiet, minus the file.
+    recordDaemonLog(text);
     if (!diagnosticsOptions.quiet) process.stderr.write(`[mecatl] ${text}`);
   });
   proc.once("exit", () => {
@@ -2645,6 +2747,46 @@ const server = http.createServer(async (request, response) => {
     response.end(JSON.stringify(diagnosticsStatus()));
     return;
   }
+  // The managed daemon's diagnostics log (see mecatedLogFile). GET /logs
+  // serves the bounded in-memory tail (`?lines=`, default 200, max 2000)
+  // with the file's path and size, the saved quiet/log-level knobs, liveness
+  // and the last startup error — so the Diagnostics page can explain a
+  // crash-at-start while the daemon itself is unreachable. GET
+  // /logs/download streams the current generation as plain text (404 while
+  // nothing has been written). The content is model-influenced, so the UI
+  // renders it as text only; both routes need the server-set studio header
+  // (neither is in the header-free read-only allowlist), and external mode
+  // answers 409 at the proxy — the deployment owns its daemon's logging.
+  if (request.method === "GET" && requestURL.pathname === "/logs") {
+    try {
+      const lines = parseTailLines(requestURL.searchParams.get("lines"));
+      response.end(JSON.stringify(await daemonLogStatus(lines)));
+    } catch (error) {
+      jsonError(
+        response,
+        error.statusCode || 500,
+        error.message || "Could not read the daemon log",
+      );
+    }
+    return;
+  }
+  if (request.method === "GET" && requestURL.pathname === "/logs/download") {
+    try {
+      await stat(mecatedLogFile);
+    } catch {
+      jsonError(response, 404, "No daemon log has been written yet");
+      return;
+    }
+    response.writeHead(200, {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Content-Disposition": `attachment; filename="${LOG_FILE_NAME}"`,
+      "Cache-Control": "no-store",
+    });
+    createReadStream(mecatedLogFile)
+      .on("error", () => response.destroy())
+      .pipe(response);
+    return;
+  }
   if (
     request.method === "POST" &&
     requestURL.pathname === "/diagnostics-options"
@@ -3051,7 +3193,12 @@ server.listen(8788, "127.0.0.1", async () => {
   try {
     await startMecatl(preferredKind());
   } catch (error) {
-    startupError ||= error.message || "mecated could not start";
+    if (!startupError) {
+      // Not via startupFailure (a gateway handshake failure, say): record
+      // it in the log file ourselves so the crash-at-start is on disk.
+      startupError = error.message || "mecated could not start";
+      recordDaemonLog(`[supervisor] ${startupError}\n`);
+    }
     process.stderr.write(`${startupError}\n`);
   }
 });

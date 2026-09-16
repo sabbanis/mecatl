@@ -34,8 +34,11 @@ export interface AgentSession {
    */
   canRename?: boolean;
   canDelete?: boolean;
+  /** Whether the daemon offers this session's exact id for copying. */
+  canCopyId?: boolean;
   renameReason?: string;
   deleteReason?: string;
+  copyIdReason?: string;
   /**
    * Title provenance off the inventory row (F4): "operator" (hand-set — an
    * auto-rename must never clobber it), "first-prompt" (seeded, replaceable),
@@ -298,6 +301,9 @@ export interface ToolCallInfo {
   callId: string;
   name: string;
   input: unknown;
+  /** The verbatim args JSON the live stream carried; the drill-down panel
+   *  pretty-prints it instead of the flattened `input` preview. */
+  rawArgs?: string;
   /** The file this call produced (Write), previewable in the canvas. */
   file?: import("@/lib/file-meta").ToolCallFile;
   output?: string;
@@ -330,6 +336,8 @@ type StreamEventBody =
       name: string;
       callId: string;
       input: unknown;
+      /** The verbatim args JSON string, alongside the flattened preview. */
+      rawArgs?: string;
       file?: import("@/lib/file-meta").ToolCallFile;
     }
   | {
@@ -345,6 +353,10 @@ type StreamEventBody =
       toolName: string;
       description: string;
       details: string;
+      /** The ask's reason and verbatim args JSON (the raw tier `details`
+       *  flattens), so the card can decode per tool and show the raw view. */
+      reason?: string;
+      args?: string;
     }
   | {
       type: "clarify";
@@ -668,6 +680,12 @@ export interface ApprovalRequest {
   toolName?: string;
   description: string;
   details: string;
+  /** The daemon's reason for asking, on its own (details joins it with the
+   *  flattened args). */
+  reason?: string;
+  /** The verbatim args JSON string the daemon sent — exactly what is being
+   *  approved. Absent on asks built without the raw tier. */
+  args?: string;
   /**
    * True when a CHILD (subagent / team member / parallel branch) is asking,
    * classified from the ask id against the daemon session id (the TUI
