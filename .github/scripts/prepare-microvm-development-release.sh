@@ -1,6 +1,10 @@
 #!/bin/sh
 set -eu
 umask 022
+# ponytail: macOS bsdtar embeds AppleDouble "._*" sidecar entries for any
+# xattr it finds (e.g. the com.apple.provenance macOS stamps on most files)
+# unless this is set; harmless no-op on GNU tar/Linux.
+export COPYFILE_DISABLE=1
 
 if [ "$#" -ne 1 ] || [ -z "$1" ]; then
   echo "usage: $0 SOURCE_BUILD_IDENTITY" >&2

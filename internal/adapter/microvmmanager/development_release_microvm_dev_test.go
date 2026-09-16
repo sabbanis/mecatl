@@ -255,13 +255,17 @@ func TestPreparedDevelopmentReleaseBundleIsImportable(t *testing.T) {
 			}
 		}
 	}
-	for _, name := range []string{"microvm-release-linux-amd64.json", "install-microvm-release.sh"} {
+	for _, name := range []string{"microvm-release-" + descriptor.Platform + ".json", "install-microvm-release.sh"} {
 		if !entries[name] {
 			t.Fatalf("development bundle omitted %q", name)
 		}
 	}
 
-	ops := &DefaultOperations{GOOS: "linux", GOARCH: "amd64"}
+	platformGOOS, platformGOARCH, ok := strings.Cut(descriptor.Platform, "-")
+	if !ok {
+		t.Fatalf("descriptor platform %q is not GOOS-GOARCH", descriptor.Platform)
+	}
+	ops := &DefaultOperations{GOOS: platformGOOS, GOARCH: platformGOARCH}
 	root := t.TempDir()
 	manifest, err := ops.Download(context.Background(), request.Release, filepath.Join(root, "download"))
 	if err != nil {
