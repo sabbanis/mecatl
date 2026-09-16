@@ -13,6 +13,9 @@ import {
   PROVIDER_ENV_KEYS,
   RESERVED_CUSTOM_PROVIDER_IDS,
   removeAuthFileProvider,
+  removeAuthFileProviderKey,
+  removeSettingsProvider,
+  upsertSettingsProvider,
   validCustomProviderBaseURL,
   validCustomProviderId,
   validProviderName,
@@ -738,5 +741,374 @@ describe("describeToolhiveRow", () => {
     expect(row.configured).toBe(false);
     expect(row.authState).toBe("detection switched off");
     expect(row.nextStep).toBe("enable ToolHive detection in Daemon defaults");
+  });
+});
+
+/**
+ * The controller now WRITES the non-secret custom provider definition into
+ * the user-global settings.yaml (`providers add`) and removes it
+ * (`providers remove`), and cuts only the key line for `providers logout`.
+ * Each editor is a line-range edit that must prove its scope the way
+ * removeAuthFileProvider does: exact id match, byte-preserving everything
+ * it did not touch, refusing rather than guessing, and never carrying a
+ * credential.
+ */
+const gateway = {
+  id: "my-gateway",
+  baseURL: "https://gw.example/v1",
+  defaultModel: "org/model:latest",
+  apiFlavor: "openai-responses",
+  authMethod: "api_key",
+};
+
+const gatewayEntry = [
+  "  my-gateway:",
+  '    base_url: "https://gw.example/v1"',
+  '    default_model: "org/model:latest"',
+  "    api_flavor: openai-responses",
+  "    auth:",
+  "      method: api_key",
+];
+
+describe("upsertSettingsProvider", () => {
+  it("appends a providers: block to an empty file", () => {
+    const { text, written } = upsertSettingsProvider("", gateway);
+    expect(written).toBe(true);
+    expect(text).toBe(["providers:", ...gatewayEntry, ""].join("\n"));
+    // What is written is exactly what the guided-copy snippet showed.
+    expect(text).toBe(customProviderSettingsSnippet(gateway));
+  });
+
+  it("appends after unrelated top-level keys, adding the missing final newline once", () => {
+    const original = "models:\n  default: x\npermissions:\n  allow: []";
+    const { text, written } = upsertSettingsProvider(original, gateway);
+    expect(written).toBe(true);
+    expect(text).toBe(
+      `${original}\n${["providers:", ...gatewayEntry, ""].join("\n")}`,
+    );
+    expect(listSettingsProviders(text)).toEqual([
+      {
+        name: "my-gateway",
+        baseURL: "https://gw.example/v1",
+        defaultModel: "org/model:latest",
+        apiFlavor: "openai-responses",
+        authMethod: "api_key",
+      },
+    ]);
+  });
+
+  it("inserts after the last entry of an existing providers: block, keeping the gap before the next key", () => {
+    const original = [
+      "providers:",
+      "  # the production gateway",
+      "  first-gw:",
+      "    base_url: https://first.example",
+      "    default_model: m",
+      "    api_flavor: anthropic-messages",
+      "",
+      "permissions:",
+      "  allow: []",
+      "",
+    ].join("\n");
+    const { text, written } = upsertSettingsProvider(original, {
+      ...gateway,
+      authMethod: "none",
+    });
+    expect(written).toBe(true);
+    expect(text).toBe(
+      [
+        "providers:",
+        "  # the production gateway",
+        "  first-gw:",
+        "    base_url: https://first.example",
+        "    default_model: m",
+        "    api_flavor: anthropic-messages",
+        ...gatewayEntry.slice(0, -1),
+        "      method: none",
+        "",
+        "permissions:",
+        "  allow: []",
+        "",
+      ].join("\n"),
+    );
+    expect(listSettingsProviders(text)?.map((p) => p.name)).toEqual([
+      "first-gw",
+      "my-gateway",
+    ]);
+  });
+
+  it("turns a flow-style empty section (providers: {}) back into a block", () => {
+    const { text, written } = upsertSettingsProvider(
+      "providers: {} # none yet\nother: 1\n",
+      gateway,
+    );
+    expect(written).toBe(true);
+    expect(text).toBe(
+      ["providers: # none yet", ...gatewayEntry, "other: 1", ""].join("\n"),
+    );
+  });
+
+  it("refuses a duplicate id without touching the text", () => {
+    const original = customProviderSettingsSnippet(gateway);
+    const result = upsertSettingsProvider(original, {
+      ...gateway,
+      baseURL: "https://other.example",
+    });
+    expect(result.written).toBe(false);
+    expect(result.text).toBe(original);
+    expect(result.reason).toMatch(/already defined/);
+    // Exact match: a prefix-sharing id is NOT a duplicate.
+    expect(
+      upsertSettingsProvider(original, { ...gateway, id: "my-gateway-2" })
+        .written,
+    ).toBe(true);
+  });
+
+  it("refuses a section it cannot extend safely (anchors, 4-space or tab indents)", () => {
+    for (const original of [
+      "providers: &shared\n  a:\n    base_url: https://a.example\n",
+      "providers:\n    four-space:\n        base_url: https://a.example\n",
+      "providers:\n\ttabbed:\n\t\tbase_url: https://a.example\n",
+    ]) {
+      const result = upsertSettingsProvider(original, gateway);
+      expect(result.written, original).toBe(false);
+      expect(result.text, original).toBe(original);
+      expect(result.reason, original).toMatch(/by hand/);
+    }
+  });
+
+  it("refuses an invalid definition instead of writing a block mecated would reject", () => {
+    const bad = [
+      { ...gateway, id: "openai" },
+      { ...gateway, id: "Bad Id" },
+      { ...gateway, apiFlavor: "grpc" },
+      { ...gateway, baseURL: "http://plain.example" },
+      { ...gateway, baseURL: "https://u:p@gw.example" },
+      { ...gateway, defaultModel: "  " },
+      { ...gateway, authMethod: "oidc" },
+    ];
+    for (const definition of bad) {
+      const result = upsertSettingsProvider("x: 1\n", definition);
+      expect(result.written, JSON.stringify(definition)).toBe(false);
+      expect(result.text).toBe("x: 1\n");
+      expect(result.reason).toBeTruthy();
+    }
+  });
+
+  it("YAML-quotes the URL and model so ':' and spaces survive", () => {
+    const { text } = upsertSettingsProvider("", {
+      ...gateway,
+      defaultModel: 'vendor/model: "quoted" v2',
+    });
+    expect(text).toContain(
+      '    default_model: "vendor/model: \\"quoted\\" v2"',
+    );
+    expect(text).toContain('    base_url: "https://gw.example/v1"');
+  });
+
+  it("has no field a credential could travel through", () => {
+    // A caller mistakenly passing a key must find it silently dropped: the
+    // editor writes exactly its five known fields and nothing else.
+    const smuggled = {
+      ...gateway,
+      apiKey: "sk-live-secret",
+      api_key: "sk-live-secret",
+    };
+    const { text } = upsertSettingsProvider("", smuggled);
+    expect(text).not.toMatch(/sk-live|api_key:/);
+  });
+});
+
+describe("removeSettingsProvider", () => {
+  it("round-trips: upsert then remove hands the original text back byte-identical", () => {
+    for (const original of [
+      "",
+      "models:\n  default: x\n",
+      "models:\n  default: x\npermissions:\n  allow: []",
+      [
+        "providers:",
+        "  first-gw:",
+        "    base_url: https://first.example",
+        "    default_model: m",
+        "    api_flavor: anthropic-messages",
+        "",
+        "permissions:",
+        "  allow: []",
+        "",
+      ].join("\n"),
+    ]) {
+      const { text: added, written } = upsertSettingsProvider(
+        original,
+        gateway,
+      );
+      expect(written, original).toBe(true);
+      const { text, removed } = removeSettingsProvider(added, gateway.id);
+      expect(removed, original).toBe(true);
+      // A file with no trailing newline gains one on the way in; that is
+      // the one byte the round trip cannot give back.
+      const expected =
+        original === "" || original.endsWith("\n") ? original : `${original}\n`;
+      expect(text, original).toBe(expected);
+    }
+  });
+
+  it("removes exactly the named entry and keeps siblings, comments and the header", () => {
+    const original = [
+      "# operator settings",
+      "providers:",
+      "  a-gw:",
+      '    base_url: "https://a.example"',
+      "    default_model: a",
+      "    api_flavor: openai-responses",
+      "    auth:",
+      "      method: none",
+      "  # b is the keyed one",
+      "  b-gw:",
+      '    base_url: "https://b.example"',
+      "    default_model: b",
+      "    api_flavor: openai-responses",
+      "permissions:",
+      "  allow: []",
+      "",
+    ].join("\n");
+    const { text, removed } = removeSettingsProvider(original, "a-gw");
+    expect(removed).toBe(true);
+    expect(text).toBe(
+      [
+        "# operator settings",
+        "providers:",
+        "  # b is the keyed one",
+        "  b-gw:",
+        '    base_url: "https://b.example"',
+        "    default_model: b",
+        "    api_flavor: openai-responses",
+        "permissions:",
+        "  allow: []",
+        "",
+      ].join("\n"),
+    );
+    // An operator's comment left at the entry indent keeps the header.
+    const { text: onlyComment } = removeSettingsProvider(text, "b-gw");
+    expect(onlyComment).toBe(
+      [
+        "# operator settings",
+        "providers:",
+        "  # b is the keyed one",
+        "permissions:",
+        "  allow: []",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("returns removed:false, text unchanged, for an absent id, a lookalike, or no section", () => {
+    const original = customProviderSettingsSnippet(gateway);
+    for (const missing of ["my-gateway-2", "my", "MY-GATEWAY", "nope"]) {
+      expect(removeSettingsProvider(original, missing), missing).toEqual({
+        text: original,
+        removed: false,
+      });
+    }
+    expect(
+      removeSettingsProvider("models:\n  default: x\n", "my-gateway"),
+    ).toEqual({
+      text: "models:\n  default: x\n",
+      removed: false,
+    });
+  });
+});
+
+describe("removeAuthFileProviderKey", () => {
+  it("cuts only the api_key line, leaving the block and every other key intact", () => {
+    const original = [
+      "providers:",
+      "  openrouter:",
+      "    api_key: sk-or-live",
+      "  my-gateway:",
+      "    # rotated 2026-01",
+      "    api_key: sk-gw",
+      "    oauth:",
+      "      access_token: tok",
+      "  anthropic:",
+      "    api_key: sk-ant",
+      "other_top_level: true",
+      "",
+    ].join("\n");
+    const { text, removed } = removeAuthFileProviderKey(original, "my-gateway");
+    expect(removed).toBe(true);
+    expect(text).toBe(
+      [
+        "providers:",
+        "  openrouter:",
+        "    api_key: sk-or-live",
+        "  my-gateway:",
+        "    # rotated 2026-01",
+        "    oauth:",
+        "      access_token: tok",
+        "  anthropic:",
+        "    api_key: sk-ant",
+        "other_top_level: true",
+        "",
+      ].join("\n"),
+    );
+    expect(text).not.toContain("sk-gw");
+    // The block is still there and lists as "configured, no key"... except
+    // its oauth token still counts as a credential in this contrived shape.
+    expect(listAuthFileProviders(text).map((p) => p.name)).toContain(
+      "my-gateway",
+    );
+  });
+
+  it("rewrites an emptied entry as `name: {}` — the daemon's own logout shape", () => {
+    const original = [
+      "providers:",
+      "  my-gateway:",
+      "    api_key: sk-gw",
+      "  openai:",
+      '    api_key: "sk-oai"',
+      "",
+    ].join("\n");
+    const { text, removed } = removeAuthFileProviderKey(original, "my-gateway");
+    expect(removed).toBe(true);
+    expect(text).toBe(
+      [
+        "providers:",
+        "  my-gateway: {}",
+        "  openai:",
+        '    api_key: "sk-oai"',
+        "",
+      ].join("\n"),
+    );
+    expect(listAuthFileProviders(text)).toEqual([
+      { name: "my-gateway", keyPresent: false },
+      { name: "openai", keyPresent: true },
+    ]);
+    // And the whole-block remover still finds the emptied entry afterwards.
+    expect(removeAuthFileProvider(text, "my-gateway").text).toBe(
+      ["providers:", "  openai:", '    api_key: "sk-oai"', ""].join("\n"),
+    );
+  });
+
+  it("never matches an api_key line of another block, and reports no key as removed:false", () => {
+    const original = [
+      "providers:",
+      "  a:",
+      "    api_key: sk-a",
+      "  b: {}",
+      "  c:",
+      "    oauth:",
+      "      access_token: tok",
+      "",
+    ].join("\n");
+    for (const name of ["b", "c", "nope", "A"]) {
+      expect(removeAuthFileProviderKey(original, name), name).toEqual({
+        text: original,
+        removed: false,
+      });
+    }
+    expect(removeAuthFileProviderKey("", "a")).toEqual({
+      text: "",
+      removed: false,
+    });
   });
 });

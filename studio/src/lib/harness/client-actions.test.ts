@@ -441,4 +441,32 @@ describe("fetchHarnessSessionDetail", () => {
     const detail = await fetchHarnessSessionDetail("s1");
     expect(detail.sessionCapabilities).toEqual({ image: true, audio: false });
   });
+
+  it("carries the debug binding, its MCP servers and mounted tools off an AI-debug snapshot (ADR 0254)", async () => {
+    stubHarnessFetch((request) => {
+      if (request.path === "/v1/sessions/dbg-1")
+        return snapshotFor("dbg-1", {
+          kind: "debug",
+          relationship: { debug_target_session_id: "target-1" },
+          debug_mcp_servers: ["github", ""],
+          debug_mcp_tools: ["mcp__github__create_issue", ""],
+        });
+      return undefined;
+    });
+    const detail = await fetchHarnessSessionDetail("dbg-1");
+    expect(detail.debugTargetSessionId).toBe("target-1");
+    expect(detail.debugMcpServers).toEqual(["github"]);
+    expect(detail.debugMcpTools).toEqual(["mcp__github__create_issue"]);
+  });
+
+  it("omits every debug field on an ordinary session", async () => {
+    stubHarnessFetch((request) => {
+      if (request.path === "/v1/sessions/s1") return snapshotFor("s1");
+      return undefined;
+    });
+    const detail = await fetchHarnessSessionDetail("s1");
+    expect(detail).not.toHaveProperty("debugTargetSessionId");
+    expect(detail).not.toHaveProperty("debugMcpServers");
+    expect(detail).not.toHaveProperty("debugMcpTools");
+  });
 });

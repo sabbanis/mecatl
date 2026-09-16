@@ -2,7 +2,10 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
+  createHarnessCustomProvider,
+  type HarnessCustomProviderDefinition,
   type HarnessProviderInfo,
+  type HarnessProviderRemovalScope,
   type KnownHarnessProvider,
   listHarnessProviders,
   listKnownHarnessProviders,
@@ -24,21 +27,34 @@ export type ProviderKeyHealth =
   /** The probe could not complete (timeout, outage, non-auth error). */
   | { state: "error"; detail: string };
 
+/** The outcome of a custom-definition write, for the Add dialog to render
+ *  in place: `ok` when the controller wrote it, `restarted` when it also
+ *  restarted the daemon (a keyless provider), `error` with the controller's
+ *  reason on refusal — or, with `ok`, the cause of a failed restart. */
+export type CustomProviderSaveResult = {
+  ok: boolean;
+  restarted: boolean;
+  error?: string;
+};
+
 /**
  * The controller-owned provider management surface: the provider inventory
  * (the auth.yaml blocks PLUS the operator settings' custom `providers:`
  * definitions, ADR 0238 — names + key-present booleans, NEVER values),
- * guided add (snippet + re-check + restart), server-side key tests (built-in
- * kinds and api_key custom gateways alike), and auth.yaml block removal.
- * Managed mode only — external mode owns nothing locally (`manageable` is
- * false and the controller would answer 409 anyway), and every mutation here
- * restarts the daemon, killing in-flight runs, so callers confirm first.
+ * guided add (snippet + re-check + restart), the custom DEFINITION write
+ * (`providers add`: the non-secret id/flavor/URL/model/auth-method entry
+ * lands in the daemon's user-global settings.yaml), server-side key tests
+ * (built-in kinds and api_key custom gateways alike), and removal in the
+ * TUI's two scopes — the key alone (`providers logout`) or the whole
+ * provider (`providers remove`). Managed mode only — external mode owns
+ * nothing locally (`manageable` is false and the controller would answer
+ * 409 anyway), and every mutation here restarts the daemon, killing
+ * in-flight runs, so callers confirm first.
  *
  * There is deliberately NO "add provider with key" action: credentials never
- * cross the browser/controller boundary (Studio rule 3). Adding a provider
- * is a guided copy — auth.yaml for built-ins; the settings `providers:`
- * block (and, for api_key auth, the auth.yaml key block) for custom
- * gateways — on the daemon's machine.
+ * cross the browser/controller boundary (Studio rule 3). The definition
+ * Studio writes has no secret field; the api_key still travels by hand into
+ * auth.yaml on the daemon's machine (for built-ins, the whole block does).
  */
 export function useProviderManagement() {
   const { connected, mode } = useRuntimeStatus();
@@ -117,20 +133,75 @@ export function useProviderManagement() {
     }
   }, []);
 
-  /** Removes a provider's auth.yaml block. RESTARTS the daemon. */
+  /**
+   * Writes a custom provider DEFINITION (non-secret: id, flavor, base URL,
+   * default model, auth method) into the daemon's user-global settings.yaml
+   * through the controller, then re-reads the inventory. The daemon is
+   * restarted by the controller only for a keyless provider; an api_key one
+   * needs its key in auth.yaml first, then the Restart button. Busy is
+   * `add:<id>`. The result is returned as well as noticed, so the dialog
+   * can render it in place (the section's notice sits behind the modal).
+   */
+  const addCustomProvider = useCallback(
+    async (
+      definition: HarnessCustomProviderDefinition,
+    ): Promise<CustomProviderSaveResult> => {
+      setBusy(`add:${definition.id}`);
+      setError(null);
+      setNotice(null);
+      try {
+        const saved = await createHarnessCustomProvider(definition);
+        await load();
+        if (definition.authMethod === "api_key") {
+          setNotice(
+            `Definition for ${definition.id} saved to the daemon's settings file. Add its key to auth.yaml, then restart the daemon.`,
+          );
+        } else if (saved.restarted) {
+          setNotice(
+            `Definition for ${definition.id} saved and the daemon restarted with it.`,
+          );
+        } else {
+          setNotice(`Definition for ${definition.id} saved.`);
+          if (saved.restartError)
+            setError(`The daemon failed to restart: ${saved.restartError}`);
+        }
+        return {
+          ok: true,
+          restarted: saved.restarted,
+          error: saved.restartError || undefined,
+        };
+      } catch (caught) {
+        const message =
+          caught instanceof Error ? caught.message : String(caught);
+        setError(message);
+        return { ok: false, restarted: false, error: message };
+      } finally {
+        setBusy("");
+      }
+    },
+    [load],
+  );
+
+  /** Removes a provider — its whole auth.yaml block plus a custom
+   *  definition (`scope: "all"`, the default) or only its api_key line
+   *  (`scope: "credential"`). RESTARTS the daemon. */
   const removeProvider = useCallback(
-    async (name: string) => {
+    async (name: string, scope: HarnessProviderRemovalScope = "all") => {
       setBusy(`remove:${name}`);
       setError(null);
       setNotice(null);
       try {
-        await removeHarnessProvider(name);
+        await removeHarnessProvider(name, scope);
         setHealth((previous) => {
           const { [name]: _dropped, ...rest } = previous;
           return rest;
         });
         await load();
-        setNotice(`Provider ${name} removed. The daemon restarted without it.`);
+        setNotice(
+          scope === "credential"
+            ? `Key for ${name} removed from auth.yaml; its definition stays. The daemon restarted.`
+            : `Provider ${name} removed. The daemon restarted without it.`,
+        );
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : String(caught));
         // The removal may have stood even when the restart failed — re-read
@@ -225,6 +296,7 @@ export function useProviderManagement() {
     notice,
     reload,
     testKey,
+    addCustomProvider,
     removeProvider,
     restartDaemon,
     setActiveProvider,

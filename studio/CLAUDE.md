@@ -73,8 +73,17 @@ Each rule is backed by a test; break the rule and its test names you.
    proxy forwards create bodies verbatim — no `workspace` injection into
    session/team/schedule creation, no `?workspace=` on `/v1/commands` (it is
    keyed by `session_id`). `MECATL_WORKSPACE` (external) and the controller's
-   `/status` `workspace` are display-only labels.
-   (hermetic: session creation is forwarded verbatim.)
+   `/status` `workspace` are display-only labels. The one placement CHOICE
+   Studio offers — "Switch worktree…" in the chat menu
+   (`worktree-picker-dialog.tsx`) — travels as the daemon's OPAQUE
+   `worktree_selector` from `GET /v1/worktrees?session_id=`, on ClearSession
+   ("Start fresh there") or ForkSession ("Bring this conversation"), never a
+   path; a stale selector (412 `placement_selector_*`) relists instead of
+   erroring. Gated on `serverCapabilities.worktrees` AND the row's `fork`
+   verdict; never offered on the draft, the mock tour or an AI-debug chat.
+   (hermetic: session creation is forwarded verbatim; `worktrees.test.ts`,
+   `create-body.test.ts`, `worktree-picker-dialog.test.tsx`, the Playwright
+   worktree test.)
 3. **Credentials never cross the browser/controller boundary.** No key-paste
    UI anywhere; `mecated` reads `~/.config/mecatl/auth.yaml`. The proxy's
    header allowlist excludes `authorization` from the browser.
@@ -168,13 +177,35 @@ Each rule is backed by a test; break the rule and its test names you.
     previous document back and returns mecated's own refusal. `POST
     /providers/active` persists the choice (`MECATL_STUDIO_PROVIDER` still
     wins at boot; a saved kind that is no longer selectable is dropped, and
-    `DELETE /providers/{name}` clears it); "Switch to offline mock" is the
-    explicit `--mock`. `GET /daemon-defaults` is header-free read-only like
-    `/status`; the PUT is not. External mode: `daemonDefaults: null`, both
-    verbs 409. (`src/lib/daemon-defaults.test.ts`,
+    `DELETE /providers/{name}?scope=all` clears it); "Switch to offline
+    mock" is the explicit `--mock`. `GET /daemon-defaults` is header-free
+    read-only like `/status`; the PUT is not. External mode:
+    `daemonDefaults: null`, both verbs 409. (`src/lib/daemon-defaults.test.ts`,
     `controller-security.test.ts`, `harness/daemon-defaults.test.ts`,
     `use-daemon-defaults.test.ts`, `daemon-defaults-card.test.tsx`,
-    `provider-section.test.tsx`, hermetic 409 rows.)
+    `provider-section.test.tsx`, hermetic 409 rows.) Provider REMOVAL has
+    the TUI's two scopes, from each row's kebab: `?scope=credential`
+    (`providers logout`, "Remove key (keep provider)") cuts ONLY the
+    `api_key` line from the provider's auth.yaml block — an emptied entry
+    becomes `name: {}` exactly as mecated's authfile writes it, and the
+    block plus a custom provider's definition stay, so it lists as
+    "configured, no key"; `?scope=all` (`providers remove`, the default)
+    cuts the whole auth.yaml block AND a custom provider's settings.yaml
+    definition, its saved model pair and the active choice. A custom
+    provider's NON-secret DEFINITION (`providers add`: id, `api_flavor`,
+    HTTPS `base_url`, `default_model`, `auth.method` `api_key`|`none`) is
+    the one thing Studio WRITES into the user-global settings.yaml: `POST
+    /providers/custom` (Add provider → Custom gateway → "Save definition";
+    a keyless provider restarts at once, an `api_key` one waits for the
+    hand-pasted key — rule 3 holds: there is no key field and none is
+    accepted). Both the write and `?scope=all` on a name the imported
+    operator settings file defines are refused 409 BEFORE anything is
+    written (Studio never edits that file) and the UI withholds the buttons
+    while it is active. Every edit is a conservative line-range rewrite
+    (`provider-auth.mjs`), temp-file + rename, the file's existing mode
+    preserved (0600 when created). (`provider-auth.test.ts`,
+    `add-provider-dialog.test.tsx`, `provider-section.test.tsx`,
+    `use-provider-management.test.ts`, hermetic 409 + header-gate rows.)
 17. **Diagnostics options are spawn FLAGS with ONE writer per flag, and the
     posture is not one of them.** Settings → Diagnostics reads the
     daemon-REPORTED `serverCapabilities.posture` and spells out the four
@@ -206,7 +237,24 @@ Each rule is backed by a test; break the rule and its test names you.
     409. (`src/lib/controller-diagnostics-options.test.ts`,
     `src/lib/posture.test.ts`, `harness/diagnostics.test.ts`,
     `use-diagnostics-options.test.ts`, `posture-card.test.tsx`, hermetic 409
-    rows, the Playwright diagnostics test.)
+    rows, the Playwright diagnostics test.) The admin surface itself
+    reaches the browser ONLY through the controller: it probes a free
+    loopback port per spawn (the ready file names only `http_address`; one
+    re-probe + re-spawn when the failed start says address-in-use —
+    `src/lib/controller-perf.mjs`), `GET /perf` reports the LIVE origin,
+    paths and knobs (`/status.perf` mirrors it), and `GET /perf/metrics` /
+    `GET /perf/vars` relay the two TEXT endpoints (409 while off, 503 while
+    no child runs; `/debug/pprof` and `/debug/flightrecorder` are NEVER
+    relayed — `performance-card.tsx` shows them as loopback links that only
+    resolve on the daemon's host, and says so). All three are
+    studio-header-gated and 409 in external mode. `src/lib/prometheus-text.ts`
+    turns the exposition into the Goroutines / Heap / RSS / GC-pause tiles
+    and prints the `mecated perf-mcp print-config` snippet byte for byte.
+    Passing `--metrics-addr=` when the switch is off means a managed daemon
+    no longer opens mecated's default 127.0.0.1:9090 listener — that is
+    deliberate, and the card's copy says it. (`controller-perf.test.ts`,
+    `prometheus-text.test.ts`, `performance-card.test.tsx`, hermetic 409 +
+    header-gate rows.)
 18. **Storage maintenance is DAEMON-owned, capability-gated, and the
     destructive step is typed-confirmed.** Settings → Storage ends in three
     cards that talk to mecated ONLY through the SDK's `client.storage`
@@ -256,6 +304,27 @@ Each rule is backed by a test; break the rule and its test names you.
     control can fork or rebind the binding. (`session-handle.test.ts`,
     `chat-status-strip.test.tsx`, `use-session-mode.test.ts`,
     `events.test.ts` provider.route, the Playwright status-strip test.)
+20. **Workspace-services enrollment never keeps the consent URL, and opens
+    its window on the click.** Where the daemon advertises
+    `workspace_enrollment`, the TUI's "workspace services not connected"
+    notice (`workspace-enrollment-notice.tsx`) sits above the live chat's
+    composer with /tools-connect and /tools-cancel as buttons. Connect calls
+    `window.open` SYNCHRONOUSLY on the click, BEFORE any await (popup-blocker
+    safe), POSTs the BODYLESS connect (retry/cancel likewise — the daemon
+    400s any body byte), points the window at the daemon's
+    `presentation_url`, and observes every 3 s until the enrollment settles;
+    that URL lives only in a ref while the enrollment is pending — never in
+    React state, the hook's return value, the DOM or a log
+    (`use-workspace-enrollment.test.tsx` serialises the state and asserts
+    its absence). A stale id (412) on retry falls back to a fresh connect;
+    cancel sends the exact id. The connector inventory
+    (`mcp_connector_status`, read once per open) speaks a DIFFERENT
+    vocabulary from the enrollment status — `completed` there is the
+    connected state — and a 401/403/404/412 folds to "unknown" (notice
+    shown) rather than an error. Hidden for a debug-target chat, the mock
+    tour and the draft; dismissible per session. (`enrollment.test.ts`,
+    `use-workspace-enrollment.test.tsx`,
+    `workspace-enrollment-notice.test.tsx`, the Playwright enrollment test.)
 
 ## Gotchas
 

@@ -64,6 +64,10 @@ import type { SessionPermissionMode } from "@/lib/protocol";
 import { effortLabel } from "@/lib/reasoning-effort";
 import { cn } from "@/lib/utils";
 import {
+  ESCAPE_ARMED_HINT,
+  useComposerDraftGuards,
+} from "./composer-draft-guards";
+import {
   fileMenuRows,
   isAttachFileItem,
   isFileMenuItem,
@@ -75,6 +79,11 @@ import {
   createComposerMentions,
   setComposerText,
 } from "./composer-mentions";
+import {
+  applyComposerPaste,
+  PastePlaceholder,
+  readPasteClipboard,
+} from "./composer-paste";
 import { liveModelProvenance, resolveDraftModel } from "./draft-model";
 import {
   EffortSheetSection,
@@ -191,6 +200,16 @@ interface ChatInputProps {
       instead of being staged. Absent = no media gate (text-size limits still
       apply); the send path gates again regardless. */
   mediaCapabilities?: MediaCapabilities;
+  /** The forwarded double-Esc counter (`useComposerEscape`): each change is
+      one Esc nothing else claimed; the first arms, a second within 1.5 s
+      clears the draft. Absent = no Esc-to-clear (the thread panel). */
+  escapePress?: number;
+  /** Fires when "the composer holds text" flips (and `false` on unmount):
+      the surface arms its Esc layering and the leave guard from it. */
+  onDraftChange?: (hasText: boolean) => void;
+  /** Persists the unsent draft under this identity (a session id, or `"new"`
+      for the draft view) so a reload never loses it; absent = transient. */
+  draftKey?: string;
 }
 
 /**
@@ -1440,6 +1459,9 @@ export function ChatInput({
   onLocalCommand,
   builtinGates,
   mediaCapabilities,
+  escapePress,
+  onDraftChange,
+  draftKey,
 }: ChatInputProps) {
   const placeholder = placeholderProp ?? DEFAULT_PLACEHOLDER;
   // Plain-text mirror of the editor, kept in sync via onUpdate. Used only for
@@ -1618,11 +1640,32 @@ export function ChatInput({
         underline: false,
       }),
       Placeholder.configure({ placeholder }),
+      // The `[Pasted text #N]` chip a large paste is staged behind; its
+      // renderText is the payload, so composerText expands it on send.
+      PastePlaceholder,
       ...mentions,
     ],
     onUpdate: ({ editor }) => {
       setText(editor.getText({ blockSeparator: "\n" }));
       setNotice(null);
+    },
+  });
+
+  // The draft guards (the TUI's esc-esc clear and two-step quit, as their
+  // web analogues): a double Esc empties an idle draft, the unsent text is
+  // persisted under `draftKey`, and `onDraftChange` feeds the leave guard.
+  const { escapeArmed } = useComposerDraftGuards({
+    editor,
+    text,
+    setText,
+    escapePress,
+    draftKey,
+    initialTextPending: Boolean(initialText),
+    onDraftChange,
+    clearComposer: () => {
+      editor?.commands.clearContent();
+      setText("");
+      setAttachedFiles([]);
     },
   });
 
@@ -1866,6 +1909,41 @@ export function ChatInput({
     onClearQueue,
   ]);
 
+  // Paste (the TUI's ctrl+v). Clipboard files with no text (a screenshot)
+  // stage through the same gate as the picker and drop; a LARGE text paste
+  // (≥ 2000 chars alone or with the current text, or ≥ 30 lines) becomes one
+  // atomic `[Pasted text #N]` chip that composerText expands on send, steer
+  // and queue; anything smaller falls through to ProseMirror's own paste.
+  // Capture-phase on the editor DOM like the keydown listener above, so a
+  // handled paste stops before ProseMirror's bubble-phase handler would
+  // insert the text too. Inert while disabled (the editor is read-only).
+  const pasteCounterRef = useRef(0);
+  useEffect(() => {
+    // N restarts with an empty composer (a send, a wipe); within one draft
+    // it is monotonic, so a deleted chip leaves a numbering gap, as in the TUI.
+    if (text === "") pasteCounterRef.current = 0;
+  }, [text]);
+  useEffect(() => {
+    const dom = editor?.view.dom;
+    if (!editor || !dom) return;
+    const onPaste = (event: ClipboardEvent) => {
+      if (disabled) return;
+      const outcome = applyComposerPaste(
+        editor,
+        readPasteClipboard(event.clipboardData),
+        {
+          stageFiles,
+          nextNumber: () => ++pasteCounterRef.current,
+        },
+      );
+      if (outcome === "default") return;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    dom.addEventListener("paste", onPaste, true);
+    return () => dom.removeEventListener("paste", onPaste, true);
+  }, [editor, disabled, stageFiles]);
+
   const hasText = text.trim().length > 0;
 
   return (
@@ -1967,6 +2045,18 @@ export function ChatInput({
         >
           <TriangleAlert className="size-3.5 shrink-0" aria-hidden="true" />
           {notice}
+        </p>
+      )}
+      {/* The double-Esc arm (the TUI's esc-esc): a second Esc inside the
+          window empties the draft; any edit disarms. */}
+      {escapeArmed && (
+        <p
+          role="status"
+          aria-live="polite"
+          data-testid="composer-escape-armed"
+          className="mb-1.5 px-1 text-xs text-muted-foreground"
+        >
+          {ESCAPE_ARMED_HINT}
         </p>
       )}
       {/* Input box: textarea + inline toolbar (+, mic) + send button.

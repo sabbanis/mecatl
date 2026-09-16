@@ -82,6 +82,11 @@ const capabilities = {
   storage_cleanup: true,
   steer: true,
   manual_compaction: true,
+  // Workspace-services enrollment (the TUI's /tools-connect): the notice above
+  // the composer and its connect/retry/cancel controls. Connector inspection
+  // lets Studio skip the notice on an already-connected chat.
+  workspace_enrollment: true,
+  mcp_connector_status: true,
 };
 
 const snapshot = {
@@ -129,6 +134,24 @@ const routes = {
   "GET /v1/info": {
     build_id: "fixture",
     server_implementation: "fixture-daemon",
+  },
+  // The resolved MCP source inventory the "Debug with AI" dialog lists its
+  // attachable debugger servers from (proto ListMcpSourcesResponse).
+  "GET /v1/mcp/sources": {
+    sources: [
+      {
+        name: "static",
+        kind: "static",
+        enabled: true,
+        servers: [
+          {
+            name: "fixture-mcp",
+            url: "http://127.0.0.1:1/mcp",
+            transport: "streamable-http",
+          },
+        ],
+      },
+    ],
   },
   // Proto-JSON GetStorageHealthResponse: a healthy store (no banner) whose
   // effective retention policy, sweep timestamps and family counts the
@@ -370,7 +393,29 @@ const routes = {
   // Slash-command discovery is keyed by `?session_id=` (placement is
   // server-owned, ADR 0291); the query is accepted and ignored here.
   "GET /v1/commands": { commands: [] },
-  "GET /v1/worktrees": { worktrees: [] },
+  // The worktree picker (`/worktrees`): eligible sibling worktrees in `git
+  // worktree list` order, each with an OPAQUE selector the clear/fork routes
+  // below accept as `worktree_selector` (ADR 0291 — never a path).
+  "GET /v1/worktrees": {
+    worktrees: [
+      {
+        selector: "wt-main",
+        kind: "git-worktree",
+        label: "main",
+        branch: "main",
+        revision: "abcdef0123456789",
+        bare: false,
+      },
+      {
+        selector: "wt-feature",
+        kind: "git-worktree",
+        label: "feature-x",
+        branch: "feature/x",
+        revision: "0123456789abcdef",
+        bare: false,
+      },
+    ],
+  },
   "POST /v1/sessions": { session_id: sessionID, placement },
   [`POST /v1/sessions/${sessionID}/fork`]: {
     session_id: "session-fixture-fork",
@@ -404,6 +449,40 @@ const routes = {
   [`GET /v1/sessions/${sessionID}/mcp-authorizations/${authorizationID}/presentation`]:
     { url: "https://example.test/authorize?state=fixture" },
   [`POST /v1/sessions/${sessionID}/mode`]: snapshot,
+  // The owner-scoped connector inventory (proto ListSessionMcpConnectorsResponse;
+  // vocabulary in internal/mcpbroker/connector.go): enrollment required but
+  // not begun, so the notice shows on open.
+  [`GET /v1/sessions/${sessionID}/mcp/connectors`]: {
+    availability: "available",
+    enrollment_state: "not_started",
+    connectors: [],
+    total_connectors: 0,
+    truncated: false,
+  },
+  // Workspace-services enrollment controls (bodyless POSTs; proto
+  // WorkspaceEnrollment). The fixture connects straight away — no consent
+  // window to drive — so `presentation_url` stays empty, as the daemon sends
+  // it on every non-begin response.
+  [`POST /v1/sessions/${sessionID}/workspace-enrollment/connect`]: {
+    enrollment_id: "enroll-fixture-1",
+    status: "connected",
+    required_services: 1,
+    presentation_url: "",
+  },
+  [`POST /v1/sessions/${sessionID}/workspace-enrollment/enroll-fixture-1/retry`]:
+    {
+      enrollment_id: "enroll-fixture-1",
+      status: "connected",
+      required_services: 1,
+      presentation_url: "",
+    },
+  [`POST /v1/sessions/${sessionID}/workspace-enrollment/enroll-fixture-1/cancel`]:
+    {
+      enrollment_id: "enroll-fixture-1",
+      status: "cancelled",
+      required_services: 1,
+      presentation_url: "",
+    },
   "POST /v1/schedules": {},
   "PUT /v1/schedules/nightly-fixture-digest": {},
   "POST /v1/schedules/nightly-fixture-digest/pause": {},

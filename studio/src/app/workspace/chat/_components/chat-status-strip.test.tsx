@@ -6,6 +6,7 @@ import {
   ChatStatusStrip,
   DEBUG_PRIVACY_NOTICE,
   debugServersNotice,
+  debugToolsNotice,
 } from "./chat-status-strip";
 
 /**
@@ -343,6 +344,38 @@ describe("ChatStatusStrip", () => {
     expect(screen.queryByText("DEBUG")).toBeNull();
     expect(screen.getByTestId("chat-status-strip")).not.toHaveAttribute(
       "data-debug",
+    );
+  });
+
+  it("names the mounted debugger MCP tools and that each call asks anew", () => {
+    const { unmount } = render(
+      <ChatStatusStrip
+        session={session({ id: "debug-1", debugTargetSessionId: "target-1" })}
+        live
+        resolvedModelId="gpt-5"
+        modelResolution="ok"
+        debugMcpServers={["github"]}
+        debugMcpTools={["mcp__github__create_issue"]}
+      />,
+    );
+    const privacy = screen.getByTestId("chat-debug-privacy");
+    expect(privacy).toHaveTextContent(
+      debugToolsNotice(["mcp__github__create_issue"]),
+    );
+    expect(privacy).toHaveTextContent("Always allow is not learned");
+    unmount();
+
+    render(
+      <ChatStatusStrip
+        session={session({ id: "debug-1", debugTargetSessionId: "target-1" })}
+        live
+        resolvedModelId="gpt-5"
+        modelResolution="ok"
+        debugMcpServers={["github"]}
+      />,
+    );
+    expect(screen.getByTestId("chat-debug-privacy")).not.toHaveTextContent(
+      "Debugger MCP tools",
     );
   });
 });

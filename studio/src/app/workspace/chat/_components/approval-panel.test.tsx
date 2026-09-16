@@ -159,4 +159,54 @@ describe("ApprovalPanel", () => {
     );
     expect(onExpand).toHaveBeenCalledWith(mainAsk);
   });
+
+  // A debugger MCP call in an AI-debug session (ADR 0254): the daemon forces
+  // every such call through a fresh ask and never learns Always allow, so
+  // the card withholds the button and says why.
+  const debugMcpAsk: ApprovalRequest = {
+    ...mainAsk,
+    approvalId: "dbg-1:1:c1:r1",
+    sessionId: "dbg-1",
+    toolName: "mcp__github__create_issue",
+    description: "mcp__github__create_issue needs your approval.",
+    reason: "debug MCP call requires fresh current operator approval",
+    args: JSON.stringify({ title: "Flaky scheduler test" }),
+    details: "",
+  };
+
+  it("withholds Always allow for a debugger MCP ask in a debug session and explains the one-call rule", () => {
+    const onRespond = vi.fn();
+    render(
+      <ApprovalPanel
+        approval={debugMcpAsk}
+        onRespond={onRespond}
+        debugSession
+      />,
+    );
+    expect(screen.getByText("Debugger MCP")).toBeInTheDocument();
+    expect(screen.getByTestId("debug-mcp-ask-note")).toHaveTextContent(
+      "Always allow is not learned",
+    );
+    expect(screen.queryByRole("button", { name: "Always allow" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Allow once" }));
+    fireEvent.click(screen.getByRole("button", { name: "Deny" }));
+    expect(onRespond.mock.calls.map(([choice]) => choice)).toEqual([
+      "once",
+      "deny",
+    ]);
+  });
+
+  it("keeps the generic card for the same ask outside a debug session, and for a non-MCP ask inside one", () => {
+    const { unmount } = render(
+      <ApprovalPanel approval={debugMcpAsk} onRespond={() => {}} />,
+    );
+    expect(screen.getByRole("button", { name: "Always allow" })).toBeEnabled();
+    expect(screen.queryByTestId("debug-mcp-ask-note")).toBeNull();
+    unmount();
+    render(
+      <ApprovalPanel approval={mainAsk} onRespond={() => {}} debugSession />,
+    );
+    expect(screen.getByRole("button", { name: "Always allow" })).toBeEnabled();
+    expect(screen.queryByText("Debugger MCP")).toBeNull();
+  });
 });

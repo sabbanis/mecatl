@@ -29,6 +29,7 @@ export * from "./retention";
 export * from "./schedules";
 export * from "./sessions";
 export * from "./store-location";
+export * from "./worktrees";
 
 // ── Controller: provider, model router, MCP gateway ─────────────────────────
 
@@ -529,13 +530,77 @@ export async function testHarnessProviderKey(
   };
 }
 
-/** Removes a provider's block from auth.yaml. RESTARTS the daemon. */
-export async function removeHarnessProvider(name: string): Promise<void> {
+/** What a provider removal cuts: `"all"` (the TUI's `providers remove`) is
+ *  the auth.yaml block AND a custom provider's settings.yaml definition;
+ *  `"credential"` (`providers logout`) is only the api_key line, leaving the
+ *  block and the definition so the provider stays configured without a key. */
+export type HarnessProviderRemovalScope = "credential" | "all";
+
+/** Removes a provider (or only its key) from the controller's files.
+ *  RESTARTS the daemon. Names and a scope travel; never a value. */
+export async function removeHarnessProvider(
+  name: string,
+  scope: HarnessProviderRemovalScope = "all",
+): Promise<void> {
   const response = await fetch(
-    `${CONTROL_API}/providers/${encodeURIComponent(name)}`,
+    `${CONTROL_API}/providers/${encodeURIComponent(name)}?scope=${scope}`,
     { method: "DELETE" },
   );
   if (!response.ok) throw await apiError(response);
+}
+
+/** The NON-secret custom provider definition (ADR 0238) the controller
+ *  writes into the daemon's user-global settings.yaml: an id, the wire
+ *  flavor, an HTTPS base URL, a default model id and the auth METHOD. There
+ *  is no key field — the api_key still goes into auth.yaml by hand (Studio
+ *  rule 3), so a credential has no channel here. */
+export interface HarnessCustomProviderDefinition {
+  id: string;
+  apiFlavor: string;
+  baseURL: string;
+  defaultModel: string;
+  authMethod: "api_key" | "none";
+}
+
+/** The controller's answer to a definition write: whether it restarted the
+ *  daemon (it does so at once for a keyless provider; an api_key one waits
+ *  for the key), and the cause when that restart failed — the definition
+ *  itself STANDS either way. */
+export interface HarnessCustomProviderSaved {
+  restarted: boolean;
+  restartError: string;
+}
+
+/**
+ * Writes a custom provider definition through the controller (`providers
+ * add` without the login step). Throws on a refused write: an invalid
+ * definition (400), an id already configured or an active imported
+ * operator settings file (409), external mode (409).
+ */
+export async function createHarnessCustomProvider(
+  definition: HarnessCustomProviderDefinition,
+): Promise<HarnessCustomProviderSaved> {
+  const response = await fetch(`${CONTROL_API}/providers/custom`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      id: definition.id,
+      apiFlavor: definition.apiFlavor,
+      baseURL: definition.baseURL,
+      defaultModel: definition.defaultModel,
+      authMethod: definition.authMethod,
+    }),
+  });
+  if (!response.ok) throw await apiError(response);
+  const body = (await response.json()) as {
+    restarted?: boolean;
+    restartError?: string;
+  };
+  return {
+    restarted: body.restarted === true,
+    restartError:
+      typeof body.restartError === "string" ? body.restartError : "",
+  };
 }
 
 /** Restarts the daemon with its current config — how a provider block just

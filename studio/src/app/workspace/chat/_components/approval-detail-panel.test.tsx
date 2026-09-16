@@ -86,4 +86,36 @@ describe("ApprovalDetailPanel", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(onRespond).not.toHaveBeenCalled();
   });
+
+  it("withholds Always allow for a debugger MCP ask in a debug session and shows the one-call note", () => {
+    const debugMcpAsk: ApprovalRequest = {
+      ...shellAsk,
+      approvalId: "dbg-1:1:c1:r1",
+      sessionId: "dbg-1",
+      toolName: "mcp__github__create_issue",
+      description: "mcp__github__create_issue needs your approval.",
+      reason: "debug MCP call requires fresh current operator approval",
+      args: JSON.stringify({ title: "Flaky scheduler test" }),
+      details: "",
+    };
+    const onRespond = vi.fn();
+    const onClose = vi.fn();
+    render(
+      <ApprovalDetailPanel
+        approval={debugMcpAsk}
+        onRespond={onRespond}
+        onClose={onClose}
+        maximized={false}
+        onToggleMaximize={() => {}}
+        debugSession
+      />,
+    );
+    expect(screen.getByTestId("debug-mcp-ask-note")).toHaveTextContent(
+      "one call at a time",
+    );
+    expect(screen.queryByRole("button", { name: "Always allow" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Allow once" }));
+    expect(onRespond).toHaveBeenCalledWith("once");
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
 });

@@ -407,7 +407,7 @@ function SessionRow({
         >
           <button
             type="button"
-            aria-label="Chat options"
+            aria-label={`Options for chat: ${session.title || "Untitled"}`}
             className={cn(
               "[grid-area:slot] flex items-center justify-center w-7 rounded text-muted-foreground hover:text-foreground",
               menuOpen
@@ -627,7 +627,7 @@ function MockProjectChatRow({ chat }: { chat: MockProjectChat }) {
           <DropdownMenuTrigger asChild>
             <button
               type="button"
-              aria-label="Chat options"
+              aria-label={`Options for chat: ${chat.title}`}
               className={cn(
                 "[grid-area:slot] flex items-center justify-center w-7 rounded text-muted-foreground hover:text-foreground",
                 menuOpen

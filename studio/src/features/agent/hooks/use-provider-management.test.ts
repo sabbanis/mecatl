@@ -12,21 +12,26 @@ import { useProviderManagement } from "./use-provider-management";
  */
 
 const {
+  createHarnessCustomProvider,
   listHarnessProviders,
   listKnownHarnessProviders,
+  removeHarnessProvider,
   startHarnessToolhiveGateway,
   runtime,
 } = vi.hoisted(() => ({
+  createHarnessCustomProvider: vi.fn(),
   listHarnessProviders: vi.fn(),
   listKnownHarnessProviders: vi.fn(),
+  removeHarnessProvider: vi.fn(),
   startHarnessToolhiveGateway: vi.fn(),
   runtime: { connected: true, mode: "managed" as "managed" | "external" },
 }));
 
 vi.mock("@/lib/harness/client", () => ({
+  createHarnessCustomProvider,
   listHarnessProviders,
   listKnownHarnessProviders,
-  removeHarnessProvider: vi.fn(),
+  removeHarnessProvider,
   restartHarnessDaemon: vi.fn(),
   setActiveHarnessProvider: vi.fn(),
   startHarnessToolhiveGateway,
@@ -58,11 +63,129 @@ const toolhiveRow = (reachable: boolean) => ({
 beforeEach(() => {
   runtime.connected = true;
   runtime.mode = "managed";
+  createHarnessCustomProvider.mockReset();
   listHarnessProviders.mockReset();
   listKnownHarnessProviders.mockReset();
+  removeHarnessProvider.mockReset();
   startHarnessToolhiveGateway.mockReset();
   listHarnessProviders.mockResolvedValue([toolhiveRow(false)]);
   listKnownHarnessProviders.mockResolvedValue([]);
+});
+
+/** A complete NON-secret custom definition (no key field exists). */
+const gateway = {
+  id: "my-gw",
+  apiFlavor: "openai-responses",
+  baseURL: "https://gw.example/v1",
+  defaultModel: "org/model",
+  authMethod: "api_key" as const,
+};
+
+describe("useProviderManagement — definition write and scoped removal", () => {
+  it("addCustomProvider posts the definition, re-reads, and points an api_key provider at the key step", async () => {
+    createHarnessCustomProvider.mockResolvedValue({
+      restarted: false,
+      restartError: "",
+    });
+    const { result } = renderHook(() => useProviderManagement());
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    let outcome: unknown;
+    await act(async () => {
+      outcome = await result.current.addCustomProvider(gateway);
+    });
+    expect(createHarnessCustomProvider).toHaveBeenCalledWith(gateway);
+    expect(listHarnessProviders).toHaveBeenCalledTimes(2);
+    expect(outcome).toEqual({ ok: true, restarted: false, error: undefined });
+    expect(result.current.notice).toMatch(
+      /Add its key to auth\.yaml, then restart the daemon/,
+    );
+    expect(result.current.error).toBeNull();
+    expect(result.current.busy).toBe("");
+  });
+
+  it("a keyless definition reports the controller's restart", async () => {
+    createHarnessCustomProvider.mockResolvedValue({
+      restarted: true,
+      restartError: "",
+    });
+    const { result } = renderHook(() => useProviderManagement());
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    let outcome: unknown;
+    await act(async () => {
+      outcome = await result.current.addCustomProvider({
+        ...gateway,
+        authMethod: "none",
+      });
+    });
+    expect(outcome).toEqual({ ok: true, restarted: true, error: undefined });
+    expect(result.current.notice).toMatch(/the daemon restarted with it/);
+  });
+
+  it("a saved definition whose restart failed keeps the save and surfaces the cause", async () => {
+    createHarnessCustomProvider.mockResolvedValue({
+      restarted: false,
+      restartError: "mecated exited before the ready file",
+    });
+    const { result } = renderHook(() => useProviderManagement());
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    let outcome: unknown;
+    await act(async () => {
+      outcome = await result.current.addCustomProvider({
+        ...gateway,
+        authMethod: "none",
+      });
+    });
+    expect(outcome).toEqual({
+      ok: true,
+      restarted: false,
+      error: "mecated exited before the ready file",
+    });
+    expect(result.current.notice).toMatch(/saved\./);
+    expect(result.current.error).toMatch(/failed to restart: mecated exited/);
+  });
+
+  it("a refused write (409: already configured / operator settings active) lands in error and returns ok:false", async () => {
+    createHarnessCustomProvider.mockRejectedValue(
+      new Error(
+        "Refused while an imported operator settings file is active: Studio does not write the settings file then.",
+      ),
+    );
+    const { result } = renderHook(() => useProviderManagement());
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    let outcome: unknown;
+    await act(async () => {
+      outcome = await result.current.addCustomProvider(gateway);
+    });
+    expect(outcome).toEqual({
+      ok: false,
+      restarted: false,
+      error: expect.stringMatching(/imported operator settings file/),
+    });
+    expect(result.current.error).toMatch(/imported operator settings file/);
+    expect(result.current.notice).toBeNull();
+    expect(result.current.busy).toBe("");
+  });
+
+  it("removeProvider passes the scope through and words the notice per scope", async () => {
+    removeHarnessProvider.mockResolvedValue(undefined);
+    const { result } = renderHook(() => useProviderManagement());
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+    await act(async () => {
+      await result.current.removeProvider("my-gw", "credential");
+    });
+    expect(removeHarnessProvider).toHaveBeenLastCalledWith(
+      "my-gw",
+      "credential",
+    );
+    expect(result.current.notice).toMatch(
+      /Key for my-gw removed from auth\.yaml; its definition stays/,
+    );
+    await act(async () => {
+      await result.current.removeProvider("my-gw");
+    });
+    expect(removeHarnessProvider).toHaveBeenLastCalledWith("my-gw", "all");
+    expect(result.current.notice).toMatch(/Provider my-gw removed/);
+  });
 });
 
 afterEach(() => {

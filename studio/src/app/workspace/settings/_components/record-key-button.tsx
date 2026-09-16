@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
   type BindingError,
+  bindingCaution,
   comboFromKeyboardEvent,
 } from "@/lib/shortcuts/keymap";
 import { keycaps } from "@/lib/shortcuts/registry";
@@ -17,7 +18,7 @@ export function bindingErrorMessage(error: BindingError): string {
     case "invalid":
       return "Not a valid shortcut";
     case "reserved":
-      return "Reserved by the browser";
+      return "Reserved by the browser — Studio may never receive it";
     case "collision":
       return `Already used by “${error.withDescription}”`;
   }
@@ -92,8 +93,17 @@ export function RecordKeyButton({
       const next = comboFromKeyboardEvent(e);
       if (!next) return;
       const error = onRecordRef.current(next);
-      if (error) toast.error(bindingErrorMessage(error));
-      else toast.success("Shortcut updated");
+      if (error) {
+        toast.error(bindingErrorMessage(error));
+      } else {
+        // Accepted — but a chord without ⌘ won't fire while typing, and a
+        // user moving a shortcut off a ⌘ chord should hear that now, not
+        // discover it in the composer.
+        const caution = bindingCaution(next);
+        if (caution)
+          toast.success("Shortcut updated", { description: caution });
+        else toast.success("Shortcut updated");
+      }
       setRecording(false);
     };
     window.addEventListener("keydown", onKeyDown, true);

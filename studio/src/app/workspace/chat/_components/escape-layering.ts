@@ -5,9 +5,10 @@
  * closer layer — a Radix dialog/menu, the composer's autocomplete — has
  * declined it, so this table is the fallback beneath them.
  *
- * `clear-draft` exists for the composer's draft guard (it decides whether a
- * typed-but-unsent draft should be cleared before a run is cancelled); the
- * chat view itself always passes `hasDraft: false`.
+ * `clear-draft` is the composer's double-Esc arm: with nothing else claiming
+ * Esc and an unsent draft in the field, the press is forwarded to the
+ * composer (`useComposerEscape` → `escapePress`), which runs
+ * `pressEscapeToClear` below — the first press arms, the second clears.
  */
 export type EscapeAction =
   | "clear-selection"
@@ -34,4 +35,30 @@ export function resolveEscapeAction(state: EscapeState): EscapeAction {
   if (state.isStreaming) return "cancel-run";
   if (state.hasDraft) return "clear-draft";
   return "none";
+}
+
+/**
+ * The double-Esc clear (the TUI's "esc esc clears the prompt"): a first Esc
+ * on an idle, non-empty composer ARMS the clear for `ESCAPE_ARM_MS`; a second
+ * Esc inside that window empties the composer; an Esc after the window has
+ * lapsed only re-arms. Pure — the caller owns the clock and the state, so the
+ * machine is testable without a keyboard.
+ */
+export interface EscapeArm {
+  /** Epoch ms until which a second Esc clears; 0 = disarmed. */
+  armedUntil: number;
+}
+
+export const ESCAPE_ARM_MS = 1500;
+
+export const DISARMED_ESCAPE: EscapeArm = { armedUntil: 0 };
+
+export function pressEscapeToClear(
+  state: EscapeArm,
+  now: number,
+): { state: EscapeArm; clear: boolean } {
+  if (state.armedUntil > 0 && now < state.armedUntil) {
+    return { state: DISARMED_ESCAPE, clear: true };
+  }
+  return { state: { armedUntil: now + ESCAPE_ARM_MS }, clear: false };
 }

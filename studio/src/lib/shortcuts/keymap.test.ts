@@ -2,6 +2,7 @@ import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { memoryStorage } from "@/test/memory-storage";
 import {
+  bindingCaution,
   comboFromKeyboardEvent,
   effectiveBindings,
   isRebindable,
@@ -108,7 +109,7 @@ describe("comboFromKeyboardEvent", () => {
 });
 
 describe("RESERVED_COMBOS", () => {
-  it("covers window/tab chords, clipboard/undo and the native focus keys", () => {
+  it("covers window/tab chords, clipboard/undo, the browser's own keys and the native focus keys", () => {
     for (const combo of [
       "mod+n",
       "mod+shift+n",
@@ -123,6 +124,34 @@ describe("RESERVED_COMBOS", () => {
       "mod+shift+z",
       "mod+a",
       "mod+f",
+      // Browser-owned chords a page may never see (or must not hijack):
+      // location, reload, print, bookmarks, history/hide, downloads, open,
+      // view-source, zoom, the ⌘1…⌘9 tab switches, clear-browsing-data.
+      "mod+l",
+      "mod+r",
+      "mod+shift+r",
+      "mod+p",
+      "mod+shift+p",
+      "mod+d",
+      "mod+shift+d",
+      "mod+h",
+      "mod+j",
+      "mod+o",
+      "mod+u",
+      "mod+=",
+      "mod+-",
+      "mod+0",
+      "mod+1",
+      "mod+9",
+      "mod+shift+delete",
+      // Function keys the browser answers itself, and the Alt navigation.
+      "f1",
+      "f5",
+      "f11",
+      "f12",
+      "alt+left",
+      "alt+right",
+      "alt+f4",
       "tab",
       "shift+tab",
       "enter",
@@ -130,6 +159,23 @@ describe("RESERVED_COMBOS", () => {
     ]) {
       expect(RESERVED_COMBOS.has(combo)).toBe(true);
     }
+  });
+
+  it("is spelled the way the recorder spells a live press, so a reserved key is refused as pressed", () => {
+    const recorded = (e: KeyboardEvent) => comboFromKeyboardEvent(e) ?? "";
+    expect(RESERVED_COMBOS.has(recorded(kb("1", { meta: true })))).toBe(true);
+    expect(
+      RESERVED_COMBOS.has(recorded(kb("Delete", { ctrl: true, shift: true }))),
+    ).toBe(true);
+    expect(RESERVED_COMBOS.has(recorded(kb("F12")))).toBe(true);
+    expect(RESERVED_COMBOS.has(recorded(kb("ArrowLeft", { alt: true })))).toBe(
+      true,
+    );
+    expect(RESERVED_COMBOS.has(recorded(kb("=", { ctrl: true })))).toBe(true);
+    // …while a free chord recorded the same way is not.
+    expect(
+      RESERVED_COMBOS.has(recorded(kb("K", { meta: true, shift: true }))),
+    ).toBe(false);
   });
 
   it("never reserves a rebindable registry default", () => {
@@ -339,12 +385,13 @@ describe("useShortcutBindings", () => {
     const { result } = renderHook(() => useShortcutBindings());
     act(() => {
       result.current.setBinding("chat.new", "mod+shift+k");
-      result.current.setBinding("chat.details", "mod+shift+d");
+      // ⌘⇧Y: free — ⌘⇧D is "bookmark all tabs" and reserved.
+      result.current.setBinding("chat.details", "mod+shift+y");
     });
     expect(Object.keys(stored())).toHaveLength(2);
 
     act(() => result.current.resetBinding("chat.new"));
-    expect(stored()).toEqual({ "chat.details": "mod+shift+d" });
+    expect(stored()).toEqual({ "chat.details": "mod+shift+y" });
     expect(
       result.current.bindings.find((b) => b.id === "chat.new")?.custom,
     ).toBe(false);
@@ -380,5 +427,32 @@ describe("useShortcutBindings", () => {
       custom: false,
     });
     expect(byId.get("search.open")?.effectiveCombo).toBe("mod+k");
+  });
+});
+
+describe("bindingCaution", () => {
+  it("flags a chord without ⌘ — the dispatcher suppresses it while typing", () => {
+    for (const combo of ["n", "shift+n", "alt+f5", "?", "down", "F3"]) {
+      expect(bindingCaution(combo)).toMatch(/Won't fire while typing/);
+    }
+    // The TUI refuses such a chord for a global action; Studio allows it and
+    // says so, since the while-typing suppression already protects typing.
+    expect(bindingCaution("n")).toMatch(/add ⌘ \(Ctrl\)/);
+  });
+
+  it("stays silent for ⌘ chords, Esc, the paging keys and a non-combo", () => {
+    for (const combo of [
+      "mod+shift+k",
+      "Cmd+K",
+      "Ctrl+,",
+      "esc",
+      "pageup",
+      "shift+pagedown",
+    ]) {
+      expect(bindingCaution(combo)).toBeNull();
+    }
+    // Not even a combo — validateBinding owns that verdict, not the caution.
+    expect(bindingCaution("")).toBeNull();
+    expect(bindingCaution("mod+shift")).toBeNull();
   });
 });

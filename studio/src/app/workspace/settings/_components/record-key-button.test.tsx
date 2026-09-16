@@ -106,8 +106,11 @@ describe("RecordKeyButton", () => {
     expect(bindingErrorMessage({ reason: "invalid" })).toBe(
       "Not a valid shortcut",
     );
+    // Preventability differs by browser and OS, so the message says "may",
+    // not "will": a chord that works on one machine and silently doesn't on
+    // another is exactly what the reserved set exists to refuse.
     expect(bindingErrorMessage({ reason: "reserved" })).toBe(
-      "Reserved by the browser",
+      "Reserved by the browser — Studio may never receive it",
     );
     expect(
       bindingErrorMessage({

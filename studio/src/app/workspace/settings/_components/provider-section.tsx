@@ -30,6 +30,7 @@ import type {
 import type { useProviderStatus } from "@/features/agent/hooks/use-provider-status";
 import type {
   HarnessProviderInfo,
+  HarnessProviderRemovalScope,
   HarnessProviderStatus,
 } from "@/lib/harness/client";
 import { cn } from "@/lib/utils";
@@ -91,12 +92,17 @@ function healthPresentation(
  * key input anywhere on this surface — not on add, not on test, not on
  * remove. The controller owns auth.yaml server-side: it reports names and
  * key-present booleans, key-tests a STORED key with one bounded outbound
- * call (only the verdict reaches the browser), and removes a block with a
- * conservative line-range cut. Adding a provider is a guided copy of a
- * snippet (a `<YOUR_KEY>` placeholder) into auth.yaml on the daemon's
- * machine, then a re-check + restart. Every mutation restarts the daemon and
- * confirms first; external mode disables all of it (the controller answers
- * 409 there anyway).
+ * call (only the verdict reaches the browser), and removes with a
+ * conservative line-range cut in the TUI's two scopes — the key alone
+ * ("Remove key (keep provider)", `providers logout`) or the whole provider
+ * (`providers remove`: the auth.yaml block plus a custom definition's
+ * settings.yaml entry; a built-in has no definition, so its item reads
+ * "Remove key"). Adding a built-in is a guided copy of a snippet (a
+ * `<YOUR_KEY>` placeholder) into auth.yaml on the daemon's machine, then a
+ * re-check + restart; a custom gateway's NON-secret definition is written
+ * by the controller (`providers add`), its key still by hand. Every mutation
+ * restarts the daemon and confirms first; external mode disables all of it
+ * (the controller answers 409 there anyway).
  */
 export function ProviderSection({
   runtime,
@@ -117,7 +123,12 @@ export function ProviderSection({
   providerStatus?: ProviderStatus;
 }) {
   const status = runtime.status;
-  const [removing, setRemoving] = useState<HarnessProviderInfo | null>(null);
+  // The pending removal awaiting confirmation: which row, and how much of
+  // it (the key line only, or the whole provider).
+  const [removing, setRemoving] = useState<{
+    row: HarnessProviderInfo;
+    scope: HarnessProviderRemovalScope;
+  } | null>(null);
   // Writes ONE provider's base-URL override into the saved daemon defaults
   // (the rest of the document is kept as saved). Managed mode only.
   const saveBaseURL =
@@ -147,8 +158,14 @@ export function ProviderSection({
   };
   const activateProvider = (kind: string) =>
     management.setActiveProvider(kind).then(refreshAll);
-  const removeProvider = (name: string) =>
-    management.removeProvider(name).then(refreshAll);
+  const removeProvider = (name: string, scope: HarnessProviderRemovalScope) =>
+    management.removeProvider(name, scope).then(refreshAll);
+  // The controller writes a custom DEFINITION only in managed mode (the
+  // dialog also withholds the button while an imported operator settings
+  // file is active — the controller would answer 409).
+  const saveDefinition = management.manageable
+    ? management.addCustomProvider
+    : undefined;
   // The controller's rows grouped for rendering: configured providers, the
   // ToolHive external row, and the unconfigured built-in kinds (which open
   // the Add dialog preselected via `addRequest`).
@@ -206,9 +223,10 @@ export function ProviderSection({
                     health={management.health[row.name]}
                     daemonStatus={daemonStatusFor(row.name)}
                     busy={management.busy}
+                    operatorSettings={status.operatorSettings}
                     onTest={() => void management.testKey(row.name)}
                     onActivate={() => void activateProvider(row.name)}
-                    onRemove={() => setRemoving(row)}
+                    onRemove={(scope) => setRemoving({ row, scope })}
                   />
                 ))}
                 {groups.toolhive ? (
@@ -252,6 +270,8 @@ export function ProviderSection({
                   savedBaseUrls={daemonDefaults?.defaults?.baseUrls}
                   saveBaseURL={saveBaseURL}
                   savingBaseURL={daemonDefaults?.busy ?? false}
+                  saveDefinition={saveDefinition}
+                  savingDefinition={management.busy.startsWith("add:")}
                   initialKind={addRequest.kind}
                   openSignal={addRequest.seq}
                 />
@@ -276,14 +296,30 @@ export function ProviderSection({
         {removing && (
           <AlertDialogContent>
             <AlertDialogHeader>
-              <AlertDialogTitle>Remove {removing.name}?</AlertDialogTitle>
+              <AlertDialogTitle>
+                {removing.scope === "credential"
+                  ? `Remove the key for ${removing.row.name}?`
+                  : isCustomRow(removing.row)
+                    ? `Remove ${removing.row.name}?`
+                    : `Remove the ${removing.row.name} key?`}
+              </AlertDialogTitle>
               <AlertDialogDescription>
-                Its block — key included — is removed from auth.yaml on the
-                daemon&rsquo;s machine, and the daemon restarts: in-flight runs
-                and session ids die with it.
-                {removing.name === status?.selectedProvider &&
+                {/* Name exactly what is cut: the api_key line only, the
+                    settings definition (plus the key block when there is
+                    one), or a built-in's whole auth.yaml block. */}
+                {removing.scope === "credential"
+                  ? "Only its api_key line is cut from auth.yaml on the daemon's machine — the provider definition stays in settings.yaml, so the row lists as configured with no key — and the daemon restarts: in-flight runs and session ids die with it."
+                  : isCustomRow(removing.row)
+                    ? `Its definition is removed from settings.yaml${
+                        removing.row.source.includes("auth.yaml")
+                          ? ", and its key block from auth.yaml,"
+                          : ""
+                      } on the daemon's machine, and the daemon restarts: in-flight runs and session ids die with it.`
+                    : "Its block — key included — is removed from auth.yaml on the daemon's machine, and the daemon restarts: in-flight runs and session ids die with it."}
+                {removing.row.name === status?.selectedProvider &&
                   " This is the SELECTED provider (MECATL_STUDIO_PROVIDER names it) — the daemon will fail to restart until the variable changes or the key returns."}
-                {groups.configured.length === 1 &&
+                {removing.scope === "all" &&
+                  groups.configured.length === 1 &&
                   " It is also the only configured provider: mecated will come back on the offline mock."}
               </AlertDialogDescription>
             </AlertDialogHeader>
@@ -291,11 +327,11 @@ export function ProviderSection({
               <AlertDialogCancel>Cancel</AlertDialogCancel>
               <AlertDialogAction
                 onClick={() => {
-                  void removeProvider(removing.name);
+                  void removeProvider(removing.row.name, removing.scope);
                   setRemoving(null);
                 }}
               >
-                Remove
+                {removing.scope === "credential" ? "Remove key" : "Remove"}
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
@@ -305,6 +341,16 @@ export function ProviderSection({
   );
 }
 
+/** A settings-defined custom gateway (ADR 0238): it has a DEFINITION the
+ *  controller can remove, distinct from its optional auth.yaml key block.
+ *  The source fallback covers an older controller with no class field. */
+function isCustomRow(row: HarnessProviderInfo): boolean {
+  return row.class === "custom" || row.source.includes("settings.yaml");
+}
+
+const OPERATOR_SETTINGS_REMOVAL_TITLE =
+  "Refused while an imported operator settings file is active — remove the providers: entry from that file by hand, then restart the daemon";
+
 /**
  * One provider row: health dot, mono name (a real anchor to its models
  * subpage), key-health label, model count, and the actions kebab. The
@@ -312,6 +358,14 @@ export function ProviderSection({
  * propagation. The built-in mock is deliberately NOT listed — it is the
  * daemon's silent fallback (and the Labs demo target), not a provider the
  * user manages here.
+ *
+ * Removal comes in the TUI's two scopes. A CUSTOM row offers "Remove key
+ * (keep provider)" — enabled only when an api_key is actually in its
+ * auth.yaml block — and "Remove provider" (definition + key block), which
+ * is withheld while an imported operator settings file is active because
+ * the controller refuses to edit the settings file then. A built-in has no
+ * definition, so its single destructive item is "Remove key": the whole
+ * auth.yaml block, disabled when there is no block to cut.
  */
 function ProviderRow({
   row,
@@ -321,6 +375,7 @@ function ProviderRow({
   health,
   daemonStatus = null,
   busy,
+  operatorSettings = false,
   onTest,
   onActivate,
   onRemove,
@@ -333,15 +388,25 @@ function ProviderRow({
   /** The daemon's own status row for this provider, when it surfaced one. */
   daemonStatus?: HarnessProviderStatus | null;
   busy: string;
+  /** An imported operator settings file is active (from /status). */
+  operatorSettings?: boolean;
   onTest: () => void;
   onActivate: () => void;
-  onRemove: () => void;
+  onRemove: (scope: HarnessProviderRemovalScope) => void;
 }) {
   const presentation = healthPresentation(row, health);
   const testing = busy === `test:${row.name}`;
   const activating = busy === `activate:${row.name}`;
   const removingBusy = busy === `remove:${row.name}`;
   const href = `/workspace/provider/${encodeURIComponent(row.name)}`;
+  const custom = isCustomRow(row);
+  const hasAuthBlock = row.source.includes("auth.yaml");
+  // An older controller sends no authMethod; an auth.yaml block then holds
+  // an api_key unless it is the oauth kind.
+  const keyed = row.authMethod
+    ? row.authMethod === "api_key"
+    : row.name !== "openai-codex";
+  const keyRemovable = keyed && row.keyPresent && hasAuthBlock;
 
   return (
     <li className="flex items-center gap-3 px-4 py-3">
@@ -418,18 +483,46 @@ function ProviderRow({
           <DropdownMenuItem asChild>
             <Link href={href}>View models</Link>
           </DropdownMenuItem>
-          <DropdownMenuItem
-            variant="destructive"
-            disabled={removingBusy || !row.source.includes("auth.yaml")}
-            title={
-              row.source.includes("auth.yaml")
-                ? undefined
-                : "No auth.yaml block to remove (configured from the environment or the settings file)"
-            }
-            onClick={onRemove}
-          >
-            {removingBusy ? "Removing…" : "Remove"}
-          </DropdownMenuItem>
+          {custom ? (
+            <>
+              <DropdownMenuItem
+                disabled={removingBusy || !keyRemovable}
+                title={
+                  keyRemovable
+                    ? "Cuts only the api_key line from auth.yaml; the definition stays"
+                    : "No api_key in auth.yaml to remove"
+                }
+                onClick={() => onRemove("credential")}
+              >
+                {removingBusy ? "Removing…" : "Remove key (keep provider)"}
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                variant="destructive"
+                disabled={removingBusy || operatorSettings}
+                title={
+                  operatorSettings
+                    ? OPERATOR_SETTINGS_REMOVAL_TITLE
+                    : "Removes the settings.yaml definition and any auth.yaml key block"
+                }
+                onClick={() => onRemove("all")}
+              >
+                {removingBusy ? "Removing…" : "Remove provider"}
+              </DropdownMenuItem>
+            </>
+          ) : (
+            <DropdownMenuItem
+              variant="destructive"
+              disabled={removingBusy || !hasAuthBlock}
+              title={
+                hasAuthBlock
+                  ? "Removes the whole auth.yaml block, key included"
+                  : "No auth.yaml block to remove (configured from the environment)"
+              }
+              onClick={() => onRemove("all")}
+            >
+              {removingBusy ? "Removing…" : "Remove key"}
+            </DropdownMenuItem>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
     </li>

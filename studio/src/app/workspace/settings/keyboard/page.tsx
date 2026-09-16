@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { useConfirm } from "@/hooks/use-confirm";
 import {
+  bindingCaution,
   isRebindable,
   type ShortcutBinding,
   useShortcutBindings,
@@ -18,6 +19,17 @@ function notRebindableNote(binding: ShortcutBinding): string {
   return binding.locked
     ? "Not rebindable — Esc stays the fallback beneath dialogs and menus."
     : "Not rebindable — handled by the composer or the conversation itself.";
+}
+
+/**
+ * The note beneath a remapped row: that the key is the user's own (the
+ * reference page's "custom" tag, in words) plus the standing caution when the
+ * chosen chord won't fire while typing. Default rows carry no note.
+ */
+function customNote(binding: ShortcutBinding): string | undefined {
+  if (!binding.custom) return undefined;
+  const caution = bindingCaution(binding.effectiveCombo);
+  return caution ? `Custom shortcut. ${caution}` : "Custom shortcut.";
 }
 
 /**
@@ -65,7 +77,11 @@ export default function KeyboardSettingsPage() {
                   .filter((b) => b.group === group)
                   .map((b) =>
                     isRebindable(b) ? (
-                      <SettingsRow key={b.id} label={b.description}>
+                      <SettingsRow
+                        key={b.id}
+                        label={b.description}
+                        description={customNote(b)}
+                      >
                         <RecordKeyButton
                           combo={b.effectiveCombo}
                           custom={b.custom}

@@ -198,6 +198,10 @@ test("external mode injects daemon auth server-side and disables local controls"
     ["providers/known", "GET"],
     ["providers/openrouter/test", "POST"],
     ["providers/openrouter", "DELETE"],
+    // The custom-definition write and the key-only (`providers logout`)
+    // removal edit the MANAGED daemon's settings.yaml / auth.yaml.
+    ["providers/custom", "POST"],
+    ["providers/openrouter?scope=credential", "DELETE"],
     ["restart", "POST"],
     // Starting the ToolHive proxy spawns a process on the MANAGED
     // controller's machine; the external deployment owns its own gateway.
@@ -228,6 +232,13 @@ test("external mode injects daemon auth server-side and disables local controls"
     // external owns them, read included.
     ["diagnostics-options", "GET"],
     ["diagnostics-options", "POST"],
+    // The runtime admin surface (the loopback --metrics-addr listener the
+    // MANAGED controller chose, its /metrics and /debug/vars relays) is the
+    // managed daemon's: an external deployment configures its own
+    // --metrics-addr / --perf-mcp, and Studio relays nothing for it.
+    ["perf", "GET"],
+    ["perf/metrics", "GET"],
+    ["perf/vars", "GET"],
     // The runtime settings (learning mode/sensitivity, the steer opt-out,
     // the soul flags) are spawn flags + a CLI-tier file of the MANAGED
     // daemon, and the soul baseline approval is one of its spawns: external
@@ -351,6 +362,11 @@ test("controller policy rejects CSRF and DNS-rebinding requests", () => {
     ["GET", "/providers/known"],
     ["POST", "/providers/openrouter/test"],
     ["DELETE", "/providers/openrouter"],
+    // Writing a provider definition into settings.yaml or cutting a key
+    // line from auth.yaml are file edits another loopback-origin page must
+    // never be able to make.
+    ["POST", "/providers/custom"],
+    ["DELETE", "/providers/openrouter?scope=credential"],
     ["POST", "/restart"],
     // Starting the ToolHive proxy spawns a process; another loopback-origin
     // page must never be able to do that.
@@ -366,6 +382,12 @@ test("controller policy rejects CSRF and DNS-rebinding requests", () => {
     // The retention write can switch on automatic deletion of the user's
     // own chats; another loopback-origin page must never reach it.
     ["POST", "/retention"],
+    // The runtime admin surface: /metrics can embed prompt text and file
+    // paths, and /perf names the loopback listener's port — another
+    // loopback-origin page must not read either.
+    ["GET", "/perf"],
+    ["GET", "/perf/metrics"],
+    ["GET", "/perf/vars"],
     // The daemon log carries model-influenced text (prompt fragments,
     // provider error bodies): another loopback-origin page must not read
     // or download it.

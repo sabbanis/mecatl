@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   APPROVAL_VERDICT_LABELS,
   approvalQueuePosition,
+  DEBUG_MCP_ASK_NOTE,
   enqueueAsk,
   formatVerdictNotice,
   isChildAsk,
+  isDebugMcpMutationAsk,
   resolveAsk,
   retractAsk,
   retractedAskNotice,
@@ -138,5 +140,57 @@ describe("approvalQueuePosition", () => {
     expect(approvalQueuePosition(0)).toBeUndefined();
     expect(approvalQueuePosition(1)).toEqual({ index: 1, total: 1 });
     expect(approvalQueuePosition(3)).toEqual({ index: 1, total: 3 });
+  });
+});
+
+describe("isDebugMcpMutationAsk", () => {
+  // The daemon's own wording (internal/adapter/sessiondebug/permission.go).
+  const DEBUG_REASON =
+    "debug MCP call requires fresh current operator approval";
+  const debugAsk: ApprovalRequest = {
+    ...ask("dbg-1:1:c1:r1", "mcp__github__create_issue"),
+    reason: DEBUG_REASON,
+    details: `${DEBUG_REASON}\n\ntitle: Flaky scheduler test`,
+  };
+
+  it("is true for a direct MCP tool with the daemon's debug reason in a debug session", () => {
+    expect(isDebugMcpMutationAsk(debugAsk, true)).toBe(true);
+  });
+
+  it("is false outside a debug session, whatever the ask says", () => {
+    expect(isDebugMcpMutationAsk(debugAsk, false)).toBe(false);
+  });
+
+  it("is false for a non-MCP tool even with the debug reason", () => {
+    expect(
+      isDebugMcpMutationAsk({ ...debugAsk, toolName: "InspectSession" }, true),
+    ).toBe(false);
+    expect(isDebugMcpMutationAsk({ ...debugAsk, toolName: "" }, true)).toBe(
+      false,
+    );
+  });
+
+  it("is false for an MCP tool asked for an ordinary reason", () => {
+    expect(
+      isDebugMcpMutationAsk(
+        {
+          ...debugAsk,
+          reason: "runs an MCP tool",
+          details: "runs an MCP tool",
+        },
+        true,
+      ),
+    ).toBe(false);
+  });
+
+  it("falls back to the joined details on a legacy ask with no reason tier", () => {
+    expect(
+      isDebugMcpMutationAsk({ ...debugAsk, reason: undefined }, true),
+    ).toBe(true);
+  });
+
+  it("names the one-call-at-a-time rule and that Always allow is not learned", () => {
+    expect(DEBUG_MCP_ASK_NOTE).toMatch(/one call at a time/);
+    expect(DEBUG_MCP_ASK_NOTE).toMatch(/Always allow is not learned/);
   });
 });

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useSyncExternalStore } from "react";
-import { SHORTCUTS, type ShortcutDef } from "./registry";
+import { comboFiresWhileTyping, SHORTCUTS, type ShortcutDef } from "./registry";
 
 /**
  * User-remappable shortcuts — the TUI's `keymap` setting, for the browser.
@@ -193,10 +193,22 @@ export function comboFromKeyboardEvent(e: KeyboardEvent): string | null {
  * - clipboard, undo, find, print, reload, location and save — every `mod`
  *   combo fires inside the composer too (`comboFiresWhileTyping`), so binding
  *   "New chat" to ⌘C would break copy app-wide with no way back but Settings;
+ * - bookmarks, history/hide, downloads, open, view-source, zoom and the
+ *   ⌘1…⌘9 tab switches (not preventable in Chrome), ⌘⇧⌫ (clear browsing
+ *   data — never reaches the page), ⌘⇧P (a private window in Firefox);
+ * - the bare function keys the browser answers itself (F1 help, F5 reload,
+ *   F6 toolbar focus, F11 fullscreen, F12 DevTools) and the Alt-chords
+ *   Windows/Linux use for back/forward, the address bar and closing;
  * - the native focus-movement and activation keys, which assistive
  *   technology and every focused control depend on.
+ *
+ * The wording the UI shows is deliberately "may never reach Studio": whether
+ * a given chord is preventable differs by browser and OS, and a shortcut that
+ * works on one machine and silently doesn't on another is worse than a
+ * refused recording.
  */
 export const RESERVED_COMBOS: ReadonlySet<string> = new Set([
+  // Window / tab lifecycle
   "mod+n",
   "mod+shift+n",
   "mod+t",
@@ -204,13 +216,20 @@ export const RESERVED_COMBOS: ReadonlySet<string> = new Set([
   "mod+w",
   "mod+shift+w",
   "mod+q",
+  "mod+m",
+  "mod+h",
+  "mod+shift+h",
   "mod+tab",
   "mod+shift+tab",
   "mod+pageup",
   "mod+pagedown",
+  ...Array.from({ length: 10 }, (_, i) => `mod+${i}`),
+  // DevTools (Windows/Linux)
   "mod+shift+i",
   "mod+shift+j",
   "mod+shift+c",
+  "mod+u",
+  // Clipboard / undo / select / find
   "mod+c",
   "mod+v",
   "mod+shift+v",
@@ -221,16 +240,61 @@ export const RESERVED_COMBOS: ReadonlySet<string> = new Set([
   "mod+a",
   "mod+f",
   "mod+g",
+  "mod+e",
+  // Print / reload / location / save / open / bookmarks / downloads / zoom
   "mod+p",
+  "mod+shift+p",
   "mod+r",
   "mod+shift+r",
   "mod+l",
   "mod+s",
+  "mod+o",
+  "mod+d",
+  "mod+shift+d",
+  "mod+shift+b",
+  "mod+j",
+  "mod+=",
+  "mod+-",
+  "mod+shift+delete",
+  // Function keys the browser answers itself
+  "f1",
+  "f5",
+  "shift+f5",
+  "mod+f5",
+  "f6",
+  "f11",
+  "f12",
+  // Alt chords: back/forward, address bar, close (Windows/Linux)
+  "alt+left",
+  "alt+right",
+  "alt+home",
+  "alt+d",
+  "alt+f4",
+  // Native focus movement and activation
   "tab",
   "shift+tab",
   "enter",
   "space",
 ]);
+
+/**
+ * A non-blocking caution for a combo that VALIDATES but has a catch worth
+ * knowing before relying on it. Today there is one: a combo without `mod` (a
+ * bare letter, symbol, arrow or function key) never fires while the caret is
+ * in a text field — the dispatcher keeps typing plain
+ * (`comboFiresWhileTyping`), which is the browser form of the TUI keymap's
+ * "global actions require a modified chord so normal typing remains
+ * available". The TUI refuses such a chord outright; Studio allows it, since
+ * the suppression already protects typing, but says so — otherwise a
+ * shortcut moved off a ⌘ chord would just stop working from the composer with
+ * no explanation. Null when there is nothing to flag (or the combo is not
+ * even valid — `validateBinding` owns that verdict).
+ */
+export function bindingCaution(combo: string): string | null {
+  const canonical = normalizeCombo(combo);
+  if (!canonical || comboFiresWhileTyping(canonical)) return null;
+  return "Won't fire while typing in a text field — add ⌘ (Ctrl) to use it from the composer too.";
+}
 
 /**
  * Whether `combo` may become the binding for `id`, given the live bindings.

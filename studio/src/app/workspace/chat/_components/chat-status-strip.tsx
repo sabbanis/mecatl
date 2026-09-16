@@ -72,6 +72,8 @@ export interface ChatStatusStripProps {
   pendingMode?: SessionPermissionMode | null;
   /** Reporting MCP servers bound to a debug session (`--debug-mcp`). */
   debugMcpServers?: string[];
+  /** The debugger MCP tools those servers mounted; each call asks anew. */
+  debugMcpTools?: string[];
   /** Selects another chat (the DEBUG target handle is a link to it). */
   onOpenSession?: (sessionId: string) => void;
 }
@@ -82,6 +84,11 @@ export const DEBUG_PRIVACY_NOTICE =
 
 export function debugServersNotice(servers: readonly string[]): string {
   return `Selected reporting servers available: ${servers.join(", ")}; availability does not authorize publication or sending.`;
+}
+
+/** The debugger MCP tools mounted from those servers — every call asks. */
+export function debugToolsNotice(tools: readonly string[]): string {
+  return `Debugger MCP tools (each call asks for approval; Always allow is not learned): ${tools.join(", ")}.`;
 }
 
 /**
@@ -120,6 +127,7 @@ export function ChatStatusStrip({
   mode,
   pendingMode = null,
   debugMcpServers = [],
+  debugMcpTools = [],
   onOpenSession,
 }: ChatStatusStripProps) {
   const runtime = useRuntimeStatus();
@@ -262,6 +270,7 @@ export function ChatStatusStrip({
           {debugMcpServers.length > 0 && (
             <> {debugServersNotice(debugMcpServers)}</>
           )}
+          {debugMcpTools.length > 0 && <> {debugToolsNotice(debugMcpTools)}</>}
         </div>
       )}
     </div>

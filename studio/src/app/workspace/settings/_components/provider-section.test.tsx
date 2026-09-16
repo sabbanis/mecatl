@@ -112,6 +112,7 @@ function fakeManagement(overrides: Partial<Management> = {}): Management {
     notice: null,
     reload: vi.fn(async () => []),
     testKey,
+    addCustomProvider: vi.fn(async () => ({ ok: true, restarted: false })),
     removeProvider,
     restartDaemon: vi.fn(async () => {}),
     startToolhive: vi.fn(async () => {}),
@@ -202,7 +203,7 @@ describe("provider management surface", () => {
     expect(document.querySelectorAll("input, textarea")).toHaveLength(0);
   });
 
-  it("confirms Remove with the restart warning before calling the controller", async () => {
+  it("confirms Remove key (a built-in's whole block) with the restart warning before calling the controller", async () => {
     const user = userEvent.setup();
     render(
       <ProviderSection runtime={fakeRuntime()} management={fakeManagement()} />,
@@ -210,15 +211,25 @@ describe("provider management surface", () => {
     await user.click(
       screen.getByRole("button", { name: "Actions for openrouter" }),
     );
-    await user.click(await screen.findByRole("menuitem", { name: "Remove" }));
+    // A built-in has no definition to keep, so its one destructive item is
+    // the whole-block cut — and there is no "keep provider" variant.
+    expect(
+      screen.queryByRole("menuitem", { name: "Remove key (keep provider)" }),
+    ).not.toBeInTheDocument();
+    await user.click(
+      await screen.findByRole("menuitem", { name: "Remove key" }),
+    );
     expect(removeProvider).not.toHaveBeenCalled();
     expect(
       await screen.findByText(/the daemon restarts: in-flight/),
     ).toBeInTheDocument();
+    expect(
+      screen.getByText(/key included — is removed from auth\.yaml/),
+    ).toBeInTheDocument();
     // The selected provider gets the extra MECATL_STUDIO_PROVIDER warning.
     expect(screen.getByText(/SELECTED provider/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Remove" }));
-    expect(removeProvider).toHaveBeenCalledWith("openrouter");
+    expect(removeProvider).toHaveBeenCalledWith("openrouter", "all");
   });
 
   it("disables Test key when the provider kind is not testable", async () => {
@@ -376,6 +387,130 @@ describe("provider management surface", () => {
  * `thv llm` delegation, the unconfigured kinds that open the Add dialog
  * preselected, and the zero-provider guidance. Still no key input anywhere.
  */
+/**
+ * Removal in the TUI's two scopes (`providers logout` vs `providers
+ * remove`): a custom row's kebab offers "Remove key (keep provider)" only
+ * when an api_key is actually in its auth.yaml block, plus "Remove provider"
+ * (withheld while an imported operator settings file is active — the
+ * controller refuses to edit the settings file then); the confirm names
+ * exactly what is cut and the scope is passed through to the hook.
+ */
+describe("provider removal scopes", () => {
+  const keyedCustom = parityRow({
+    name: "my-gw",
+    class: "custom",
+    authMethod: "api_key",
+    keyPresent: true,
+    source: "settings.yaml + auth.yaml",
+    testable: true,
+  });
+  const keylessCustom = parityRow({
+    name: "open-gw",
+    class: "custom",
+    authMethod: "none",
+    keyPresent: true,
+    source: "settings.yaml",
+    testable: false,
+    authState: "not required",
+  });
+
+  it("Remove key (keep provider) confirms the api_key-only cut and passes scope credential", async () => {
+    const user = userEvent.setup();
+    render(
+      <ProviderSection
+        runtime={fakeRuntime()}
+        management={fakeManagement({ providers: [keyedCustom] })}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Actions for my-gw" }));
+    await user.click(
+      await screen.findByRole("menuitem", {
+        name: "Remove key (keep provider)",
+      }),
+    );
+    expect(removeProvider).not.toHaveBeenCalled();
+    const description = await screen.findByText(
+      /Only its api_key line is cut from auth\.yaml/,
+    );
+    expect(description).toHaveTextContent(/definition stays in settings\.yaml/);
+    expect(description).toHaveTextContent(/the daemon restarts: in-flight/);
+    await user.click(screen.getByRole("button", { name: "Remove key" }));
+    expect(removeProvider).toHaveBeenCalledWith("my-gw", "credential");
+  });
+
+  it("Remove provider names the definition AND the key block, and passes scope all", async () => {
+    const user = userEvent.setup();
+    render(
+      <ProviderSection
+        runtime={fakeRuntime()}
+        management={fakeManagement({ providers: [keyedCustom] })}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Actions for my-gw" }));
+    await user.click(
+      await screen.findByRole("menuitem", { name: "Remove provider" }),
+    );
+    expect(
+      await screen.findByText(
+        /Its definition is removed from settings\.yaml, and its key block from auth\.yaml,/,
+      ),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+    expect(removeProvider).toHaveBeenCalledWith("my-gw", "all");
+  });
+
+  it("a keyless custom row disables the key-only cut; Remove provider names only the definition", async () => {
+    const user = userEvent.setup();
+    render(
+      <ProviderSection
+        runtime={fakeRuntime()}
+        management={fakeManagement({ providers: [keylessCustom] })}
+      />,
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Actions for open-gw" }),
+    );
+    expect(
+      await screen.findByRole("menuitem", {
+        name: "Remove key (keep provider)",
+      }),
+    ).toHaveAttribute("aria-disabled", "true");
+    await user.click(screen.getByRole("menuitem", { name: "Remove provider" }));
+    const description = await screen.findByText(
+      /Its definition is removed from settings\.yaml on the daemon/,
+    );
+    expect(description).not.toHaveTextContent(/key block/);
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+    expect(removeProvider).toHaveBeenCalledWith("open-gw", "all");
+  });
+
+  it("withholds Remove provider while an imported operator settings file is active, keeping the key-only cut", async () => {
+    const user = userEvent.setup();
+    render(
+      <ProviderSection
+        runtime={fakeRuntime({
+          status: { ...status, operatorSettings: true },
+        })}
+        management={fakeManagement({ providers: [keyedCustom] })}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Actions for my-gw" }));
+    const remove = await screen.findByRole("menuitem", {
+      name: "Remove provider",
+    });
+    expect(remove).toHaveAttribute("aria-disabled", "true");
+    expect(remove).toHaveAttribute(
+      "title",
+      expect.stringMatching(
+        /Refused while an imported operator settings file is active/,
+      ),
+    );
+    expect(
+      screen.getByRole("menuitem", { name: "Remove key (keep provider)" }),
+    ).not.toHaveAttribute("aria-disabled", "true");
+  });
+});
+
 describe("provider inventory parity", () => {
   it("renders class, env-shadowed auth state (amber, titled), default model and next step", () => {
     render(

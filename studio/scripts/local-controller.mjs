@@ -35,6 +35,13 @@ import {
   tailIsTruncated,
 } from "../src/lib/controller-log.mjs";
 import {
+  freeLoopbackPort,
+  isAddressInUse,
+  PERF_PROXY_TIMEOUT_MS,
+  perfProxyRoute,
+  perfStatus,
+} from "../src/lib/controller-perf.mjs";
+import {
   normalizePermissions,
   permissionArgs,
 } from "../src/lib/controller-permissions.mjs";
@@ -49,6 +56,7 @@ import {
   normalizeDaemonDefaults,
 } from "../src/lib/daemon-defaults.mjs";
 import {
+  CUSTOM_PROVIDER_API_FLAVORS,
   customProviderProbeURL,
   describeProviderRow,
   describeToolhiveRow,
@@ -57,6 +65,11 @@ import {
   listSettingsProviders,
   PROVIDER_ENV_KEYS,
   removeAuthFileProvider,
+  removeAuthFileProviderKey,
+  removeSettingsProvider,
+  upsertSettingsProvider,
+  validCustomProviderBaseURL,
+  validCustomProviderId,
   validProviderName,
 } from "../src/lib/provider-auth.mjs";
 import {
@@ -640,6 +653,11 @@ let permissionsConfig = normalizePermissions({});
 // own (info logging, product metrics on) with the admin listener explicitly
 // OFF and the controller mirroring mecated's stderr.
 let diagnosticsOptions = normalizeDiagnosticsOptions({});
+// The loopback admin/metrics address (`host:port`) the CURRENT child was
+// spawned with as `--metrics-addr`, or "" while the surface is off. The
+// controller CHOOSES it per spawn (mecated's ready file names only
+// http_address), so a restart may move it; GET /perf reports the live one.
+let adminAddr = "";
 // The SAVED storage document (POST /storage), or null while the env/built-in
 // defaults still apply — the same null-means-unsaved shape as
 // modelRouterConfig, so a failed restart can roll back to "no file".
@@ -1647,7 +1665,9 @@ async function stopChild() {
   await delay(250);
 }
 
-async function startMecatl(kind) {
+// `adminRetry` is internal: set on the ONE re-spawn startMecatl allows itself
+// when the probed admin port was taken before mecated could bind it.
+async function startMecatl(kind, { adminRetry = false } = {}) {
   if (restartTimer) {
     clearTimeout(restartTimer);
     restartTimer = null;
@@ -1717,14 +1737,26 @@ async function startMecatl(kind) {
   // raises the project-trust floor for trusted/auto/yolo, which is what the
   // Permissions page tells the user (controller-permissions.test.ts pins it).
   args.push(...permissionArgs(permissionsConfig, { trustOnce }));
-  // Observability flags: log level, the admin/metrics listener (EXPLICITLY
-  // off — `--metrics-addr=` — until a diagnostics card opens it; mecated's
-  // built-in default is a fixed loopback port two managed daemons would
-  // fight over), the goroutine alarm, product-metrics opt-out. `quiet` is
-  // controller-side (the stderr mirror below) and adds no flag. No admin
-  // address is chosen yet, so an enabled listener still yields the explicit
-  // off flag and never `--perf-mcp` (mecated refuses it without a listener).
-  args.push(...diagnosticsOptionArgs(diagnosticsOptions, { adminAddr: "" }));
+  // Observability flags: log level, the admin/metrics listener, the perf
+  // MCP mount, the goroutine alarm, product-metrics opt-out. `quiet` is
+  // controller-side (the stderr mirror below) and adds no flag.
+  //
+  // The admin listener is EXPLICIT in both directions. Off (the default)
+  // passes `--metrics-addr=`: mecated's built-in default is a FIXED
+  // loopback port (127.0.0.1:9090) that two managed daemons on one machine
+  // would fight over and that an "off" switch would otherwise silently
+  // leave open — so a managed daemon opens NO admin listener until the
+  // Performance card turns it on (anyone who scraped :9090 from a managed
+  // Studio daemon before this flag was passed enables the surface there).
+  // On, the controller CHOOSES the port: the ready file names only
+  // http_address, so a free loopback port is probed and released just
+  // before the spawn. Probe-to-bind is a real, rare race; the ready-wait
+  // below re-probes and re-spawns ONCE when the failed start says the
+  // address was taken.
+  adminAddr = diagnosticsOptions.admin.enabled
+    ? `127.0.0.1:${await freeLoopbackPort()}`
+    : "";
+  args.push(...diagnosticsOptionArgs(diagnosticsOptions, { adminAddr }));
   // Retention limits + sweep cadence as CLI flags (they out-rank a settings
   // file per field), but ONLY when no imported operator settings file is
   // active: that file's own retention: block, if any, then stands untouched
@@ -1820,6 +1852,16 @@ async function startMecatl(kind) {
   try {
     doc = await waitForReadyDoc(proc);
   } catch (error) {
+    // The admin port was probed, not kernel-assigned, so another process
+    // can take it between the probe and mecated's bind. One re-probe +
+    // re-spawn covers that race (the dead child's stderr is in startupLog);
+    // a second failure is a real startup error and surfaces as one.
+    if (adminAddr !== "" && !adminRetry && isAddressInUse(startupLog)) {
+      supervisorNote(
+        `[supervisor] admin listener ${adminAddr} was taken before mecated bound it; retrying on another port\n`,
+      );
+      return startMecatl(kind, { adminRetry: true });
+    }
     throw startupFailure(kind, error.message || "mecatl did not become ready");
   }
   mecatlBaseURL = `http://${doc.http_address}`;
@@ -2262,6 +2304,10 @@ const server = http.createServer(async (request, response) => {
         // quiet) plus the effective product-metrics verdict — read-only,
         // nothing secret-shaped. The posture stays under `permissions`.
         diagnosticsOptions: diagnosticsStatus(),
+        // The LIVE runtime admin surface: whether this child was spawned
+        // with the loopback admin listener, the origin the controller chose
+        // for it and the perf MCP mount — the same payload as GET /perf.
+        perf: perfStatus(diagnosticsOptions, adminAddr),
       }),
     );
     return;
@@ -2491,6 +2537,141 @@ const server = http.createServer(async (request, response) => {
     }
     return;
   }
+  // Custom provider DEFINITION write (`providers add`, ADR 0238): POST
+  // /providers/custom { id, apiFlavor, baseURL, defaultModel, authMethod }.
+  // The definition is NON-secret by construction — an id, a wire flavor, an
+  // HTTPS base URL, a model id and an auth METHOD — so the controller may
+  // write it into the user-global settings.yaml (the file mecated reads at
+  // the operator tier) the way it already writes the router/runtime files:
+  // the same line-range discipline as removal (provider-auth.mjs), temp-file
+  // + rename, the file's existing mode preserved (0600 when created). The
+  // api_key itself still travels by hand into auth.yaml (Studio rule 3):
+  // there is no key field here and none is accepted. Refused (409) while an
+  // imported operator-settings.yaml is active — that CLI-tier file wins the
+  // whole providers: section when it has one, and Studio never edits it —
+  // and when the id is already configured anywhere. A keyless
+  // (auth.method none) provider is complete on write, so the daemon
+  // restarts at once; an api_key one waits for the key (the UI's Restart).
+  // Checked BEFORE the /providers/{name} regex below, which would otherwise
+  // read "custom" as a provider name.
+  if (
+    request.method === "POST" &&
+    requestURL.pathname === "/providers/custom"
+  ) {
+    try {
+      if (
+        !String(request.headers["content-type"] || "")
+          .toLowerCase()
+          .startsWith("application/json")
+      )
+        throw Object.assign(
+          new Error("Content-Type must be application/json"),
+          { statusCode: 415 },
+        );
+      const input = JSON.parse(
+        (await readBody(request, 8192)).toString("utf8"),
+      );
+      const field = (key) =>
+        typeof input?.[key] === "string" ? input[key].trim() : "";
+      const definition = {
+        id: field("id"),
+        apiFlavor: field("apiFlavor"),
+        baseURL: field("baseURL"),
+        defaultModel: field("defaultModel"),
+        authMethod: field("authMethod"),
+      };
+      const invalid = (message) =>
+        Object.assign(new Error(message), { statusCode: 400 });
+      if (!validCustomProviderId(definition.id))
+        throw invalid(
+          "not a valid custom provider id (lower-case letters, digits and hyphens, starting with a letter; built-in names are reserved)",
+        );
+      if (!CUSTOM_PROVIDER_API_FLAVORS.includes(definition.apiFlavor))
+        throw invalid(
+          `apiFlavor must be one of ${CUSTOM_PROVIDER_API_FLAVORS.join(", ")}`,
+        );
+      if (!validCustomProviderBaseURL(definition.baseURL))
+        throw invalid(
+          "baseURL must be an HTTPS URL without credentials, query, or fragment",
+        );
+      if (definition.defaultModel === "")
+        throw invalid("defaultModel is required");
+      if (
+        definition.authMethod !== "api_key" &&
+        definition.authMethod !== "none"
+      )
+        throw invalid('authMethod must be "api_key" or "none"');
+      if (operatorSettingsActive)
+        throw Object.assign(
+          new Error(
+            "Refused while an imported operator settings file is active: Studio does not write the settings file then. Add the providers: entry to that file by hand, then restart the daemon.",
+          ),
+          { statusCode: 409 },
+        );
+      const configured = new Set([
+        ...(await listConfiguredProviderNames()),
+        ...(await listCustomSettingsProviders()).map((entry) => entry.name),
+      ]);
+      if (configured.has(definition.id))
+        throw Object.assign(
+          new Error(
+            `"${definition.id}" is already configured (an ${authFile} block or a providers: definition exists) — remove it first.`,
+          ),
+          { statusCode: 409 },
+        );
+      let currentText = "";
+      let mode = 0o600;
+      try {
+        currentText = await readFile(userSettingsFile, "utf8");
+        mode = (await stat(userSettingsFile)).mode & 0o777;
+      } catch (error) {
+        if (error?.code !== "ENOENT")
+          throw Object.assign(
+            new Error(
+              `Could not read ${userSettingsFile}: ${error.message || error}`,
+            ),
+            { statusCode: 500 },
+          );
+      }
+      const { text, written, reason } = upsertSettingsProvider(
+        currentText,
+        definition,
+      );
+      if (!written) throw Object.assign(new Error(reason), { statusCode: 409 });
+      await mkdir(dirname(userSettingsFile), { recursive: true });
+      const temp = `${userSettingsFile}.tmp`;
+      await writeFile(temp, text, { mode });
+      await rename(temp, userSettingsFile);
+      // The definition STANDS from here: a failed restart is reported on
+      // the success body (restarted:false + the cause), never as a failure
+      // of the write the operator asked for.
+      let restarted = false;
+      let restartError = "";
+      if (definition.authMethod === "none") {
+        try {
+          await queueRestart(() => startMecatl(preferredKind()));
+          restarted = true;
+        } catch (error) {
+          restartError = error.message || String(error);
+        }
+      }
+      response.end(
+        JSON.stringify({
+          ok: true,
+          restarted,
+          restartError,
+          settingsFile: userSettingsFile,
+        }),
+      );
+    } catch (error) {
+      jsonError(
+        response,
+        error.statusCode || 400,
+        error.message || "Could not save the provider definition",
+      );
+    }
+    return;
+  }
   // Key test + removal: POST /providers/{name}/test, DELETE /providers/{name}.
   const providerRoute = requestURL.pathname.match(
     /^\/providers\/([^/]+?)(?:\/(test))?$/,
@@ -2562,53 +2743,120 @@ const server = http.createServer(async (request, response) => {
       return;
     }
     if (request.method === "DELETE" && !action) {
-      // Removing a provider block is a conservative line-range cut of the
-      // named top-level key (provider-auth.mjs), written temp-file+rename
-      // with owner-only permissions, then a daemon restart so the change is
-      // real. Removing the LAST provider is allowed: mecated runs on the
-      // offline mock without providers (the state the user already sees on
-      // first run) — the UI's confirm warns, the controller doesn't refuse.
-      // If the restart then fails (e.g. MECATL_STUDIO_PROVIDER still names
-      // the removed provider), the removal STANDS — the operator asked for
-      // the credential to be gone — and the startup error surfaces both in
-      // this response and on /status.startupError.
+      // Two scopes, the TUI's two verbs. `?scope=credential` (`providers
+      // logout`) cuts ONLY the api_key line from the provider's auth.yaml
+      // block — the block and, for a custom provider, its settings.yaml
+      // definition stay, so it lists as "configured, no key". `?scope=all`
+      // (`providers remove`, the default) cuts the whole auth.yaml block
+      // AND a custom provider's definition from the user-global
+      // settings.yaml (a built-in has no definition, so only the block
+      // goes). Every cut is a conservative line-range edit
+      // (provider-auth.mjs) written temp-file+rename — owner-only for
+      // auth.yaml, the file's existing mode for settings.yaml — then a
+      // daemon restart so the change is real. A definition living in the
+      // ACTIVE imported operator-settings.yaml is refused (409) before
+      // anything is written: Studio never edits that file. Removing the
+      // LAST provider is allowed: mecated runs on the offline mock without
+      // providers (the state the user already sees on first run) — the
+      // UI's confirm warns, the controller doesn't refuse. If the restart
+      // then fails (e.g. MECATL_STUDIO_PROVIDER still names the removed
+      // provider), the removal STANDS — the operator asked for it to be
+      // gone — and the startup error surfaces both in this response and on
+      // /status.startupError. No value is ever logged or echoed.
+      const scope = requestURL.searchParams.get("scope") || "all";
+      if (scope !== "all" && scope !== "credential") {
+        jsonError(response, 400, 'scope must be "credential" or "all"');
+        return;
+      }
       try {
         await queueRestart(async () => {
           const current = await readAuthFileText();
-          const { text, removed } = removeAuthFileProvider(current, name);
-          if (!removed) {
-            // A settings-defined provider has no auth.yaml block to cut —
-            // its definition lives in an operator-owned settings file the
-            // controller never edits.
-            const settingsDefined = (await listCustomSettingsProviders()).some(
-              (definition) => definition.name === name,
-            );
-            throw Object.assign(
-              new Error(
-                settingsDefined
-                  ? `"${name}" is defined in the operator settings (providers: section), not ${authFile} — remove it from the settings file, then restart the daemon.`
-                  : `No provider named "${name}" in ${authFile}`,
-              ),
-              { statusCode: settingsDefined ? 409 : 404 },
-            );
+          let authText = current;
+          let authChanged = false;
+          if (scope === "credential") {
+            const cut = removeAuthFileProviderKey(current, name);
+            if (!cut.removed)
+              throw Object.assign(
+                new Error(
+                  `No api_key found for providers.${name} in ${authFile}`,
+                ),
+                { statusCode: 404 },
+              );
+            authText = cut.text;
+            authChanged = true;
+          } else {
+            if (operatorSettingsActive) {
+              let operatorText = "";
+              try {
+                operatorText = await readFile(operatorSettingsFile, "utf8");
+              } catch {
+                // Unreadable = it defines nothing; the user-global file is
+                // what mecated sees.
+              }
+              const owned = listSettingsProviders(operatorText);
+              if (owned?.some((entry) => entry.name === name))
+                throw Object.assign(
+                  new Error(
+                    `"${name}" is defined in the imported operator settings file (providers: section), which Studio never edits — refused while that file is active. Remove the entry there by hand, then restart the daemon.`,
+                  ),
+                  { statusCode: 409 },
+                );
+            }
+            const cut = removeAuthFileProvider(current, name);
+            authText = cut.text;
+            authChanged = cut.removed;
+            let settingsText = "";
+            let settingsMode = 0o600;
+            let hasSettings = false;
+            try {
+              settingsText = await readFile(userSettingsFile, "utf8");
+              settingsMode = (await stat(userSettingsFile)).mode & 0o777;
+              hasSettings = true;
+            } catch (error) {
+              if (error?.code !== "ENOENT")
+                throw Object.assign(
+                  new Error(
+                    `Could not read ${userSettingsFile}: ${error.message || error}`,
+                  ),
+                  { statusCode: 500 },
+                );
+            }
+            const definition = hasSettings
+              ? removeSettingsProvider(settingsText, name)
+              : { text: settingsText, removed: false };
+            if (!authChanged && !definition.removed)
+              throw Object.assign(
+                new Error(
+                  `No provider named "${name}" in ${authFile} or ${userSettingsFile}`,
+                ),
+                { statusCode: 404 },
+              );
+            if (definition.removed) {
+              const temp = `${userSettingsFile}.tmp`;
+              await writeFile(temp, definition.text, { mode: settingsMode });
+              await rename(temp, userSettingsFile);
+            }
           }
-          const temp = `${authFile}.tmp`;
-          await writeFile(temp, text, { mode: 0o600 });
-          await rename(temp, authFile);
+          if (authChanged) {
+            const temp = `${authFile}.tmp`;
+            await writeFile(temp, authText, { mode: 0o600 });
+            await rename(temp, authFile);
+          }
           // A DURABLE active-provider choice naming the removed provider
-          // would wedge every later boot on a fail-fast --default-provider,
-          // so it is cleared (and so is its saved model pair). The
-          // this-process override falls back too — unless
+          // would wedge every later boot on a fail-fast --default-provider
+          // (a keyed provider without its key is not startable either), so
+          // it is cleared — and, when the whole provider goes, so is its
+          // saved model pair (a credential-only cut keeps the pair with the
+          // definition). The this-process override falls back too — unless
           // MECATL_STUDIO_PROVIDER pins it, which the UI's confirm warns
           // about and which the operator must change by hand.
-          if (
-            daemonDefaults.activeProvider === name ||
-            Object.hasOwn(daemonDefaults.models, name)
-          ) {
+          const dropModels =
+            scope === "all" && Object.hasOwn(daemonDefaults.models, name);
+          if (daemonDefaults.activeProvider === name || dropModels) {
             const { [name]: _dropped, ...models } = daemonDefaults.models;
             applyDaemonDefaults({
               ...daemonDefaults,
-              models,
+              models: dropModels ? models : daemonDefaults.models,
               activeProvider:
                 daemonDefaults.activeProvider === name
                   ? null
@@ -2620,7 +2868,7 @@ const server = http.createServer(async (request, response) => {
             activeProviderOverride = null;
           await startMecatl(preferredKind());
         });
-        response.end(JSON.stringify({ ok: true, restarted: true }));
+        response.end(JSON.stringify({ ok: true, restarted: true, scope }));
       } catch (error) {
         jsonError(
           response,
@@ -3053,6 +3301,56 @@ const server = http.createServer(async (request, response) => {
         response,
         error.statusCode || 400,
         error.message || "Could not update the diagnostics options",
+      );
+    }
+    return;
+  }
+  // The runtime admin surface as the browser may see it (see
+  // src/lib/controller-perf.mjs). GET /perf reports whether THIS child was
+  // spawned with the loopback admin listener, the origin the controller
+  // chose for it, the paths mecated mounts there and the perf MCP /
+  // goroutine-alarm knobs. GET /perf/metrics and GET /perf/vars RELAY the
+  // two TEXT endpoints — the browser's CSP is connect-src 'self', so it can
+  // never fetch the loopback listener itself — verbatim (status + body,
+  // redirects never followed), 409 while the surface is off and 503 while
+  // no child is running. NEVER relayed: /debug/pprof and
+  // /debug/flightrecorder (binary, potentially large — the Performance card
+  // shows them as loopback links, which only resolve in a browser on the
+  // daemon's host). /metrics can embed prompt text and file paths, so all
+  // three routes need the server-set studio header (none is in the
+  // header-free read-only allowlist), and external mode answers 409 at the
+  // proxy — the deployment configures its own --metrics-addr / --perf-mcp.
+  if (request.method === "GET" && requestURL.pathname === "/perf") {
+    response.end(JSON.stringify(perfStatus(diagnosticsOptions, adminAddr)));
+    return;
+  }
+  const perfRelay =
+    request.method === "GET" ? perfProxyRoute(requestURL.pathname) : null;
+  if (perfRelay) {
+    if (adminAddr === "") {
+      jsonError(response, 409, "the runtime admin surface is off");
+      return;
+    }
+    if (!child) {
+      jsonError(response, 503, "mecated is not running");
+      return;
+    }
+    try {
+      const upstream = await fetch(`http://${adminAddr}${perfRelay.path}`, {
+        signal: AbortSignal.timeout(PERF_PROXY_TIMEOUT_MS),
+        redirect: "manual",
+      });
+      const body = Buffer.from(await upstream.arrayBuffer());
+      response.writeHead(upstream.status, {
+        "Content-Type": perfRelay.contentType,
+        "Cache-Control": "no-store",
+      });
+      response.end(body);
+    } catch (error) {
+      jsonError(
+        response,
+        502,
+        `mecated's admin listener did not answer: ${error.message || error}`,
       );
     }
     return;

@@ -556,7 +556,35 @@ export function removeAuthFileProvider(text, name) {
   const lines = source.split("\n");
   const providersAt = lines.findIndex((line) => providersHeader.test(line));
   if (providersAt === -1) return { text: source, removed: false };
+  const range = providerEntryRange(lines, providersAt, name);
+  if (!range) return { text: source, removed: false };
+  return {
+    text: [...lines.slice(0, range.start), ...lines.slice(range.end)].join(
+      "\n",
+    ),
+    removed: true,
+  };
+}
 
+/**
+ * The half-open line range `[start, end)` of the named 2-space-indented
+ * entry inside the top-level block whose header sits at `providersAt`, or
+ * null when no such entry exists. The ONE block walk every provider-file
+ * editor in this module shares (auth.yaml block removal, key-only removal,
+ * settings definition removal, the upsert's duplicate check), so their
+ * notion of "what belongs to this entry" cannot drift: the exact `<name>:`
+ * key line (`===` on the captured key, so "openai" never matches
+ * "openai-codex") plus every deeper-indented line, including nested blocks
+ * and indented comments; blank lines only when more of the entry follows
+ * them. A comment at the entry indent (or shallower) may document the NEXT
+ * entry, so it ends the range conservatively; so does a dedent.
+ *
+ * @param {string[]} lines
+ * @param {number} providersAt
+ * @param {string} name
+ * @returns {{start: number, end: number} | null}
+ */
+function providerEntryRange(lines, providersAt, name) {
   let start = -1;
   for (let i = providersAt + 1; i < lines.length; i += 1) {
     const line = lines[i];
@@ -567,13 +595,11 @@ export function removeAuthFileProvider(text, name) {
       break;
     }
   }
-  if (start === -1) return { text: source, removed: false };
+  if (start === -1) return null;
 
   // Walk the block: consume deeper-indented lines outright; consume a run of
   // blank lines ONLY when a deeper-indented line follows it (a blank gap
-  // before the next sibling or a dedent stays in the file). A comment at the
-  // providers indent (or shallower) may document the NEXT entry, so it ends
-  // the block conservatively.
+  // before the next sibling or a dedent stays in the file).
   let end = start + 1;
   while (end < lines.length) {
     const line = lines[end];
@@ -592,8 +618,215 @@ export function removeAuthFileProvider(text, name) {
     }
     break;
   }
+  return { start, end };
+}
+
+/**
+ * Removes ONLY the `api_key:` line from the named provider's auth.yaml block
+ * — the TUI's `providers logout` for an API-key provider — leaving the block
+ * (and any other line in it) in place, so the provider stays "configured,
+ * no key" and a settings-defined custom provider keeps its definition. An
+ * entry left with nothing under it is rewritten as `<name>: {}`, exactly as
+ * mecated's own `authfile` mutator does: a bare `<name>:` (a YAML null)
+ * fails its "auth provider entry must be a mapping" validation on the next
+ * read. The key line is matched inside the named block's range only, so a
+ * nested `api_key:` of any OTHER provider is never touched, and the removed
+ * value is never returned — only the file text with the line cut.
+ *
+ * @param {string} text
+ * @param {string} name
+ * @returns {{text: string, removed: boolean}}
+ */
+export function removeAuthFileProviderKey(text, name) {
+  const source = String(text ?? "");
+  const lines = source.split("\n");
+  const providersAt = lines.findIndex((line) => providersHeader.test(line));
+  if (providersAt === -1) return { text: source, removed: false };
+  const range = providerEntryRange(lines, providersAt, name);
+  if (!range) return { text: source, removed: false };
+  const keyLines = new Set();
+  for (let i = range.start + 1; i < range.end; i += 1) {
+    if (/^\s+api_key:/.test(lines[i])) keyLines.add(i);
+  }
+  if (keyLines.size === 0) return { text: source, removed: false };
+  const next = lines.filter((_, index) => !keyLines.has(index));
+  // Emptied (nothing but blanks/comments left under the key line)? Mirror
+  // the daemon's `{}` shape so the entry stays a mapping.
+  const remaining = range.end - keyLines.size;
+  const emptied = !next
+    .slice(range.start + 1, remaining)
+    .some((line) => /^\s+[^\s#]/.test(line));
+  if (emptied) {
+    next[range.start] = next[range.start].replace(
+      /^( {2}[A-Za-z0-9_-]+:)\s*(#.*)?$/,
+      (_match, key, comment) =>
+        comment ? `${key} {} ${comment}` : `${key} {}`,
+    );
+  }
+  return { text: next.join("\n"), removed: true };
+}
+
+// ── Settings.yaml `providers:` definition editors ───────────────────────────
+// The controller writes and removes the NON-secret custom-provider
+// definition (ADR 0238) in the user-global settings.yaml with the same
+// conservative line-range discipline as the auth.yaml editors above: exact
+// key match, byte-preserving everything outside the touched lines, never a
+// YAML parse. Neither editor can carry a credential — the definition has no
+// secret field, and the api_key still travels by hand into auth.yaml.
+
+/** A settings `providers:` header: bare, or with a trailing comment. */
+const settingsProvidersHeader = /^providers:\s*(#.*)?$/;
+/** The flow-style empty section (`providers: {}`), which the upsert turns
+ *  back into a block header before inserting. */
+const settingsProvidersEmptyFlow = /^providers:\s*\{\s*\}\s*(#.*)?$/;
+
+/**
+ * Inserts one custom provider definition into a settings.yaml text's
+ * top-level `providers:` section — appending a fresh `providers:` block at
+ * the end when the file has none — and returns the new text. The entry is
+ * the exact shape `customProviderSettingsSnippet` emits (2-space indent,
+ * URL/model YAML-quoted via `yamlQuote`, `auth.method` api_key or none), so
+ * what Studio writes is byte-for-byte what it used to ask the operator to
+ * paste. Placed after the section's last existing entry.
+ *
+ * REFUSES — `{ text: <unchanged>, written: false, reason }` — rather than
+ * guessing when: the definition itself is invalid (id grammar / reserved,
+ * flavor, HTTPS base URL, empty default model, auth method); an entry with
+ * that id already exists in the section; or the section is written in a
+ * form this line editor cannot extend safely (a `providers:` line carrying
+ * a value other than `{}`, or a block whose entries are not 2-space
+ * indented — inserting a 2-space entry into a 4-space block would break the
+ * whole file for mecated). Everything outside the inserted lines is
+ * preserved byte-for-byte, so `removeSettingsProvider` of the same id gives
+ * the original text back.
+ *
+ * @param {string} text
+ * @param {{id: string, baseURL: string, defaultModel: string,
+ *          apiFlavor: string, authMethod: string}} definition
+ * @returns {{text: string, written: boolean, reason?: string}}
+ */
+export function upsertSettingsProvider(text, definition) {
+  const source = String(text ?? "");
+  const refuse = (reason) => ({ text: source, written: false, reason });
+  const id = String(definition?.id ?? "").trim();
+  const baseURL = String(definition?.baseURL ?? "").trim();
+  const defaultModel = String(definition?.defaultModel ?? "").trim();
+  const apiFlavor = String(definition?.apiFlavor ?? "").trim();
+  const authMethod = definition?.authMethod;
+  if (!validCustomProviderId(id))
+    return refuse(
+      "not a valid custom provider id (lower-case letters, digits and hyphens, starting with a letter; built-in names are reserved)",
+    );
+  if (!CUSTOM_PROVIDER_API_FLAVORS.includes(apiFlavor))
+    return refuse(
+      `api_flavor must be one of ${CUSTOM_PROVIDER_API_FLAVORS.join(", ")}`,
+    );
+  if (!validCustomProviderBaseURL(baseURL))
+    return refuse(
+      "base_url must be an HTTPS URL without credentials, query, or fragment",
+    );
+  if (defaultModel === "") return refuse("default_model is required");
+  if (authMethod !== "api_key" && authMethod !== "none")
+    return refuse('auth.method must be "api_key" or "none"');
+
+  const entry = [
+    `  ${id}:`,
+    `    base_url: ${yamlQuote(baseURL)}`,
+    `    default_model: ${yamlQuote(defaultModel)}`,
+    `    api_flavor: ${apiFlavor}`,
+    "    auth:",
+    `      method: ${authMethod}`,
+  ];
+  const lines = source.split("\n");
+  const headerAt = lines.findIndex((line) => /^providers:/.test(line));
+  if (headerAt === -1) {
+    const prefix =
+      source === "" ? "" : source.endsWith("\n") ? source : `${source}\n`;
+    return {
+      text: `${prefix}providers:\n${entry.join("\n")}\n`,
+      written: true,
+    };
+  }
+  if (settingsProvidersEmptyFlow.test(lines[headerAt])) {
+    lines[headerAt] = lines[headerAt].replace(
+      settingsProvidersEmptyFlow,
+      (_match, comment) => (comment ? `providers: ${comment}` : "providers:"),
+    );
+  } else if (!settingsProvidersHeader.test(lines[headerAt])) {
+    return refuse(
+      "the file's providers: section is written in a form Studio cannot edit safely — add the entry by hand",
+    );
+  }
+  if (providerEntryRange(lines, headerAt, id))
+    return refuse(`"${id}" is already defined in the providers: section`);
+  // The insertion point: after the block's last indented line. Every entry
+  // key in the block must sit at the 2-space indent this editor writes.
+  let last = headerAt;
+  let seenKey = false;
+  for (let i = headerAt + 1; i < lines.length; i += 1) {
+    const line = lines[i];
+    if (line.trim() === "") continue;
+    if (/^\S/.test(line)) break; // dedented past the providers block
+    if (/^\t/.test(line))
+      return refuse(
+        "the file's providers: section is indented with tabs — add the entry by hand",
+      );
+    const indent = line.match(/^ +/)[0].length;
+    const comment = /^\s*#/.test(line);
+    // A 2-space line must be an entry key (or a comment); deeper content
+    // before any 2-space key means the block's keys sit at another indent.
+    const misplaced =
+      indent < 2 ||
+      (indent === 2 && !comment && !providerKeyLine.test(line)) ||
+      (indent > 2 && !comment && !seenKey);
+    if (misplaced)
+      return refuse(
+        "the file's providers: section is not indented the way Studio writes it — add the entry by hand",
+      );
+    if (indent === 2 && !comment) seenKey = true;
+    last = i;
+  }
   return {
-    text: [...lines.slice(0, start), ...lines.slice(end)].join("\n"),
-    removed: true,
+    text: [
+      ...lines.slice(0, last + 1),
+      ...entry,
+      ...lines.slice(last + 1),
+    ].join("\n"),
+    written: true,
   };
+}
+
+/**
+ * Removes the named custom provider's definition from a settings.yaml
+ * text's top-level `providers:` section — the entry's exact line range,
+ * found by the same walk as the auth.yaml editors — and, when that leaves
+ * the section with no entries at all, the `providers:` header too (an
+ * upsert into a file with no section appended both, so the round trip hands
+ * the original text back byte-for-byte). Comments left at the entry indent
+ * keep the header: they are the operator's notes, not Studio's to drop.
+ *
+ * @param {string} text
+ * @param {string} id
+ * @returns {{text: string, removed: boolean}}
+ */
+export function removeSettingsProvider(text, id) {
+  const source = String(text ?? "");
+  const lines = source.split("\n");
+  const headerAt = lines.findIndex((line) =>
+    settingsProvidersHeader.test(line),
+  );
+  if (headerAt === -1) return { text: source, removed: false };
+  const range = providerEntryRange(lines, headerAt, id);
+  if (!range) return { text: source, removed: false };
+  const next = [...lines.slice(0, range.start), ...lines.slice(range.end)];
+  let emptied = true;
+  for (let i = headerAt + 1; i < next.length; i += 1) {
+    const line = next[i];
+    if (line.trim() === "") continue;
+    if (/^\S/.test(line)) break;
+    emptied = false;
+    break;
+  }
+  if (emptied) next.splice(headerAt, 1);
+  return { text: next.join("\n"), removed: true };
 }

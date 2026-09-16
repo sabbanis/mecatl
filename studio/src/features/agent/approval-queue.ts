@@ -34,6 +34,45 @@ export function isChildAsk(askId: string, sessionId: string): boolean {
   return askId.includes(":") && !askId.startsWith(`${sessionId}:`);
 }
 
+/**
+ * The daemon's own wording on a debugger MCP ask
+ * (`internal/adapter/sessiondebug/permission.go`): the substring the TUI
+ * keys on (`approval_surface.go` isDebugMCPMutationAsk).
+ */
+const DEBUG_MCP_ASK_REASON = "debug MCP call";
+
+/**
+ * Classifies an ask as a debugger MCP call in an AI-debug session (ADR
+ * 0254), the TUI heuristic: the session is a debug session, the tool is a
+ * direct MCP tool (`mcp__<server>__<tool>`), and the daemon's reason says the
+ * call needs "fresh current operator approval". The daemon forces EVERY
+ * selected debugger MCP call through such an ask — even under auto/yolo or a
+ * configured allow — and its policy never learns Always allow for them, so
+ * the panel must not offer a grant that would silently not persist.
+ *
+ * Best-effort, like the TUI: it keys on the daemon's wording, and there is
+ * no daemon flag to gate on. A miss shows the generic card (Always allow
+ * offered; the daemon still re-asks) — never a wrong grant. A legacy ask
+ * with no `reason` tier falls back to `details`, which joins the reason with
+ * the flattened args.
+ */
+export function isDebugMcpMutationAsk(
+  ask: Pick<ApprovalRequest, "toolName" | "reason" | "details">,
+  debugSession: boolean,
+): boolean {
+  if (!debugSession) return false;
+  if (!(ask.toolName ?? "").startsWith("mcp__")) return false;
+  const reason = ask.reason ?? ask.details ?? "";
+  return reason.includes(DEBUG_MCP_ASK_REASON);
+}
+
+/**
+ * The card's hint on a debugger MCP ask: why there is no Always allow, and
+ * what a later call does. Shared by the inline card and the side panel.
+ */
+export const DEBUG_MCP_ASK_NOTE =
+  "Debugger MCP call — approved one call at a time. Always allow is not learned for these calls, so a later call asks again.";
+
 /** Quiet human framing for an approval verdict line. */
 export const APPROVAL_VERDICT_LABELS: Record<string, string> = {
   allow_once: "allowed once",

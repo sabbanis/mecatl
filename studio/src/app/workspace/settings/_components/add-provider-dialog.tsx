@@ -20,8 +20,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import type { CustomProviderSaveResult } from "@/features/agent/hooks/use-provider-management";
 import { BASE_URL_KINDS } from "@/lib/daemon-defaults.mjs";
 import type {
+  HarnessCustomProviderDefinition,
   HarnessProviderInfo,
   KnownHarnessProvider,
 } from "@/lib/harness/client";
@@ -57,9 +59,13 @@ const FLAVOR_LABELS: Record<string, string> = {
  * - a BUILT-IN kind copies one auth.yaml block;
  * - "Custom gateway" (ADR 0238: an operator-defined provider) collects the
  *   NON-secret definition — id, API flavor, base URL, default model, auth
- *   method — and emits the settings `providers:` block plus, for api_key
- *   auth, the auth.yaml key block. The id/URL/model fields hold identifiers,
- *   never credentials; the key still travels only by hand into auth.yaml.
+ *   method. With `saveDefinition` wired (managed mode, no imported operator
+ *   settings file) a primary "Save definition" has the controller WRITE the
+ *   settings `providers:` entry — the TUI's `providers add` — with the YAML
+ *   behind a "Show YAML" disclosure; otherwise the entry is a copyable
+ *   snippet as before. For api_key auth the auth.yaml key block follows
+ *   either way. The id/URL/model fields hold identifiers, never
+ *   credentials; the key still travels only by hand into auth.yaml.
  */
 export function AddProviderDialog({
   known,
@@ -73,11 +79,21 @@ export function AddProviderDialog({
   savedBaseUrls,
   saveBaseURL,
   savingBaseURL = false,
+  saveDefinition,
+  savingDefinition = false,
   initialKind = "",
   openSignal = 0,
 }: {
   known: KnownHarnessProvider[];
   configured: string[];
+  /** Writes a custom provider's NON-secret definition into the daemon's
+   *  user-global settings.yaml through the controller (RESTARTS the daemon
+   *  for a keyless provider). Managed mode only; absent = copy-only. Not
+   *  used while `operatorSettings` is true: the controller refuses then. */
+  saveDefinition?: (
+    definition: HarnessCustomProviderDefinition,
+  ) => Promise<CustomProviderSaveResult>;
+  savingDefinition?: boolean;
   /** The kind to PRESELECT when the dialog is opened from outside (an
    *  "Available kinds" row); "" starts on the chooser. Read only when
    *  `openSignal` changes. */
@@ -120,6 +136,11 @@ export function AddProviderDialog({
   const [customBaseURL, setCustomBaseURL] = useState("");
   const [customModel, setCustomModel] = useState("");
   const [customAuth, setCustomAuth] = useState<"api_key" | "none">("api_key");
+  // The controller's answer once the definition was WRITTEN (null until
+  // then); a refused write's reason renders in place, inside the dialog.
+  const [definitionSaved, setDefinitionSaved] =
+    useState<CustomProviderSaveResult | null>(null);
+  const [saveError, setSaveError] = useState("");
   // Optional base-URL override for a BUILT-IN provider (provider_overrides).
   const [overrideURL, setOverrideURL] = useState("");
   // Whether the override was just SAVED as a spawn flag (managed mode).
@@ -175,9 +196,39 @@ export function AddProviderDialog({
     setCustomBaseURL("");
     setCustomModel("");
     setCustomAuth("api_key");
+    setDefinitionSaved(null);
+    setSaveError("");
     setOverrideURL("");
     setOverrideSaved(false);
   }
+
+  // The controller writes the definition only in managed mode and never
+  // while an imported operator settings file is active (it answers 409:
+  // that CLI-tier file wins the whole providers: section when it has one),
+  // so the dialog falls back to the copyable snippet there.
+  const canSaveDefinition = Boolean(saveDefinition) && !operatorSettings;
+  const definition: HarnessCustomProviderDefinition = {
+    id: customId,
+    apiFlavor: customFlavor,
+    baseURL: customBaseURL.trim(),
+    defaultModel: customModel.trim(),
+    authMethod: customAuth,
+  };
+
+  async function saveCustomDefinition() {
+    if (!saveDefinition || !customComplete || customTaken) return;
+    setSaveError("");
+    const result = await saveDefinition(definition);
+    if (result.ok) {
+      setDefinitionSaved(result);
+      if (result.error) setSaveError(result.error);
+    } else {
+      setSaveError(result.error || "The controller refused the definition.");
+    }
+  }
+  // A keyless definition is complete on write and the daemon restarted
+  // with it: nothing left to re-check or restart.
+  const finished = definitionSaved?.restarted === true;
 
   function handleOpenChange(next: boolean) {
     setOpen(next);
@@ -216,8 +267,15 @@ export function AddProviderDialog({
     setChecking(true);
     try {
       const rows = await reload();
+      // A custom api_key provider lists as soon as its DEFINITION is saved,
+      // so "appeared" there means its key landed in auth.yaml too.
+      const needsKey = isCustom && customAuth === "api_key";
       setChecked(
-        rows.some((row) => row.name === targetName) ? "appeared" : "missing",
+        rows.some(
+          (row) => row.name === targetName && (!needsKey || row.keyPresent),
+        )
+          ? "appeared"
+          : "missing",
       );
     } finally {
       setChecking(false);
@@ -409,23 +467,86 @@ export function AddProviderDialog({
             {isCustom && customComplete && !customTaken && (
               <>
                 <div className="flex flex-col gap-3">
-                  <p className="text-sm font-medium">
-                    2. Add this to the operator settings
-                    <span className="block text-xs font-normal text-muted-foreground">
-                      Paste the block into{" "}
-                      <code className="font-mono">{settingsPath}</code> (merge
-                      it under an existing{" "}
-                      <code className="font-mono">providers:</code> key if one
-                      exists).
-                      {operatorSettings &&
-                        " You are running with an imported operator settings file — if it already defines a providers: section, add the entry THERE instead: that file wins the whole section."}
-                    </span>
-                  </p>
-                  <CopyableSnippet
-                    text={settingsSnippet}
-                    copied={copied === "settings"}
-                    onCopy={() => void copyText("settings", settingsSnippet)}
-                  />
+                  {canSaveDefinition && definitionSaved ? (
+                    <p className="text-sm">
+                      Definition saved ✓ to{" "}
+                      <code className="font-mono">{settingsPath}</code>
+                      {definitionSaved.restarted
+                        ? " — the daemon restarted with it."
+                        : "."}
+                    </p>
+                  ) : canSaveDefinition ? (
+                    <>
+                      <p className="text-sm font-medium">
+                        2. Save the definition
+                        <span className="block text-xs font-normal text-muted-foreground">
+                          Studio writes this{" "}
+                          <code className="font-mono">providers:</code> entry
+                          into <code className="font-mono">{settingsPath}</code>{" "}
+                          on the daemon&rsquo;s machine — it names the endpoint
+                          and wire protocol, never a key.{" "}
+                          {customAuth === "none"
+                            ? "The daemon restarts so the gateway is selectable right away."
+                            : "The daemon restarts after the key is in place (next step)."}
+                        </span>
+                      </p>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          size="sm"
+                          variant="action"
+                          className="rounded-full"
+                          disabled={savingDefinition}
+                          onClick={() => void saveCustomDefinition()}
+                        >
+                          {savingDefinition ? "Saving…" : "Save definition"}
+                        </Button>
+                        <details className="text-xs">
+                          <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+                            Show YAML
+                          </summary>
+                          <div className="pt-2">
+                            <CopyableSnippet
+                              text={settingsSnippet}
+                              copied={copied === "settings"}
+                              onCopy={() =>
+                                void copyText("settings", settingsSnippet)
+                              }
+                            />
+                          </div>
+                        </details>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-sm font-medium">
+                        2. Add this to the operator settings
+                        <span className="block text-xs font-normal text-muted-foreground">
+                          Paste the block into{" "}
+                          <code className="font-mono">{settingsPath}</code>{" "}
+                          (merge it under an existing{" "}
+                          <code className="font-mono">providers:</code> key if
+                          one exists).
+                          {operatorSettings &&
+                            " Studio does not write the settings file while an imported operator settings file is active — and if that file already defines a providers: section, add the entry THERE instead: it wins the whole section."}
+                        </span>
+                      </p>
+                      <CopyableSnippet
+                        text={settingsSnippet}
+                        copied={copied === "settings"}
+                        onCopy={() =>
+                          void copyText("settings", settingsSnippet)
+                        }
+                      />
+                    </>
+                  )}
+                  {saveError && (
+                    <p
+                      role="alert"
+                      className="whitespace-pre-wrap text-xs text-destructive"
+                    >
+                      {saveError}
+                    </p>
+                  )}
                 </div>
                 {customAuth === "api_key" && (
                   <div className="flex flex-col gap-3">
@@ -553,8 +674,15 @@ export function AddProviderDialog({
               </div>
             )}
 
+            {finished && (
+              <p className="text-sm">
+                <span className="font-medium">{targetLabel}</span> is ready —
+                set it as active from its row to use it.
+              </p>
+            )}
             {showSteps &&
               !customTaken &&
+              !finished &&
               (checked === "appeared" ? (
                 <p className="text-sm">
                   <span className="font-medium">{targetLabel}</span> found ✓ —
@@ -564,12 +692,16 @@ export function AddProviderDialog({
               ) : (
                 <p className="text-sm font-medium">
                   {isCustom && customAuth === "api_key" ? "4" : "3"}. Save the
-                  file{isCustom && customAuth === "api_key" ? "s" : ""}, then
-                  Re-check
+                  file
+                  {isCustom && customAuth === "api_key" && !definitionSaved
+                    ? "s"
+                    : ""}
+                  , then Re-check
                   {checked === "missing" && (
                     <span className="block text-xs font-normal text-muted-foreground">
-                      Not found yet — make sure the file is saved on the
-                      daemon&rsquo;s machine, then try again.
+                      {definitionSaved
+                        ? "The key is not in auth.yaml yet — save the file on the daemon's machine, then try again."
+                        : "Not found yet — make sure the file is saved on the daemon's machine, then try again."}
                     </span>
                   )}
                 </p>
@@ -583,17 +715,20 @@ export function AddProviderDialog({
             >
               Done
             </Button>
-            {showSteps && !customTaken && checked !== "appeared" && (
-              <Button
-                variant="action"
-                className="rounded-full"
-                disabled={checking}
-                onClick={() => void recheck()}
-              >
-                {checking ? "Checking…" : "Re-check"}
-              </Button>
-            )}
-            {showSteps && checked === "appeared" && (
+            {showSteps &&
+              !customTaken &&
+              !finished &&
+              checked !== "appeared" && (
+                <Button
+                  variant="action"
+                  className="rounded-full"
+                  disabled={checking}
+                  onClick={() => void recheck()}
+                >
+                  {checking ? "Checking…" : "Re-check"}
+                </Button>
+              )}
+            {showSteps && !finished && checked === "appeared" && (
               <Button
                 variant="action"
                 disabled={restarting}

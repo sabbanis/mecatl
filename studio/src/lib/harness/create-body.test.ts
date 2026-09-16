@@ -12,6 +12,7 @@ import {
   createThreadHarnessSession,
   forkHarnessSessionToModel,
   forkHarnessSessionToSelection,
+  forkHarnessSessionToWorktree,
   ThreadSourceBusyError,
 } from "./sessions";
 
@@ -37,6 +38,8 @@ const FORK_ALLOWED = new Set([
   "model_id",
   "provider_id",
   "reasoning_effort",
+  // The opaque ListWorktrees selector (ADR 0291) — never a path.
+  "worktree_selector",
 ]);
 
 /** The debug create (ADR 0254) is pinned as its OWN exact set. */
@@ -212,6 +215,27 @@ describe("session create bodies stay inside the daemon's strict field set", () =
       "Title",
     );
     expect(captured.body()).toEqual({ title: "Title" });
+  });
+
+  it("a worktree fork carries the title and the opaque selector as worktree_selector", async () => {
+    const captured = captureCreates();
+    await forkHarnessSessionToWorktree("src-1", "Title", "wt-feature");
+    expect(captured.requests[0].path).toBe("/v1/sessions/src-1/fork");
+    const keys = Object.keys(captured.body());
+    expect(keys.every((k) => FORK_ALLOWED.has(k))).toBe(true);
+    // Never a path, never a workspace key: the selector is the ONLY
+    // placement-shaped field a browser may send (ADR 0291).
+    expect(Object.hasOwn(captured.body(), "workspace")).toBe(false);
+    expect(captured.body()).toEqual({
+      title: "Title",
+      worktree_selector: "wt-feature",
+    });
+  });
+
+  it("a fork with no worktree pick omits worktree_selector (inherits the source placement)", async () => {
+    const captured = captureCreates();
+    await forkHarnessSessionToModel("src-1", null, "Title");
+    expect(Object.hasOwn(captured.body(), "worktree_selector")).toBe(false);
   });
 
   it("a busy fork source (412) surfaces as ThreadSourceBusyError", async () => {

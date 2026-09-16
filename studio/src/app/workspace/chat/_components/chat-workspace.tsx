@@ -31,12 +31,14 @@ import type {
 import { useDeliveryFollow } from "@/features/agent/hooks/use-delivery-follow";
 import { useHarnessRuntime } from "@/features/agent/hooks/use-harness-runtime";
 import { useSessionMode } from "@/features/agent/hooks/use-session-mode";
+import { useWorkspaceEnrollment } from "@/features/agent/hooks/use-workspace-enrollment";
 import {
   isMockTourSession,
   MOCK_TOUR_MESSAGES,
   MOCK_TOUR_SESSION,
 } from "@/features/agent/mock-tour";
 import { useRuntimeStatus } from "@/features/agent/runtime-status";
+import { useBeforeUnloadGuard } from "@/hooks/use-beforeunload-guard";
 import { useConfirm } from "@/hooks/use-confirm";
 import { useIsCompact, useIsMobile } from "@/hooks/use-mobile";
 import { useNavReopenSidebar } from "@/hooks/use-nav-reopen-sidebar";
@@ -79,6 +81,7 @@ import {
   clearConversationGate,
   NOTHING_TO_CLEAR,
 } from "./clear-conversation";
+import { useDebugSessionDialog } from "./debug-session-dialog";
 import { DraftGreeting } from "./draft-greeting";
 import {
   AgentList,
@@ -89,6 +92,8 @@ import {
 } from "./session-sidebar";
 import { useBuiltinSlashCommands } from "./use-builtin-slash-commands";
 import { useClearConversation } from "./use-clear-conversation";
+import { useComposerEscape } from "./use-composer-escape";
+import { useWorktreeSwitch } from "./use-worktree-switch";
 
 /** Route for a chat, or the base (a new draft) when none is selected. */
 const chatHref = (id?: string) =>
@@ -277,6 +282,7 @@ function DraftView({
   onLocalCommand,
   builtinGates,
   mediaCapabilities,
+  onDraftChange,
 }: {
   onSend: (content: string, files?: File[]) => void;
   seed: string | null;
@@ -312,7 +318,26 @@ function DraftView({
   builtinGates?: BuiltinGates;
   /** The deployment's media modalities — a draft has no session detail yet. */
   mediaCapabilities?: MediaCapabilities;
+  /** Fires when the composer's "holds unsent text" state flips (and `false`
+      when it unmounts); the workspace arms its leave guard from it. */
+  onDraftChange?: (hasText: boolean) => void;
 }) {
+  // The draft view has no panel, selection or run, so Esc goes straight to
+  // the composer's double-Esc clear once there is text to clear. Only one of
+  // ChatView / DraftView is mounted, so close.esc has a single owner.
+  const [hasDraft, setHasDraft] = useState(false);
+  const handleDraftChange = useCallback(
+    (hasText: boolean) => {
+      setHasDraft(hasText);
+      onDraftChange?.(hasText);
+    },
+    [onDraftChange],
+  );
+  const { escapePress } = useComposerEscape({
+    hasDraft,
+    panelOpen: false,
+    isStreaming: false,
+  });
   return (
     <div className="flex h-full flex-col">
       {/* Same header bar as an open chat, so a draft doesn't lose the title
@@ -358,6 +383,9 @@ function DraftView({
               onSend={onSend}
               initialText={seed}
               onInitialTextConsumed={onSeedConsumed}
+              draftKey="new"
+              escapePress={escapePress}
+              onDraftChange={handleDraftChange}
               placeholder="Start a new chat..."
               mobileDocked
               mode={mode}
@@ -657,6 +685,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     pendingSteers,
     cancelPendingSteers,
     cancelChat,
+    drivingRun,
     cancelChild,
     pendingAuthorization,
     openAuthorization,
@@ -691,6 +720,15 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     void cancelChat();
   }, [cancelChat]);
 
+  // The leave guard (the TUI's two-step quit, as the browser's confirm): an
+  // unsent draft in whichever composer is mounted (lifted via onDraftChange),
+  // or a run THIS tab drives — the `POST /prompt` stream ends its run on
+  // disconnect (the CLAUDE.md residual). A watched run driven elsewhere
+  // survives the tab, so it never arms the guard; cancel-on-exit is
+  // deliberately not implemented (runs outlive the client, ADR 0250).
+  const [hasDraft, setHasDraft] = useState(false);
+  useBeforeUnloadGuard(hasDraft || (drivingRun && isStreaming));
+
   // The daemon's operator-enabled capabilities (A3 caches /v1/compatibility).
   const { serverCapabilities } = useRuntimeStatus();
 
@@ -707,6 +745,18 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   const debugChat = Boolean(
     sessionDetail?.debugTargetSessionId ||
       sessions.find((s) => s.id === selectedId)?.debugTargetSessionId,
+  );
+
+  // Workspace-services enrollment (the TUI's /tools-connect notice): gated on
+  // the daemon's `workspace_enrollment` capability inside the hook, hidden on
+  // the mock tour and on an AI-debug chat. The daemon accepts the controls
+  // only while the session is idle, so a run in flight disables them.
+  const enrollment = useWorkspaceEnrollment(
+    isMockSelected ? null : selectedId || null,
+    {
+      idle: !isStreaming && (status === "idle" || status === "error"),
+      debugSession: debugChat,
+    },
   );
 
   // Manual compaction (B1.2-B1.4): gated on the daemon's manual_compaction
@@ -845,31 +895,37 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   // evidence (secrets included) to the model, even though the target itself
   // can never be modified. Gated on the daemon's session_debug capability.
   const debugSupported = serverCapabilities.session_debug === true;
-  const handleDebugSession = useCallback(
-    async (id: string) => {
-      // The Labs mock row is local demo content — never a daemon target.
-      if (isMockTourSession(id)) return;
-      const ok = await confirm({
-        title: "Debug with AI",
-        description:
-          "This creates a separate diagnostic chat bound to this session. " +
-          "The session's stored transcript and event evidence — including " +
-          "anything sensitive it contains — will be sent to the model as " +
-          "debugging evidence. The session itself is read-only to the " +
-          "debugger and is never modified.",
-        confirmText: "Send evidence & debug",
-      });
-      if (!ok) return;
+  // The consent dialog (DebugSessionDialog) also offers the daemon's
+  // configured MCP servers when its debug_mcp capability is on — the TUI's
+  // `--debug-mcp NAME`: every call the debugger makes on them still asks for
+  // approval one call at a time, and Always allow is never learned.
+  const createDebugSession = useCallback(
+    async (id: string, mcpServers: string[]) => {
       try {
-        const debugId = await createHarnessDebugSession(id);
+        const debugId = await createHarnessDebugSession(id, { mcpServers });
         await refreshSessions();
         handleSelectSession(debugId);
-        toast.success("Debug session created");
+        toast.success(
+          mcpServers.length > 0
+            ? `Debug session created with MCP: ${mcpServers.join(", ")}`
+            : "Debug session created",
+        );
       } catch (caught) {
         toast.error(caught instanceof Error ? caught.message : String(caught));
       }
     },
-    [confirm, refreshSessions, handleSelectSession],
+    [refreshSessions, handleSelectSession],
+  );
+  const { requestDebugSession, debugSessionDialog } = useDebugSessionDialog({
+    onCreate: (id, mcpServers) => void createDebugSession(id, mcpServers),
+  });
+  const handleDebugSession = useCallback(
+    (id: string) => {
+      // The Labs mock row is local demo content — never a daemon target.
+      if (isMockTourSession(id)) return;
+      requestDebugSession(id);
+    },
+    [requestDebugSession],
   );
 
   const sessionActions: SessionActions = useMemo(
@@ -1010,11 +1066,28 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     else toast.info(NOTHING_TO_CLEAR);
   });
 
+  // Switch worktree (the TUI's /worktrees picker): a clear (default) or a
+  // fork of this chat rooted at a sibling git worktree the daemon lists by
+  // opaque selector (ADR 0291); the UI moves to the new chat once the daemon
+  // answered. Offered only when the daemon advertises `worktrees` and the
+  // row may mint a successor; never on a draft, the mock tour or a debug chat.
+  const { openWorktreePicker, worktreePickerDialog } = useWorktreeSwitch({
+    session:
+      isMockSelected || debugChat || !selectedSession ? null : selectedSession,
+    supported: serverCapabilities.worktrees === true,
+    onSwitched: async (newId) => {
+      await refreshSessions();
+      handleSelectSession(newId);
+    },
+  });
+
   const dialogs = (
     <>
       {ConfirmDialog}
       {PromptDialog}
       {sessionDetailsDialog}
+      {debugSessionDialog}
+      {worktreePickerDialog}
     </>
   );
 
@@ -1169,6 +1242,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
           pendingSteers={steerSupported ? pendingSteers : undefined}
           onRetractSteers={steerSupported ? cancelPendingSteers : undefined}
           onCancelRun={handleCancelRun}
+          onDraftChange={setHasDraft}
           onCompact={compactSupported && !debugChat ? handleCompact : undefined}
           // Clear conversation: the daemon's row verdict gates the item; the
           // composer is blocked while the successor handoff is in flight.
@@ -1185,6 +1259,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
                 : undefined
           }
           readOnlyPlaceholder={clearing ? CLEARING_PLACEHOLDER : undefined}
+          onSwitchWorktree={openWorktreePicker}
           onLocalCommand={handleSlashBuiltin}
           builtinGates={builtinGates}
           // The Agents panel's model; Teams is gated on the daemon's `teams`
@@ -1193,6 +1268,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
           teamsSupported={serverCapabilities.teams === true}
           mediaCapabilities={mediaCapabilities}
           onCancelChild={cancelChild}
+          enrollment={enrollment}
           contextInfo={
             resolvedModel
               ? {
@@ -1240,6 +1316,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
           providerRoute={providerRoute}
           modelResolution={sessionDetailStatus}
           debugMcpServers={sessionDetail?.debugMcpServers}
+          debugMcpTools={sessionDetail?.debugMcpTools}
           models={modelOptions}
           autoModelLabel={routingEnabled ? "Auto-routed" : "Default model"}
           onSwitchModel={debugChat ? undefined : handleSwitchModel}
@@ -1284,6 +1361,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
             onModeChange={changeMode}
             onLocalCommand={handleSlashBuiltin}
             builtinGates={builtinGates}
+            onDraftChange={setHasDraft}
           />
         )}
       </div>
@@ -1319,6 +1397,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
             onModeChange={changeMode}
             onLocalCommand={handleSlashBuiltin}
             builtinGates={builtinGates}
+            onDraftChange={setHasDraft}
           />
         )}
       </div>

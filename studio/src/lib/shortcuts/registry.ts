@@ -237,6 +237,17 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     group: "Composer",
     fixed: true,
   },
+  // The double-Esc clear (the TUI's "esc esc"): with nothing else claiming
+  // Esc — no selection, no panel, no run — a first press arms, a second
+  // within 1.5 s empties the draft. The press rides close.esc and is
+  // forwarded to the composer, so this row is documentation-only.
+  {
+    id: "composer.clearDraft",
+    combo: "esc",
+    description: "Press twice on an idle draft to clear it",
+    group: "Composer",
+    fixed: true,
+  },
   {
     id: "composer.slash",
     combo: "/",
@@ -249,6 +260,17 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     id: "composer.mention",
     combo: "@",
     description: "Mention an agent, or attach a file",
+    group: "Composer",
+    fixed: true,
+  },
+  // Paste (the TUI's ctrl+v). The browser owns ⌘V (it is in the keymap's
+  // RESERVED_COMBOS, so nothing can be bound over it); the composer's own
+  // paste listener decides what the clipboard becomes. Documentation-only.
+  {
+    id: "composer.paste",
+    combo: "mod+v",
+    description:
+      "Paste — a clipboard image attaches; a large text paste is staged as [Pasted text #N] and expands on send",
     group: "Composer",
     fixed: true,
   },

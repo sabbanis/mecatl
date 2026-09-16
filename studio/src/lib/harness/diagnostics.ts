@@ -247,3 +247,99 @@ export async function fetchHarnessDaemonLog(
       typeof body.startupError === "string" ? body.startupError : "",
   };
 }
+
+/**
+ * The managed daemon's RUNTIME ADMIN SURFACE as the controller reports it
+ * (`GET /perf`): Studio's analogue of mecatui's embedded-server `--perf`
+ * family. The listener is loopback-only and its port is the controller's
+ * choice per spawn (mecated's ready file names only the HTTP address), so
+ * the origin here is the LIVE one and may move on a restart. The browser
+ * never fetches it directly (CSP `connect-src 'self'`): the two text
+ * endpoints come through `fetchHarnessPerfMetrics` / `PERF_VARS_URL`, and
+ * the binary pprof / flight-recorder endpoints are links that only resolve
+ * in a browser on the daemon's host.
+ */
+export interface HarnessPerfStatus {
+  /** Whether THIS child was spawned with the admin listener (`--metrics-addr`). */
+  enabled: boolean;
+  /** `http://127.0.0.1:<port>` while enabled, else "". */
+  adminUrl: string;
+  /** The paths mecated mounts there (`/metrics`, `/debug/pprof`,
+   *  `/debug/vars`, `/debug/flightrecorder`, plus `/mcp` with the perf MCP). */
+  paths: string[];
+  /** Whether the read-only perf MCP server is mounted at `/mcp` (`--perf-mcp`). */
+  perfMcp: boolean;
+  /** `--goroutine-warn-threshold`; 0 = the alarm is off. */
+  goroutineWarnThreshold: number;
+  /** How often the alarm samples (mecated's `--goroutine-warn-interval`). */
+  goroutineWarnIntervalSeconds: number;
+}
+
+/** Decodes the controller's `GET /perf` payload; null when it is not one. */
+export function readPerfStatus(raw: unknown): HarnessPerfStatus | null {
+  if (!raw || typeof raw !== "object") return null;
+  const body = raw as {
+    enabled?: unknown;
+    adminUrl?: unknown;
+    paths?: unknown;
+    perfMcp?: unknown;
+    goroutineWarnThreshold?: unknown;
+    goroutineWarnIntervalSeconds?: unknown;
+  };
+  if (typeof body.enabled !== "boolean") return null;
+  const threshold = Number(body.goroutineWarnThreshold ?? 0);
+  const interval = Number(body.goroutineWarnIntervalSeconds ?? 0);
+  return {
+    enabled: body.enabled,
+    adminUrl: typeof body.adminUrl === "string" ? body.adminUrl : "",
+    paths: Array.isArray(body.paths)
+      ? body.paths.filter((path): path is string => typeof path === "string")
+      : [],
+    perfMcp: body.perfMcp === true,
+    goroutineWarnThreshold:
+      Number.isInteger(threshold) && threshold > 0 ? threshold : 0,
+    goroutineWarnIntervalSeconds:
+      Number.isFinite(interval) && interval > 0 ? interval : 0,
+  };
+}
+
+/**
+ * The live admin-surface facts. Null when the controller cannot answer —
+ * external mode's 409 (the deployment configures its own daemon's
+ * `--metrics-addr` / `--perf-mcp`), an older controller without the route,
+ * or an unreachable controller — so the caller renders the matching note.
+ */
+export async function fetchHarnessPerfStatus(
+  signal?: AbortSignal,
+): Promise<HarnessPerfStatus | null> {
+  const response = await fetch(`${CONTROL_API}/perf`, {
+    signal,
+    cache: "no-store",
+  });
+  if (!response.ok) return null;
+  return readPerfStatus(await response.json().catch(() => null));
+}
+
+/** The controller's relay of mecated's `/metrics` (Prometheus text). */
+export const PERF_METRICS_URL = `${CONTROL_API}/perf/metrics`;
+/** The controller's relay of mecated's `/debug/vars` (expvar JSON). */
+export const PERF_VARS_URL = `${CONTROL_API}/perf/vars`;
+
+/**
+ * mecated's current `/metrics` exposition, relayed by the controller as
+ * plain text (`GET /perf/metrics`). A non-OK answer — 409 while the
+ * surface is off, 503 while no child runs, 502 when the listener did not
+ * answer, or mecated's own status — surfaces as a typed HarnessApiError
+ * carrying the controller's message. The text is MODEL-INFLUENCED (it can
+ * embed prompt text and file paths): render it as plain text only.
+ */
+export async function fetchHarnessPerfMetrics(
+  signal?: AbortSignal,
+): Promise<string> {
+  const response = await fetch(PERF_METRICS_URL, {
+    signal,
+    cache: "no-store",
+  });
+  if (!response.ok) throw await apiError(response);
+  return response.text();
+}

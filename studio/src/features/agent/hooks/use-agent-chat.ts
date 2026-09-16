@@ -833,6 +833,10 @@ export function useAgentChat(
   // the durable watch must not attach on top of it (the prompt path owns the
   // view). An id, not a boolean: a stream can outlive a chat switch.
   const drivingRef = useRef<string | null>(null);
+  // The same fact as state, for the workspace's leave guard: closing the tab
+  // ends a run THIS tab drives (`POST /prompt` cancels on disconnect); a
+  // watched run driven elsewhere survives it and never sets this.
+  const [drivingRun, setDrivingRun] = useState(false);
   // The live watch's teardown + resume position (per-session, opaque).
   const watchAbortRef = useRef<AbortController | null>(null);
   const watchCursorRef = useRef("");
@@ -1897,6 +1901,7 @@ export function useAgentChat(
         // This tab drives the run now: the durable watch must not attach on
         // top of the prompt stream, and the run's identity starts unknown.
         drivingRef.current = daemonId;
+        setDrivingRun(true);
         runIdRef.current = "";
         lastDispositionRef.current = undefined;
         await streamHarnessPrompt(
@@ -1970,6 +1975,7 @@ export function useAgentChat(
         abortRef.current = null;
         if (daemonId && drivingRef.current === daemonId) {
           drivingRef.current = null;
+          setDrivingRun(false);
         }
       }
     },
@@ -2104,6 +2110,7 @@ export function useAgentChat(
     abortRef.current = controller;
     // This tab drives the retried run: the watch must not attach on top.
     drivingRef.current = daemonId;
+    setDrivingRun(true);
     runIdRef.current = "";
     lastDispositionRef.current = undefined;
     let ineligible = false;
@@ -2164,7 +2171,10 @@ export function useAgentChat(
       }
     } finally {
       abortRef.current = null;
-      if (drivingRef.current === daemonId) drivingRef.current = null;
+      if (drivingRef.current === daemonId) {
+        drivingRef.current = null;
+        setDrivingRun(false);
+      }
     }
     if (ineligible && !(await resendLast())) {
       // Nothing held to re-send either (the prompt was recovered into the
@@ -2420,6 +2430,7 @@ export function useAgentChat(
       authorizationControlRef.current = inFlight;
       abortRef.current = controller;
       drivingRef.current = daemonId;
+      setDrivingRun(true);
       runIdRef.current = "";
       lastDispositionRef.current = undefined;
       setError(null);
@@ -2493,7 +2504,10 @@ export function useAgentChat(
           authorizationControlRef.current = null;
         }
         if (abortRef.current === controller) abortRef.current = null;
-        if (drivingRef.current === daemonId) drivingRef.current = null;
+        if (drivingRef.current === daemonId) {
+          drivingRef.current = null;
+          setDrivingRun(false);
+        }
         settle();
       }
     },
@@ -2980,6 +2994,10 @@ export function useAgentChat(
     consumeRecoverDraft,
     refreshTranscript,
     cancelChat,
+    /** THIS tab's prompt / retry / authorization stream is driving a run
+     *  (the leave guard's second arm: closing the tab would end it). False
+     *  for a watched run driven elsewhere — closing the tab leaves it be. */
+    drivingRun,
     /** Cancels one live delegated child by its session id; the parent run
      *  keeps going. Optimistic `cancelling…` on its lane/card until its end. */
     cancelChild,

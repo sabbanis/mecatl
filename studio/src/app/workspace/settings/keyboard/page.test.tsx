@@ -101,8 +101,47 @@ describe("KeyboardSettingsPage", () => {
     render(<KeyboardSettingsPage />);
     await userEvent.click(newChatButton());
     fireEvent.keyDown(window, { key: "n", metaKey: true });
-    expect(toast.error).toHaveBeenCalledWith("Reserved by the browser");
+    expect(toast.error).toHaveBeenCalledWith(
+      "Reserved by the browser — Studio may never receive it",
+    );
     expect(stored()).toBeNull();
+
+    // The broadened set: a ⌘-digit tab switch and Ctrl+Shift+Delete are
+    // refused the same way, as the recorder spells them.
+    await userEvent.click(newChatButton());
+    fireEvent.keyDown(window, { key: "1", metaKey: true });
+    await userEvent.click(newChatButton());
+    fireEvent.keyDown(window, { key: "Delete", ctrlKey: true, shiftKey: true });
+    expect(toast.error).toHaveBeenCalledTimes(3);
+    expect(stored()).toBeNull();
+  });
+
+  it("accepts a bare letter but says it won't fire while typing — on the toast and beneath the row", async () => {
+    render(<KeyboardSettingsPage />);
+    await userEvent.click(newChatButton());
+    fireEvent.keyDown(window, { key: "n" });
+
+    expect(stored()).toEqual({ "chat.new": "n" });
+    expect(toast.success).toHaveBeenLastCalledWith("Shortcut updated", {
+      description: expect.stringMatching(/Won't fire while typing/),
+    });
+    const row = screen.getByText("New chat").closest("div");
+    if (!row) throw new Error("no New chat row");
+    expect(
+      within(row).getByText(/Custom shortcut\. Won't fire while typing/),
+    ).toBeInTheDocument();
+
+    // A ⌘ chord is custom too, but carries no caution.
+    await userEvent.click(newChatButton());
+    fireEvent.keyDown(window, { key: "K", metaKey: true, shiftKey: true });
+    expect(toast.success).toHaveBeenLastCalledWith("Shortcut updated");
+    expect(within(row).getByText("Custom shortcut.")).toBeInTheDocument();
+
+    // Back on the default there is no note at all.
+    await userEvent.click(
+      screen.getByRole("button", { name: "Reset to default" }),
+    );
+    expect(within(row).queryByText(/Custom shortcut/)).toBeNull();
   });
 
   it("Reset all asks first, then clears the whole keymap", async () => {

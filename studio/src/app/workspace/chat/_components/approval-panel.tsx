@@ -4,6 +4,10 @@ import { Fullscreen, ShieldAlert } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { ApprovalChoice, ApprovalRequest } from "@/features/agent";
+import {
+  DEBUG_MCP_ASK_NOTE,
+  isDebugMcpMutationAsk,
+} from "@/features/agent/approval-queue";
 import { isPlanAsk } from "@/features/agent/plan-ask";
 import { cn } from "@/lib/utils";
 import { AskArgsView } from "./ask-args-view";
@@ -21,6 +25,7 @@ export function ApprovalPanel({
   onRespond,
   queuePosition,
   onExpand,
+  debugSession = false,
 }: {
   approval: ApprovalRequest;
   onRespond: (choice: ApprovalChoice) => void;
@@ -30,6 +35,9 @@ export function ApprovalPanel({
   /** Opens the ask's full-height view (the side panel); omitted = the card
    *  offers no Expand button (the thread panel keeps it inline). */
   onExpand?: (approval: ApprovalRequest) => void;
+  /** True on an AI-debug session (ADR 0254): a debugger MCP ask then offers
+   *  no Always allow (the daemon never learns it) and says so. */
+  debugSession?: boolean;
 }) {
   // A PresentPlan ask is a plan review, not a tool authorization: its own
   // surface (rendered plan, approve & run / auto-accept edits / iterate).
@@ -56,6 +64,11 @@ export function ApprovalPanel({
   // persistent grant learned from a throwaway child would outlive it (the
   // TUI withholds AllowAlways for child asks for the same reason).
   const child = approval.child === true;
+  // A debugger MCP call (ADR 0254) is approved one call at a time: the
+  // daemon never learns Always allow for it, so the button is withheld and
+  // the card says why instead of offering a grant that would not persist.
+  const debugMcp = isDebugMcpMutationAsk(approval, debugSession);
+  const offerAlways = !child && !debugMcp;
   const description = child
     ? `A subagent's ${toolName} needs your approval.`
     : approval.description;
@@ -127,10 +140,24 @@ export function ApprovalPanel({
             Subagent
           </Badge>
         )}
+        {debugMcp && (
+          <Badge variant="outline" className="text-xs">
+            Debugger MCP
+          </Badge>
+        )}
       </div>
       {destructive && (
         <p className="mb-3 text-xs font-medium text-destructive">
           This action modifies or deletes data.
+        </p>
+      )}
+      {debugMcp && (
+        <p
+          role="note"
+          data-testid="debug-mcp-ask-note"
+          className="mb-3 text-xs text-muted-foreground"
+        >
+          {DEBUG_MCP_ASK_NOTE}
         </p>
       )}
       <AskArgsView
@@ -151,7 +178,7 @@ export function ApprovalPanel({
         >
           Allow once
         </Button>
-        {!child && (
+        {offerAlways && (
           <Button
             size="sm"
             variant="outline"

@@ -316,6 +316,44 @@ test("Clear conversation in the chat menu mints a successor and re-enables the c
   ).toHaveAttribute("contenteditable", "true");
 });
 
+test("Switch worktree… lists the fixture worktrees and moves to the picked one", async ({
+  page,
+}) => {
+  await page.goto("/workspace/chat");
+  await page.getByText("Fix the flaky scheduler test").first().click();
+  await expect(
+    page.getByText("the test races the claim sentinel", { exact: false }),
+  ).toBeVisible();
+  // Gated on the fixture's `worktrees` capability AND the row's `fork`
+  // verdict (the same daemon verdict that gates Clear conversation).
+  await page.getByRole("button", { name: "Chat options" }).click();
+  await page
+    .getByRole("menuitem", { name: "Switch worktree…", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", { name: "Switch worktree" });
+  // The two fixture worktrees, in daemon order, with branch and short rev.
+  const main = dialog.getByRole("radio", { name: /^main main/ });
+  const feature = dialog.getByRole("radio", { name: /feature-x/ });
+  await expect(main).toBeVisible();
+  await expect(feature).toBeVisible();
+  await expect(dialog.getByText("feature/x")).toBeVisible();
+  await expect(dialog.getByText("0123456")).toBeVisible();
+  // Nothing picked: Switch stays disabled until a worktree is chosen.
+  const confirm = dialog.getByRole("button", { name: "Switch", exact: true });
+  await expect(confirm).toBeDisabled();
+  await feature.check();
+  await confirm.click();
+  // The default is a fresh (clear) successor: the fixture's clear route
+  // answers the cleared id and the UI moves there; the old chat stays.
+  await expect(page).toHaveURL(/\/workspace\/chat\/session-fixture-clear$/);
+  await expect(
+    page.getByText("Now working in feature-x (feature/x)"),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Fix the flaky scheduler test").first(),
+  ).toBeVisible();
+});
+
 test("a scheduled task's delivery note renders as an attributed card", async ({
   page,
 }) => {
@@ -478,4 +516,23 @@ test("the chat status strip shows the session handle, the resolved model and the
     "title",
     /posture trusted — allow-all off/,
   );
+});
+
+test("the workspace-services notice connects through the daemon and clears", async ({
+  page,
+}) => {
+  await page.goto("/workspace/chat");
+  await page.getByText("Fix the flaky scheduler test").first().click();
+  // The fixture advertises workspace_enrollment and its connector inventory
+  // reads not_started: the TUI's "workspace services not connected" notice
+  // shows above the composer with the /tools-connect action as a button.
+  const notice = page.getByTestId("workspace-enrollment-notice");
+  await expect(notice).toBeVisible();
+  await expect(notice).toContainText("Workspace services aren't connected");
+  // Connect opens the consent window on the click, then POSTs the bodyless
+  // connect; the fixture answers "connected" outright, so the window closes
+  // again, the notice clears and the toast confirms.
+  await notice.getByRole("button", { name: "Connect" }).click();
+  await expect(page.getByText("Workspace services connected")).toBeVisible();
+  await expect(notice).toHaveCount(0);
 });

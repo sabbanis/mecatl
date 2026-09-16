@@ -59,6 +59,7 @@ import {
   type QueuedMessage,
   type QueuePause,
 } from "@/features/agent/hooks/use-agent-chat";
+import type { WorkspaceEnrollmentView } from "@/features/agent/hooks/use-workspace-enrollment";
 import { isMockTourSession } from "@/features/agent/mock-tour";
 import type { StatusMessage } from "@/features/agent/stop-reason";
 import { cacheHitRate, formatPercent } from "@/features/agent/turn-stats";
@@ -116,7 +117,6 @@ import {
   focusForDelegationCard,
   preferredDelegationTab,
 } from "./delegation-panel";
-import { resolveEscapeAction } from "./escape-layering";
 import { FilePreview } from "./file-preview";
 import { FleetStatusChip } from "./fleet-status-chip";
 import { HelpMenuItem, HelpSheetItem } from "./help-menu-item";
@@ -133,6 +133,10 @@ import {
 import { SidePanel } from "./side-panel";
 import { StatusLine } from "./status-line";
 import { streamingPhaseLabel } from "./streaming-phase";
+import {
+  SwitchWorktreeMenuItem,
+  SwitchWorktreeSheetItem,
+} from "./switch-worktree-menu-item";
 import { ToolCallPanel } from "./tool-call-panel";
 import {
   CopyTranscriptMenuItem,
@@ -140,12 +144,10 @@ import {
   TranscriptMenuItems,
   TranscriptSheetItems,
 } from "./transcript-actions";
-import {
-  isSelectAllChord,
-  selectElementContents,
-  selectionInside,
-} from "./transcript-text";
+import { isSelectAllChord, selectElementContents } from "./transcript-text";
 import { TurnErrorStrip } from "./turn-error-strip";
+import { useComposerEscape } from "./use-composer-escape";
+import { WorkspaceEnrollmentNotice } from "./workspace-enrollment-notice";
 
 /** The authorization card's fallback when a caller wires no handler. */
 const noAuthorizationAction = async () => {};
@@ -277,6 +279,7 @@ function MobileChatMenu({
   compactDisabled,
   onClear,
   clearDisabledReason,
+  onSwitchWorktree,
   usage,
   transcript,
 }: {
@@ -294,6 +297,9 @@ function MobileChatMenu({
   onClear?: () => void;
   /** Non-empty renders Clear conversation disabled with this reason. */
   clearDisabledReason?: string;
+  /** Opens the worktree picker (the `/worktrees` built-in): present only
+   *  when the daemon lists worktrees and the row may mint a successor. */
+  onSwitchWorktree?: () => void;
   usage?: UsageFigures | null;
   /** Select / copy the whole conversation (the TUI's ctrl+g / ctrl+y). */
   transcript?: TranscriptActionProps;
@@ -344,6 +350,12 @@ function MobileChatMenu({
               <ClearConversationSheetItem
                 onSelect={onClear}
                 disabledReason={clearDisabledReason}
+                onDone={() => setOpen(false)}
+              />
+            )}
+            {onSwitchWorktree && (
+              <SwitchWorktreeSheetItem
+                onSelect={onSwitchWorktree}
                 onDone={() => setOpen(false)}
               />
             )}
@@ -968,15 +980,18 @@ export function ChatView({
   onSteerMessage,
   onRetractSteers,
   onCancelRun,
+  onDraftChange,
   onCompact,
   onClear,
   clearDisabledReason,
+  onSwitchWorktree,
   contextInfo,
   modelResolution = "ok",
   providerRoute,
   pendingMode,
   modeSwitchDeferred = false,
   debugMcpServers,
+  debugMcpTools,
   readOnlyPlaceholder,
   mode,
   onModeChange,
@@ -993,6 +1008,7 @@ export function ChatView({
   fleet,
   teamsSupported,
   onCancelChild,
+  enrollment = null,
 }: {
   session: AgentSession;
   messages: AgentMessage[];
@@ -1075,6 +1091,9 @@ export function ChatView({
   onRetractSteers?: () => Promise<PendingSteer[]>;
   /** Cancels the in-flight run (Esc with no panel open). */
   onCancelRun?: () => void;
+  /** Fires when the composer's "holds unsent text" state flips (and `false`
+      when the composer unmounts); the workspace arms its leave guard from it. */
+  onDraftChange?: (hasText: boolean) => void;
   /** Manually compacts the conversation (B1.2); present only when the
       daemon's manual_compaction capability is on. Disabled while streaming. */
   onCompact?: () => void;
@@ -1083,6 +1102,10 @@ export function ChatView({
   onClear?: () => void;
   /** Non-empty renders Clear conversation disabled with this daemon reason. */
   clearDisabledReason?: string;
+  /** Switch worktree — opens the `/worktrees` placement picker (a clear or
+      fork of this chat rooted at a sibling git worktree); present only when
+      the daemon lists worktrees and the row may mint a successor. */
+  onSwitchWorktree?: () => void;
   /** The session's effective model + context window (B1.1): feeds the slim
       approximate context meter near the composer. */
   contextInfo?: {
@@ -1104,6 +1127,8 @@ export function ChatView({
   modeSwitchDeferred?: boolean;
   /** Reporting MCP servers bound to a debug session (the strip's notice). */
   debugMcpServers?: string[];
+  /** The debugger MCP tools those servers mounted (the strip's notice). */
+  debugMcpTools?: string[];
   /** The latest turn's input tokens (turn.end): the meter's occupancy. */
   contextOccupancy?: number;
   /** The transient status line under the transcript (a no-progress nudge,
@@ -1150,6 +1175,11 @@ export function ChatView({
   /** Cancels one live delegated child by its session id (the inline cards'
       and the Agents panel's cancel controls; absent = no controls). */
   onCancelChild?: (childId: string) => void | Promise<void>;
+  /** The chat's workspace-services enrollment (the TUI's /tools-connect
+      notice + actions); null on the mock tour. The notice renders itself
+      only while the daemon's capability applies and the enrollment is
+      unsettled. */
+  enrollment?: WorkspaceEnrollmentView | null;
 }) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   // Whether the transcript is scrolled to (near) the bottom; when it isn't,
@@ -1171,6 +1201,17 @@ export function ChatView({
   // The single right-hand panel — a discriminated union makes "one panel at a
   // time" structural rather than something to coordinate by hand.
   const [panel, setPanel] = useState<ActivePanel | null>(null);
+  // The composer holds unsent text (reported by ChatInput's onDraftChange):
+  // the Esc layering's fourth arm reads it here, and the workspace lifts it
+  // into the leave guard through the prop of the same name.
+  const [hasDraft, setHasDraft] = useState(false);
+  const handleDraftChange = useCallback(
+    (hasText: boolean) => {
+      setHasDraft(hasText);
+      onDraftChange?.(hasText);
+    },
+    [onDraftChange],
+  );
   const [appendText, setAppendText] = useState<string | null>(null);
   // The Enter preference (Settings → Chat) decides the streaming placeholder.
   const { behavior: enterBehavior } = useEnterSendBehavior();
@@ -1372,38 +1413,29 @@ export function ChatView({
   // open. `resolveEscapeAction` picks exactly ONE arm: drop a transcript
   // selection first (an Esc meant to clear a selection can never stop a
   // run), else close the side panel if one is up, else interrupt a
-  // streaming run (the Claude Code convention: Esc cancels). On mobile the
+  // streaming run (the Claude Code convention: Esc cancels), else forward the
+  // press to the composer's double-Esc clear (`escapePress`). On mobile the
   // panel lives in a Radix Sheet that owns its own Escape, so only the
-  // selection and cancel arms fire there.
-  useShortcut("close.esc", () => {
-    switch (
-      resolveEscapeAction({
-        hasSelection: selectionInside(messagesContainerRef.current),
-        panelOpen: panel !== null,
-        isStreaming,
-        hasDraft: false,
-      })
-    ) {
-      case "clear-selection":
-        window.getSelection()?.removeAllRanges();
+  // selection, cancel and clear arms fire there.
+  const { escapePress } = useComposerEscape({
+    hasDraft,
+    panelOpen: panel !== null,
+    isStreaming,
+    hasSelectionIn: messagesContainerRef,
+    onClosePanel: () => {
+      // Inside the Agents panel a drilled-into child/group/view steps back
+      // to its roster first (the TUI's esc layering); the next Esc closes.
+      if (
+        panel !== null &&
+        panel.kind === "delegation" &&
+        panel.focus !== null
+      ) {
+        setPanel({ ...panel, focus: null });
         return;
-      case "close-panel":
-        // Inside the Agents panel a drilled-into child/group/view steps back
-        // to its roster first (the TUI's esc layering); the next Esc closes.
-        if (
-          panel !== null &&
-          panel.kind === "delegation" &&
-          panel.focus !== null
-        ) {
-          setPanel({ ...panel, focus: null });
-          return;
-        }
-        closeSidePanel();
-        return;
-      case "cancel-run":
-        onCancelRun?.();
-        return;
-    }
+      }
+      closeSidePanel();
+    },
+    onCancelRun,
   });
 
   // Keyboard paging of the transcript (the TUI's PgUp/PgDn/Home/End). These
@@ -1599,6 +1631,9 @@ export function ChatView({
                     disabledReason={clearDisabledReason}
                   />
                 )}
+                {onSwitchWorktree && (
+                  <SwitchWorktreeMenuItem onSelect={onSwitchWorktree} />
+                )}
                 <TranscriptMenuItems
                   messages={messages}
                   botName={botName}
@@ -1634,6 +1669,7 @@ export function ChatView({
               compactDisabled={isStreaming}
               onClear={onClear}
               clearDisabledReason={clearDisabledReason}
+              onSwitchWorktree={onSwitchWorktree}
               usage={usage}
               transcript={{
                 messages,
@@ -1659,6 +1695,7 @@ export function ChatView({
           mode={mode}
           pendingMode={pendingMode}
           debugMcpServers={debugMcpServers}
+          debugMcpTools={debugMcpTools}
           onOpenSession={onOpenSession}
         />
 
@@ -1733,6 +1770,7 @@ export function ChatView({
                   approval={pendingApproval}
                   onRespond={onRespondApproval}
                   onExpand={handleExpandApproval}
+                  debugSession={Boolean(session.debugTargetSessionId)}
                   queuePosition={
                     approvalQueueLength
                       ? { index: 1, total: approvalQueueLength }
@@ -1810,6 +1848,9 @@ export function ChatView({
                   onNewChat={onNewChat}
                 />
               )}
+              {enrollment && (
+                <WorkspaceEnrollmentNotice enrollment={enrollment} />
+              )}
               <MockProviderNotice />
               {pendingClarification ? (
                 <ClarificationPanel
@@ -1838,6 +1879,9 @@ export function ChatView({
                   mediaCapabilities={mediaCapabilities}
                   onPreviewAttachment={handlePreviewFile}
                   focusKey={session.id}
+                  draftKey={session.id}
+                  escapePress={escapePress}
+                  onDraftChange={handleDraftChange}
                   mobileDocked
                   modelLockedLabel={
                     live ? session.model || "Auto-routed" : undefined
@@ -1901,6 +1945,7 @@ export function ChatView({
           onDelegationTabChange={handleDelegationTabChange}
           onDelegationFocus={handleDelegationFocus}
           onRespondApproval={onRespondApproval}
+          debugSession={Boolean(session.debugTargetSessionId)}
         />
       )}
       {/* On mobile the same panels render as a full-height bottom sheet: the
@@ -1943,6 +1988,7 @@ export function ChatView({
                 onDelegationTabChange={handleDelegationTabChange}
                 onDelegationFocus={handleDelegationFocus}
                 onRespondApproval={onRespondApproval}
+                debugSession={Boolean(session.debugTargetSessionId)}
               />
             </div>
           </SheetContent>
@@ -1968,6 +2014,7 @@ function SidePanelForKind({
   onDelegationTabChange,
   onDelegationFocus,
   onRespondApproval,
+  debugSession = false,
 }: {
   panel: ActivePanel;
   parentSessionId: string;
@@ -1984,6 +2031,8 @@ function SidePanelForKind({
   onDelegationFocus: (focus: DelegationFocus | null) => void;
   /** Answers the expanded ask from the approval detail panel's foot. */
   onRespondApproval?: (choice: ApprovalChoice) => void;
+  /** True on an AI-debug chat: a debugger MCP ask offers no Always allow. */
+  debugSession?: boolean;
 }) {
   const shared = { onClose, maximized, onToggleMaximize, windowControls };
   switch (panel.kind) {
@@ -2011,6 +2060,7 @@ function SidePanelForKind({
         <ApprovalDetailPanel
           approval={panel.approval}
           onRespond={(choice) => onRespondApproval?.(choice)}
+          debugSession={debugSession}
           {...shared}
         />
       );

@@ -3,6 +3,7 @@
 import { useHarnessRuntime } from "@/features/agent/hooks/use-harness-runtime";
 import { AboutDaemonCard } from "../_components/about-daemon-card";
 import { DaemonLogCard } from "../_components/daemon-log-card";
+import { PerformanceCard } from "../_components/performance-card";
 import { PostureCard } from "../_components/posture-card";
 import { RuntimeStatusLine } from "../_components/runtime-status-line";
 
@@ -21,6 +22,7 @@ export default function DiagnosticsSettingsPage() {
       <RuntimeStatusLine runtime={runtime} />
       <PostureCard />
       <DaemonLogCard />
+      <PerformanceCard />
       <AboutDaemonCard
         selectedProviderId={runtime.status?.selectedProvider ?? undefined}
       />

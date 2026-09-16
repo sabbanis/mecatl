@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { type EscapeState, resolveEscapeAction } from "./escape-layering";
+import {
+  DISARMED_ESCAPE,
+  ESCAPE_ARM_MS,
+  type EscapeState,
+  pressEscapeToClear,
+  resolveEscapeAction,
+} from "./escape-layering";
 
 /**
  * Esc resolves to exactly one action, in the TUI's layering: a transcript
@@ -64,5 +70,41 @@ describe("resolveEscapeAction", () => {
     expect(
       resolveEscapeAction({ ...none, hasSelection: true, isStreaming: true }),
     ).toBe("clear-selection");
+  });
+});
+
+/**
+ * The double-Esc clear machine (the TUI's "esc esc"): first press arms for
+ * ESCAPE_ARM_MS, a second inside the window clears and disarms, a press
+ * after the window only re-arms. Pure over an injected clock.
+ */
+describe("pressEscapeToClear", () => {
+  const t0 = 10_000;
+
+  it("arms on a first press without clearing", () => {
+    const { state, clear } = pressEscapeToClear(DISARMED_ESCAPE, t0);
+    expect(clear).toBe(false);
+    expect(state).toEqual({ armedUntil: t0 + ESCAPE_ARM_MS });
+  });
+
+  it("clears and disarms on a second press inside the window", () => {
+    const armed = pressEscapeToClear(DISARMED_ESCAPE, t0).state;
+    const { state, clear } = pressEscapeToClear(armed, t0 + ESCAPE_ARM_MS - 1);
+    expect(clear).toBe(true);
+    expect(state).toEqual(DISARMED_ESCAPE);
+    // The clear consumed the arm: a third press starts over.
+    expect(pressEscapeToClear(state, t0 + ESCAPE_ARM_MS).clear).toBe(false);
+  });
+
+  it("re-arms instead of clearing once the window has lapsed", () => {
+    const armed = pressEscapeToClear(DISARMED_ESCAPE, t0).state;
+    const late = t0 + ESCAPE_ARM_MS;
+    const { state, clear } = pressEscapeToClear(armed, late);
+    expect(clear).toBe(false);
+    expect(state).toEqual({ armedUntil: late + ESCAPE_ARM_MS });
+  });
+
+  it("pins the window to the TUI's 1.5 s", () => {
+    expect(ESCAPE_ARM_MS).toBe(1500);
   });
 });

@@ -3,6 +3,10 @@
 import { ShieldAlert } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { ApprovalChoice, ApprovalRequest } from "@/features/agent";
+import {
+  DEBUG_MCP_ASK_NOTE,
+  isDebugMcpMutationAsk,
+} from "@/features/agent/approval-queue";
 import { isPlanAsk } from "@/features/agent/plan-ask";
 import { cn } from "@/lib/utils";
 import { askToolName } from "./ask-args";
@@ -25,6 +29,7 @@ export function ApprovalDetailPanel({
   maximized,
   onToggleMaximize,
   windowControls,
+  debugSession = false,
 }: {
   approval: ApprovalRequest;
   onRespond: (choice: ApprovalChoice) => void;
@@ -32,6 +37,9 @@ export function ApprovalDetailPanel({
   maximized: boolean;
   onToggleMaximize: () => void;
   windowControls?: boolean;
+  /** True on an AI-debug session (ADR 0254): a debugger MCP ask then offers
+   *  no Always allow (the daemon never learns it) and says so. */
+  debugSession?: boolean;
 }) {
   // A PresentPlan ask opens as the full-height plan review instead.
   if (isPlanAsk(approval.toolName)) {
@@ -49,6 +57,10 @@ export function ApprovalDetailPanel({
   const toolName = askToolName(approval);
   const destructive = DELETE_WORDS.test(toolName);
   const child = approval.child === true;
+  // A debugger MCP call (ADR 0254): approved one call at a time, Always
+  // allow never learned by the daemon — withheld here as on the inline card.
+  const debugMcp = isDebugMcpMutationAsk(approval, debugSession);
+  const offerAlways = !child && !debugMcp;
   const respond = (choice: ApprovalChoice) => {
     onRespond(choice);
     onClose();
@@ -70,6 +82,15 @@ export function ApprovalDetailPanel({
               ? `A subagent's ${toolName} needs your approval.`
               : approval.description}
           </p>
+          {debugMcp && (
+            <p
+              role="note"
+              data-testid="debug-mcp-ask-note"
+              className="mb-2 text-xs text-muted-foreground"
+            >
+              {DEBUG_MCP_ASK_NOTE}
+            </p>
+          )}
           <AskArgsView
             approval={approval}
             layout="full"
@@ -90,7 +111,7 @@ export function ApprovalDetailPanel({
           >
             Allow once
           </Button>
-          {!child && (
+          {offerAlways && (
             <Button
               size="sm"
               variant="outline"

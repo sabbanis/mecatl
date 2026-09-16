@@ -52,3 +52,23 @@ describe("AppearanceSettingsPage — new chat preferences", () => {
     expect(screen.getByRole("button", { name: "Showing" })).toBeDisabled();
   });
 });
+
+/**
+ * The Enter preference changes what a key DOES; which keys fire what is the
+ * keymap on Settings → Keyboard. Personalize points there so the two are
+ * found together.
+ */
+describe("AppearanceSettingsPage — keyboard shortcuts", () => {
+  beforeEach(() => {
+    vi.stubGlobal("localStorage", memoryStorage());
+  });
+
+  it("links to Settings → Keyboard for rebinding", () => {
+    render(<AppearanceSettingsPage />);
+    expect(screen.getByText("Keyboard shortcuts")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Customize/ })).toHaveAttribute(
+      "href",
+      "/workspace/settings/keyboard",
+    );
+  });
+});

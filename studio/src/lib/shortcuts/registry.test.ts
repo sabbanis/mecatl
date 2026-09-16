@@ -160,6 +160,31 @@ describe("shortcut registry", () => {
     }
   });
 
+  it("documents paste as a fixed ⌘V in the Composer group (the TUI's ctrl+v)", () => {
+    const def = SHORTCUTS.find((s) => s.id === "composer.paste");
+    expect(def?.combo).toBe("mod+v");
+    expect(def?.group).toBe("Composer");
+    expect(def?.description).toBe(
+      "Paste — a clipboard image attaches; a large text paste is staged as [Pasted text #N] and expands on send",
+    );
+    // Fixed: the browser owns ⌘V and the composer's paste listener decides
+    // what the clipboard becomes; the dispatcher never claims the chord (no
+    // handler is registered), so paste keeps working everywhere else.
+    expect(def?.fixed).toBe(true);
+    expect(keycaps("mod+v")).toEqual(["⌘", "V"]);
+  });
+
+  it("documents the double-Esc draft clear as a fixed Esc row in the Composer group", () => {
+    const def = SHORTCUTS.find((s) => s.id === "composer.clearDraft");
+    expect(def?.combo).toBe("esc");
+    expect(def?.group).toBe("Composer");
+    expect(def?.description).toBe("Press twice on an idle draft to clear it");
+    // Fixed: the press rides close.esc and is forwarded to the composer;
+    // nothing registers a handler for this id, so it is never dispatched.
+    expect(def?.fixed).toBe(true);
+    expect(def?.locked).toBeUndefined();
+  });
+
   it("phrases Esc's layering: selection, then the side panel, then the run", () => {
     expect(SHORTCUTS.find((s) => s.id === "close.esc")?.description).toBe(
       "Clear the selection, close the side panel — or stop the running turn",

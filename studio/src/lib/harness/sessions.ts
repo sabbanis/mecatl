@@ -172,6 +172,10 @@ async function forkHarnessSession(
     /** A reasoning-effort tier for the fork; ""/absent omits the field. A
      *  fork accepts an effort WITHOUT a model (the source's model carries). */
     reasoningEffort?: string;
+    /** An opaque worktree selector from ListWorktrees (ADR 0291): the fork
+     *  is rooted at that worktree instead of inheriting the source's
+     *  placement. ""/absent omits the field. */
+    worktreeSelector?: string;
   },
   signal?: AbortSignal,
 ): Promise<string> {
@@ -186,6 +190,9 @@ async function forkHarnessSession(
           : {}),
         ...(options.reasoningEffort
           ? { reasoningEffort: options.reasoningEffort }
+          : {}),
+        ...(options.worktreeSelector
+          ? { worktreeSelector: options.worktreeSelector }
           : {}),
       },
       { signal },
@@ -268,6 +275,27 @@ export async function createThreadHarnessSession(
   signal?: AbortSignal,
 ): Promise<string> {
   return forkHarnessSession(parentSessionId, { title }, signal);
+}
+
+/**
+ * Continues an existing chat in ANOTHER worktree of the repository: a fork
+ * seeded from the source's history, carrying its title, rooted at the
+ * worktree the opaque `worktreeSelector` names (from ListWorktrees, ADR
+ * 0291 — never a path). A stale selector is refused with a
+ * `placement_selector_*` HarnessApiError; a running/awaiting source answers
+ * 412 (ThreadSourceBusyError). The model and effort carry over unchanged.
+ */
+export async function forkHarnessSessionToWorktree(
+  sourceSessionId: string,
+  title: string,
+  worktreeSelector: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  return forkHarnessSession(
+    sourceSessionId,
+    { title, worktreeSelector },
+    signal,
+  );
 }
 
 // ── Prompt / retry streams ──────────────────────────────────────────────────
@@ -764,6 +792,10 @@ export interface HarnessSessionDetail {
    *  (`--debug-mcp`); availability never authorizes publication. Absent when
    *  none are bound. */
   debugMcpServers?: string[];
+  /** On an AI-debug session: the direct MCP tools those servers mounted
+   *  (`mcp__<server>__<tool>`) — each call asks for approval one call at a
+   *  time. Absent when none are mounted. */
+  debugMcpTools?: string[];
 }
 
 /** The token-usage bucket the main agent's spend is recorded under. */
@@ -778,11 +810,13 @@ export async function fetchHarnessSessionDetail(
   const total = snapshot.tokenUsage?.[MAIN_USAGE_BUCKET]?.total;
   const debugTarget = snapshot.relationship?.debugTargetSessionId ?? "";
   const debugServers = (snapshot.debugMcpServers ?? []).filter(Boolean);
+  const debugTools = (snapshot.debugMcpTools ?? []).filter(Boolean);
   return {
     // Debug-session facts ride only when set, so an ordinary session's detail
     // stays the three-field shape older callers and tests compare against.
     ...(debugTarget ? { debugTargetSessionId: debugTarget } : {}),
     ...(debugServers.length > 0 ? { debugMcpServers: debugServers } : {}),
+    ...(debugTools.length > 0 ? { debugMcpTools: debugTools } : {}),
     resolvedModel: resolved
       ? {
           providerId: resolved.providerId,
@@ -948,10 +982,23 @@ export async function fetchHarnessSessionIdentity(
  */
 export async function clearHarnessSession(
   sessionId: string,
+  options?: {
+    /** An opaque worktree selector from ListWorktrees (ADR 0291): the
+     *  successor is rooted at that worktree instead of inheriting the
+     *  source's placement. ""/absent omits the field (same placement). */
+    worktreeSelector?: string;
+  },
   signal?: AbortSignal,
 ): Promise<string> {
   const session = await harnessSession(sessionId, signal);
-  const successor = await harness(() => session.clear({}, { signal }));
+  const successor = await harness(() =>
+    session.clear(
+      options?.worktreeSelector
+        ? { worktreeSelector: options.worktreeSelector }
+        : {},
+      { signal },
+    ),
+  );
   if (!successor.id) throw new Error("harness returned no session id");
   return adoptSession(successor).id;
 }

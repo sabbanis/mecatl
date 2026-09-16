@@ -4,6 +4,7 @@ import {
   Bell,
   BellRing,
   CornerDownRight,
+  Keyboard,
   ListEnd,
   Minus,
   Monitor,
@@ -13,6 +14,7 @@ import {
   Plus,
   Sun,
 } from "lucide-react";
+import Link from "next/link";
 import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
@@ -173,6 +175,20 @@ export default function AppearanceSettingsPage() {
             options={ENTER_BEHAVIOR_OPTIONS}
             onChange={(next) => setBehavior(next as EnterSendBehavior)}
           />
+        </SettingsRow>
+
+        {/* Discoverability: the Enter preference above changes what a key
+            DOES; which keys fire what lives on Settings → Keyboard. */}
+        <SettingsRow
+          label="Keyboard shortcuts"
+          description="Rebind any shortcut, or see them all. Stored in this browser."
+        >
+          <Button asChild variant="outline" className="w-44 rounded-full">
+            <Link href="/workspace/settings/keyboard">
+              <Keyboard className="size-4" />
+              Customize
+            </Link>
+          </Button>
         </SettingsRow>
 
         <SettingsRow

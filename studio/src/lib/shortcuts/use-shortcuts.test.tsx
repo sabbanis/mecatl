@@ -191,6 +191,33 @@ describe("ShortcutsProvider with a user keymap (Settings → Keyboard)", () => {
     expect(newChat).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps the while-typing suppression for a plain-letter override", () => {
+    vi.stubGlobal("localStorage", memoryStorage());
+    window.localStorage.setItem(
+      KEYMAP_STORAGE_KEY,
+      JSON.stringify({ "chat.new": "n" }),
+    );
+    const newChat = vi.fn();
+    mount({ "chat.new": newChat });
+
+    // In the composer the letter stays text — the remapped shortcut is
+    // suppressed exactly as a plain-letter default would be.
+    const composer = focusComposer();
+    fireEvent.keyDown(composer, { key: "n" });
+    expect(newChat).not.toHaveBeenCalled();
+
+    // Outside a text field the letter fires, and the default no longer does.
+    composer.blur();
+    fireEvent.keyDown(document.body, { key: "n" });
+    expect(newChat).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(document.body, {
+      key: "O",
+      metaKey: true,
+      shiftKey: true,
+    });
+    expect(newChat).toHaveBeenCalledTimes(1);
+  });
+
   it("picks up a keymap change made while mounted", () => {
     vi.stubGlobal("localStorage", memoryStorage());
     const newChat = vi.fn();
