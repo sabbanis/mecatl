@@ -17,6 +17,8 @@ export interface OptionItem {
   value: string;
   label: string;
   icon?: React.ComponentType<{ className?: string }>;
+  /** One short line under the label in the menu (not on the trigger). */
+  description?: string;
 }
 
 /**
@@ -79,8 +81,15 @@ export function OptionField({
                     className="flex w-full items-center gap-3 px-4 py-3 text-sm transition-colors hover:bg-muted/50"
                   >
                     {Icon && <Icon className="size-4 text-muted-foreground" />}
-                    <span className="min-w-0 flex-1 truncate text-left font-medium">
-                      {option.label}
+                    <span className="flex min-w-0 flex-1 flex-col text-left">
+                      <span className="truncate font-medium">
+                        {option.label}
+                      </span>
+                      {option.description ? (
+                        <span className="truncate text-xs text-muted-foreground">
+                          {option.description}
+                        </span>
+                      ) : null}
                     </span>
                     <Check
                       className={cn(
@@ -121,7 +130,16 @@ export function OptionField({
                 )}
               />
               {Icon && <Icon className="size-4 text-muted-foreground" />}
-              {option.label}
+              {option.description ? (
+                <span className="flex min-w-0 flex-col">
+                  <span>{option.label}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {option.description}
+                  </span>
+                </span>
+              ) : (
+                option.label
+              )}
             </DropdownMenuItem>
           );
         })}

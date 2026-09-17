@@ -18,8 +18,11 @@ import Link from "next/link";
 import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
+import { usePalette } from "@/components/palette-provider";
+import { paletteSwatch } from "@/components/palette-swatch";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import { BUILT_IN_PALETTES, findPalette } from "@/lib/palettes";
 import {
   type EnterSendBehavior,
   UI_SCALE_MAX,
@@ -39,6 +42,16 @@ const THEME_OPTIONS = [
   { value: "system", label: "System", icon: Monitor },
 ] as const;
 
+// The palette catalogue IS the "list themes" surface (mecatui --list-themes):
+// one option per built-in, its swatch in the palette's accent. Built once so
+// the swatch component identities stay stable across renders.
+const PALETTE_OPTIONS = BUILT_IN_PALETTES.map((palette) => ({
+  value: palette.id,
+  label: palette.label,
+  description: palette.description,
+  icon: paletteSwatch(palette.swatch),
+}));
+
 const SIDE_OPTIONS = [
   { value: "left", label: "Left", icon: PanelLeft },
   { value: "right", label: "Right", icon: PanelRight },
@@ -51,6 +64,7 @@ const ENTER_BEHAVIOR_OPTIONS = [
 
 export default function AppearanceSettingsPage() {
   const { theme: activeTheme, setTheme } = useTheme();
+  const { palette, setPalette, defaultPalette } = usePalette();
   const { side, setSide } = useSessionListSide();
   const { scale, setScale } = useUiScale();
   const { behavior, setBehavior } = useEnterSendBehavior();
@@ -115,6 +129,26 @@ export default function AppearanceSettingsPage() {
             value={mounted ? (activeTheme ?? "system") : "system"}
             options={THEME_OPTIONS}
             onChange={setTheme}
+          />
+        </SettingsRow>
+
+        {/* The second appearance axis: a named token set (data-palette on
+            <html>) over the same light/dark choice — the web form of
+            mecatui's --theme aztec|mono|solar. Browser-local; the deployment
+            may pin a default with BRAND_PALETTE. */}
+        <SettingsRow
+          label="Palette"
+          description={
+            defaultPalette === "default"
+              ? "Accent and shell colours. Light and dark still follow Theme; code blocks keep their light and dark colours."
+              : `Accent and shell colours. Light and dark still follow Theme; code blocks keep their light and dark colours. This deployment's default is ${findPalette(defaultPalette)?.label ?? defaultPalette}.`
+          }
+        >
+          <OptionField
+            label="Palette"
+            value={palette}
+            options={PALETTE_OPTIONS}
+            onChange={setPalette}
           />
         </SettingsRow>
 

@@ -19,6 +19,8 @@ import {
   saveHarnessRouter,
   saveHarnessStorageSettings,
   startHarnessGatewayOAuth,
+  trustWorkspace,
+  trustWorkspaceOnce,
   waitForHarnessGateway,
 } from "@/lib/harness/client";
 import { useRuntimeStatus } from "../runtime-status";
@@ -196,6 +198,40 @@ export function useHarnessRuntime() {
   );
 
   /**
+   * The REMEMBERED project-trust grant — mecatui's "trust" answer. The
+   * controller persists `trustProject: true` stamped with the workspace's
+   * live identity anchor (also how a DRIFTED grant is re-accepted after the
+   * changed instructions were reviewed) and restarts the daemon with
+   * `--trust-project`. Bodyless: the anchor is the controller's, never the
+   * browser's. `/status.trust` is re-read afterwards so the page shows the
+   * decision the new spawn actually got.
+   */
+  const trustProject = useCallback(
+    async () =>
+      runWrite(
+        "trust",
+        () => trustWorkspace(),
+        "Project trusted. The daemon restarted with --trust-project and now honours this project's configuration.",
+      ),
+    [runWrite],
+  );
+
+  /**
+   * The "trust once" answer: `--trust-project` for THIS controller process
+   * only. Nothing is persisted — the grant rides every daemon restart in
+   * between and dies when Studio's controller exits.
+   */
+  const trustProjectOnce = useCallback(
+    async () =>
+      runWrite(
+        "trust",
+        () => trustWorkspaceOnce(),
+        "Project trusted for this Studio session. Nothing is saved: the grant lasts until Studio's controller exits. The daemon restarted.",
+      ),
+    [runWrite],
+  );
+
+  /**
    * Saves the session-store document (durable directory or in-memory). The
    * controller restarts the daemon on the new flag; a store it cannot use is
    * rolled back there and lands in `error`.
@@ -249,6 +285,11 @@ export function useHarnessRuntime() {
     connectGatewayOAuth,
     saveRouter,
     savePermissions,
+    /** The remembered project-trust grant (restarts the daemon); `busy`
+     *  reads "trust" while either grant runs. */
+    trustProject,
+    /** The this-controller-process-only grant (restarts the daemon). */
+    trustProjectOnce,
     saveStorage,
     saveRetention,
   };

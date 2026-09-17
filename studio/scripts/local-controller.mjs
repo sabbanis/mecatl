@@ -51,6 +51,11 @@ import {
   validSkillName,
 } from "../src/lib/controller-security.mjs";
 import {
+  hasProjectAuthority,
+  trustAnchor,
+  trustDecision,
+} from "../src/lib/controller-trust.mjs";
+import {
   DAEMON_DEFAULTS_EMPTY,
   daemonDefaultArgs,
   normalizeDaemonDefaults,
@@ -684,8 +689,19 @@ const retentionStatus = () => ({
 let daemonDefaults = DAEMON_DEFAULTS_EMPTY;
 // A this-process-only trust grant: `--trust-project` on the next spawns
 // without persisting it, for a "trust once" answer to a trust prompt. Never
-// written to disk, so it dies with the controller.
-const trustOnce = false;
+// written to disk, so it dies with the controller — and ONLY with the
+// controller: every daemon restart in between (a router save, a skill edit,
+// a provider switch) keeps it, which the banner's copy says.
+let trustOnce = false;
+// The controller's OWN trust registry state for the CURRENT spawn (see
+// src/lib/controller-trust.mjs), computed in startMecatl — never per /status
+// poll, which would walk the workspace tree every 5 s. `trustDrifted` is
+// the saved grant's anchor no longer matching the live one: the spawn then
+// gets NO --trust-project (fail safe, the daemon's own Drifted arm) and the
+// workspace banner re-prompts. Drift is detected at spawn time only.
+let trustDrifted = false;
+let trustAuthority = false;
+let liveTrustAnchor = "";
 let startupLog = "";
 let restartQueue = Promise.resolve();
 let gatewayRefresh = null;
@@ -1222,6 +1238,35 @@ async function loadPermissions() {
   }
 }
 
+/**
+ * Persists a permissions document and restarts the daemon on its flags,
+ * serialised on the restart queue. A start mecated refuses (auto/yolo as
+ * root outside MECATL_SANDBOX) rolls the previous document back, restarts
+ * on it, and rethrows with mecated's own refusal so the caller can answer
+ * it as the 400 body. Shared by POST /permissions and the two trust grants.
+ * @param {ReturnType<typeof normalizePermissions>} next
+ */
+function restartOnPermissions(next) {
+  return queueRestart(async () => {
+    const previous = permissionsConfig;
+    permissionsConfig = next;
+    await persistPermissions(next);
+    try {
+      await startMecatl(preferredKind());
+    } catch (error) {
+      // mecated names the refused tier on stderr; the generic
+      // "exited during startup" alone would hide the reason.
+      const refusal = startupLog.match(/posture "[a-z]+" refused[^\n]*/);
+      permissionsConfig = previous;
+      await persistPermissions(previous);
+      await startMecatl(preferredKind());
+      throw refusal
+        ? new Error(`${refusal[0]} (previous permissions restored)`)
+        : error;
+    }
+  });
+}
+
 /** Atomic (tmp + rename), owner-only. Flags only — no settings.yaml key. */
 async function persistDiagnosticsOptions(options) {
   await mkdir(studioStateDir, { recursive: true, mode: 0o700 });
@@ -1736,7 +1781,19 @@ async function startMecatl(kind, { adminRetry = false } = {}) {
   // spawn is deliberately NOT --headless: on an interactive root mecated
   // raises the project-trust floor for trusted/auto/yolo, which is what the
   // Permissions page tells the user (controller-permissions.test.ts pins it).
-  args.push(...permissionArgs(permissionsConfig, { trustOnce }));
+  //
+  // The controller's own trust registry is re-read here, once per spawn:
+  // the live identity anchor decides whether a SAVED grant still stands
+  // (its stamped anchor must equal the live one — a soul/agent/command/
+  // skill edit since the grant drifts it, and a drifted grant passes NO
+  // trust flag), and the authority probe tells /status whether there is
+  // anything a grant would admit at all.
+  liveTrustAnchor = trustAnchor(workspace);
+  trustAuthority = hasProjectAuthority(workspace);
+  trustDrifted =
+    permissionsConfig.trustProject &&
+    permissionsConfig.trustAnchor !== liveTrustAnchor;
+  args.push(...permissionArgs(permissionsConfig, { trustOnce, trustDrifted }));
   // Observability flags: log level, the admin/metrics listener, the perf
   // MCP mount, the goroutine alarm, product-metrics opt-out. `quiet` is
   // controller-side (the stderr mirror below) and adds no flag.
@@ -2283,6 +2340,18 @@ const server = http.createServer(async (request, response) => {
           trustProject: permissionsConfig.trustProject,
           noShell: permissionsConfig.noShell,
           trustOnce,
+        },
+        // The controller's OWN project-trust registry as resolved for the
+        // CURRENT spawn (src/lib/controller-trust.mjs): whether the
+        // workspace carries anything a grant would admit, the decision the
+        // spawn actually got, who granted it, and the live identity anchor
+        // (an opaque hash the banner keys its "Not now" on). Computed at
+        // spawn time — never here — and it cannot see the daemon's own
+        // registry (its remembered / declared grants), which the UI states.
+        trust: {
+          hasAuthority: trustAuthority,
+          ...trustDecision(permissionsConfig, { trustOnce, trustDrifted }),
+          anchor: liveTrustAnchor,
         },
         skills: { dir: skillsDir, scope: "project" },
         memory: { dir: memoryDir, scope: "project" },
@@ -3386,30 +3455,82 @@ const server = http.createServer(async (request, response) => {
       const next = normalizePermissions(
         JSON.parse((await readBody(request, 16_384)).toString("utf8")),
       );
-      await queueRestart(async () => {
-        const previous = permissionsConfig;
-        permissionsConfig = next;
-        await persistPermissions(next);
-        try {
-          await startMecatl(preferredKind());
-        } catch (error) {
-          // mecated names the refused tier on stderr; the generic
-          // "exited during startup" alone would hide the reason.
-          const refusal = startupLog.match(/posture "[a-z]+" refused[^\n]*/);
-          permissionsConfig = previous;
-          await persistPermissions(previous);
-          await startMecatl(preferredKind());
-          throw refusal
-            ? new Error(`${refusal[0]} (previous permissions restored)`)
-            : error;
-        }
-      });
+      // The trust ANCHOR is the controller's, never the client's: a FRESH
+      // grant (the switch turning on) stamps the live anchor; a save that
+      // merely keeps trustProject true (a posture or shell change) carries
+      // the stored anchor forward, so an unrelated save can never quietly
+      // re-accept drifted instructions — that takes the explicit
+      // POST /permissions/trust below. Turning trust off clears it.
+      next.trustAnchor = !next.trustProject
+        ? ""
+        : permissionsConfig.trustProject && permissionsConfig.trustAnchor
+          ? permissionsConfig.trustAnchor
+          : trustAnchor(workspace);
+      await restartOnPermissions(next);
       response.end(JSON.stringify({ ok: true, config: permissionsConfig }));
     } catch (error) {
       jsonError(
         response,
         error.statusCode || 400,
         error.message || "Could not update the permissions",
+      );
+    }
+    return;
+  }
+  // The trust prompt's two grant answers (the workspace banner; mecatui's
+  // pre-TUI "trust / trust once / no"). Both are BODYLESS POSTs behind the
+  // studio header; each restarts the daemon with --trust-project.
+  //
+  // /permissions/trust is the REMEMBERED grant: it persists trustProject
+  // and stamps the LIVE anchor, so it is also how a drifted grant is
+  // re-accepted after the user has reviewed the changed instructions. It
+  // writes ONLY the controller's permissions.json — never the daemon's own
+  // registry file.
+  if (
+    request.method === "POST" &&
+    requestURL.pathname === "/permissions/trust"
+  ) {
+    try {
+      await restartOnPermissions({
+        ...permissionsConfig,
+        trustProject: true,
+        trustAnchor: trustAnchor(workspace),
+      });
+      response.end(JSON.stringify({ ok: true, config: permissionsConfig }));
+    } catch (error) {
+      jsonError(
+        response,
+        error.statusCode || 400,
+        error.message || "Could not trust the project",
+      );
+    }
+    return;
+  }
+  // /permissions/trust-once grants for THIS controller process only: the
+  // in-memory flag rides every spawn until the controller exits and is
+  // never persisted. A start the grant somehow makes mecated refuse drops
+  // the grant again and restarts without it.
+  if (
+    request.method === "POST" &&
+    requestURL.pathname === "/permissions/trust-once"
+  ) {
+    try {
+      await queueRestart(async () => {
+        trustOnce = true;
+        try {
+          await startMecatl(preferredKind());
+        } catch (error) {
+          trustOnce = false;
+          await startMecatl(preferredKind());
+          throw error;
+        }
+      });
+      response.end(JSON.stringify({ ok: true }));
+    } catch (error) {
+      jsonError(
+        response,
+        error.statusCode || 400,
+        error.message || "Could not trust the project for this session",
       );
     }
     return;

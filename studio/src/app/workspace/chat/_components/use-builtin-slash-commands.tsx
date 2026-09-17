@@ -15,12 +15,7 @@ import {
   gatedReason,
   type StudioBuiltinCommand,
 } from "@/features/agent/composer-builtins";
-import { useRuntimeStatus } from "@/features/agent/runtime-status";
-import {
-  browserPlatform,
-  buildDiagnosticsReport,
-} from "@/lib/harness/diagnostics-report";
-import { fetchHarnessServerInfo } from "@/lib/harness/server-info";
+import { useDiagnosticsReport } from "@/features/agent/hooks/use-diagnostics-report";
 import { HELP_ROUTE } from "./help-menu-item";
 import {
   SessionDetailsDialog,
@@ -48,8 +43,13 @@ export interface BuiltinSlashDeps {
    *  the empty-history successor, the UI moves there once it answered. */
   onClearConversation: () => void | Promise<void>;
   /** The session's resolved provider/model (GET-session echo), for the
-   *  diagnostics report; null with no session or an older daemon. */
-  resolvedModel: { providerId: string; modelId: string } | null;
+   *  diagnostics report; null with no session or an older daemon. The
+   *  effective reasoning-effort tier rides along when the snapshot has it. */
+  resolvedModel: {
+    providerId: string;
+    modelId: string;
+    reasoningEffort?: string;
+  } | null;
   /** The composer's permission mode (Studio vocabulary). */
   permissionMode: string;
   /** Inventory-row facts the `/session` dialog shows beyond the snapshot:
@@ -92,13 +92,13 @@ export function useBuiltinSlashCommands(deps: BuiltinSlashDeps): {
   openSessionDetails: () => void;
 } {
   const router = useRouter();
-  const { mode: serverMode, deployment } = useRuntimeStatus();
+  // The one report composer (shared with the About card's "Send to a new
+  // chat"); it reads runtime status itself and is referentially stable.
+  const { compose } = useDiagnosticsReport();
   // Read through a ref so the dispatcher stays stable across chat state
   // churn (the composer re-subscribes its keydown listener on every change).
   const depsRef = useRef(deps);
   depsRef.current = deps;
-  const runtimeRef = useRef({ serverMode, deployment });
-  runtimeRef.current = { serverMode, deployment };
 
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [detailsSessionId, setDetailsSessionId] = useState<string | null>(null);
@@ -146,35 +146,18 @@ export function useBuiltinSlashCommands(deps: BuiltinSlashDeps): {
           return ok;
         case "diagnostics": {
           if (d.isStreaming) return refuse(DIAGNOSTICS_WHILE_STREAMING);
-          const { serverMode: mode, deployment: label } = runtimeRef.current;
-          const resolvedModel = d.resolvedModel;
-          const permissionMode = d.permissionMode;
-          const send = d.onSend;
-          void (async () => {
-            // The safe identity probe (ADR 0245); an older daemon or a
-            // transient fault reads "unavailable", never blocks the report.
-            const serverInfo = await fetchHarnessServerInfo(
-              resolvedModel?.providerId || undefined,
-            ).catch(() => null);
-            send(
-              buildDiagnosticsReport({
-                platform: browserPlatform(),
-                clientBuild: process.env.NEXT_PUBLIC_STUDIO_BUILD ?? "",
-                mode,
-                serverInfo,
-                deployment: label,
-                resolvedModel,
-                permissionMode,
-              }),
-            );
-          })();
+          const { resolvedModel, permissionMode, onSend: send } = d;
+          // The identity probe (ADR 0245) runs inside compose; an older
+          // daemon or a transient fault reads as a lookup class and
+          // "unavailable" rows — it never blocks the report.
+          void compose({ resolvedModel, permissionMode }).then(send);
           return ok;
         }
         default:
           return ok;
       }
     },
-    [router],
+    [router, compose],
   );
 
   // The menu item and ⌘I share `/session`'s dialog; unlike the built-in they

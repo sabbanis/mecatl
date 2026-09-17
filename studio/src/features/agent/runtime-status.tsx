@@ -17,7 +17,9 @@ import {
   probeHarness,
   setActiveHarnessProvider,
 } from "@/lib/harness/client";
+import { AuthRecoveryBanner } from "./auth-recovery-banner";
 import { refreshComposerCapabilities } from "./composer-capabilities";
+import { classifyOffline, type OfflineCause } from "./offline-cause";
 
 const POLL_INTERVAL_MS = 5_000;
 
@@ -39,6 +41,11 @@ export interface RuntimeStatus {
   gateway: { name: string; url: string } | null;
   /** Why the daemon is unreachable, when it is. */
   detail: string;
+  /** The NAMED cause behind an offline state — plain connectivity, or a
+   *  refused credential (sign-in required / session expired / credential
+   *  rejected / identity provider unreachable, `offline-cause.ts`); null
+   *  while connecting or connected. */
+  offlineCause: OfflineCause | null;
   /** The daemon's open feature registry (GET /v1/compatibility, ADR 0248).
    *  Empty against an older daemon — every feature-gated surface must treat
    *  absence as "not supported", never assume. */
@@ -52,6 +59,13 @@ export interface RuntimeStatus {
    *  controller is unreachable. The EFFECTIVE posture is
    *  `serverCapabilities.posture` (absent on an older daemon). */
   permissions: HarnessControlStatus["permissions"];
+  /** The controller's OWN project-trust decision for the current spawn
+   *  (authority, decision, source, live anchor); null in external mode,
+   *  against an older controller, or while it is unreachable. */
+  trust: NonNullable<HarnessControlStatus["trust"]> | null;
+  /** The controller's workspace label — display/keying only ("" when
+   *  unknown). Never a placement input (Studio rule 2). */
+  workspace: string;
   /** False only when the daemon reports an API major Studio does not speak. */
   apiCompatible: boolean;
   /** Forces an immediate re-probe (the offline screen's Retry). */
@@ -79,6 +93,8 @@ const RuntimeStatusContext = createContext<RuntimeStatus | null>(null);
 export function RuntimeStatusProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<RuntimeConnectionState>("connecting");
   const [detail, setDetail] = useState("");
+  /** The failed probe's HTTP status + machine code (`HarnessStatus`). */
+  const [failure, setFailure] = useState({ status: 0, code: "" });
   const [control, setControl] = useState<HarnessControlStatus | null>(null);
   const [mode, setMode] = useState<"managed" | "external">("managed");
   const [compat, setCompat] = useState<HarnessCompatibility | null>(null);
@@ -112,6 +128,7 @@ export function RuntimeStatusProvider({ children }: { children: ReactNode }) {
     } else {
       setState("offline");
       setDetail(daemon.detail);
+      setFailure({ status: daemon.status, code: daemon.code });
       // The next reconnect re-reads mentions and commands: a restart may have
       // changed the resolved roster.
       capabilitiesLoaded.current = false;
@@ -139,6 +156,10 @@ export function RuntimeStatusProvider({ children }: { children: ReactNode }) {
   // 0/absent = older daemon (compatible by definition of the additive era);
   // a REPORTED major other than 1 is a real skew Studio must not hide.
   const apiCompatible = compat === null || compat.apiMajor <= 1;
+  // The named cause behind an offline state decides WHICH banner renders: a
+  // refused credential gets the auth-recovery banner, not "unreachable".
+  const offlineCause: OfflineCause | null =
+    state === "offline" ? classifyOffline({ ...failure, detail }) : null;
 
   const switchProvider = useCallback(
     async (kind: string) => {
@@ -160,18 +181,24 @@ export function RuntimeStatusProvider({ children }: { children: ReactNode }) {
         toolhiveAvailable: control?.toolhiveGateway?.available ?? false,
         gateway: control?.gateway ?? null,
         detail,
+        offlineCause,
         features: featureSet,
         serverCapabilities: compat?.capabilities ?? {},
         deployment: compat?.deployment ?? "",
         permissions: control?.permissions ?? null,
+        trust: control?.trust ?? null,
+        workspace: control?.workspace ?? "",
         apiCompatible,
         refresh,
         switchProvider,
       }}
     >
-      {state === "offline" && (
-        <OfflineBanner detail={detail} onRetry={refresh} />
-      )}
+      {state === "offline" &&
+        (offlineCause && offlineCause.kind !== "connectivity" ? (
+          <AuthRecoveryBanner cause={offlineCause} onRetry={refresh} />
+        ) : (
+          <OfflineBanner detail={detail} onRetry={refresh} />
+        ))}
       {state === "connected" && !apiCompatible && (
         <div
           role="alert"

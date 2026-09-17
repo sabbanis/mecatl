@@ -32,17 +32,36 @@ describe("probeHarness", () => {
     await expect(probeHarness()).resolves.toEqual({
       live: true,
       detail: "connected",
+      status: 200,
+      code: "",
     });
     expect(stub.last().url).toBe("/api/mecatl/v1/models");
   });
 
-  it("never throws: a refused daemon folds into {live:false, detail}", async () => {
+  it("never throws: a refused daemon folds into {live:false, detail, status, code}", async () => {
     stubHarnessFetch(() =>
       jsonResponse(503, { code: "draining", error: "draining" }),
     );
     const status = await probeHarness();
     expect(status.live).toBe(false);
     expect(status.detail).toContain("restarting");
+    expect(status.status).toBe(503);
+    expect(status.code).toBe("draining");
+  });
+
+  it("types a refused credential so the offline banner can name it", async () => {
+    stubHarnessFetch(() =>
+      jsonResponse(401, {
+        code: "unauthenticated",
+        error: "missing or invalid bearer token",
+      }),
+    );
+    await expect(probeHarness()).resolves.toEqual({
+      live: false,
+      detail: "missing or invalid bearer token",
+      status: 401,
+      code: "unauthenticated",
+    });
   });
 
   it("never throws: an unreachable daemon folds into {live:false, detail}", async () => {

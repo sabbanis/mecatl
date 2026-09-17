@@ -88,6 +88,21 @@ before(async () => {
         "Content-Disposition",
         'inline; filename="from-upstream.json"',
       );
+      // A daemon that rejects Studio's bearer (a static-token or audience
+      // mismatch): an RFC 9457 401 with the stable code.
+      if (request.url === "/v1/sessions/rejected-credential") {
+        response.statusCode = 401;
+        response.setHeader("WWW-Authenticate", 'Bearer realm="mecatl"');
+        response.end(
+          JSON.stringify({
+            type: "urn:mecatl:error:unauthenticated",
+            code: "unauthenticated",
+            error: "missing or invalid bearer token",
+            status: 401,
+          }),
+        );
+        return;
+      }
       if (request.url === "/v1/sessions") {
         response.end(JSON.stringify({ session_id: "session-from-upstream" }));
         return;
@@ -135,6 +150,30 @@ test("server-renders Mecatl Studio", async () => {
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
   const html = await response.text();
   assert.match(html, /Mecatl Studio/);
+  // The palette boot script (src/components/palette-boot-script.tsx) ships
+  // inline in <head>: the stored-or-default palette lands on <html> before
+  // first paint, so the marker must be in the server HTML, not only in a
+  // client bundle.
+  assert.match(html, /data-palette/);
+  assert.match(html, /mecatl-studio\.palette/);
+});
+
+test("the About card server-renders Studio's own build stamp", async () => {
+  const response = await fetch(`${studioBaseURL}/workspace/settings/provider`);
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  // The stamp is inlined at `next build` (next.config.ts `env`, read via
+  // src/lib/studio-build.ts), so the server-rendered card already names it
+  // — before any daemon call, and whatever the daemon answers. The value
+  // is whatever THIS build computed (MECATL_STUDIO_BUILD, else
+  // version+sha, else version+dev); the assertion is that a real, non-empty
+  // stamp is there, never the sanitizer's "unavailable".
+  const match = /data-testid="about-studio-build"[^>]*>([^<]+)</.exec(html);
+  assert.ok(match, "the About card's Studio row is server-rendered");
+  const stamp = match[1].trim();
+  assert.notEqual(stamp, "");
+  assert.notEqual(stamp, "unavailable");
+  assert.match(stamp, /^[A-Za-z0-9._/+-]+$/);
 });
 
 test("external mode injects daemon auth server-side and disables local controls", async () => {
@@ -162,6 +201,9 @@ test("external mode injects daemon auth server-side and disables local controls"
   // its posture/trust/shell flags, so the saved-permissions mirror is null
   // (the EFFECTIVE posture still reads off the daemon's capabilities).
   assert.equal(status.permissions, null);
+  // Nor its project-trust decision: there is no controller registry to
+  // read in external mode, so the workspace trust banner never renders.
+  assert.equal(status.trust, null);
   // Same for the session store: its location / in-memory mode is the
   // deployment's own spawn flag, so the mirror is null and the Storage card
   // renders the managed note instead of a form.
@@ -246,6 +288,11 @@ test("external mode injects daemon auth server-side and disables local controls"
     ["runtime-settings", "GET"],
     ["runtime-settings", "PUT"],
     ["soul/approve", "POST"],
+    // The two project-trust grants (the workspace banner's "Trust project"
+    // / "Trust for this session") write the MANAGED controller's own trust
+    // registry and restart its daemon: external owns its trust decision.
+    ["permissions/trust", "POST"],
+    ["permissions/trust-once", "POST"],
   ]) {
     const refused = await fetch(`${studioBaseURL}/api/mecatl-control/${path}`, {
       method,
@@ -294,6 +341,27 @@ test("an unreachable daemon is a friendly 503, never demo content", async () => 
   // and carries no fabricated inventory.
   const page = await fetch(`${offlineBaseURL}/workspace/chat`);
   assert.equal(page.status, 200);
+});
+
+test("a daemon 401 is relayed verbatim — status, code, words and challenge — with the bearer still injected", async () => {
+  const rejected = await fetch(
+    `${studioBaseURL}/api/mecatl/v1/sessions/rejected-credential`,
+  );
+  // The proxy adds auth ONLY: the daemon's refusal crosses untouched, so the
+  // client can classify it (Credential rejected, never "unreachable").
+  assert.equal(rejected.status, 401);
+  assert.equal(
+    rejected.headers.get("www-authenticate"),
+    'Bearer realm="mecatl"',
+  );
+  const body = await rejected.json();
+  assert.equal(body.code, "unauthenticated");
+  assert.match(body.error, /bearer token/);
+  assert.deepEqual(upstreamRequests.at(-1), {
+    url: "/v1/sessions/rejected-credential",
+    authorization: "Bearer test-secret",
+    body: null,
+  });
 });
 
 test("controller policy rejects CSRF and DNS-rebinding requests", () => {
@@ -399,6 +467,11 @@ test("controller policy rejects CSRF and DNS-rebinding requests", () => {
     ["GET", "/runtime-settings"],
     ["PUT", "/runtime-settings"],
     ["POST", "/soul/approve"],
+    // The project-trust grants raise what a checked-in allow rule may
+    // auto-approve and restart the daemon: another loopback-origin page must
+    // never be able to trust the workspace on the user's behalf.
+    ["POST", "/permissions/trust"],
+    ["POST", "/permissions/trust-once"],
   ]) {
     assert.equal(
       requestIsAllowed(

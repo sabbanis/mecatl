@@ -3,7 +3,11 @@
 @custom-variant dark (&:is(.dark *));
 
 /* Tokens hold complete CSS color values — not bare HSL triplets.
-   This keeps operator branding overrides format-agnostic (hex, hsl, oklch all work). */
+   This keeps overrides format-agnostic (hex, hsl, oklch all work). The named
+   palettes (Settings → Personalize → Palette; src/lib/palettes.ts) are the
+   `[data-palette="…"]` / `.dark[data-palette="…"]` block pairs after `.dark`
+   below: each overrides the accent + shell subset of these tokens, and
+   palettes-css.test.ts pins that every catalogue id has both blocks. */
 :root {
   --background: hsl(0 0% 100%);
   --foreground: hsl(240 10% 3.9%);
@@ -38,6 +42,21 @@
   --nav-border: #265b41;
   --nav-button-active-bg: #398560;
   --nav-button-active-text: #ffffff;
+
+  /* Shell band tokens — the workspace radial gradient and the top nav that
+     sits on it (workspace/layout.tsx, shell/top-nav.tsx). Promoted from
+     literals so a named palette can restyle the band; the nav colours are
+     the same in light and dark (the band is a fixed brand surface), only the
+     gradient deepens in dark. */
+  --shell-gradient-start: #006652;
+  --shell-gradient-mid: #03433e;
+  --shell-gradient-end: #06202a;
+  --nav-pill-bg: #cadfd8;
+  --nav-pill-text: #03433e;
+  --nav-icon: #a5b8b4;
+  --nav-search-border: #6e807d;
+  --nav-search-text: #b4c0c1;
+  --nav-kbd-bg: #3f605a;
 
   /* Status, display, and link tokens (ADR-0018 convergence palette).
      Complete colour values, never bare HSL triplets. */
@@ -101,6 +120,18 @@
   --nav-button-active-bg: #2d6b4a;
   --nav-button-active-text: #f0f0f0;
 
+  /* Shell band tokens — dark deepens each gradient stop so the shell recedes
+     behind the dark card; the nav colours stay the fixed brand values. */
+  --shell-gradient-start: #023d31;
+  --shell-gradient-mid: #022723;
+  --shell-gradient-end: #02141b;
+  --nav-pill-bg: #cadfd8;
+  --nav-pill-text: #03433e;
+  --nav-icon: #a5b8b4;
+  --nav-search-border: #6e807d;
+  --nav-search-text: #b4c0c1;
+  --nav-kbd-bg: #3f605a;
+
   /* Status, display, and link tokens — dark-mode variants. */
   --success: hsl(142 61% 55%); /* lighter green for dark surfaces */
   --warning: hsl(35 92% 62%); /* lighter amber */
@@ -124,6 +155,151 @@
   --sidebar-accent-foreground: hsl(240 4.8% 95.9%);
   --sidebar-border: hsl(240 3.7% 15.9%);
   --sidebar-ring: hsl(217.2 91.2% 59.8%);
+}
+
+/* ── Named palettes ──────────────────────────────────────────────────────────
+   One light + one dark block per catalogue id in src/lib/palettes.ts, applied
+   as `data-palette` on <html> (the boot script in the root layout sets it
+   before first paint; PaletteProvider keeps it in step). A palette overrides
+   ONLY the accent + shell subset of the tokens above — surfaces, text and the
+   semantic status colours stay — and both blocks of a pair define the SAME
+   token set, because `[data-palette]` (0-1-0) ties `.dark` (0-1-0) and wins
+   by source order alone, so the dark block (0-2-0) must restate every token
+   the light block touched. These blocks MUST stay after `:root` and `.dark`
+   (palettes-css.test.ts pins the order and the set parity).
+   Values follow mecatui's built-ins (cmd/mecatui/theme/builtins.go), darkened
+   where an accent has to carry small text on white. */
+
+/* aztec — jade, turquoise and gold on obsidian (mecatui's default). */
+[data-palette="aztec"] {
+  --brand: #0f7f6c;
+  --brand-ink: #0f7f6c;
+  --brand-label: #0f7f6c;
+  --btn-primary: #0f7f6c;
+  --btn-primary-hover: #0b6656;
+  --link: #157a83;
+  --info: #157a83;
+  --nav-background: #15201c;
+  --nav-border: #2e4039;
+  --nav-button-active-bg: #2a9d8f;
+  --shell-gradient-start: #1f6b5c;
+  --shell-gradient-mid: #15302a;
+  --shell-gradient-end: #0e1311;
+  --nav-pill-bg: #bfe6dc;
+  --nav-pill-text: #0e2a24;
+  --nav-icon: #8a998f;
+  --nav-search-border: #4b6a60;
+  --nav-search-text: #b7c4bd;
+  --nav-kbd-bg: #2e4039;
+}
+.dark[data-palette="aztec"] {
+  --brand: #1fb39a;
+  --brand-ink: #4fd1b8;
+  --brand-label: #4fd1b8;
+  --btn-primary: #12866f;
+  --btn-primary-hover: #0e6b59;
+  --link: #5cc8d0;
+  --info: #5cc8d0;
+  --nav-background: #0e1311;
+  --nav-border: #1e2a25;
+  --nav-button-active-bg: #1c6b5c;
+  --shell-gradient-start: #143d33;
+  --shell-gradient-mid: #0f1f1a;
+  --shell-gradient-end: #0a0f0d;
+  --nav-pill-bg: #a8ddd0;
+  --nav-pill-text: #0e2a24;
+  --nav-icon: #8a998f;
+  --nav-search-border: #3d5a50;
+  --nav-search-text: #a9b8b1;
+  --nav-kbd-bg: #26362f;
+}
+
+/* mono — neutral greys with a blue accent. */
+[data-palette="mono"] {
+  --brand: #2563eb;
+  --brand-ink: #2563eb;
+  --brand-label: #2563eb;
+  --btn-primary: #2563eb;
+  --btn-primary-hover: #1d4ed8;
+  --link: #2563eb;
+  --info: #2563eb;
+  --nav-background: #1f1f1f;
+  --nav-border: #3a3a3a;
+  --nav-button-active-bg: #3f3f46;
+  --shell-gradient-start: #3a3a3a;
+  --shell-gradient-mid: #232323;
+  --shell-gradient-end: #141414;
+  --nav-pill-bg: #e4e4e7;
+  --nav-pill-text: #18181b;
+  --nav-icon: #a1a1aa;
+  --nav-search-border: #71717a;
+  --nav-search-text: #c4c4c8;
+  --nav-kbd-bg: #3f3f46;
+}
+.dark[data-palette="mono"] {
+  --brand: #3b82f6;
+  --brand-ink: #60a5fa;
+  --brand-label: #60a5fa;
+  --btn-primary: #1d4ed8;
+  --btn-primary-hover: #1e40af;
+  --link: #60a5fa;
+  --info: #60a5fa;
+  --nav-background: #0b0b0b;
+  --nav-border: #262626;
+  --nav-button-active-bg: #2f2f2f;
+  --shell-gradient-start: #262626;
+  --shell-gradient-mid: #161616;
+  --shell-gradient-end: #0b0b0b;
+  --nav-pill-bg: #d4d4d8;
+  --nav-pill-text: #0b0b0b;
+  --nav-icon: #8a8a8a;
+  --nav-search-border: #4a4a4a;
+  --nav-search-text: #b5b5b5;
+  --nav-kbd-bg: #2a2a2a;
+}
+
+/* solar — warm and light-leaning (solarized gold, orange and blue). */
+[data-palette="solar"] {
+  --brand: #9a7300;
+  --brand-ink: #8a6800;
+  --brand-label: #8a6800;
+  --btn-primary: #9a7300;
+  --btn-primary-hover: #7f5e00;
+  --link: #cb4b16;
+  --info: #1f6fa8;
+  --nav-background: #5c4300;
+  --nav-border: #7a5c0c;
+  --nav-button-active-bg: #9a7300;
+  --shell-gradient-start: #a77b0a;
+  --shell-gradient-mid: #6b4f0a;
+  --shell-gradient-end: #3f3008;
+  --nav-pill-bg: #f3e3b5;
+  --nav-pill-text: #3f3008;
+  --nav-icon: #d9c48a;
+  --nav-search-border: #a8925a;
+  --nav-search-text: #e6d8b4;
+  --nav-kbd-bg: #7a5c0c;
+}
+.dark[data-palette="solar"] {
+  --brand: #b58900;
+  --brand-ink: #e0b52e;
+  --brand-label: #e0b52e;
+  --btn-primary: #8a6800;
+  --btn-primary-hover: #705400;
+  --link: #f0884d;
+  --info: #5fb0ee;
+  --nav-background: #191404;
+  --nav-border: #3a2c08;
+  --nav-button-active-bg: #6b4f0a;
+  --shell-gradient-start: #4a3708;
+  --shell-gradient-mid: #2c2206;
+  --shell-gradient-end: #191404;
+  --nav-pill-bg: #e8d59a;
+  --nav-pill-text: #2c2206;
+  --nav-icon: #b8a878;
+  --nav-search-border: #6b5a2a;
+  --nav-search-text: #d6c89a;
+  --nav-kbd-bg: #3a2c08;
 }
 
 /* Maps CSS tokens → Tailwind utility classes.
@@ -198,14 +374,11 @@
      scroll), leaving a strip beside/below the app, and overscroll exposes
      the canvas too. Every visible surface (the card, panels, dialogs)
      declares its own bg-background, so nothing reads body's background —
-     matching the gradient's end keeps the stale strip invisible. */
+     matching the gradient's end keeps the stale strip invisible. The token
+     already carries the dark and per-palette values. */
   html,
   body {
-    background-color: #06202a;
-  }
-  html.dark,
-  html.dark body {
-    background-color: #02141b;
+    background-color: var(--shell-gradient-end);
   }
   /* Mobile is read at arm's length — bump the default root size past
      native body text (~17pt). The Interface scale slider multiplies

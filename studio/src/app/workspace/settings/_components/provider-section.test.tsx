@@ -68,6 +68,8 @@ function fakeRuntime(overrides: Partial<Runtime> = {}): Runtime {
     savePermissions: vi.fn(async () => {}),
     saveStorage: vi.fn(async () => {}),
     saveRetention: vi.fn(async () => {}),
+    trustProject: vi.fn(async () => {}),
+    trustProjectOnce: vi.fn(async () => {}),
     ...overrides,
   };
 }

@@ -96,7 +96,10 @@ export async function proxyMecatl(request: Request, path: string[]) {
         { status: auth.status },
       );
     if (auth.kind === "unavailable")
-      return Response.json({ error: auth.error }, { status: auth.status });
+      return Response.json(
+        { error: auth.error, code: auth.code },
+        { status: auth.status },
+      );
     if (auth.kind === "bearer")
       headers.set("authorization", `Bearer ${auth.token}`);
   } else {
@@ -123,6 +126,9 @@ export async function proxyControl(request: Request, path: string[]) {
         // sets its posture/trust/shell flags (the EFFECTIVE posture still
         // reads off the daemon's capabilities.posture).
         permissions: null,
+        // Nor its project-trust decision: there is no controller registry
+        // to read, so the workspace trust banner never renders.
+        trust: null,
         skills: null,
         memory: null,
         // The session store is likewise the deployment's spawn flag: Studio

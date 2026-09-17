@@ -1,11 +1,13 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { useHarnessRuntime } from "@/features/agent/hooks/use-harness-runtime";
+import type { HarnessTrustState } from "@/lib/harness/client";
 import {
   effectivePostureNote,
   PermissionsSection,
   POSTURE_OPTIONS,
+  trustRowLabel,
 } from "./permissions-section";
 
 type Runtime = ReturnType<typeof useHarnessRuntime>;
@@ -25,6 +27,10 @@ const runtimeStatus = {
   connected: true,
   mode: "managed" as "managed" | "external",
   serverCapabilities: {} as Record<string, unknown>,
+  // The controller's own project-trust decision (`/status.trust`); null
+  // against an older controller, so the row stays capability-gated on it.
+  trust: null as HarnessTrustState | null,
+  refresh: vi.fn(async () => {}),
 };
 
 vi.mock("@/features/agent/runtime-status", () => ({
@@ -60,14 +66,18 @@ function fakeRuntime(overrides: Partial<Runtime> = {}): Runtime {
     savePermissions,
     saveStorage: vi.fn(async () => {}),
     saveRetention: vi.fn(async () => {}),
+    trustProject: vi.fn(async () => {}),
+    trustProjectOnce: vi.fn(async () => {}),
     ...overrides,
   };
 }
 
 beforeEach(() => {
   savePermissions.mockClear();
+  runtimeStatus.refresh.mockClear();
   runtimeStatus.mode = "managed";
   runtimeStatus.serverCapabilities = {};
+  runtimeStatus.trust = null;
 });
 
 describe("PermissionsSection", () => {
@@ -329,5 +339,153 @@ describe("effectivePostureNote", () => {
     expect(
       effectivePostureNote({ ...base, saved: "yolo", effective: "strict" }),
     ).toMatch(/below the saved yolo/);
+  });
+});
+
+/**
+ * The "Project trust" row: the controller's resolved decision for the
+ * current spawn as words (mecatui's trust states), "Forget trust" for a
+ * remembered grant, and "Trust again" for a drifted one — the explicit grant
+ * route, because a plain save with the switch already on never re-stamps the
+ * anchor. Gated on the controller reporting `/status.trust` at all.
+ */
+describe("PermissionsSection project trust row", () => {
+  const untrusted: HarnessTrustState = {
+    hasAuthority: true,
+    decision: "untrusted",
+    source: "none",
+    anchor: "a".repeat(64),
+  };
+  const trustedRuntime = () =>
+    fakeRuntime({
+      permissions: {
+        config: {
+          posture: "strict",
+          trustProject: true,
+          noShell: false,
+          trustOnce: false,
+        },
+        operatorSettings: false,
+      },
+    });
+
+  it("names every decision", () => {
+    expect(trustRowLabel(untrusted)).toBe("Untrusted");
+    expect(trustRowLabel({ ...untrusted, decision: "drifted" })).toBe(
+      "Untrusted — instructions changed",
+    );
+    expect(
+      trustRowLabel({ ...untrusted, decision: "once", source: "studio" }),
+    ).toBe("Trusted for this session");
+    expect(
+      trustRowLabel({ ...untrusted, decision: "trusted", source: "studio" }),
+    ).toBe("Trusted (remembered)");
+    expect(
+      trustRowLabel({ ...untrusted, decision: "trusted", source: "posture" }),
+    ).toBe("Trusted (by the posture)");
+  });
+
+  it("is absent when the controller reports no trust decision (older controller)", () => {
+    render(<PermissionsSection runtime={fakeRuntime()} />);
+    expect(screen.queryByText("Project trust")).toBeNull();
+  });
+
+  it("shows Untrusted with the withheld-instructions explanation and the residual, and no buttons", () => {
+    runtimeStatus.trust = untrusted;
+    render(<PermissionsSection runtime={fakeRuntime()} />);
+    expect(screen.getByText("Project trust")).toBeInTheDocument();
+    expect(screen.getByText("Untrusted")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Mecatl withholds until you trust it/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/not visible here/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Forget trust" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Trust again" })).toBeNull();
+  });
+
+  it("says when the project ships nothing a grant would admit", () => {
+    runtimeStatus.trust = { ...untrusted, hasAuthority: false };
+    render(<PermissionsSection runtime={fakeRuntime()} />);
+    expect(
+      screen.getByText(/ships no instructions a grant would admit/),
+    ).toBeInTheDocument();
+  });
+
+  it("Forget trust saves the document with the switch off and keeps the other flags", async () => {
+    const user = userEvent.setup();
+    runtimeStatus.trust = {
+      ...untrusted,
+      decision: "trusted",
+      source: "studio",
+    };
+    const runtime = trustedRuntime();
+    render(<PermissionsSection runtime={runtime} />);
+    expect(screen.getByText("Trusted (remembered)")).toBeInTheDocument();
+    expect(screen.getByText(/re-checks the project/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Forget trust" }));
+    expect(savePermissions).toHaveBeenCalledWith({
+      posture: "strict",
+      trustProject: false,
+      noShell: false,
+    });
+    expect(runtime.trustProject).not.toHaveBeenCalled();
+  });
+
+  it("Trust again on a drifted grant calls the hook's explicit grant (not the generic write), then re-reads the status", async () => {
+    const user = userEvent.setup();
+    runtimeStatus.trust = { ...untrusted, decision: "drifted" };
+    const runtime = trustedRuntime();
+    render(<PermissionsSection runtime={runtime} />);
+    expect(
+      screen.getByText("Untrusted — instructions changed"),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/started without the grant/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Trust again" }));
+    await waitFor(() => expect(runtime.trustProject).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(runtimeStatus.refresh).toHaveBeenCalled());
+    // Not the generic write: that would carry the stale anchor forward.
+    expect(savePermissions).not.toHaveBeenCalled();
+    expect(runtime.trustProjectOnce).not.toHaveBeenCalled();
+  });
+
+  it("disables both trust buttons while the hook's trust write is in flight", () => {
+    runtimeStatus.trust = { ...untrusted, decision: "drifted" };
+    render(<PermissionsSection runtime={trustedRuntime()} />);
+    expect(screen.getByRole("button", { name: "Trust again" })).toBeEnabled();
+    render(
+      <PermissionsSection runtime={{ ...trustedRuntime(), busy: "trust" }} />,
+    );
+    expect(screen.getByRole("button", { name: "Trusting…" })).toBeDisabled();
+    expect(
+      screen.getAllByRole("button", { name: "Forget trust" }).at(-1),
+    ).toBeDisabled();
+  });
+
+  it("reads the posture floor and the session grant as trusted", () => {
+    runtimeStatus.trust = {
+      ...untrusted,
+      decision: "trusted",
+      source: "posture",
+    };
+    render(
+      <PermissionsSection
+        runtime={fakeRuntime({
+          permissions: {
+            config: {
+              posture: "auto",
+              trustProject: false,
+              noShell: false,
+              trustOnce: false,
+            },
+            operatorSettings: false,
+          },
+        })}
+      />,
+    );
+    expect(screen.getByText("Trusted (by the posture)")).toBeInTheDocument();
+    expect(
+      screen.getByText(/auto posture trusts the project/),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Forget trust" })).toBeNull();
   });
 });

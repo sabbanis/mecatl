@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { PaletteProvider } from "@/components/palette-provider";
 import { memoryStorage } from "@/test/memory-storage";
 import AppearanceSettingsPage from "./page";
 
@@ -70,5 +71,67 @@ describe("AppearanceSettingsPage — keyboard shortcuts", () => {
       "href",
       "/workspace/settings/keyboard",
     );
+  });
+});
+
+/**
+ * The Palette row is the web form of mecatui's `--theme` / `--list-themes`:
+ * it enumerates every built-in palette by name and description, and picking
+ * one lands `data-palette` on <html> at once AND persists it, while the
+ * light/dark Theme row stays a separate axis. A deployment pin
+ * (`BRAND_PALETTE`) is named in the row so a user knows why a fresh browser
+ * is not Stacklok green.
+ */
+describe("AppearanceSettingsPage — palette", () => {
+  const PALETTE_KEY = "mecatl-studio.palette";
+
+  beforeEach(() => {
+    vi.stubGlobal("localStorage", memoryStorage());
+  });
+  afterEach(() => {
+    document.documentElement.removeAttribute("data-palette");
+  });
+
+  it("lists the built-in palettes with descriptions and applies a choice", async () => {
+    const user = userEvent.setup();
+    render(<AppearanceSettingsPage />);
+    const trigger = screen.getByRole("button", { name: "Palette" });
+    expect(trigger).toHaveTextContent("Default");
+
+    await user.click(trigger);
+    for (const label of ["Default", "Aztec", "Mono", "Solar"]) {
+      expect(
+        await screen.findByRole("menuitem", { name: new RegExp(label) }),
+      ).toBeInTheDocument();
+    }
+    expect(screen.getByRole("menuitem", { name: /Aztec/ })).toHaveTextContent(
+      "Jade, turquoise and gold on obsidian.",
+    );
+
+    await user.click(screen.getByRole("menuitem", { name: /Aztec/ }));
+    expect(screen.getByRole("button", { name: "Palette" })).toHaveTextContent(
+      "Aztec",
+    );
+    expect(window.localStorage.getItem(PALETTE_KEY)).toBe("aztec");
+    expect(document.documentElement.getAttribute("data-palette")).toBe("aztec");
+    // The light/dark axis is untouched by a palette choice.
+    expect(screen.getByRole("button", { name: "Theme" })).toHaveTextContent(
+      "System",
+    );
+  });
+
+  it("shows the stored palette on load and names a deployment pin", () => {
+    window.localStorage.setItem(PALETTE_KEY, "solar");
+    render(
+      <PaletteProvider defaultPalette="mono">
+        <AppearanceSettingsPage />
+      </PaletteProvider>,
+    );
+    expect(screen.getByRole("button", { name: "Palette" })).toHaveTextContent(
+      "Solar",
+    );
+    expect(
+      screen.getByText(/This deployment's default is Mono\./),
+    ).toBeInTheDocument();
   });
 });

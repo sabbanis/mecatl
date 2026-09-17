@@ -12,12 +12,19 @@ import { expect, test } from "@playwright/test";
 
 test("the chat list and transcript come from the daemon", async ({ page }) => {
   await page.goto("/workspace/chat");
+  // The draft route's tab names the draft, then the app (no chat open yet).
+  await expect(page).toHaveTitle(/^New chat — Mecatl Studio$/);
   // The sidebar row is the daemon's session inventory.
   await page.getByText("Fix the flaky scheduler test").first().click();
   // Opening the chat rehydrates the authoritative transcript.
   await expect(
     page.getByText("the test races the claim sentinel", { exact: false }),
   ).toBeVisible();
+  // The tab title follows the open chat (mecatui's window title): the title
+  // leads, the app name trails; the fixture chat is idle, so no phase word.
+  await expect(page).toHaveTitle(
+    /^Fix the flaky scheduler test — Mecatl Studio$/,
+  );
 });
 
 test("the live chat's model pill shows the daemon's effective reasoning-effort tier", async ({
@@ -186,6 +193,16 @@ test("external mode marks runtime settings as deployment-owned", async ({
   await expect(fixtureStatus).toBeVisible();
   await expect(fixtureStatus).toContainText("ok");
   await expect(fixtureStatus.locator("[data-role='hint']")).toHaveCount(0);
+  // The About card puts Studio's own build stamp (inlined at `next build`)
+  // and the external server mode next to the daemon's safe identity from
+  // GET /v1/info — the fixture's build id and composition family.
+  await expect(page.getByTestId("about-studio-build")).not.toBeEmpty();
+  await expect(page.getByTestId("about-server-mode")).toHaveText("external");
+  await expect(page.getByTestId("about-server-build")).toHaveText("fixture");
+  await expect(page.getByTestId("about-server-implementation")).toHaveText(
+    "fixture-daemon",
+  );
+  await expect(page.getByTestId("about-posture")).toHaveText("trusted");
 });
 
 test("diagnostics shows the daemon-reported posture and its defenses", async ({
@@ -535,4 +552,28 @@ test("the workspace-services notice connects through the daemon and clears", asy
   await notice.getByRole("button", { name: "Connect" }).click();
   await expect(page.getByText("Workspace services connected")).toBeVisible();
   await expect(notice).toHaveCount(0);
+});
+
+test("the Permissions page reads the daemon-reported posture in external mode and offers no launch flags", async ({
+  page,
+}) => {
+  // Posture, project trust and shell-less mode are spawn flags of the
+  // MANAGED daemon; the external deployment owns its own. So the page shows
+  // only the EFFECTIVE tier off the fixture's compatibility document
+  // (`posture: "trusted"`) and the managed note — no tier picker, no trust
+  // switch, nothing that would pretend to change a flag Studio cannot pass.
+  await page.goto("/workspace/settings/permissions");
+  const effectiveRow = page
+    .getByText("Effective posture", { exact: true })
+    .locator("xpath=ancestor::div[2]");
+  await expect(
+    effectiveRow.getByText("trusted", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Managed by the external mecated deployment").first(),
+  ).toBeVisible();
+  await expect(page.getByRole("switch")).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "Operator posture" }),
+  ).toHaveCount(0);
 });

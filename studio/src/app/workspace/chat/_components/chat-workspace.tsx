@@ -23,11 +23,13 @@ import {
   useAgentRoster,
   useAgentSessions,
 } from "@/features/agent";
+import { deriveChatPhase } from "@/features/agent/chat-phase";
 import type {
   BuiltinGates,
   BuiltinOutcome,
   StudioBuiltinCommand,
 } from "@/features/agent/composer-builtins";
+import type { SessionInventoryWalk } from "@/features/agent/hooks/use-agent-sessions";
 import { useDeliveryFollow } from "@/features/agent/hooks/use-delivery-follow";
 import { useHarnessRuntime } from "@/features/agent/hooks/use-harness-runtime";
 import { useSessionMode } from "@/features/agent/hooks/use-session-mode";
@@ -48,6 +50,7 @@ import {
   type MediaCapabilities,
   resolveMediaCapabilities,
 } from "@/lib/attachment-inline";
+import { composeDocumentTitle, useDocumentTitle } from "@/lib/document-title";
 import {
   compactHarnessSession,
   forkHarnessSessionToModel,
@@ -56,6 +59,7 @@ import {
 } from "@/lib/harness/client";
 import { createHarnessDebugSession } from "@/lib/harness/debug";
 import { useDefaultModel, useDisabledModels } from "@/lib/model-preferences";
+import { takePendingDraft } from "@/lib/pending-draft";
 import {
   type SessionListSide,
   useAgentDisplayName,
@@ -83,6 +87,7 @@ import {
 } from "./clear-conversation";
 import { useDebugSessionDialog } from "./debug-session-dialog";
 import { DraftGreeting } from "./draft-greeting";
+import { SessionInventoryStatus } from "./session-inventory-status";
 import {
   AgentList,
   MockProjectList,
@@ -132,6 +137,9 @@ function SidebarContent({
   onNewChat,
   isLoading,
   error,
+  walk,
+  onCancelLoad,
+  onRetryLoad,
   groups,
   agents,
   selectedId,
@@ -142,6 +150,10 @@ function SidebarContent({
   onNewChat: () => void;
   isLoading: boolean;
   error: string | null;
+  /** The inventory walk's progress/outcome for the status line. */
+  walk: SessionInventoryWalk;
+  onCancelLoad: () => void;
+  onRetryLoad: () => void;
   groups: { label: string; sessions: AgentSession[] }[];
   agents: RosterAgent[];
   selectedId: string;
@@ -190,11 +202,12 @@ function SidebarContent({
       </div>
 
       <div className="flex-1 overflow-y-auto py-3">
-        {error && (
-          <p className="px-4 pb-2 text-xs text-destructive break-words">
-            {error}
-          </p>
-        )}
+        <SessionInventoryStatus
+          walk={walk}
+          error={error}
+          onCancel={onCancelLoad}
+          onRetry={onRetryLoad}
+        />
         {/* The Labs mock Projects section leads the list: local demo
             content, never daemon rows — same gate and labeling discipline
             as the mock tour group. */}
@@ -237,7 +250,11 @@ function SidebarContent({
             </div>
           )
         ) : (
-          !error && (
+          // A walk still running or stopped early has not proven the
+          // inventory empty; the status line above says what happened.
+          !error &&
+          !walk.inFlight &&
+          !walk.cancelled && (
             <p className="text-center text-sm text-muted-foreground/50 py-8">
               No chats yet
             </p>
@@ -418,6 +435,9 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     sessions,
     isLoading: sessionsLoading,
     error: sessionsError,
+    walk: sessionsWalk,
+    cancelLoad: cancelSessionsLoad,
+    retry: retrySessionsLoad,
     deleteSession,
     renameSession,
     refreshSessions,
@@ -647,6 +667,19 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   }, []);
   const getCreateEffort = useCallback(() => draftEffortRef.current, []);
 
+  // A run terminal may have flipped the daemon-owned mode (a plan approved
+  // → Manual / Accept edits): re-adopt it so the Mode pill never lies. The
+  // inventory is re-walked on the same terminal because the daemon's title
+  // (the first-prompt seed, an auto-rename) lands with the run, not the
+  // create — until then a fresh chat's header and tab title read the
+  // "Untitled chat" stand-in, and the next poll is up to 20 s away. The
+  // resolved model/context window already re-reads via the hook's
+  // GET-session detail on the same terminal.
+  const handleRunEnded = useCallback(() => {
+    refreshMode();
+    void refreshSessions();
+  }, [refreshMode, refreshSessions]);
+
   const {
     messages,
     isStreaming,
@@ -702,11 +735,8 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     sessionState: hookSessionId
       ? sessions.find((s) => s.id === hookSessionId)?.state
       : undefined,
-    // A run terminal may have flipped the daemon-owned mode (a plan approved
-    // → Manual / Accept edits): re-adopt it so the Mode pill never lies.
-    // The resolved model/context window already re-reads via the hook's
-    // GET-session detail on the same terminal.
-    onRunEnded: refreshMode,
+    // Mode re-adopt + inventory re-walk on the run terminal (handleRunEnded).
+    onRunEnded: handleRunEnded,
   });
 
   // Bridges the chat hook's isStreaming (declared above) into the mode hook
@@ -729,8 +759,9 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   const [hasDraft, setHasDraft] = useState(false);
   useBeforeUnloadGuard(hasDraft || (drivingRun && isStreaming));
 
-  // The daemon's operator-enabled capabilities (A3 caches /v1/compatibility).
-  const { serverCapabilities } = useRuntimeStatus();
+  // The daemon's operator-enabled capabilities (A3 caches /v1/compatibility)
+  // and the connection state the tab title's Offline/Connecting word reads.
+  const { serverCapabilities, state: connection } = useRuntimeStatus();
 
   // The session's effective model + context window: the chat hook's
   // GET-session detail (read on open and re-read on every run terminal), so
@@ -795,6 +826,14 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   // Seed for the draft composer, set when a starter prompt is picked.
   const [draftSeed, setDraftSeed] = useState<string | null>(null);
   const clearDraftSeed = useCallback(() => setDraftSeed(null), []);
+  // Text handed over from another route (Settings → About → "Send to a new
+  // chat" stashes the diagnostics report) lands in the draft composer once,
+  // on mount; the user reviews it and presses Enter — nothing is sent on
+  // their behalf.
+  useEffect(() => {
+    const pending = takePendingDraft();
+    if (pending) setDraftSeed(pending);
+  }, []);
 
   // Sessions minted to back message threads. Filtered HERE, at the
   // presentation seam, deliberately not inside use-agent-sessions: rule 9's
@@ -850,6 +889,21 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
       thresholdTokens: null,
     };
   }, [selectedId, sessions]);
+
+  // The browser tab title — mecatui's window title (wintitle.go): the chat
+  // title leads, a STATIC phase word trails (Working / ⚠ Approval, or the
+  // connection's Offline / Connecting), then the app name. The phase folds
+  // this tab's own status with the inventory row's daemon state, so a run
+  // driven elsewhere (a schedule, another tab — ADR 0250) reaches the tab
+  // too. It changes only on a phase transition, never per token.
+  const phase = deriveChatPhase(status, selectedSession?.state);
+  useDocumentTitle(
+    composeDocumentTitle({
+      chatTitle: selectedSession ? selectedSession.title : "New chat",
+      phase,
+      connection,
+    }),
+  );
 
   // Scheduled-task delivery notes that land while this chat sits idle (a
   // fire that completed between two inventory polls): pick them up from the
@@ -1000,6 +1054,9 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     onNewChat: handleNewChat,
     isLoading: sessionsLoading,
     error: sessionsError,
+    walk: sessionsWalk,
+    onCancelLoad: cancelSessionsLoad,
+    onRetryLoad: retrySessionsLoad,
     groups,
     agents,
     selectedId,

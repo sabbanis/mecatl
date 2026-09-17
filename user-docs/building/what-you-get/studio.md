@@ -107,6 +107,7 @@ token on the server; the browser never sees a daemon address or credential.
 | `MECATL_STUDIO_ORIGINS` | Controller's Origin allowlist (managed mode) |
 | `MECATL_STUDIO_PROVIDER` | Managed provider: `mock`, `toolhive`, or any provider named in `auth.yaml`; when set it overrides the provider remembered from Settings |
 | `MECATL_ALLOW_INSECURE_LOOPBACK_MCP` | `1` permits a loopback-HTTP MCP gateway |
+| `BRAND_PALETTE` | Default colour palette (`default`, `aztec`, `mono`, or `solar`) for browsers that have not chosen one under Settings → Personalize → Palette; light and dark still follow the Theme setting |
 
 ## Limits worth knowing
 

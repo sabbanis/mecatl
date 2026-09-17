@@ -96,13 +96,24 @@ export function normalizePermissions(input) {
  * `posture: yolo`. `--trust-project` rides the saved switch OR the in-memory
  * trust-once grant; `--no-shell` drops the Shell tool from the catalog.
  *
+ * `trustDrifted` is the controller's drift verdict for THIS spawn (the saved
+ * trust anchor no longer matches the workspace's live one): a drifted saved
+ * switch passes NO trust flag — the same fail-safe arm as the daemon's own
+ * resolveTrust (internal/app/trust.go: a remembered-but-drifted entry is
+ * untrusted until re-granted). Trust-once is a fresh, explicit answer to the
+ * live prompt, so it still grants.
+ *
  * @param {{posture: string, trustProject: boolean, noShell: boolean}} permissions
- * @param {{trustOnce?: boolean}} [options]
+ * @param {{trustOnce?: boolean, trustDrifted?: boolean}} [options]
  * @returns {string[]}
  */
-export function permissionArgs(permissions, { trustOnce = false } = {}) {
+export function permissionArgs(
+  permissions,
+  { trustOnce = false, trustDrifted = false } = {},
+) {
   const args = ["--posture", permissions.posture];
-  if (permissions.trustProject || trustOnce) args.push("--trust-project");
+  if ((permissions.trustProject && !trustDrifted) || trustOnce)
+    args.push("--trust-project");
   if (permissions.noShell) args.push("--no-shell");
   return args;
 }

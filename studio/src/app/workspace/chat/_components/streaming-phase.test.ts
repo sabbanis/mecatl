@@ -30,6 +30,24 @@ describe("streamingPhaseLabel", () => {
     expect(streamingPhaseLabel(message({ content: "hello" }))).toBe("Writing");
   });
 
+  it("is Reasoning once reasoning deltas arrive with no text yet, and Writing once text streams", () => {
+    expect(streamingPhaseLabel(message({ reasoning: "weighing it" }))).toBe(
+      "Reasoning",
+    );
+    expect(streamingPhaseLabel(message({ reasoning: "  \n" }))).toBe(
+      "Thinking",
+    );
+    expect(
+      streamingPhaseLabel(message({ reasoning: "weighing", content: "so" })),
+    ).toBe("Writing");
+    // A running tool still wins: its name says what is actually happening.
+    expect(
+      streamingPhaseLabel(
+        message({ reasoning: "weighing", toolCalls: [call({ name: "Grep" })] }),
+      ),
+    ).toBe("Running Grep");
+  });
+
   it("names the running tool", () => {
     expect(
       streamingPhaseLabel(message({ toolCalls: [call({ name: "Read" })] })),

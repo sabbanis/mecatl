@@ -523,15 +523,32 @@ export async function respondToHarnessApproval(
 export async function cancelHarnessRun(
   sessionId: string,
   runId: string,
-): Promise<void> {
-  if (!runId) return;
+): Promise<HarnessRunCancelOutcome> {
+  if (!runId) return "stale";
   try {
     const session = await harnessSession(sessionId);
-    await session.controls(runId).cancel();
-  } catch {
-    // Fire-and-forget by contract.
+    await harness(() => session.controls(runId).cancel());
+    return "cancelled";
+  } catch (error) {
+    // Never throws (fire-and-forget by contract); the outcome tells the
+    // caller whether the run was still live to be cancelled.
+    if (
+      error instanceof HarnessApiError &&
+      error.code === "stale_run_control"
+    ) {
+      return "stale";
+    }
+    return "unknown";
   }
 }
+
+/**
+ * How a run cancel landed: the daemon accepted it (`cancelled`); the run had
+ * already ended, or there was no run id to name (`stale` — the turn ended on
+ * its own terms and must not be labelled cancelled); or the request itself
+ * failed (`unknown` — the run's state is not known to this client).
+ */
+export type HarnessRunCancelOutcome = "cancelled" | "stale" | "unknown";
 
 /** The outcome of a per-child cancel: the daemon accepted it, or the child
  *  was already gone (finished, or never known to this run). */
@@ -652,19 +669,41 @@ async function fetchSessionInventoryPage(
 }
 
 /**
+ * One page of the inventory walk as it lands: the cumulative page/row counts
+ * so far plus the rows of THIS page, so a caller can merge and show them
+ * before the walk finishes (or is cancelled).
+ */
+export interface SessionWalkProgress {
+  /** Pages fetched so far, this one included. */
+  pages: number;
+  /** Rows fetched so far across every page, this one included. */
+  rows: number;
+  /** The rows of the page that just landed. */
+  page: SessionSummary[];
+}
+
+/**
  * Walks the session inventory to completion, bounded so a pathological store
  * cannot loop the UI forever. Only a COMPLETE walk may be used to conclude a
  * session is gone — a partial page proves nothing about absent rows.
+ * `onProgress` fires after each page lands; an aborted `signal` rejects the
+ * walk mid-way (the pages already reported through `onProgress` stand).
  */
 export async function fetchAllSessions(
   signal?: AbortSignal,
   maxPages = 25,
+  onProgress?: (progress: SessionWalkProgress) => void,
 ): Promise<{ sessions: SessionSummary[]; complete: boolean }> {
   const sessions: SessionSummary[] = [];
   let cursor = "";
   for (let page = 0; page < maxPages; page += 1) {
     const result = await fetchSessionInventoryPage(cursor, 100, signal);
     sessions.push(...result.sessions);
+    onProgress?.({
+      pages: page + 1,
+      rows: sessions.length,
+      page: result.sessions,
+    });
     if (!result.nextCursor) return { sessions, complete: true };
     cursor = result.nextCursor;
   }

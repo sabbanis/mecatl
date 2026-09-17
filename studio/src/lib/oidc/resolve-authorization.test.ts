@@ -77,6 +77,12 @@ describe("resolveProxyAuthorization ordering", () => {
         oidc: { kind: "refresh-failed" },
         staticToken: "static-1",
       }),
-    ).toMatchObject({ kind: "unavailable", status: 502 });
+    ).toMatchObject({
+      kind: "unavailable",
+      status: 502,
+      // The stable code the proxy relays so the client can tell an
+      // identity-provider outage from a daemon outage (both are 5xx).
+      code: "oidc_idp_unavailable",
+    });
   });
 });

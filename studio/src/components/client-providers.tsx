@@ -3,6 +3,7 @@
 import { ThemeProvider, useTheme } from "next-themes";
 import { type ReactNode, Suspense } from "react";
 import { Toaster } from "sonner";
+import { PaletteProvider } from "@/components/palette-provider";
 import { useUiScale } from "@/lib/profile-preferences";
 
 /** Applies the stored interface-scale preference to the root on load. */
@@ -13,6 +14,8 @@ function UiScaleInit() {
 
 interface ClientProvidersProps {
   children: ReactNode;
+  /** The deployment's palette pin (`BRAND_PALETTE`), resolved by the root layout. */
+  defaultPalette?: string;
 }
 
 function ThemedToaster() {
@@ -28,7 +31,10 @@ function ThemedToaster() {
   );
 }
 
-export function ClientProviders({ children }: ClientProvidersProps) {
+export function ClientProviders({
+  children,
+  defaultPalette,
+}: ClientProvidersProps) {
   return (
     <ThemeProvider
       attribute="class"
@@ -36,11 +42,15 @@ export function ClientProviders({ children }: ClientProvidersProps) {
       enableSystem
       disableTransitionOnChange
     >
-      <Suspense fallback={null}>
-        <UiScaleInit />
-        {children}
-        <ThemedToaster />
-      </Suspense>
+      {/* Palette is the second appearance axis (data-palette on <html>),
+          independent of next-themes' light/dark class. */}
+      <PaletteProvider defaultPalette={defaultPalette}>
+        <Suspense fallback={null}>
+          <UiScaleInit />
+          {children}
+          <ThemedToaster />
+        </Suspense>
+      </PaletteProvider>
     </ThemeProvider>
   );
 }

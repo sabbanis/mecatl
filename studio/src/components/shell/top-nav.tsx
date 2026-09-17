@@ -11,10 +11,11 @@ import {
 } from "@/components/ui/tooltip";
 
 /**
- * The workspace top navigation bar. It sits directly on the fixed dark-green
- * gradient (see `workspace/layout.tsx`), so every colour here is a fixed
- * brand colour, identical in light and dark themes — only the card below it
- * follows the theme.
+ * The workspace top navigation bar. It sits directly on the shell gradient
+ * (see `workspace/layout.tsx`), so every colour here is a `--nav-*` shell
+ * token (globals.css): the same in light and dark — only the card below it
+ * follows the theme — and restyled together with the gradient by a named
+ * palette.
  *
  * Left: the Stacklok logo mark, painted white via a CSS mask over the brand
  * SVG (the asset itself is never recoloured). Centre-right: the pill nav from
@@ -60,7 +61,7 @@ export function TopNav() {
                   key={item.key}
                   href={item.href}
                   aria-current="page"
-                  className="flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full bg-[#cadfd8] px-0 text-[13px] font-semibold text-[#03433e] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 max-[499px]:w-12 min-[500px]:px-4"
+                  className="flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full bg-(--nav-pill-bg) px-0 text-[13px] font-semibold text-(--nav-pill-text) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 max-[499px]:w-12 min-[500px]:px-4"
                 >
                   <Icon className="size-[17px] shrink-0" />
                   <span className="hidden min-[500px]:inline">
@@ -78,7 +79,7 @@ export function TopNav() {
                 <TooltipTrigger asChild>
                   <Link
                     href={item.href}
-                    className="flex h-9 w-12 shrink-0 items-center justify-center rounded-full text-[#a5b8b4] transition-colors hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
+                    className="flex h-9 w-12 shrink-0 items-center justify-center rounded-full text-(--nav-icon) transition-colors hover:bg-white/10 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60"
                   >
                     <Icon className="size-[17px] shrink-0" />
                     <span className="sr-only">{item.label}</span>
@@ -94,7 +95,7 @@ export function TopNav() {
             styled for a light surface, so restyle the trigger (and its kbd
             chip) from outside for the dark gradient band. Below `sm` the
             trigger already collapses to an icon-only button. */}
-        <div className="shrink-0 [&_kbd]:rounded-full [&_kbd]:border-transparent [&_kbd]:bg-[#3f605a] [&_kbd]:text-[#a5b8b4] [&>button]:rounded-full [&>button]:border-[#6e807d] [&>button]:bg-transparent [&>button]:text-[#b4c0c1] [&>button]:hover:bg-white/10 [&>button]:hover:text-white [&>button]:focus-visible:ring-white/60 [&>button]:min-[500px]:w-[214px]">
+        <div className="shrink-0 [&_kbd]:rounded-full [&_kbd]:border-transparent [&_kbd]:bg-(--nav-kbd-bg) [&_kbd]:text-(--nav-icon) [&>button]:rounded-full [&>button]:border-(--nav-search-border) [&>button]:bg-transparent [&>button]:text-(--nav-search-text) [&>button]:hover:bg-white/10 [&>button]:hover:text-white [&>button]:focus-visible:ring-white/60 [&>button]:min-[500px]:w-[214px]">
           <GlobalSearch />
         </div>
       </div>

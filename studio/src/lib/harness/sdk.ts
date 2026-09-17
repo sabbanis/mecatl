@@ -13,6 +13,7 @@
  */
 
 import {
+  AuthenticationError,
   type Client,
   connect,
   MecatlError,
@@ -64,11 +65,40 @@ const codeFraming: Record<string, string> = {
 };
 
 /**
+ * The raw RFC 9457 problem body the SDK keeps on an HTTP error's `cause`.
+ * Two things live ONLY there: a `code` outside the SDK's registry (the
+ * proxy's `oidc_login_required` / `oidc_session_expired` /
+ * `oidc_idp_unavailable`, a 403's code — the SDK narrows those to
+ * "unknown"), and a 401's own words (the SDK collapses every 401 into
+ * `AuthenticationError("Authentication failed")` before reading the body).
+ */
+function problemFromCause(error: MecatlError): {
+  code: string;
+  message: string;
+} {
+  const problem = error.cause;
+  if (!problem || typeof problem !== "object") return { code: "", message: "" };
+  const body = problem as Record<string, unknown>;
+  const text = (key: string) =>
+    typeof body[key] === "string" ? (body[key] as string) : "";
+  return {
+    code: text("code"),
+    message: text("detail") || text("title") || text("error"),
+  };
+}
+
+/**
  * Translates an SDK failure into Studio's typed `HarnessApiError`, which UI
  * flow control branches on by stable machine `code` (never message prose).
  *
  * - A `ServerError` carries the daemon's RFC 9457 problem: its HTTP status and
- *   `code` cross verbatim (`stale_run_control`, `proposal_conflict`, …).
+ *   `code` cross verbatim (`stale_run_control`, `proposal_conflict`, …). A
+ *   code the SDK does not register (the proxy's `oidc_*` codes) is read off
+ *   the raw problem body instead of degrading to "".
+ * - An `AuthenticationError` (every HTTP 401) is typed on the problem body's
+ *   own `code` and words — the proxy's "sign in again from Settings" copy,
+ *   the daemon's `unauthenticated` — so the offline banner can name the
+ *   cause; the SDK's generic "Authentication failed" is the fallback.
  * - Any other `MecatlError` (transport, protocol, unsupported feature,
  *   incompatible server) keeps the SDK's own code under status 0 — the UI
  *   still branches on `code`, and the message stays the SDK's own words.
@@ -81,11 +111,21 @@ export function toHarnessError(error: unknown): unknown {
   // keeps its typed `reason` so the composer can say exactly what to fix.
   if (error instanceof PromptValidationError) return error;
   if (error instanceof ServerError) {
-    const code = error.code === "unknown" ? "" : error.code;
+    const raw = problemFromCause(error);
+    const code = error.code === "unknown" ? raw.code : error.code;
     return new HarnessApiError(
       error.status ?? 0,
       code,
       codeFraming[code] ?? error.message,
+    );
+  }
+  if (error instanceof AuthenticationError) {
+    const raw = problemFromCause(error);
+    const code = raw.code || error.code;
+    return new HarnessApiError(
+      error.status ?? 401,
+      code,
+      codeFraming[code] ?? (raw.message || error.message),
     );
   }
   if (error instanceof MecatlError) {

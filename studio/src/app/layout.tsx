@@ -1,7 +1,9 @@
 import type { Metadata, Viewport } from "next";
 import { Inter, Merriweather } from "next/font/google";
 import { ClientProviders } from "@/components/client-providers";
+import { PaletteBootScript } from "@/components/palette-boot-script";
 import { ServerProviders } from "@/components/server-providers";
+import { resolveDefaultPalette } from "@/lib/palettes";
 import "./globals.css";
 
 const inter = Inter({
@@ -53,13 +55,24 @@ export default async function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  // The operator's palette pin (the MECATUI_THEME analogue): a browser with
+  // no stored choice gets this palette. Read where the page renders — like
+  // BRAND_NAME, a statically prerendered route captures it at build time.
+  const defaultPalette = resolveDefaultPalette(process.env.BRAND_PALETTE);
   return (
     <html lang="en" suppressHydrationWarning>
+      <head>
+        {/* Blocking: puts the stored-or-default palette on <html> before the
+            first paint, the way next-themes' own script does for .dark. */}
+        <PaletteBootScript defaultPalette={defaultPalette} />
+      </head>
       <body
         className={`${inter.variable} ${merriweather.variable} text-sm antialiased`}
       >
         <ServerProviders>
-          <ClientProviders>{children}</ClientProviders>
+          <ClientProviders defaultPalette={defaultPalette}>
+            {children}
+          </ClientProviders>
         </ServerProviders>
       </body>
     </html>

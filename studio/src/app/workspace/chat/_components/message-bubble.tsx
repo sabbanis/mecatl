@@ -45,6 +45,7 @@ import { DelegationCardRow } from "./delegation-card";
 import { FailedTurnCard } from "./failed-turn-card";
 import { HarnessNote } from "./harness-note";
 import { mdComponents } from "./markdown-components";
+import { ReasoningDisclosure } from "./reasoning-disclosure";
 import { StopReasonChip } from "./stop-reason-chip";
 import { ToolCallList } from "./tool-call-list";
 
@@ -455,15 +456,24 @@ export function MessageBubble({
   // A non-error stop worth naming (turn limit, budget, cancelled, …) renders
   // as a chip, so a stopped turn never reads as a quiet success either.
   const stopLabel = !isUser ? stopReasonLabel(message.stopReason) : null;
+  // Provider-summarised reasoning, when the model emitted any: a live
+  // "Reasoning…" line while the trailing turn is streaming with nothing else
+  // to show yet (no text, no running tool), then a collapsed summary.
+  const reasoningText = !isUser ? (message.reasoning ?? "").trim() : "";
+  const reasoningLive =
+    streaming &&
+    !hasContent &&
+    !(message.toolCalls ?? []).some((call) => call.status === "running");
   // A failed turn must always render (never look like an empty success), as
-  // must one that only carries notices, delegation badges, a stat line, or a
-  // stop-reason chip.
+  // must one that only carries notices, delegation badges, a stat line, a
+  // stop-reason chip, or reasoning.
   const hasExtras =
     Boolean(message.failed) ||
     notices.length > 0 ||
     delegations.length > 0 ||
     turnStat !== null ||
-    stopLabel !== null;
+    stopLabel !== null ||
+    reasoningText !== "";
 
   if (!isUser && !hasContent && !hasToolCalls && !hasExtras) return null;
   if (!isUser && !hasContent && hasToolCalls && !showActivity && !hasExtras)
@@ -505,6 +515,9 @@ export function MessageBubble({
             </span>
           )}
         </div>
+        {reasoningText !== "" && (
+          <ReasoningDisclosure reasoning={reasoningText} live={reasoningLive} />
+        )}
         {message.attachments && message.attachments.length > 0 && (
           <div className="flex flex-wrap gap-1.5 my-1.5">
             {message.attachments.map((att) => (

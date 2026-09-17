@@ -48,6 +48,47 @@ function toAgentSession(summary: SessionSummary): AgentSession {
 }
 
 /**
+ * What the sidebar knows about the inventory walk: the progress of the
+ * VISIBLE walk (the first load, a reconnect, or an explicit retry — the
+ * background poll refreshes silently and never sets `inFlight`) plus what the
+ * most recent finished walk proved about the inventory's extent.
+ */
+export interface SessionInventoryWalk {
+  /** A visible walk is running. Background polls never set this. */
+  inFlight: boolean;
+  /** Pages landed so far in the walk this state describes. */
+  pages: number;
+  /** Chat rows seen so far in the walk this state describes. */
+  rows: number;
+  /**
+   * Whether the most recent finished walk covered the whole inventory: null
+   * until one finishes; false after a page-bounded or cancelled walk.
+   */
+  complete: boolean | null;
+  /** The last visible walk ended because the user stopped it. */
+  cancelled: boolean;
+}
+
+const IDLE_WALK: SessionInventoryWalk = {
+  inFlight: false,
+  pages: 0,
+  rows: 0,
+  complete: null,
+  cancelled: false,
+};
+
+/** Partial-walk merge: update the rows seen, keep the rows not seen. */
+function mergeRows(
+  previous: AgentSession[],
+  chats: AgentSession[],
+): AgentSession[] {
+  const seen = new Map(chats.map((chat) => [chat.id, chat]));
+  const merged = previous.map((chat) => seen.get(chat.id) ?? chat);
+  const known = new Set(previous.map((chat) => chat.id));
+  return [...merged, ...chats.filter((chat) => !known.has(chat.id))];
+}
+
+/**
  * The chat list, backed by the daemon's session store — the record of chats.
  *
  * Invariants (from the server-backed-chats design):
@@ -66,37 +107,122 @@ export function useAgentSessions() {
   const [sessions, setSessions] = useState<AgentSession[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [walk, setWalk] = useState<SessionInventoryWalk>(IDLE_WALK);
   const loadedOnce = useRef(false);
+  // The mount-scoped controller (aborted on unmount/disconnect) so a retry or
+  // refresh started from an event handler still dies with the hook.
+  const mountRef = useRef<AbortController | null>(null);
+  // The visible walk's own controller: Cancel aborts THIS walk only, never
+  // the mount-scoped signal the 20-second poll keeps using.
+  const visibleWalkRef = useRef<AbortController | null>(null);
 
-  const load = useCallback(async (signal?: AbortSignal) => {
-    try {
-      const walk = await fetchAllSessions(signal);
-      if (signal?.aborted) return;
-      const chats = walk.sessions
-        .filter((summary) => summary.isChat)
-        .map(toAgentSession);
-      setSessions((previous) => {
-        if (walk.complete) return chats;
-        // Incomplete walk: update what we saw, keep what we did not.
-        const seen = new Map(chats.map((chat) => [chat.id, chat]));
-        const merged = previous.map((chat) => seen.get(chat.id) ?? chat);
-        const known = new Set(previous.map((chat) => chat.id));
-        return [...merged, ...chats.filter((chat) => !known.has(chat.id))];
-      });
-      setError(null);
-      loadedOnce.current = true;
-    } catch (caught) {
-      if (signal?.aborted) return;
-      setError(caught instanceof Error ? caught.message : String(caught));
-    } finally {
-      if (!signal?.aborted) setIsLoading(false);
-    }
-  }, []);
+  const load = useCallback(
+    async (parentSignal?: AbortSignal, visible = false) => {
+      if (parentSignal?.aborted) return;
+      const controller = new AbortController();
+      const onParentAbort = () => controller.abort();
+      parentSignal?.addEventListener("abort", onParentAbort);
+      if (visible) {
+        visibleWalkRef.current?.abort();
+        visibleWalkRef.current = controller;
+        setWalk((previous) => ({
+          ...previous,
+          inFlight: true,
+          pages: 0,
+          rows: 0,
+          cancelled: false,
+        }));
+      }
+      let pagesSeen = 0;
+      let chatRows = 0;
+      try {
+        const result = await fetchAllSessions(
+          controller.signal,
+          25,
+          (progress) => {
+            if (controller.signal.aborted) return;
+            const chats = progress.page
+              .filter((summary) => summary.isChat)
+              .map(toAgentSession);
+            pagesSeen = progress.pages;
+            chatRows += chats.length;
+            // Each page lands as it arrives (a partial merge never deletes),
+            // so rows show from the first page on, not only after the walk.
+            if (chats.length > 0) {
+              setSessions((previous) => mergeRows(previous, chats));
+            }
+            if (visible) {
+              setWalk((previous) => ({
+                ...previous,
+                pages: pagesSeen,
+                rows: chatRows,
+              }));
+            }
+            loadedOnce.current = true;
+            setIsLoading(false);
+          },
+        );
+        if (parentSignal?.aborted) return;
+        const chats = result.sessions
+          .filter((summary) => summary.isChat)
+          .map(toAgentSession);
+        // Only a COMPLETE walk may drop a row; a bounded walk merges.
+        setSessions((previous) =>
+          result.complete ? chats : mergeRows(previous, chats),
+        );
+        setError(null);
+        loadedOnce.current = true;
+        setWalk((previous) => ({
+          inFlight: visible ? false : previous.inFlight,
+          pages: pagesSeen,
+          rows: chats.length,
+          complete: result.complete,
+          cancelled: false,
+        }));
+      } catch (caught) {
+        if (parentSignal?.aborted) {
+          // Unmounted or disconnected: nothing to report, but a visible walk
+          // must not read as still loading once the hook comes back.
+          if (visible) {
+            setWalk((previous) => ({ ...previous, inFlight: false }));
+          }
+          return;
+        }
+        if (controller.signal.aborted) {
+          // The user stopped this walk: the pages merged so far stand, and
+          // the inventory's extent is unproven.
+          setWalk((previous) => ({
+            ...previous,
+            inFlight: false,
+            pages: pagesSeen,
+            rows: chatRows,
+            complete: false,
+            cancelled: true,
+          }));
+          return;
+        }
+        setError(caught instanceof Error ? caught.message : String(caught));
+        if (visible) {
+          setWalk((previous) => ({ ...previous, inFlight: false }));
+        }
+      } finally {
+        parentSignal?.removeEventListener("abort", onParentAbort);
+        if (visibleWalkRef.current === controller) {
+          visibleWalkRef.current = null;
+        }
+        if (!parentSignal?.aborted) setIsLoading(false);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!connected) return;
     const controller = new AbortController();
-    void load(controller.signal);
+    mountRef.current = controller;
+    // The first walk after mount/reconnect is the visible one; the poll and
+    // the sessions-changed re-walk refresh silently.
+    void load(controller.signal, true);
     const timer = setInterval(() => {
       void load(controller.signal);
     }, POLL_INTERVAL_MS);
@@ -107,13 +233,25 @@ export function useAgentSessions() {
     });
     return () => {
       controller.abort();
+      if (mountRef.current === controller) mountRef.current = null;
       clearInterval(timer);
       unsubscribe();
     };
   }, [connected, load]);
 
   const refreshSessions = useCallback(async () => {
-    await load();
+    await load(mountRef.current?.signal);
+  }, [load]);
+
+  /** Stops the visible inventory walk; the rows merged so far stay. */
+  const cancelLoad = useCallback(() => {
+    visibleWalkRef.current?.abort();
+  }, []);
+
+  /** Re-walks the inventory visibly (after an error, a cancel, or a bounded walk). */
+  const retry = useCallback(async () => {
+    setError(null);
+    await load(mountRef.current?.signal, true);
   }, [load]);
 
   /** Creates a daemon session and returns its row. The id IS the daemon id. */
@@ -235,6 +373,9 @@ export function useAgentSessions() {
     sessions,
     isLoading: isLoading && !loadedOnce.current,
     error,
+    walk,
+    cancelLoad,
+    retry,
     createSession,
     deleteSession,
     renameSession,

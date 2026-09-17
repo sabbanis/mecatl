@@ -1,7 +1,47 @@
+import { execSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { NextConfig } from "next";
 
 const isDev = process.env.NODE_ENV !== "production";
+
+/**
+ * Studio's client build stamp — the web analogue of mecatui's linker-stamped
+ * `buildinfo.BuildID`, shown on Settings → Provider → About and printed on
+ * the `/diagnostics` report's `client build:` line (src/lib/studio-build.ts).
+ *
+ * `MECATL_STUDIO_BUILD` wins when the build environment sets it (a CI image
+ * naming its release); otherwise `<package.json version>+<short git sha>`,
+ * or `<version>+dev` when the build tree has no `.git` (a source tarball).
+ * It is inlined at `next build` via the `env` block below, so `next start`
+ * reports the stamp of the build it serves — a bug report wants the build,
+ * not the checkout that happens to be running it.
+ */
+function studioBuildId(): string {
+  const explicit = (process.env.MECATL_STUDIO_BUILD ?? "").trim();
+  if (explicit) return explicit;
+  let version = "0.0.0";
+  try {
+    const pkg = JSON.parse(
+      readFileSync(resolve(import.meta.dirname, "package.json"), "utf8"),
+    ) as { version?: string };
+    if (pkg.version) version = pkg.version;
+  } catch {
+    // keep the placeholder version
+  }
+  let sha = "dev";
+  try {
+    sha = execSync("git rev-parse --short HEAD", {
+      cwd: import.meta.dirname,
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+      .toString()
+      .trim();
+  } catch {
+    // no .git in the build tree
+  }
+  return `${version}+${sha || "dev"}`;
+}
 
 /**
  * Content Security Policy header.
@@ -46,6 +86,8 @@ const allowedDevOrigins = (process.env.MECATL_STUDIO_PUBLIC_ORIGIN || "")
 const nextConfig: NextConfig = {
   reactCompiler: true,
   poweredByHeader: false,
+  // Inlined into both bundles at build time; read via `studioBuild()`.
+  env: { NEXT_PUBLIC_STUDIO_BUILD: studioBuildId() },
   // The TypeScript SDK is a `file:../sdk/typescript` dependency — npm links it
   // as a symlink pointing OUTSIDE studio/. Turbopack resolves modules only
   // under its root, so the root is the monorepo checkout, not studio/.

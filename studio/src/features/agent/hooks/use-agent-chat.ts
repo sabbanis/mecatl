@@ -67,6 +67,7 @@ import {
   openAuthorizationWindow,
   reduceAuthorizationEvent,
 } from "../mcp-authorization-phase";
+import { authFailureMessage } from "../offline-cause";
 import {
   isPlanApprovalVerdict,
   isPlanAsk,
@@ -110,6 +111,7 @@ import {
   shouldAutoRetry,
   unmarkFailedRehydrate,
 } from "./failed-step-retry";
+import { stampTrailingAssistantStop } from "./stop-stamp";
 
 type ChatStatus =
   | "idle"
@@ -661,7 +663,12 @@ export function useAgentChat(
     onRunEnded?: (stop: string) => void;
   },
 ) {
-  const { connected, features, serverCapabilities } = useRuntimeStatus();
+  const {
+    connected,
+    features,
+    serverCapabilities,
+    refresh: refreshRuntime,
+  } = useRuntimeStatus();
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [status, setStatus] = useState<ChatStatus>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -1078,6 +1085,31 @@ export function useAgentChat(
     setMessages((prev) => unmarkFailedRehydrate(prev, marked.mark));
     setError(null);
     setStatus((current) => (current === "error" ? "idle" : current));
+  }, [sessionId, sessionState, rehydrateSerial]);
+
+  // A rehydrated chat whose inventory state reads `cancelled` (stopped from
+  // another client, or from this tab before a reload): the transcript
+  // endpoint carries no stop reason, so the last turn gets its `cancelled`
+  // chip here — once per rebuild, and never once a run this tab drove has
+  // replaced the rebuilt view (a stale `cancelled` poll after a local run
+  // must not mark the fresh turn).
+  const cancelledMarkRef = useRef<object | null>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: rehydrateSerial re-runs the check after each transcript rebuild (the ref holds the rebuild)
+  useEffect(() => {
+    if (!sessionId || sessionState !== "cancelled") return;
+    const rebuilt = rehydratedRef.current;
+    if (!rebuilt || rebuilt.id !== sessionId) return;
+    if (localRunsRef.current > 0) return;
+    if (cancelledMarkRef.current === rebuilt) return;
+    cancelledMarkRef.current = rebuilt;
+    setMessages((prev) =>
+      stampTrailingAssistantStop(
+        prev,
+        "cancelled",
+        () => "history-assistant-cancelled",
+        0,
+      ),
+    );
   }, [sessionId, sessionState, rehydrateSerial]);
 
   // The durable session watch (ADR 0250): when this chat's run is being
@@ -1947,9 +1979,15 @@ export function useAgentChat(
           setStatus("idle");
           return;
         }
+        // A refused credential (a 401, the proxy's oidc_* refusal) is named
+        // by its cause class, and the runtime re-probes at once so the
+        // auth-recovery banner appears without waiting for the poll.
+        const authFailure = authFailureMessage(caught);
+        if (authFailure) void refreshRuntime();
         // A prompt the SDK refused to build (a part the session's modalities
         // reject, media over its ceilings) gets the composer's own wording.
         const message =
+          authFailure ??
           mapPromptValidationError(caught) ??
           (caught instanceof Error ? caught.message : String(caught));
         setError(message);
@@ -1979,7 +2017,14 @@ export function useAgentChat(
         }
       }
     },
-    [status, connected, queueMessage, makeStreamHandler, adoptRunId],
+    [
+      status,
+      connected,
+      queueMessage,
+      makeStreamHandler,
+      adoptRunId,
+      refreshRuntime,
+    ],
   );
 
   /** The composer's send: a fresh user prompt also lifts a paused queue, so
@@ -2156,10 +2201,16 @@ export function useAgentChat(
         ineligible = true;
       } else {
         // The retry never started (transport, a refusal that is not a 409):
-        // non-destructive — the strip names it and keeps Retry available.
-        const message = retryStartFailure(
-          caught instanceof Error ? caught.message : String(caught),
-        );
+        // non-destructive — the strip names it and keeps Retry available. A
+        // refused credential is named by its cause class and re-probes the
+        // runtime at once so the auth-recovery banner appears.
+        const authFailure = authFailureMessage(caught);
+        if (authFailure) void refreshRuntime();
+        const message =
+          authFailure ??
+          retryStartFailure(
+            caught instanceof Error ? caught.message : String(caught),
+          );
         patch((current) => ({
           ...current,
           failed: true,
@@ -2187,7 +2238,14 @@ export function useAgentChat(
       setError(RETRY_INELIGIBLE_NO_PROMPT);
       setStatus("error");
     }
-  }, [status, connected, resendLast, makeStreamHandler, adoptRunId]);
+  }, [
+    status,
+    connected,
+    resendLast,
+    makeStreamHandler,
+    adoptRunId,
+    refreshRuntime,
+  ]);
 
   // Fires the automatic retry armed by startRun once the failed terminal has
   // committed to state: retryLast reads `status`, so it must run from a
@@ -2577,7 +2635,24 @@ export function useAgentChat(
       // Scoped to the run this hook knows about (ADR 0249): if that run
       // already ended, the daemon answers 409 stale_run_control and the
       // session's NEXT run is left untouched — exactly what "cancel" meant.
-      await cancelHarnessRun(daemonIdRef.current, runIdRef.current);
+      const outcome = await cancelHarnessRun(
+        daemonIdRef.current,
+        runIdRef.current,
+      );
+      // The tab aborted its own stream, so the daemon's `cancelled` terminal
+      // never arrives: the trailing turn is stamped here — unless the run
+      // had already ended on its own (a stale refusal), when the terminal
+      // this tab saw owns the label and "cancelled" would mislabel it.
+      if (outcome !== "stale") {
+        setMessages((prev) =>
+          stampTrailingAssistantStop(
+            prev,
+            "cancelled",
+            () => `cancelled-${Date.now()}`,
+          ),
+        );
+        setStatusMessage(statusFromStopReason("cancelled"));
+      }
     }
     // The daemon retracts a cancelled run's asks pre-seal, but the client
     // must not keep a dead ask on screen either way.

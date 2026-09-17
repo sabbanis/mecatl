@@ -19,7 +19,14 @@ export type ProxyAuthDecision =
       code: "oidc_login_required" | "oidc_session_expired";
       error: string;
     }
-  | { kind: "unavailable"; status: 502; error: string };
+  | {
+      kind: "unavailable";
+      status: 502;
+      /** Stable machine code so the client can tell an identity-provider
+       *  outage from a daemon outage (both would otherwise read as 5xx). */
+      code: "oidc_idp_unavailable";
+      error: string;
+    };
 
 /** The exact normalization the proxy has always applied to MECATL_AUTH_TOKEN. */
 export function normalizeStaticToken(raw: string | undefined): string {
@@ -60,6 +67,7 @@ export function resolveProxyAuthorization(options: {
   return {
     kind: "unavailable",
     status: 502,
+    code: "oidc_idp_unavailable",
     error:
       "Could not refresh the OIDC access token — the identity provider may be unreachable. Try again shortly.",
   };

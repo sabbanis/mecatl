@@ -115,6 +115,24 @@ describe("permissionArgs", () => {
     ).toEqual(["--posture", "strict", "--trust-project"]);
   });
 
+  it("withholds --trust-project from a DRIFTED saved grant (the daemon's own fail-safe arm), while trust-once still grants", () => {
+    expect(
+      permissionArgs(normalizePermissions({ trustProject: true }), {
+        trustDrifted: true,
+      }),
+    ).toEqual(["--posture", "strict"]);
+    expect(
+      permissionArgs(normalizePermissions({ trustProject: true }), {
+        trustDrifted: true,
+        trustOnce: true,
+      }),
+    ).toEqual(["--posture", "strict", "--trust-project"]);
+    // Drift without a saved grant changes nothing (there is nothing to withhold).
+    expect(
+      permissionArgs(normalizePermissions({}), { trustDrifted: true }),
+    ).toEqual(["--posture", "strict"]);
+  });
+
   it("adds --no-shell for shell-less mode", () => {
     expect(
       permissionArgs(
@@ -187,9 +205,9 @@ describe("local-controller spawn", () => {
     expect(source).not.toMatch(/["'`]--headless["'`]/);
   });
 
-  it("spreads permissionArgs over the saved document and the trust-once grant into the mecated args", () => {
+  it("spreads permissionArgs over the saved document, the trust-once grant and the drift verdict into the mecated args", () => {
     expect(source).toMatch(
-      /args\.push\(\.\.\.permissionArgs\(permissionsConfig, \{ trustOnce \}\)\)/,
+      /args\.push\(\s*\.\.\.permissionArgs\(permissionsConfig, \{ trustOnce, trustDrifted \}\),?\s*\)/,
     );
   });
 

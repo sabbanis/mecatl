@@ -24,6 +24,14 @@ already-running controller). Setting `MECATL_BASE_URL` selects external mode.
 The hermetic suite (`npm run test:server`) builds Next first — a stale build is
 the usual reason it fails mysteriously.
 
+Studio's own build stamp (Settings → Provider → About's `Studio` row, the
+`/diagnostics` report's `client build:` line; `src/lib/studio-build.ts`) is
+inlined at `next build` by `next.config.ts` (`NEXT_PUBLIC_STUDIO_BUILD` =
+`MECATL_STUDIO_BUILD` when the build environment sets it, else
+`<package.json version>+<short git sha>`, else `+dev` without a `.git`).
+`next start` reports the stamp of the build it serves, not the running
+checkout — a bug report wants the build.
+
 ## Module shape
 
 - `@stacklok-oss/mecatl-sdk` (source `../sdk/typescript`, a `file:` dependency
@@ -52,7 +60,10 @@ the usual reason it fails mysteriously.
   flags — via `GET|PUT /runtime-settings` + `POST /soul/approve`); policy
   helpers in `src/lib/controller-security.mjs`, the flag grammars in
   `src/lib/controller-permissions.mjs`, `src/lib/daemon-defaults.mjs` and
-  `src/lib/runtime-settings.mjs`.
+  `src/lib/runtime-settings.mjs`; the controller's OWN project-trust
+  registry probes — authority + identity anchor mirroring the daemon's
+  `workspacetrust` — in the node-only `src/lib/controller-trust.mjs`
+  (`/status.trust`, `POST /permissions/trust`, `POST /permissions/trust-once`).
 - `src/features/agent/` — runtime-status provider + the daemon-backed hooks;
   `src/app/workspace/**` — the five surfaces.
 
@@ -124,8 +135,51 @@ Each rule is backed by a test; break the rule and its test names you.
     NOT the composer's per-session Mode; the EFFECTIVE tier is
     `serverCapabilities.posture` (capability-gated: absent on an older
     daemon). External mode: `permissions: null`, every `/permissions` verb
-    409. (`src/lib/controller-permissions.test.ts`,
-    `permissions-section.test.tsx`, hermetic 409 + CSRF rows.)
+    409. The four tiers are the SDK's `ServerPosture` ladder and nothing
+    else — every Studio copy (`POSTURES`, `POSTURE_TIERS`, the picker's
+    `POSTURE_OPTIONS`) is pinned to it, in order.
+    (`src/lib/controller-permissions.test.ts`,
+    `permissions-section.test.tsx`, `posture-vocabulary.test.ts`, hermetic
+    409 + CSRF rows, the Playwright external-mode Permissions test.) Project
+    trust itself is the controller's OWN registry, never the daemon's:
+    mecated never prompts, and Studio cannot reach the Go composition layer
+    mecatui's pre-TUI prompt uses, so `src/lib/controller-trust.mjs`
+    mirrors the daemon's two probes in JavaScript — `hasProjectAuthority`
+    (authority.go: soul / any file under the six anchor dirs / a non-empty
+    `permissions.allow` in `.mecatl/settings{,.local}.yaml` or
+    `.claude/settings{,.local}.json`) and `trustAnchor` (anchor.go's
+    transcript byte-for-byte; permission rules deliberately NOT folded) —
+    re-read ONCE PER SPAWN in `startMecatl`, never per `/status` poll. A
+    saved grant carries the anchor it was granted at; a spawn whose live
+    anchor differs is DRIFTED and gets NO `--trust-project` (the daemon's
+    own fail-safe arm) until the bodyless `POST /permissions/trust`
+    re-accepts it; `POST /permissions/trust-once` is mecatui's "trust once"
+    — in-memory, dies with the controller, rides every restart in between.
+    Both grants are studio-header-gated and 409 in external mode, and reach
+    the UI only through `useHarnessRuntime().trustProject` /
+    `.trustProjectOnce` (busy label `trust`), which re-read `/status.trust`
+    so the page shows the decision the NEW spawn got. The registry never
+    reads or writes `trust.yaml` / `trustedWorkspaces:` — the daemon may
+    trust a workspace Studio reads as untrusted, and the UI says so.
+    The PROMPT itself is mecatui's pre-TUI "trust / trust once / no" as a
+    workspace banner (`workspace-trust-banner.tsx`, mounted in the layout's
+    banner band): it renders only when the controller reports admittable
+    authority AND the spawn got no grant (`untrusted`, or a `drifted`
+    remembered grant), never in external mode, never once the daemon's own
+    `GET /v1/soul` reports a TRUSTED project soul (the one wire signal that
+    the daemon admitted the project from a registry Studio cannot see), and
+    not after "Not now" — which stores the LIVE anchor under
+    `localStorage["mecatl.trust.dismissed:<workspace>"]`, so a changed
+    authority set (a new anchor) re-prompts. Both grants confirm first
+    (the daemon restarts; in-flight runs end) and the once-copy says the
+    grant lasts until the CONTROLLER restarts. Settings → Permissions shows
+    the decision as a "Project trust" row with "Forget trust" (the switch
+    off) and, on drift, "Trust again" (the explicit grant — a plain save
+    with the switch already on never re-stamps the anchor).
+    (`src/lib/controller-trust.test.ts`, `use-harness-runtime.test.ts`,
+    `harness/trust.test.ts`, `workspace-trust-banner.test.tsx`,
+    `permissions-section.test.tsx`, hermetic 409 + CSRF rows for both grant
+    routes and the external `trust: null`.)
 14. **The session store is a spawn FLAG too, never a settings.yaml key, and
     in-memory means NO flag.** Settings → Storage saves a Studio-owned
     `storage-settings.json` (seeded from `MECATL_STUDIO_STORE_DIR` /
@@ -325,6 +379,27 @@ Each rule is backed by a test; break the rule and its test names you.
     tour and the draft; dismissible per session. (`enrollment.test.ts`,
     `use-workspace-enrollment.test.tsx`,
     `workspace-enrollment-notice.test.tsx`, the Playwright enrollment test.)
+21. **A refused credential is never "unreachable".** The liveness probe is
+    typed (`HarnessStatus.status` / `.code`); `toHarnessError` reads the raw
+    problem body off the SDK error's `cause` (the SDK collapses every 401
+    into "Authentication failed" and narrows unregistered codes to
+    "unknown"); and `offline-cause.ts` names the class: the proxy's 401
+    `oidc_login_required` / `oidc_session_expired` (Studio refuses to dial
+    the deployment anonymously), its 502 `oidc_idp_unavailable`, and a
+    daemon 401/403 ("Credential rejected", with the MECATL_AUTH_TOKEN /
+    audience / issuer remedy). Those render `auth-recovery-banner.tsx` at the
+    point of failure — cause, remedy, Sign in / Sign in again (only when
+    `/api/auth/oidc/status` reports `configured`; the popup opens on the
+    click), "Open sign-in settings", Retry — and re-probe on the callback
+    page's `mecatl-oidc` message and on window focus, so the connected flip
+    (and `use-agent-chat`'s transcript rehydrate, the resume of the open
+    chat) never waits for the 5 s poll. A chat-level 401 puts the same title
+    + remedy on the error strip and re-probes at once. Everything else keeps
+    "Mecatl is unreachable." There is ONE deployment (MECATL_BASE_URL): no
+    saved-target list, and the daemon URL is never rendered (rule 3).
+    (`offline-cause.test.ts`, `sdk-auth-errors.test.ts`,
+    `auth-recovery-banner.test.tsx`, `runtime-status.auth.test.tsx`,
+    `use-agent-chat.auth-failure.test.ts`, hermetic 401 relay row.)
 
 ## Gotchas
 

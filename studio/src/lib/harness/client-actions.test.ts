@@ -213,21 +213,41 @@ describe("respondToHarnessApproval / cancelHarnessRun", () => {
     ).rejects.toMatchObject({ code: "stale_run_control" });
   });
 
-  it("cancels the named run and swallows a stale refusal (fire-and-forget)", async () => {
+  it("cancels the named run and swallows a stale refusal (fire-and-forget), reporting the outcome", async () => {
     const { requests } = stubHarnessFetch((request) => {
       if (request.path === "/v1/sessions/s1") return snapshotFor("s1");
       if (request.path === "/v1/sessions/s1/cancel")
         return problemResponse(409, "stale_run_control", "run ended");
       return undefined;
     });
-    await expect(cancelHarnessRun("s1", "run-9")).resolves.toBeUndefined();
+    // A stale refusal never throws — and says the run had already ended, so
+    // the turn is not labelled cancelled.
+    await expect(cancelHarnessRun("s1", "run-9")).resolves.toBe("stale");
     const cancel = requests.find((r) => r.path === "/v1/sessions/s1/cancel");
     expect(cancel?.body).toEqual({ expected_run_id: "run-9" });
     // No run id → nothing to name → no request.
-    await cancelHarnessRun("s1", "");
+    await expect(cancelHarnessRun("s1", "")).resolves.toBe("stale");
     expect(
       requests.filter((r) => r.path === "/v1/sessions/s1/cancel"),
     ).toHaveLength(1);
+  });
+
+  it("reports an accepted cancel, and an unknown outcome for a transport fault", async () => {
+    stubHarnessFetch((request) => {
+      if (request.path === "/v1/sessions/s1") return snapshotFor("s1");
+      if (request.path === "/v1/sessions/s1/cancel")
+        return new Response(null, { status: 204 });
+      return undefined;
+    });
+    await expect(cancelHarnessRun("s1", "run-9")).resolves.toBe("cancelled");
+    await resetHarnessClient();
+    stubHarnessFetch((request) => {
+      if (request.path === "/v1/sessions/s1") return snapshotFor("s1");
+      if (request.path === "/v1/sessions/s1/cancel")
+        return problemResponse(500, "internal", "boom");
+      return undefined;
+    });
+    await expect(cancelHarnessRun("s1", "run-9")).resolves.toBe("unknown");
   });
 });
 

@@ -14,7 +14,10 @@ import {
   postureImpliesTrust,
   postureRank,
 } from "@/lib/controller-permissions.mjs";
-import type { HarnessPermissionsConfig } from "@/lib/harness/client";
+import type {
+  HarnessPermissionsConfig,
+  HarnessTrustState,
+} from "@/lib/harness/client";
 import { OptionField } from "./option-field";
 import {
   ExternalManagedNote,
@@ -110,6 +113,48 @@ export function effectivePostureNote({
 }
 
 /**
+ * The "Project trust" row's badge text for the controller's resolved
+ * decision (mecatui's trust states, as words). Exported for its vitest.
+ */
+export function trustRowLabel(trust: HarnessTrustState): string {
+  switch (trust.decision) {
+    case "trusted":
+      return trust.source === "posture"
+        ? "Trusted (by the posture)"
+        : "Trusted (remembered)";
+    case "once":
+      return "Trusted for this session";
+    case "drifted":
+      return "Untrusted — instructions changed";
+    default:
+      return "Untrusted";
+  }
+}
+
+/** The row's explanation: what the decision means and what it cannot see. */
+function trustRowDescription(
+  trust: HarnessTrustState,
+  posture: string,
+): string {
+  const residual =
+    "A grant made in mecatui or settings.yaml is not visible here.";
+  switch (trust.decision) {
+    case "trusted":
+      return trust.source === "posture"
+        ? `The ${posture} posture trusts the project on its own; the trust switch and the anchor do not matter at this tier.`
+        : "Studio remembers this grant and re-checks the project's soul, agents, commands and skills at every daemon start; a change withholds the grant until you trust the project again.";
+    case "once":
+      return "Granted for this controller session only — it lasts until Studio's controller restarts and is never saved.";
+    case "drifted":
+      return "The project's soul, agents, commands or skills changed since you trusted it, so the daemon started without the grant (checked at each start). Review the changes, then trust it again.";
+    default:
+      return trust.hasAuthority
+        ? `This project ships instructions (soul, agents, commands, skills or allow rules) that Mecatl withholds until you trust it. ${residual}`
+        : `This project ships no instructions a grant would admit. ${residual}`;
+  }
+}
+
+/**
  * The daemon-wide operator posture, project trust and shell-less mode —
  * mecated spawn flags owned by Studio's controller (never a settings.yaml
  * key). Every save restarts the daemon. This is NOT the composer's
@@ -117,7 +162,11 @@ export function effectivePostureNote({
  * the ceiling every session runs under.
  */
 export function PermissionsSection({ runtime }: { runtime: Runtime }) {
-  const { serverCapabilities } = useRuntimeStatus();
+  const runtimeStatus = useRuntimeStatus();
+  const { serverCapabilities } = runtimeStatus;
+  // The controller's OWN trust decision for the current spawn (null against
+  // an older controller / in external mode / before the first status poll).
+  const trust: HarnessTrustState | null = runtimeStatus.trust ?? null;
   const { confirm, ConfirmDialog } = useConfirm();
   const [draft, setDraft] = useState<HarnessPermissionsConfig | null>(null);
 
@@ -222,6 +271,35 @@ export function PermissionsSection({ runtime }: { runtime: Runtime }) {
     setDraft(null);
   };
 
+  // "Forget trust" is the ordinary document write with the switch off (the
+  // controller clears the stored anchor). "Trust again" is the explicit
+  // grant route (`runtime.trustProject`, POST /permissions/trust): it
+  // re-stamps the LIVE anchor, which a plain save with the switch already on
+  // deliberately does not (an unrelated save must never quietly re-accept
+  // drifted instructions). Both restart the daemon; the hook re-reads the
+  // document afterwards and lands a refusal in `runtime.error`.
+  const forgetTrust = async () => {
+    await runtime.savePermissions({
+      posture: saved.posture,
+      trustProject: false,
+      noShell: saved.noShell,
+    });
+    setDraft(null);
+  };
+  const trustAgain = async () => {
+    await runtime.trustProject();
+    // The row reads the controller's decision off the status poll; ask it
+    // now so the badge flips as soon as the restarted daemon answers.
+    await runtimeStatus.refresh?.();
+  };
+  const trustBusy = runtime.busy === "trust";
+  const trustBadgeVariant =
+    trust?.decision === "trusted" || trust?.decision === "once"
+      ? "info"
+      : trust?.decision === "drifted"
+        ? "warning"
+        : "outline";
+
   return (
     <SettingsCard
       title="Permissions"
@@ -262,6 +340,37 @@ export function PermissionsSection({ runtime }: { runtime: Runtime }) {
               onCheckedChange={(checked) => patch({ trustProject: checked })}
             />
           </SettingsRow>
+
+          {trust && (
+            <SettingsRow
+              label="Project trust"
+              description={trustRowDescription(trust, saved.posture)}
+            >
+              <Badge variant={trustBadgeVariant}>{trustRowLabel(trust)}</Badge>
+              {trust.decision === "drifted" && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="rounded-full"
+                  disabled={trustBusy || busy}
+                  onClick={() => void trustAgain()}
+                >
+                  {trustBusy ? "Trusting…" : "Trust again"}
+                </Button>
+              )}
+              {saved.trustProject && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="rounded-full"
+                  disabled={trustBusy || busy}
+                  onClick={() => void forgetTrust()}
+                >
+                  Forget trust
+                </Button>
+              )}
+            </SettingsRow>
+          )}
 
           <SettingsRow
             label="Shell tool"

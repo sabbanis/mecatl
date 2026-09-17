@@ -34,5 +34,8 @@ export function streamingPhaseLabel(message?: AgentMessage): string {
     const rest = names.length - MAX_NAMED_TOOLS;
     return rest > 0 ? `Running ${shown} +${rest}` : `Running ${shown}`;
   }
+  // Reasoning deltas have arrived but no text yet: the model is reasoning,
+  // not merely "thinking" in the abstract (the bubble shows the live line).
+  if (message?.reasoning?.trim() && !message.content) return "Reasoning";
   return message?.content ? "Writing" : "Thinking";
 }

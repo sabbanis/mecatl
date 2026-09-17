@@ -19,6 +19,7 @@ import {
 import { apiError } from "./errors";
 import { type HarnessRetentionState, readRetentionState } from "./retention";
 import { type HarnessStorageState, readStorageState } from "./store-location";
+import { type HarnessTrustState, readTrustState } from "./trust";
 
 export * from "./daemon-defaults";
 export * from "./diagnostics";
@@ -29,6 +30,7 @@ export * from "./retention";
 export * from "./schedules";
 export * from "./sessions";
 export * from "./store-location";
+export * from "./trust";
 export * from "./worktrees";
 
 // ── Controller: provider, model router, MCP gateway ─────────────────────────
@@ -82,6 +84,16 @@ export interface HarnessControlStatus {
    * them. The EFFECTIVE posture is `serverCapabilities.posture`.
    */
   permissions: HarnessPermissionsState | null;
+  /**
+   * The controller's OWN project-trust decision for the current spawn
+   * (`./trust`): whether the workspace carries admittable authority, what
+   * the spawn got (trusted/once/drifted/untrusted), who granted it and the
+   * live identity anchor. Null in external mode and against an older
+   * controller (optional so status literals elsewhere keep compiling —
+   * readers treat absence as null). It cannot see the daemon's own
+   * trust.yaml grants.
+   */
+  trust?: HarnessTrustState | null;
   /**
    * The SESSION STORE the managed daemon was spawned with (durable
    * directory or in-memory — a spawn flag the controller owns). Null in
@@ -173,6 +185,7 @@ export async function fetchHarnessControlStatus(
       authFile?: string;
       workspace?: string;
       permissions?: unknown;
+      trust?: unknown;
       storage?: unknown;
       retention?: unknown;
       settingsFile?: string;
@@ -220,6 +233,7 @@ export async function fetchHarnessControlStatus(
       memoryDir: body.memory?.dir ?? "",
       workspace: typeof body.workspace === "string" ? body.workspace : "",
       permissions: readPermissions(body.permissions),
+      trust: readTrustState(body.trust),
       storage: readStorageState(body.storage),
       retention: readRetentionState(body.retention),
       settingsFile:

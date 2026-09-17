@@ -6,6 +6,7 @@
 
 import type { ServerCapabilities } from "@stacklok-oss/mecatl-sdk";
 
+import { HarnessApiError } from "./errors";
 import {
   getHarnessClient,
   harness,
@@ -16,12 +17,21 @@ import {
 export interface HarnessStatus {
   live: boolean;
   detail: string;
+  /** The HTTP status behind a failed probe (0 = no response at all, e.g. a
+   *  refused connection); 200 while live. */
+  status: number;
+  /** The stable machine code behind a failed probe: the proxy's
+   *  `oidc_login_required` / `oidc_session_expired` / `oidc_idp_unavailable`,
+   *  the daemon's `unauthenticated`, "" when the body carried none. */
+  code: string;
 }
 
 /**
  * Cheap liveness probe. A deployed instance has no daemon on loopback, so this
  * failing is the expected path there — callers fall back to mock behaviour.
- * Never throws: every failure is folded into `{live:false, detail}`.
+ * Never throws: every failure is folded into `{live:false, detail, status,
+ * code}` — the typed half lets the offline banner tell "the daemon is down"
+ * from "Studio's credential was refused" (`offline-cause.ts`).
  */
 export async function probeHarness(
   signal?: AbortSignal,
@@ -31,13 +41,18 @@ export async function probeHarness(
       { $typeName: "mecatl.v1.ListModelsRequest" },
       { signal },
     );
-    return { live: true, detail: "connected" };
+    return { live: true, detail: "connected", status: 200, code: "" };
   } catch (error) {
     const translated = toHarnessError(error);
+    const typed =
+      translated instanceof HarnessApiError
+        ? { status: translated.status, code: translated.code }
+        : { status: 0, code: "" };
     return {
       live: false,
       detail:
         translated instanceof Error ? translated.message : String(translated),
+      ...typed,
     };
   }
 }

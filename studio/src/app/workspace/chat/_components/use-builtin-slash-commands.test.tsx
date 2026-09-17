@@ -51,7 +51,7 @@ vi.mock("@/lib/harness/sessions", () => ({
   fetchHarnessSessionIdentity: harness.identity,
 }));
 vi.mock("@/lib/harness/server-info", () => ({
-  fetchHarnessServerInfo: harness.serverInfo,
+  probeHarnessServerInfo: harness.serverInfo,
 }));
 
 function makeDeps(overrides: Partial<BuiltinSlashDeps> = {}): BuiltinSlashDeps {
@@ -90,9 +90,12 @@ beforeEach(() => {
   });
   harness.serverInfo.mockReset();
   harness.serverInfo.mockResolvedValue({
-    buildId: "fixture",
-    serverImplementation: "fixture-daemon",
-    providerEndpoint: "https://openrouter.ai/api/v1",
+    info: {
+      buildId: "fixture",
+      serverImplementation: "fixture-daemon",
+      providerEndpoint: "https://openrouter.ai/api/v1",
+    },
+    lookup: "ok",
   });
 });
 
@@ -237,8 +240,11 @@ describe("useBuiltinSlashCommands", () => {
       expect(lines).toContain("permission mode: acceptEdits");
     });
 
-    it("still sends when the identity probe fails, reading unavailable", async () => {
-      harness.serverInfo.mockRejectedValue(new Error("offline"));
+    it("still sends when the identity probe fails, naming the lookup class", async () => {
+      harness.serverInfo.mockResolvedValue({
+        info: null,
+        lookup: "unreachable",
+      });
       const deps = makeDeps({ resolvedModel: null });
       const { result } = renderHook(() => useBuiltinSlashCommands(deps));
       result.current.handleSlashBuiltin("diagnostics");
@@ -246,6 +252,7 @@ describe("useBuiltinSlashCommands", () => {
       const report = (deps.onSend as ReturnType<typeof vi.fn>).mock
         .calls[0]?.[0] as string;
       expect(report).toContain("server build: unavailable");
+      expect(report).toContain("server lookup: unreachable");
       expect(report).toContain("active model: unavailable");
     });
   });
