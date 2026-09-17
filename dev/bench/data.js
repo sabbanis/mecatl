@@ -223682,6 +223682,40 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789650238634,
         "tool": "customBiggerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "danbarr@users.noreply.github.com",
+            "name": "Dan Barr",
+            "username": "danbarr"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f29d734c2521dc295ba9c2aa559e757c7d506bb9",
+          "message": "mecak8s: make operator flag help concise and actionable (#1669)\n\nCo-authored-by: Dan Barr <6922515+danbarr@users.noreply.github.com>\nCo-authored-by: Jakub Hrozek <jakub.hrozek@posteo.se>",
+          "timestamp": "2026-09-17T09:06:49-04:00",
+          "tree_id": "6a1a6a2ef1f3b78ce74f667f59290eac8f862585",
+          "url": "https://github.com/stacklok/mecatl/commit/f29d734c2521dc295ba9c2aa559e757c7d506bb9"
+        },
+        "date": 1789651083686,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
       }
     ],
     "mecatl scenarios (render allocs, advisory)": [
@@ -324702,6 +324736,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789651080530,
+  "lastUpdate": 1789651084695,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
