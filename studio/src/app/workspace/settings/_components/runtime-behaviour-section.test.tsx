@@ -47,7 +47,7 @@ vi.mock("@/features/agent/runtime-status", () => ({
   useRuntimeStatus: () => runtimeStatus,
 }));
 
-const SWITCH = "Read messages while working";
+const SWITCH = "Take messages while working";
 
 const doc = (
   overrides: Partial<{
@@ -215,8 +215,7 @@ describe("RuntimeBehaviourSection", () => {
 });
 
 describe("steerRowDescription", () => {
-  const base =
-    "On: a message you send while the agent is working is picked up at its next step. Off: it waits until the agent finishes.";
+  const base = "Let the agent take your messages while it is still working.";
 
   it("is the plain two-part sentence when the daemon reports nothing", () => {
     expect(steerRowDescription(undefined, true)).toBe(base);

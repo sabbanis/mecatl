@@ -24,7 +24,7 @@ import {
 } from "./settings-card";
 
 /** The row's visible label; the switch's aria-label repeats it. */
-const STEER_LABEL = "Read messages while working";
+const STEER_LABEL = "Take messages while working";
 
 /**
  * The row's description in plain words, plus ONE line when the daemon's
@@ -36,8 +36,7 @@ export function steerRowDescription(
   liveSteer: unknown,
   enabled: boolean,
 ): string {
-  const base =
-    "On: a message you send while the agent is working is picked up at its next step. Off: it waits until the agent finishes.";
+  const base = "Let the agent take your messages while it is still working.";
   if (typeof liveSteer !== "boolean" || liveSteer === enabled) return base;
   return `${base} Right now this is ${liveSteer ? "on" : "off"}.`;
 }
@@ -158,7 +157,7 @@ export function RuntimeBehaviourSection() {
   return (
     <SettingsCard
       title="Agent behaviour"
-      description="Applies to everyone using this agent."
+      description="Applies to everyone who uses this agent."
     >
       {body}
     </SettingsCard>
