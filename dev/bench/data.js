@@ -245799,6 +245799,45 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789638954721,
         "tool": "customSmallerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "328978+blkt@users.noreply.github.com",
+            "name": "Michelangelo Mori",
+            "username": "blkt"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "58c620e4ece251058324102c41d942a5a2c31473",
+          "message": "test(app): resolve env(1) absolutely so the scrub probe survives a pinned PATH (#1633)\n\nCo-authored-by: Claude Opus 5 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T12:42:32+02:00",
+          "tree_id": "2844956de5453e9d0bd0ffa962e4ed3713197956",
+          "url": "https://github.com/stacklok/mecatl/commit/58c620e4ece251058324102c41d942a5a2c31473"
+        },
+        "date": 1789642417231,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3320,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 111.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1155,
+            "unit": "allocs/op"
+          }
+        ]
       }
     ],
     "mecatl scenarios (smaller-is-better)": [
@@ -322331,6 +322370,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789642414364,
+  "lastUpdate": 1789642418305,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
