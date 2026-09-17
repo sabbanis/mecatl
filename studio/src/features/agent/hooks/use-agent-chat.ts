@@ -62,6 +62,7 @@ import {
   reduceDelegationFleet,
 } from "../delegation-fleet";
 import { deliveryMessage, hasDeliveryNote } from "../delivery-message";
+import { attachHookToMessage, reduceHookEvent } from "../hook-notice";
 import {
   AUTHORIZATION_CHECK_IN_FLIGHT_NOTICE,
   AUTHORIZATION_LINK_COPIED_NOTICE,
@@ -83,6 +84,7 @@ import {
 import { buildPromptPayload } from "../prompt-payload";
 import { useRuntimeStatus } from "../runtime-status";
 import type { SessionTitleUpdate } from "../session-title";
+import { resolveSteerSupported } from "../steer-support";
 import {
   appendSteerTrace,
   type SteerTraceDecision,
@@ -539,6 +541,10 @@ export function reduceWatchEvent(
           formatVerdictNotice(event.toolName, event.verdict),
         ],
       }));
+    case "hook":
+      // A hook fire lands on the tool call it names (the row's chip) or,
+      // call-less, as a marked notice on the trailing assistant message.
+      return reduceHookEvent(messages, event, onAssistant);
     case "notice":
       return onAssistant((message) => ({
         ...message,
@@ -1738,6 +1744,11 @@ export function useAgentChat(
             });
             break;
           }
+          case "hook":
+            // Attributed to the call on this turn's bubble (its chip), else
+            // a marked notice; the call's status is left to its own result.
+            patch((message) => attachHookToMessage(message, event));
+            break;
           case "notice":
             patch((message) => ({
               ...message,
@@ -2867,10 +2878,11 @@ export function useAgentChat(
   }, []);
 
   // Steer is capability-gated (C1.2): the live `capabilities.steer` off
-  // /v1/compatibility, or the `http_steer` feature-registry row a rebuilt
-  // daemon serves. Absent both, mid-run sends queue instead.
-  const steerSupported =
-    serverCapabilities.steer === true || features.has("http_steer");
+  // /v1/compatibility DECIDES when present — an explicit false (`--no-steer`
+  // / operator `steer: false`) wins over the STATIC `http_steer` registry
+  // row a rebuilt daemon lists unconditionally; the row is only the fallback
+  // for an older daemon without the key. Absent both, mid-run sends queue.
+  const steerSupported = resolveSteerSupported(serverCapabilities, features);
 
   /**
    * Injects a message — text plus staged image attachments (ADR 0251) — into

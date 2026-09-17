@@ -14,8 +14,11 @@ test("the chat list and transcript come from the daemon", async ({ page }) => {
   await page.goto("/workspace/chat");
   // The draft route's tab names the draft, then the app (no chat open yet).
   await expect(page).toHaveTitle(/^New chat — Mecatl Studio$/);
-  // The sidebar row is the daemon's session inventory.
-  await page.getByText("Fix the flaky scheduler test").first().click();
+  // The sidebar row is the daemon's session inventory (by role: the draft's
+  // Continue chip names the same chat, so a bare text match is ambiguous).
+  await page
+    .getByRole("button", { name: /^Open chat: Fix the flaky scheduler test/ })
+    .click();
   // Opening the chat rehydrates the authoritative transcript.
   await expect(
     page.getByText("the test races the claim sentinel", { exact: false }),
@@ -589,6 +592,26 @@ test("the chat status strip shows the session handle, the resolved model and the
   );
 });
 
+test("the top navigation shows the daemon-reported posture as a chrome chip on every page", async ({
+  page,
+}) => {
+  // The fixture's compatibility document reports posture "trusted". Unlike
+  // the chat strip's badge this one lives in the shell's top navigation, so
+  // it is visible outside a chat too; it is worded as PROJECT trust (Studio's
+  // own trust switch is what makes the daemon report `trusted`) and links to
+  // Settings → Permissions, where the tier is explained and changed.
+  await page.goto("/workspace/chat");
+  const chip = page.getByTestId("posture-badge");
+  await expect(chip).toBeVisible();
+  await expect(chip).toHaveText("Trusted project");
+  await expect(chip).toHaveAttribute("data-tone", "neutral");
+  await expect(chip).toHaveAttribute("href", "/workspace/settings/permissions");
+  await expect(chip).toHaveAccessibleName(/^Project instructions are trusted/);
+  // Chrome-level: the same chip is on a non-chat page.
+  await page.goto("/workspace/settings/appearance");
+  await expect(page.getByTestId("posture-badge")).toHaveText("Trusted project");
+});
+
 test("the workspace-services notice connects through the daemon and clears", async ({
   page,
 }) => {
@@ -677,6 +700,70 @@ test("the Runs tab lists the fixture subagent and opens its read-only transcript
     .click();
   await expect(
     page.getByRole("dialog").getByText("digest sent", { exact: false }),
+  ).toBeVisible();
+});
+
+test("View transcript in the row menu opens the read-only dialog without opening the chat", async ({
+  page,
+}) => {
+  await page.goto("/workspace/chat");
+  // The row's options button reveals on hover (≥500px), so hover the row
+  // first. The fixture row offers `view_transcript`, so the item is enabled.
+  const row = page.getByRole("button", {
+    name: /^Open chat: Fix the flaky scheduler test/,
+  });
+  await row.hover();
+  await page
+    .getByRole("button", {
+      name: "Options for chat: Fix the flaky scheduler test",
+    })
+    .click();
+  await page
+    .getByRole("menuitem", { name: "View transcript", exact: true })
+    .click();
+  // The same read-only dialog the Runs tab opens, labelled by the chat title,
+  // replaying the daemon's authoritative transcript.
+  const dialog = page.getByRole("dialog", {
+    name: "Fix the flaky scheduler test",
+  });
+  await expect(
+    dialog.getByText("the test races the claim sentinel", { exact: false }),
+  ).toBeVisible();
+  // Read-only: the chat did not become the live chat — the URL is still the
+  // draft route and the tab title unchanged.
+  await expect(page).toHaveURL(/\/workspace\/chat$/);
+  await expect(page).toHaveTitle(/^New chat — Mecatl Studio$/);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+});
+
+test("Fork chat in the row menu continues in a copy of the chat", async ({
+  page,
+}) => {
+  await page.goto("/workspace/chat");
+  const row = page.getByRole("button", {
+    name: /^Open chat: Fix the flaky scheduler test/,
+  });
+  await row.hover();
+  await page
+    .getByRole("button", {
+      name: "Options for chat: Fix the flaky scheduler test",
+    })
+    .click();
+  // The fixture row offers `fork` (the same daemon verdict that gates Clear
+  // conversation and the model/effort switch), so the item is enabled.
+  await page.getByRole("menuitem", { name: "Fork chat", exact: true }).click();
+  // The UI moves to the copy only after the daemon answered with its id; the
+  // copy carries the source's conversation and the source stays in the list.
+  await expect(page).toHaveURL(/\/workspace\/chat\/session-fixture-fork$/);
+  await expect(
+    page.getByText("Forked — continuing in a copy of this chat"),
+  ).toBeVisible();
+  await expect(
+    page.getByText("the test races the claim sentinel", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Fix the flaky scheduler test").first(),
   ).toBeVisible();
 });
 
@@ -778,4 +865,161 @@ test("the chat's MCP tools panel lists the broker connectors with their catalogu
   await expect(
     panel.getByRole("link", { name: "Configure in Settings → MCP tools" }),
   ).toHaveAttribute("href", "/workspace/settings/gateway");
+});
+
+test("the composer inserts an MCP prompt after filling its argument", async ({
+  page,
+}) => {
+  await page.goto("/workspace/chat");
+  await page.getByText("Fix the flaky scheduler test").first().click();
+  await expect(
+    page.getByText("the test races the claim sentinel", { exact: false }),
+  ).toBeVisible();
+  // The composer's "Insert from MCP" entry is gated on the fixture's `mcp`;
+  // the prompt picker lists GET /v1/mcp/prompts, holds Render until the
+  // required argument is filled, previews POST /v1/mcp/prompts/get's
+  // messages, and inserts them — role-prefixed — into the draft. Nothing
+  // is sent: no user bubble, no fixture reply.
+  await page.getByRole("button", { name: "Insert from MCP" }).first().click();
+  await page.getByRole("menuitem", { name: /^Prompt/ }).click();
+  const dialog = page.getByRole("dialog", { name: "Insert an MCP prompt" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: /Summarize a file/ }).click();
+  const render = dialog.getByRole("button", { name: "Render" });
+  await expect(render).toBeDisabled();
+  await dialog.getByLabel(/File path/).fill("README.md");
+  await expect(render).toBeEnabled();
+  await render.click();
+  await expect(
+    dialog.getByText("Summarize the file at README.md."),
+  ).toBeVisible();
+  await expect(dialog.getByText("I will read it first.")).toBeVisible();
+  await dialog.getByRole("button", { name: "Insert into message" }).click();
+  await expect(dialog).toHaveCount(0);
+  const composer = page.locator(".composer-editor .ProseMirror").first();
+  await expect(composer).toContainText(
+    "user: Summarize the file at README.md.",
+  );
+  await expect(composer).toContainText("assistant: I will read it first.");
+  await expect(page.getByText("Streaming from the fixture.")).toHaveCount(0);
+});
+
+test("the composer previews and inserts an MCP resource", async ({ page }) => {
+  await page.goto("/workspace/chat");
+  await page.getByText("Fix the flaky scheduler test").first().click();
+  await expect(
+    page.getByText("the test races the claim sentinel", { exact: false }),
+  ).toBeVisible();
+  // The resource picker lists GET /v1/mcp/resources, reads the picked one
+  // (GET /v1/mcp/resources/read) into a preview pane, and inserts its text
+  // into the draft for review — never sending it.
+  await page.getByRole("button", { name: "Insert from MCP" }).first().click();
+  await page.getByRole("menuitem", { name: /^Resource/ }).click();
+  const dialog = page.getByRole("dialog", { name: "Insert an MCP resource" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: /Fixture notes/ }).click();
+  await expect(dialog.getByTestId("mcp-resource-preview")).toHaveText(
+    "Fixture notes: the scheduler test is flaky.",
+  );
+  await dialog.getByRole("button", { name: "Insert into message" }).click();
+  await expect(dialog).toHaveCount(0);
+  const composer = page.locator(".composer-editor .ProseMirror").first();
+  await expect(composer).toContainText(
+    "Fixture notes: the scheduler test is flaky.",
+  );
+  await expect(page.getByText("Streaming from the fixture.")).toHaveCount(0);
+});
+
+test("a ?prompt= deep link pre-fills the draft composer, strips the query and sends nothing", async ({
+  page,
+}) => {
+  // The web analogue of `mecatui -p` without auto-send: the text is in the
+  // composer, the address bar is clean (a reload would not re-seed), and no
+  // turn ran — no confirmation, no user bubble, no fixture reply.
+  await page.goto("/workspace/chat?prompt=Hello%20fixture");
+  const composer = page.locator(".composer-editor .ProseMirror").first();
+  await expect(composer).toHaveText("Hello fixture");
+  await expect(page).toHaveURL(/\/workspace\/chat$/);
+  await expect(
+    page.getByRole("dialog", { name: "Send this prompt?" }),
+  ).toHaveCount(0);
+  await expect(page.getByText("Streaming from the fixture.")).toHaveCount(0);
+});
+
+test("a ?prompt=&send=1 deep link confirms the exact prompt, sends it once and leaves an interactive chat", async ({
+  page,
+}) => {
+  // A URL is drive-by reachable, so `send=1` never sends on its own: the
+  // exact text waits behind a one-click confirmation. The query is already
+  // stripped while the dialog is up, so a reload could not re-ask.
+  await page.goto("/workspace/chat?prompt=Hello%20fixture&send=1");
+  const dialog = page.getByRole("dialog", { name: "Send this prompt?" });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByTestId("seed-prompt-text")).toHaveText(
+    "Hello fixture",
+  );
+  await expect(page).toHaveURL(/\/workspace\/chat$/);
+  await expect(page.getByText("Streaming from the fixture.")).toHaveCount(0);
+  // Send takes the composer's own path: the draft mints its daemon session
+  // (POST /v1/sessions → session-fixture-1), the prompt streams, and the URL
+  // moves to the minted chat.
+  await dialog.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(page.getByText("Hello fixture", { exact: true })).toBeVisible();
+  await expect(page.getByText("Streaming from the fixture.")).toBeVisible();
+  await expect(page).toHaveURL(/\/workspace\/chat\/session-fixture-1$/);
+  // Then it is an ordinary chat: the composer is back, empty and enabled.
+  const composer = page.locator(".composer-editor .ProseMirror").first();
+  await expect(composer).toBeVisible();
+  await expect(composer).toHaveText("");
+});
+
+test("the Continue chip on the draft opens the most recent chat without any preference", async ({
+  page,
+}) => {
+  await page.goto("/workspace/chat");
+  // Default preference: the draft stays, and names the newest quiet chat
+  // (the fixture's one idle main chat) as a Continue chip.
+  await expect(page).toHaveTitle(/^New chat — Mecatl Studio$/);
+  const chip = page.getByRole("button", { name: /^Continue/ });
+  await expect(chip).toContainText("Continue “Fix the flaky scheduler test”");
+  await chip.click();
+  await expect(page).toHaveURL(/\/workspace\/chat\/session-fixture-1$/);
+  await expect(
+    page.getByText("the test races the claim sentinel", { exact: false }),
+  ).toBeVisible();
+});
+
+test("the Most recent chat launch preference opens the newest chat on the bare route, and New chat still gives a draft", async ({
+  page,
+}) => {
+  // Settings → Personalize → Start on: "Most recent chat" is browser-local.
+  await page.addInitScript(() => {
+    localStorage.setItem("mecatl-studio.launch-target", "latest");
+  });
+  await page.goto("/workspace/chat");
+  // The landing waits for the daemon probe and the inventory (up to one
+  // 5 s probe interval), then REPLACES the URL with the newest chat.
+  await expect(page).toHaveURL(/\/workspace\/chat\/session-fixture-1$/, {
+    timeout: 15_000,
+  });
+  await expect(
+    page.getByText("the test races the claim sentinel", { exact: false }),
+  ).toBeVisible();
+  await expect(page).toHaveTitle(
+    /^Fix the flaky scheduler test — Mecatl Studio$/,
+  );
+  // An explicit New chat wins over the preference: the draft stays put
+  // instead of bouncing straight back to the most recent chat.
+  await page.getByRole("button", { name: "New chat", exact: true }).click();
+  await expect(page).toHaveURL(/\/workspace\/chat$/);
+  await expect(
+    page.getByRole("heading", { name: "What can I help you with?" }),
+  ).toBeVisible();
+  // Give a would-be re-open its probe interval and confirm nothing moved.
+  await page.waitForTimeout(6_000);
+  await expect(page).toHaveURL(/\/workspace\/chat$/);
+  await expect(
+    page.getByRole("heading", { name: "What can I help you with?" }),
+  ).toBeVisible();
 });

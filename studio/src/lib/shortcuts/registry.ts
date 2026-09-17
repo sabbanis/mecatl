@@ -119,6 +119,20 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     description: "Previous chat (vim-style)",
     group: "Chats",
   },
+  // Jump to the most recent chat (the `--resume-latest` analogue; the pick
+  // is `features/agent/latest-chat`). A bare letter beside j/k, deliberately
+  // NOT a ⌘⇧ chord: every ⌘⇧ letter is already registered here (F G L O S U
+  // X Y), in the keymap's RESERVED_COMBOS (B C D H I J N P R T V W Z), a
+  // DevTools chord Firefox never yields on Windows/Linux (E K M), Chrome's
+  // tab search (A) or macOS log-out (Q). Like j/k
+  // it never fires while the caret is in a text field; the draft's Continue
+  // chip and the Personalize launch preference cover that case.
+  {
+    id: "chat.latest",
+    combo: "l",
+    description: "Jump to the most recent chat",
+    group: "Chats",
+  },
   // The `/session` details dialog (exact id + copy, state, placement…). ⌘I /
   // Ctrl+I is unbound in Chrome and Edge, and Firefox's Page Info and
   // Safari's Mail Link both yield to a page handler that prevents it. NOT
@@ -153,6 +167,30 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     combo: "mod+shift+y",
     description:
       "Debug the selected chat with AI — a separate diagnostic chat (the TUI's F1)",
+    group: "Chats",
+  },
+  // Copy the open chat's session ID (the TUI's `c` on the /session overlay,
+  // `y` on /sessions). A bare letter like the vim-style j/k rows, so it never
+  // fires while typing: every preventable ⌘⇧ letter chord is spoken for or
+  // keymap-reserved, and the mnemonic ⌘⇧C is Inspect Element in Chrome, Edge
+  // and Safari on macOS — it never reaches the page. Rebindable to a chord
+  // from Settings → Keyboard.
+  {
+    id: "chat.copyId",
+    combo: "c",
+    description: "Copy the open chat's session ID",
+    group: "Chats",
+  },
+  // Fork the open chat as-is (the TUI's `f` on /sessions): a copy on the same
+  // model, effort and placement. ⌘⇧S / Ctrl+Shift+S is unbound in Chrome;
+  // Edge's Web capture, Firefox's screenshot and Safari's Save As all yield
+  // to a page handler that prevents it. NOT ⌘⇧F (the model picker), and not
+  // ⌘⇧B / ⌘⇧D (the browsers' bookmark chords, keymap-reserved). A ⌘ chord,
+  // so it fires from the composer too.
+  {
+    id: "chat.fork",
+    combo: "mod+shift+s",
+    description: "Fork the open chat as-is — continue in a copy",
     group: "Chats",
   },
 
@@ -411,6 +449,46 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     description: "Filter scheduled tasks by name or schedule",
     group: "Scheduled",
   },
+
+  // Tools — the MCP surfaces (the TUI's ctrl+o inventory panel, ctrl+r
+  // resources picker and f8 prompts picker). No mnemonic letter chord is
+  // left: every ⌘⇧<letter> is either bound above, browser-reserved (see
+  // RESERVED_COMBOS in keymap.ts) or a Firefox DevTools chord that never
+  // reaches the page (Ctrl+Shift+E/K/M/S), and every bare ⌘<letter> the
+  // browsers do yield is taken (⌘K ⌘B ⌘I). So the three ride the
+  // punctuation keys beside Enter — ⌘. ⌘; ⌘' — which no browser claims
+  // (Safari's ⌘. Stop and ⌘; Check Spelling, Firefox's Ctrl+' link quick
+  // find all yield to a page handler), insert nothing while the caret is
+  // in the composer, and match by the produced character so they follow
+  // the user's layout. Caveat: on a dead-key layout (US-International,
+  // ABNT2) the apostrophe reports as "Dead" and ⌘' never fires — rebind it
+  // in Settings → Keyboard. All three are ⌘ chords, so they fire from the
+  // composer; each is registered ONLY while the daemon grants the MCP
+  // capability (`useShortcut` `enabled`), so the keys keep their native
+  // meaning against a daemon without MCP. The overlay-hotkey row's other
+  // subjects — the agents roster (`agents.toggle`) and the effort picker
+  // (`composer.model`) — live in their own groups above.
+  {
+    id: "mcp.inventory",
+    combo: "mod+.",
+    description:
+      "Open the MCP tools panel — connectors, sources, ToolHive groups (the TUI's ctrl+o)",
+    group: "Tools",
+  },
+  {
+    id: "mcp.resources",
+    combo: "mod+;",
+    description:
+      "Insert an MCP resource into the message — pick, preview, then edit and send (the TUI's ctrl+r)",
+    group: "Tools",
+  },
+  {
+    id: "mcp.prompts",
+    combo: "mod+'",
+    description:
+      "Insert an MCP prompt into the message — pick, fill its arguments, review (the TUI's f8)",
+    group: "Tools",
+  },
 ] as const;
 
 /** Groups in render order. */
@@ -421,6 +499,7 @@ export const SHORTCUT_GROUPS = [
   "Composer",
   "Approvals",
   "Scheduled",
+  "Tools",
 ] as const;
 
 const CAP_LABEL: Record<string, string> = {
@@ -536,12 +615,18 @@ export function comboFiresWhileTyping(combo: string): boolean {
  */
 export function describeShortcut(
   def: ShortcutDef,
-  enterBehavior: "queue" | "steer",
+  enterBehavior: "queue" | "steer" | "queue-only",
 ): string {
+  // "queue-only" (Settings → Personalize, the never-steer switch): both keys
+  // queue, so neither row promises a steer.
   const onEnter =
-    enterBehavior === "queue" ? "queue the message" : "steer the agent";
+    enterBehavior === "steer" ? "steer the agent" : "queue the message";
   const onShiftEnter =
-    enterBehavior === "queue" ? "steer the agent" : "queue the message";
+    enterBehavior === "queue"
+      ? "steer the agent"
+      : enterBehavior === "steer"
+        ? "queue the message"
+        : "queue the message (steering is off)";
   switch (def.id) {
     case "composer.send":
       return `Send — while the agent is replying: ${onEnter}`;

@@ -227,6 +227,59 @@ const routes = {
   // The distinct ToolHive groups (proto ListToolHiveGroupsResponse), listed
   // under the sources as the TUI's "ToolHive groups:" line.
   "GET /v1/mcp/toolhive/groups": { groups: ["default", "research"] },
+  // The composer's "Insert from MCP" pickers (the TUI's f8 prompts / ctrl+r
+  // resources). ONE prompt with ONE required argument (proto
+  // ListMcpPromptsResponse), rendered by POST /v1/mcp/prompts/get into two
+  // role-tagged messages (GetMcpPromptResponse — the fixture ignores the
+  // posted arguments); ONE text resource (ListMcpResourcesResponse) read by
+  // GET /v1/mcp/resources/read as a single text chunk (ReadMcpResourceResponse).
+  "GET /v1/mcp/prompts": {
+    prompts: [
+      {
+        server: "fixture-mcp",
+        name: "summarize",
+        title: "Summarize a file",
+        description: "Summarizes one workspace file.",
+        arguments: [
+          {
+            name: "path",
+            title: "File path",
+            description: "Workspace-relative path of the file.",
+            required: true,
+          },
+        ],
+      },
+    ],
+  },
+  "POST /v1/mcp/prompts/get": {
+    description: "Summarizes one workspace file.",
+    messages: [
+      { role: "user", text: "Summarize the file at README.md." },
+      { role: "assistant", text: "I will read it first." },
+    ],
+  },
+  "GET /v1/mcp/resources": {
+    resources: [
+      {
+        server: "fixture-mcp",
+        uri: "file:///fixture/notes.txt",
+        name: "notes.txt",
+        title: "Fixture notes",
+        description: "Release notes kept by the fixture.",
+        mime_type: "text/plain",
+        size: 44,
+      },
+    ],
+  },
+  "GET /v1/mcp/resources/read": {
+    contents: [
+      {
+        uri: "file:///fixture/notes.txt",
+        mime_type: "text/plain",
+        text: "Fixture notes: the scheduler test is flaky.",
+      },
+    ],
+  },
   // Proto-JSON GetStorageHealthResponse: a healthy store (no banner) whose
   // effective retention policy, sweep timestamps and family counts the
   // Storage page's Retention card renders. int64s ride as JSON numbers.
@@ -381,6 +434,24 @@ const routes = {
     session_id: clearedSessionID,
     complete: true,
     messages: [],
+  },
+  // The fork-as-is copy ("Fork chat" in the row / header menu) renders as the
+  // source's conversation carried over: a fork seeds from the source's
+  // history, so its transcript is the fixture chat's opening exchange.
+  "GET /v1/sessions/session-fixture-fork": {
+    ...snapshot,
+    session_id: "session-fixture-fork",
+  },
+  "GET /v1/sessions/session-fixture-fork/transcript": {
+    session_id: "session-fixture-fork",
+    complete: true,
+    messages: [
+      { role: "user", text: "Why does the scheduler test flake?" },
+      {
+        role: "assistant",
+        text: "The fixture transcript renders: the test races the claim sentinel.",
+      },
+    ],
   },
   "GET /v1/models": {
     models: [{ id: "fixture-model", provider_id: "fixture" }],

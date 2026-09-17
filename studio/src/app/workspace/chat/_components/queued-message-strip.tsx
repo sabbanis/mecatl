@@ -25,7 +25,10 @@ export interface QueuedMessageStripProps {
   paused?: QueuePause | null;
   /** A run is live: queued rows may be steered into it. */
   isStreaming: boolean;
-  onSteer: (id: string) => void;
+  /** Steers a queued row into the live run. Absent when steering is off —
+   *  the daemon does not support it, or the user chose "Queue only" — and
+   *  the row menu then offers no Steer. */
+  onSteer?: (id: string) => void;
   onEdit: (id: string) => void;
   onDelete: (id: string) => void;
   /** Sends the whole held queue as one prompt (the paused header's Send now). */
@@ -53,9 +56,9 @@ function rowLabel(row: { text: string; files?: File[] }): string {
  * a single Retract for the bundle — then the queue under a header that reads
  * muted while a run is live ("N queued · ↑ edit") and loud when the queue is
  * paused ("N queued · paused: <reason>", with Send now / Edit all / Clear
- * all). Queued rows offer Steer (only while a run is live), Edit (back into
- * the composer, attachments included), and Delete. Renders nothing when
- * nothing is held.
+ * all). Queued rows offer Steer (only while a run is live AND `onSteer` is
+ * wired — steering off withdraws it), Edit (back into the composer,
+ * attachments included), and Delete. Renders nothing when nothing is held.
  */
 export function QueuedMessageStrip({
   queued,
@@ -184,7 +187,7 @@ export function QueuedMessageStrip({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                {isStreaming && (
+                {isStreaming && onSteer && (
                   <DropdownMenuItem onClick={() => onSteer(message.id)}>
                     Steer
                   </DropdownMenuItem>

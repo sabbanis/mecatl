@@ -5,6 +5,10 @@ import { AboutDaemonCard } from "../_components/about-daemon-card";
 import { DaemonLogCard } from "../_components/daemon-log-card";
 import { PerformanceCard } from "../_components/performance-card";
 import { PostureCard } from "../_components/posture-card";
+import {
+  DAEMON_LOG_ANCHOR_ID,
+  ProductMetricsCard,
+} from "../_components/product-metrics-card";
 import { RuntimeStatusLine } from "../_components/runtime-status-line";
 
 /**
@@ -21,7 +25,12 @@ export default function DiagnosticsSettingsPage() {
     <>
       <RuntimeStatusLine runtime={runtime} />
       <PostureCard />
-      <DaemonLogCard />
+      <ProductMetricsCard />
+      {/* The product-metrics dry run prints to mecated's stderr, which this
+          card shows: the anchor is the card's "Daemon log below" link. */}
+      <div id={DAEMON_LOG_ANCHOR_ID} className="scroll-mt-4">
+        <DaemonLogCard />
+      </div>
       <PerformanceCard />
       <AboutDaemonCard
         selectedProviderId={runtime.status?.selectedProvider ?? undefined}

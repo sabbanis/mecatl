@@ -292,7 +292,11 @@ Each rule is backed by a test; break the rule and its test names you.
     threshold`, `--product-metrics=false`/`--product-metrics-dry-run` (never
     `=true`: the controller's env opt-out — `DO_NOT_TRACK`,
     `MECATL_PRODUCT_METRICS` — stays the operator's and is reported as
-    `productMetrics.source: "environment"`); `quiet` only gates the
+    `productMetrics.source: "environment"`; `product-metrics-card.tsx` shows
+    the effective verdict as "Not disabled"/"Off" — never a definitive On,
+    because `telemetry.productMetrics.enabled` in settings.yaml is a third
+    opt-out Studio cannot read — and disables both switches under an env
+    opt-out); `quiet` only gates the
     controller's stderr mirror and restarts nothing. The controller is
     also the daemon's LOG FILE (mecatui's embedded-server log, ported):
     mecated has no log-file flag, so the process holding its stderr appends
@@ -307,7 +311,8 @@ Each rule is backed by a test; break the rule and its test names you.
     `diagnosticsOptions`, `diagnosticsOptionArgs`. External mode: both verbs
     409. (`src/lib/controller-diagnostics-options.test.ts`,
     `src/lib/posture.test.ts`, `harness/diagnostics.test.ts`,
-    `use-diagnostics-options.test.ts`, `posture-card.test.tsx`, hermetic 409
+    `use-diagnostics-options.test.ts`, `posture-card.test.tsx`,
+    `product-metrics-card.test.tsx`, hermetic 409
     rows, the Playwright diagnostics test.) The admin surface itself
     reaches the browser ONLY through the controller: it probes a free
     loopback port per spawn (the ready file names only `http_address`; one
@@ -479,6 +484,24 @@ Each rule is backed by a test; break the rule and its test names you.
   continuation run; polling stops when the request resolves from any
   stream, on cancel, chat switch, or unmount). Cancel confirms first: it
   fails the parked tool call.
+- The composer's "Insert from MCP" (mecatui's f8 prompts and ctrl+r
+  resources pickers: `mcp-prompt-picker.tsx`, `mcp-resource-picker.tsx`,
+  owned by `ChatInput` through `useMcpComposerInsert`) is gated on
+  `serverCapabilities.mcp` — a daemon granting only `mcp_connector_status`
+  never receives a prompt or resource RPC — and the picked text is APPENDED
+  after the draft as paragraphs (`appendComposerText`), reviewed, never sent.
+  Prompts insert the TUI's role-prefixed join (`renderPromptForComposer`);
+  a resource's binary chunks are named, never inserted; every insertion is
+  clamped to 64 KiB with a note. The Tools shortcuts — `mcp.inventory` ⌘.,
+  `mcp.resources` ⌘;, `mcp.prompts` ⌘' — are registered only while the
+  capability is on (the chords keep their native meaning otherwise); they
+  ride punctuation because every mnemonic letter chord is bound, browser-
+  reserved or a Firefox DevTools key (the registry's Tools note has the
+  audit). `requestOpenMcpPicker(kind)` is the outside opener for a slash
+  built-in; the composer that last held focus answers. (`harness/mcp.test.ts`,
+  `mcp-prompt-picker.test.tsx`, `mcp-resource-picker.test.tsx`,
+  `chat-input-mcp-insert.test.tsx`, `registry.test.ts`, the Playwright
+  MCP prompt / resource tests.)
 
 <!-- BEGIN:nextjs-agent-rules -->
 

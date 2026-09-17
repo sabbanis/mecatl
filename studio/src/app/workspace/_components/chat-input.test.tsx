@@ -277,6 +277,51 @@ describe("resolveComposerAction", () => {
   // Attachments no longer force the queue path: a steer carries staged image
   // parts (ADR 0251). Availability is the handler's business — performAction
   // degrades steer→queue when onSteer is absent, keeping the files attached.
+
+  // "Queue only" is the client-level never-steer switch (mecatui --no-steer):
+  // both keys queue while streaming — Shift+Enter has no opposite to invert
+  // into — and the idle cells are the ordinary send / newline.
+  it("queues on BOTH streaming Enter and Shift+Enter under queue-only", () => {
+    expect(
+      resolveComposerAction({
+        shift: false,
+        isStreaming: true,
+        behavior: "queue-only",
+      }),
+    ).toBe("queue");
+    expect(
+      resolveComposerAction({
+        shift: true,
+        isStreaming: true,
+        behavior: "queue-only",
+      }),
+    ).toBe("queue");
+  });
+
+  it("leaves the idle and mod+Enter cells alone under queue-only", () => {
+    expect(
+      resolveComposerAction({
+        shift: false,
+        isStreaming: false,
+        behavior: "queue-only",
+      }),
+    ).toBe("send");
+    expect(
+      resolveComposerAction({
+        shift: true,
+        isStreaming: false,
+        behavior: "queue-only",
+      }),
+    ).toBe("newline");
+    expect(
+      resolveComposerAction({
+        shift: false,
+        mod: true,
+        isStreaming: true,
+        behavior: "queue-only",
+      }),
+    ).toBe("newline");
+  });
 });
 
 describe("AttachmentPill", () => {

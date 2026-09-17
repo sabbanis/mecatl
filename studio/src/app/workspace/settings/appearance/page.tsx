@@ -4,14 +4,17 @@ import {
   Bell,
   BellRing,
   CornerDownRight,
+  History,
   Keyboard,
   ListEnd,
+  ListX,
   Minus,
   Monitor,
   Moon,
   PanelLeft,
   PanelRight,
   Plus,
+  SquarePen,
   Sun,
 } from "lucide-react";
 import Link from "next/link";
@@ -25,9 +28,11 @@ import { Switch } from "@/components/ui/switch";
 import { findPalette, type PaletteDef } from "@/lib/palettes";
 import {
   type EnterSendBehavior,
+  type LaunchTarget,
   UI_SCALE_MAX,
   UI_SCALE_MIN,
   useEnterSendBehavior,
+  useLaunchTarget,
   useSessionListSide,
   useShowStarterPrompts,
   useUiScale,
@@ -65,10 +70,33 @@ const SIDE_OPTIONS = [
   { value: "right", label: "Right", icon: PanelRight },
 ] as const;
 
+// The third option is the client-level never-steer switch (the web form of
+// `mecatui --no-steer`): both keys queue and every steer affordance is
+// withdrawn, whatever the daemon supports. The daemon-side opt-out is the
+// Mid-run steering switch on Settings → Agent.
+// The `--resume-latest` analogue: what the bare chat route opens.
+const LAUNCH_TARGET_OPTIONS = [
+  { value: "draft", label: "New chat", icon: SquarePen },
+  { value: "latest", label: "Most recent chat", icon: History },
+] as const;
+
 const ENTER_BEHAVIOR_OPTIONS = [
   { value: "queue", label: "Queue message", icon: ListEnd },
   { value: "steer", label: "Steer the agent", icon: CornerDownRight },
+  {
+    value: "queue-only",
+    label: "Queue only",
+    icon: ListX,
+    description: "Never steer, even with Shift+Enter.",
+  },
 ] as const;
+
+/** The Message queuing row's description, phrased for the chosen value. */
+function enterBehaviorDescription(behavior: EnterSendBehavior): string {
+  return behavior === "queue-only"
+    ? "Never steer the in-flight run — every mid-run message waits for the next turn; a cancelled or failed run pauses the queue until you resume it."
+    : "Shift+Enter does the opposite; a cancelled or failed run pauses the queue until you resume it.";
+}
 
 function PersonalizeCard() {
   const { theme: activeTheme, setTheme } = useTheme();
@@ -80,6 +108,8 @@ function PersonalizeCard() {
   const { side, setSide } = useSessionListSide();
   const { scale, setScale } = useUiScale();
   const { behavior, setBehavior } = useEnterSendBehavior();
+  const { target: launchTarget, setTarget: setLaunchTarget } =
+    useLaunchTarget();
   const { show: showStarterPrompts, setShow: setShowStarterPrompts } =
     useShowStarterPrompts();
   const { dismissed: welcomeDismissed, setDismissed: setWelcomeDismissed } =
@@ -213,7 +243,7 @@ function PersonalizeCard() {
 
         <SettingsRow
           label="Message queuing"
-          description="Shift+Enter does the opposite; a cancelled or failed run pauses the queue until you resume it."
+          description={enterBehaviorDescription(behavior)}
         >
           <OptionField
             label="Message queuing"
@@ -235,6 +265,21 @@ function PersonalizeCard() {
               Customize
             </Link>
           </Button>
+        </SettingsRow>
+
+        {/* The `--resume-latest` analogue. "Most recent" skips chats that
+            are running or waiting on an approval (`latest-chat.ts`); an
+            explicit "New chat" always wins over it. */}
+        <SettingsRow
+          label="Start on"
+          description="What Chat opens when no chat is in the URL. “Most recent chat” skips chats that are running or waiting on an approval."
+        >
+          <OptionField
+            label="Start on"
+            value={launchTarget}
+            options={LAUNCH_TARGET_OPTIONS}
+            onChange={(next) => setLaunchTarget(next as LaunchTarget)}
+          />
         </SettingsRow>
 
         <SettingsRow

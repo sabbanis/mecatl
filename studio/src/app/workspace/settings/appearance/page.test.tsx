@@ -99,6 +99,55 @@ describe("AppearanceSettingsPage — keyboard shortcuts", () => {
 });
 
 /**
+ * The Message queuing row carries the client-level never-steer switch as a
+ * third option, "Queue only" (the web form of `mecatui --no-steer`): picking
+ * it persists the "queue-only" preference the composer reads, and the row's
+ * description stops promising that Shift+Enter "does the opposite".
+ */
+describe("AppearanceSettingsPage — message queuing", () => {
+  const ENTER_KEY = "mecatl-studio.enter-send-behavior";
+
+  beforeEach(() => {
+    vi.stubGlobal("localStorage", memoryStorage());
+  });
+
+  it("offers Queue only and persists it with an honest description", async () => {
+    const user = userEvent.setup();
+    render(<AppearanceSettingsPage />);
+    const trigger = screen.getByRole("button", { name: "Message queuing" });
+    expect(trigger).toHaveTextContent("Queue message");
+    expect(
+      screen.getByText(/Shift\+Enter does the opposite/),
+    ).toBeInTheDocument();
+
+    await user.click(trigger);
+    for (const label of ["Queue message", "Steer the agent", "Queue only"]) {
+      expect(
+        await screen.findByRole("menuitem", { name: new RegExp(label) }),
+      ).toBeInTheDocument();
+    }
+    await user.click(screen.getByRole("menuitem", { name: /Queue only/ }));
+
+    expect(
+      screen.getByRole("button", { name: "Message queuing" }),
+    ).toHaveTextContent("Queue only");
+    expect(window.localStorage.getItem(ENTER_KEY)).toBe("queue-only");
+    expect(
+      screen.getByText(/Never steer the in-flight run/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/does the opposite/)).not.toBeInTheDocument();
+  });
+
+  it("shows a stored Queue only choice on load", () => {
+    window.localStorage.setItem(ENTER_KEY, "queue-only");
+    render(<AppearanceSettingsPage />);
+    expect(
+      screen.getByRole("button", { name: "Message queuing" }),
+    ).toHaveTextContent("Queue only");
+  });
+});
+
+/**
  * The Palette row is the web form of mecatui's `--theme` / `--list-themes`:
  * it enumerates every built-in palette by name and description, and picking
  * one lands `data-palette` on <html> at once AND persists it, while the
@@ -222,5 +271,50 @@ describe("AppearanceSettingsPage — custom palettes", () => {
     expect(
       screen.getByText("Document format and allowed tokens"),
     ).toBeInTheDocument();
+  });
+});
+
+/**
+ * "Start on" is the `--resume-latest` analogue: a new draft by default, or
+ * the most recent quiet chat, persisted browser-locally under the key the
+ * chat workspace's launch effect reads.
+ */
+describe("AppearanceSettingsPage — start on", () => {
+  const LAUNCH_KEY = "mecatl-studio.launch-target";
+
+  beforeEach(() => {
+    vi.stubGlobal("localStorage", memoryStorage());
+  });
+
+  it("defaults to New chat and persists Most recent chat", async () => {
+    const user = userEvent.setup();
+    render(<AppearanceSettingsPage />);
+    const trigger = screen.getByRole("button", { name: "Start on" });
+    expect(trigger).toHaveTextContent("New chat");
+    expect(window.localStorage.getItem(LAUNCH_KEY)).toBeNull();
+    expect(
+      screen.getByText(/skips chats that are running or waiting/),
+    ).toBeInTheDocument();
+
+    await user.click(trigger);
+    await user.click(
+      await screen.findByRole("menuitem", { name: /Most recent chat/ }),
+    );
+    expect(screen.getByRole("button", { name: "Start on" })).toHaveTextContent(
+      "Most recent chat",
+    );
+    expect(window.localStorage.getItem(LAUNCH_KEY)).toBe("latest");
+
+    await user.click(screen.getByRole("button", { name: "Start on" }));
+    await user.click(await screen.findByRole("menuitem", { name: /New chat/ }));
+    expect(window.localStorage.getItem(LAUNCH_KEY)).toBeNull();
+  });
+
+  it("shows the stored choice on load", async () => {
+    window.localStorage.setItem(LAUNCH_KEY, "latest");
+    render(<AppearanceSettingsPage />);
+    expect(
+      await screen.findByRole("button", { name: "Start on" }),
+    ).toHaveTextContent("Most recent chat");
   });
 });

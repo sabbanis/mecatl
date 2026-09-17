@@ -10,6 +10,7 @@ import {
 import {
   createHarnessSession,
   createThreadHarnessSession,
+  forkHarnessSessionCopy,
   forkHarnessSessionToModel,
   forkHarnessSessionToSelection,
   forkHarnessSessionToWorktree,
@@ -113,6 +114,23 @@ describe("session create bodies stay inside the daemon's strict field set", () =
     const keys = Object.keys(captured.body());
     expect(keys.every((k) => FORK_ALLOWED.has(k))).toBe(true);
     expect(captured.body()).toEqual({ title: "Thread: x" });
+  });
+
+  it("fork-as-is carries ONLY the copy title (same model, effort and placement as the source)", async () => {
+    const captured = captureCreates();
+    await forkHarnessSessionCopy("src", "Title");
+    expect(captured.requests[0].path).toBe("/v1/sessions/src/fork");
+    const keys = Object.keys(captured.body());
+    expect(keys.every((k) => FORK_ALLOWED.has(k))).toBe(true);
+    // No model_id/provider_id/reasoning_effort/worktree_selector: the
+    // daemon's own routing and the source's placement apply unchanged.
+    expect(captured.body()).toEqual({ title: "Title (copy)" });
+  });
+
+  it("fork-as-is of an untitled chat gets the plain floor title", async () => {
+    const captured = captureCreates();
+    await forkHarnessSessionCopy("src", "");
+    expect(captured.body()).toEqual({ title: "Untitled chat (copy)" });
   });
 
   it("model-switch fork carries the model pick and the source title", async () => {

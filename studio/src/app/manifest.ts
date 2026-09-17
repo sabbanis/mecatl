@@ -17,6 +17,15 @@ export default function manifest(): MetadataRoute.Manifest {
     display: "standalone",
     background_color: "#03433e",
     theme_color: "#03433e",
+    // Share to the installed app: the shared text/title/url land in the
+    // chat route as `?prompt=&title=&url=`, PREFILL-ONLY — a share pre-fills
+    // the composer and the user presses Enter (see lib/chat-seed.ts; a
+    // share never carries `send=1`).
+    share_target: {
+      action: "/workspace/chat",
+      method: "GET",
+      params: { text: "prompt", title: "title", url: "url" },
+    },
     icons: [
       {
         src: "/icon-192.png",

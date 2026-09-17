@@ -37,6 +37,7 @@ import { useDeliveryFollow } from "@/features/agent/hooks/use-delivery-follow";
 import { useHarnessRuntime } from "@/features/agent/hooks/use-harness-runtime";
 import { useSessionMode } from "@/features/agent/hooks/use-session-mode";
 import { useWorkspaceEnrollment } from "@/features/agent/hooks/use-workspace-enrollment";
+import { pickLatestEligibleChat } from "@/features/agent/latest-chat";
 import {
   isMockTourSession,
   MOCK_TOUR_MESSAGES,
@@ -53,6 +54,7 @@ import {
   type MediaCapabilities,
   resolveMediaCapabilities,
 } from "@/lib/attachment-inline";
+import type { ChatSeed } from "@/lib/chat-seed";
 import { composeDocumentTitle, useDocumentTitle } from "@/lib/document-title";
 import {
   compactHarnessSession,
@@ -70,6 +72,7 @@ import {
   type SessionListSide,
   useAgentDisplayName,
   useDeveloperTools,
+  useLaunchTarget,
   useMockFeatures,
   useSessionListSide,
   useShowStarterPrompts,
@@ -100,6 +103,10 @@ import {
   clearConversationGate,
   NOTHING_TO_CLEAR,
 } from "./clear-conversation";
+import {
+  ContinueLatestChip,
+  type LatestChatSummary,
+} from "./continue-latest-chip";
 import { useDebugSessionDialog } from "./debug-session-dialog";
 import { DraftGreeting } from "./draft-greeting";
 import { InspectQueryWatcher } from "./inspect-query-watcher";
@@ -122,6 +129,10 @@ import { useBuiltinSlashCommands } from "./use-builtin-slash-commands";
 import { useClearConversation } from "./use-clear-conversation";
 import { useComposerEscape } from "./use-composer-escape";
 import { useDebugOpeningPrompt } from "./use-debug-opening-prompt";
+import { useForkSessionCopy } from "./use-fork-session-copy";
+import { useLatestChatAutoOpen } from "./use-latest-chat-auto-open";
+import { seedSendWaitReason, useSeedPrompt } from "./use-seed-prompt";
+import { useSessionRowShortcuts } from "./use-session-row-shortcuts";
 import { useWorktreeSwitch } from "./use-worktree-switch";
 
 /** Route for a chat, or the base (a new draft) when none is selected. */
@@ -351,6 +362,8 @@ function DraftView({
   builtinGates,
   mediaCapabilities,
   onDraftChange,
+  latest,
+  onContinueLatest,
 }: {
   onSend: (content: string, files?: File[]) => void;
   seed: string | null;
@@ -394,6 +407,9 @@ function DraftView({
   /** Fires when the composer's "holds unsent text" state flips (and `false`
       when it unmounts); the workspace arms its leave guard from it. */
   onDraftChange?: (hasText: boolean) => void;
+  /** The most recent eligible chat for the Continue chip (null = no chip). */
+  latest: LatestChatSummary | null;
+  onContinueLatest: (id: string) => void;
 }) {
   // The draft view has no panel, selection or run, so Esc goes straight to
   // the composer's double-Esc clear once there is text to clear. Only one of
@@ -446,6 +462,9 @@ function DraftView({
               showStarterPrompts={showStarterPrompts}
               onPickSeed={onPickSeed}
             />
+            {/* The `--resume-latest` chip: continue the newest quiet chat
+                without any preference set. */}
+            <ContinueLatestChip latest={latest} onContinue={onContinueLatest} />
           </div>
         </div>
         <div className="absolute bottom-0 left-0 right-0 px-3 lg:px-4 pb-4 max-[499px]:px-0 max-[499px]:pb-0">
@@ -488,7 +507,14 @@ function DraftView({
  * `/workspace/chat` with no id is a draft whose daemon session is minted on
  * the first send.
  */
-export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
+export function ChatWorkspace({
+  sessionId,
+  seed,
+}: {
+  sessionId?: string;
+  /** The route's `?prompt=` arrival, resolved by page.tsx (lib/chat-seed). */
+  seed?: ChatSeed | null;
+}) {
   const {
     sessions,
     runs,
@@ -938,6 +964,27 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     const pending = takePendingDraft();
     if (pending) setDraftSeed(pending);
   }, []);
+  // The route's arrival prompt (`?prompt=…`, `&send=1`, the PWA share
+  // target — the web analogue of `mecatui -p`): consumed once per mount by
+  // the hook, which strips the query. A prefill goes to whichever composer
+  // the route shows (the draft's, or the open chat's via initialDraft); a
+  // send=1 seed waits behind the confirmation dialog and then takes the
+  // composer's own send path, so a draft mints its session exactly as Enter
+  // would. Send is held while offline, mid-run, or on the mock tour.
+  const [sessionSeed, setSessionSeed] = useState<string | null>(null);
+  const clearSessionSeed = useCallback(() => setSessionSeed(null), []);
+  const { seedPromptDialog } = useSeedPrompt({
+    seed,
+    sessionId,
+    onPrefill: sessionId ? setSessionSeed : setDraftSeed,
+    onSend: sendMessage,
+    waitReason: seedSendWaitReason({
+      connected: connection === "connected",
+      isStreaming,
+      status,
+      isMock: isMockSelected,
+    }),
+  });
 
   // Sessions minted to back message threads. Filtered HERE, at the
   // presentation seam, deliberately not inside use-agent-sessions: rule 9's
@@ -955,6 +1002,14 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
       sessions
         .filter((s) => !threadSessionIds.has(s.id))
         .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0)),
+    [sessions, threadSessionIds],
+  );
+  // The `--resume-latest` pick — the newest QUIET chat: running/awaiting,
+  // AI-debug, thread-backing and mock rows are skipped (`latest-chat.ts`).
+  // Feeds the draft's Continue chip, the `chat.latest` shortcut and the
+  // "Most recent chat" launch preference below.
+  const latestChat = useMemo(
+    () => pickLatestEligibleChat(sessions, threadSessionIds),
     [sessions, threadSessionIds],
   );
   // The Drafts tab exists only when the daemon classifies drafts (the
@@ -1051,21 +1106,54 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     [selectId, isMobile, isCompact],
   );
 
+  // The `--resume-latest` landing (Settings → Personalize → "Start on"): a
+  // bare-route arrival under "Most recent chat" opens `latestChat` once the
+  // daemon is connected and the inventory has loaded — unless the user asked
+  // for a draft ("New chat"), the draft already holds work (an arrival
+  // prompt, a picked starter, typed text), or nothing is eligible. Native
+  // replaceState, deliberately not a push: Back must return to wherever the
+  // user came from, never bounce to the draft (the `handleSessionCreated`
+  // reasoning about the App Router applies here too).
+  const { target: launchTarget } = useLaunchTarget();
+  const openLatestOnLanding = useCallback(
+    (id: string) => {
+      setSelectedIdState(id);
+      window.history.replaceState(null, "", chatHref(id));
+      // A phone mounts with the list open (pre-measurement init); the opened
+      // chat must not sit underneath it, as after a tap on a row.
+      if (isMobile || isCompact) setSidebarOpen(false);
+    },
+    [isMobile, isCompact],
+  );
+  const { requestDraft: requestExplicitDraft } = useLatestChatAutoOpen({
+    selectedId,
+    launchTarget,
+    connected: connection === "connected",
+    sessionsLoading,
+    hold: Boolean(seed) || draftSeed !== null || hasDraft,
+    latestChatId: latestChat?.id ?? null,
+    onOpen: openLatestOnLanding,
+  });
+
   /** "New chat" opens the draft route; the daemon session is minted on send. */
   const handleNewChat = useCallback(() => {
+    // An explicit draft: the launch preference must not re-open the most
+    // recent chat over it, whether or not the route change remounts.
+    requestExplicitDraft();
     setSelectedIdState("");
     router.push(chatHref());
     if (isMobile || isCompact) setSidebarOpen(false);
-  }, [router, isMobile, isCompact]);
+  }, [requestExplicitDraft, router, isMobile, isCompact]);
 
   const deselectIfActive = useCallback(
     (id: string) => {
       if (id === selectedId) {
+        requestExplicitDraft();
         setSelectedIdState("");
         router.push(chatHref());
       }
     },
-    [selectedId, router],
+    [selectedId, router, requestExplicitDraft],
   );
 
   // "Debug with AI" (F1, ADR 0254): creates a SEPARATE no-fs diagnostic
@@ -1260,6 +1348,57 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     },
     [runs],
   );
+  // The row menu's "View transcript" (the TUI's `v`) for a CHAT row: the same
+  // read-only dialog the Runs tab opens, without making the row the live
+  // chat. A row the daemon withholds toasts its reason (the item is already
+  // disabled with it); an id not in the chat inventory is a run.
+  const handleViewTranscript = useCallback(
+    (id: string) => {
+      const row = sessions.find((s) => s.id === id);
+      if (!row) {
+        handleInspectSession(id);
+        return;
+      }
+      if (row.canViewTranscript !== true) {
+        toast.info(
+          capabilityReasonLabel(row.viewTranscriptReason) ||
+            "Transcript unavailable",
+        );
+        return;
+      }
+      setInspecting({
+        sessionId: id,
+        label: row.title || "Untitled chat",
+        subtitle: "",
+        parentSessionId: "",
+      });
+    },
+    [sessions, handleInspectSession],
+  );
+  // The row menu's "Fork chat" (the TUI's `f`): a copy of the chat as-is on
+  // the same model/effort/placement; the UI moves there once the daemon
+  // answered and the source stays in the list.
+  const forkSessionCopy = useForkSessionCopy({
+    onForked: async (newId) => {
+      await refreshSessions();
+      handleSelectSession(newId);
+    },
+  });
+  const handleForkSession = useCallback(
+    (id: string) => {
+      const row = sessions.find((s) => s.id === id);
+      void forkSessionCopy(id, row?.title ?? "");
+    },
+    [sessions, forkSessionCopy],
+  );
+  const rowActions: SessionActions = useMemo(
+    () => ({
+      ...sessionActions,
+      onViewTranscript: handleViewTranscript,
+      onFork: handleForkSession,
+    }),
+    [sessionActions, handleViewTranscript, handleForkSession],
+  );
 
   // Flattened, in-display-order chat ids for keyboard navigation (the
   // active tab's rows).
@@ -1308,6 +1447,10 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   );
 
   useShortcut("chat.new", handleNewChat);
+  // Jump to the most recent quiet chat (the `--resume-latest` analogue).
+  useShortcut("chat.latest", () => {
+    if (latestChat) handleSelectSession(latestChat.id);
+  });
   useShortcut("chat.toggleList", () => setSidebarOpen((o) => !o));
   useShortcut("chat.next", () => navigateBy(true));
   useShortcut("chat.next.vim", () => navigateBy(true));
@@ -1332,7 +1475,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     agents,
     selectedId,
     onSelect: handleSelectSession,
-    actions: sessionActions,
+    actions: rowActions,
     showMockProjects: mockFeatures,
     kindTabs: (
       <SessionKindTabs
@@ -1417,6 +1560,13 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     else if (clearGate.kind === "disabled") toast.info(clearGate.reason);
     else toast.info(NOTHING_TO_CLEAR);
   });
+  // The per-chat keys for the OPEN chat: copy its session ID (the TUI's `c`
+  // on /session) and fork it as-is (the TUI's `f`); a draft, the mock tour or
+  // a refusing row toasts why instead.
+  useSessionRowShortcuts({
+    session: isMockSelected ? undefined : selectedSession,
+    onFork: handleForkSession,
+  });
 
   // Switch worktree (the TUI's /worktrees picker): a clear (default) or a
   // fork of this chat rooted at a sibling git worktree the daemon lists by
@@ -1440,6 +1590,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
       {sessionDetailsDialog}
       {debugSessionDialog}
       {worktreePickerDialog}
+      {seedPromptDialog}
       {inspecting && (
         <TranscriptDialog
           sessionId={inspecting.sessionId}
@@ -1594,6 +1745,9 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
           onRecoverDraftConsumed={consumeRecoverDraft}
           onEditFailed={failedPrompt !== null ? takeFailedPrompt : undefined}
           onSend={sendMessage}
+          // The `?prompt=` arrival on an open chat, prefilled once.
+          initialDraft={sessionSeed}
+          onInitialDraftConsumed={clearSessionSeed}
           queuedMessages={queuedMessages}
           onQueueMessage={queueMessage}
           onOpenSession={handleSelectSession}
@@ -1677,6 +1831,12 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
               ? () => sessionActions.onDelete(selectedSession.id)
               : undefined
           }
+          // Fork as-is: the header item gates itself on the row's `fork`
+          // capability (disabled with the daemon's reason); a debug chat's
+          // successor would lose its binding, so it is not offered there.
+          onFork={
+            debugChat ? undefined : () => handleForkSession(selectedSession.id)
+          }
           onSidePanelOpenChange={
             isMobile ? undefined : handleSidePanelOpenChange
           }
@@ -1739,6 +1899,8 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
             onLocalCommand={handleSlashBuiltin}
             builtinGates={builtinGates}
             onDraftChange={setHasDraft}
+            latest={latestChat}
+            onContinueLatest={handleSelectSession}
           />
         )}
       </div>
@@ -1777,6 +1939,8 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
             onLocalCommand={handleSlashBuiltin}
             builtinGates={builtinGates}
             onDraftChange={setHasDraft}
+            latest={latestChat}
+            onContinueLatest={handleSelectSession}
           />
         )}
       </div>

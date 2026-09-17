@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import type { ToolCallInfo } from "@/features/agent";
 import { friendlyToolName, toolRawArgs } from "@/lib/tool-summary";
 import { cn } from "@/lib/utils";
+import { HookSection } from "./hook-notice";
 import { SidePanel } from "./side-panel";
 import { statusDotClass } from "./tool-call-list";
 import { parseDiffArgs, ToolDiff } from "./tool-diff";
@@ -135,6 +136,7 @@ export function ToolCallPanel({
           {call.output ||
             (call.status === "running" ? "(still running)" : "(no output)")}
         </pre>
+        <HookSection hooks={call.hooks} />
         {call.parts && call.parts.length > 0 && (
           <>
             <SectionLabel>Result parts</SectionLabel>

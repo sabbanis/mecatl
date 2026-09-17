@@ -357,6 +357,25 @@ export type ToolResultPart =
   | { kind: "image"; mimeType: string; data: string }
   | { kind: "resource_link"; url: string; name: string; title?: string };
 
+/**
+ * What a hook fire did (the wire's HookDecision, labelled): `blocked` vetoed
+ * the action, `modified` rewrote its payload, `advisory` flagged content
+ * without changing anything, `info` is a benign notice (also the daemon's
+ * default for an unspecified decision).
+ */
+export type HookDecision = "info" | "blocked" | "modified" | "advisory";
+
+/** One hook fire attributed to a tool call (`hook` event with a callId). */
+export interface HookNotice {
+  /** The hook phase (PreToolUse, PostToolUse, …), as the daemon names it. */
+  phase: string;
+  /** The tool the hook fired on; empty for a call-less lifecycle hook. */
+  tool: string;
+  decision: HookDecision;
+  /** The daemon's human-readable message; may be empty. */
+  text: string;
+}
+
 export interface ToolCallInfo {
   callId: string;
   name: string;
@@ -372,6 +391,8 @@ export interface ToolCallInfo {
   /** Image / resource-link blocks the result carried besides its text. */
   parts?: ToolResultPart[];
   isError?: boolean;
+  /** Hook fires attributed to this call (PreToolUse / PostToolUse notices). */
+  hooks?: HookNotice[];
   status: "running" | "completed" | "failed";
 }
 
@@ -485,6 +506,21 @@ type StreamEventBody =
   | { type: "steer"; text: string; messageId: string; parts?: SteerEchoPart[] }
   /** A one-line advisory (tool progress, compaction, unrendered event kinds). */
   | { type: "notice"; text: string }
+  /**
+   * A hook fired (`hook` event): phase + tool + labelled decision, with the
+   * daemon's message in `text`. `callId` names the tool call a
+   * PreToolUse/PostToolUse fire belongs to (the call's hook chips); a
+   * lifecycle hook (SessionStart, UserPromptSubmit, Stop) has none and
+   * renders as a marked transcript notice.
+   */
+  | {
+      type: "hook";
+      phase: string;
+      tool: string;
+      decision: HookDecision;
+      callId: string;
+      text: string;
+    }
   /**
    * The downstream provider a turn was routed to (EvProviderRoute, ADR 0210):
    * metadata for the chat status strip's model segment (`model/route`),

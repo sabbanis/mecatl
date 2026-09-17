@@ -15,6 +15,7 @@ import {
   FolderPlus,
   Mic,
   Paperclip,
+  Plug,
   Plus,
   RotateCcw,
   Shield,
@@ -101,6 +102,11 @@ import {
   effortTriggerLabel,
   ModelPickerShortcut,
 } from "./effort-picker";
+import {
+  McpInsertMenu,
+  type McpPickerKind,
+  useMcpComposerInsert,
+} from "./mcp-composer-insert";
 import { ModelSheetSection, ModelSubmenuContent } from "./model-picker";
 
 interface ProjectItem {
@@ -696,8 +702,12 @@ function MobileComposerMenu({
   currentEffort,
   currentModelReasoning,
   effortSupported = true,
+  onInsertFromMcp,
 }: {
   onFilesSelected: (files: File[]) => void;
+  /** Present when the daemon grants `capabilities.mcp`: opens the MCP prompt
+   *  or resource picker (the desktop toolbar's "Insert from MCP"). */
+  onInsertFromMcp?: (kind: McpPickerKind) => void;
   /** Draft pick ("" = auto row); null = reset to untouched (Studio default). */
   onModelChange?: (id: string | null) => void;
   modelLockedLabel?: string;
@@ -800,6 +810,32 @@ function MobileComposerMenu({
               <Paperclip className="size-4 text-muted-foreground" />
               Add a file
             </button>
+            {onInsertFromMcp && (
+              <>
+                <button
+                  type="button"
+                  className={menuRow}
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onInsertFromMcp("prompt");
+                  }}
+                >
+                  <Plug className="size-4 text-muted-foreground" />
+                  Insert an MCP prompt
+                </button>
+                <button
+                  type="button"
+                  className={menuRow}
+                  onClick={() => {
+                    setMenuOpen(false);
+                    onInsertFromMcp("resource");
+                  }}
+                >
+                  <Plug className="size-4 text-muted-foreground" />
+                  Insert an MCP resource
+                </button>
+              </>
+            )}
             {onModeChange && (
               <button
                 type="button"
@@ -1340,6 +1376,9 @@ export function resolveComposerAction(input: {
 }): ComposerEnterAction {
   if (input.mod) return "newline";
   if (!input.isStreaming) return input.shift ? "newline" : "send";
+  // "Queue only" (the client-level never-steer switch, mecatui --no-steer):
+  // Enter AND Shift+Enter queue — there is no opposite to invert into.
+  if (input.behavior === "queue-only") return "queue";
   if (!input.shift) return input.behavior;
   return input.behavior === "queue" ? "steer" : "queue";
 }
@@ -1657,6 +1696,11 @@ export function ChatInput({
       setNotice(null);
     },
   });
+
+  // "Insert from MCP" (the TUI's f8 prompts / ctrl+r resources pickers):
+  // capability-gated on the daemon's `mcp`; the picked text is appended
+  // after the draft for review, never sent.
+  const mcpInsert = useMcpComposerInsert(editor);
 
   // The one-shot draft clear (the TUI's ctrl+u ClearPrompt): editor content
   // — `[Pasted text #N]` chips included — the text mirror, the staged files
@@ -2214,6 +2258,9 @@ export function ChatInput({
               onModeChange={onModeChange}
               modeDisabled={disabled || (isStreaming && !modeSwitchDeferred)}
               modePending={modePending}
+              onInsertFromMcp={
+                mcpInsert.available && !disabled ? mcpInsert.open : undefined
+              }
             />
           </div>
           {/* TipTap composer: resolved @agent / /skill mentions are atomic
@@ -2273,6 +2320,7 @@ export function ChatInput({
             onFilesSelected={stageFiles}
             inputRef={attachInputRef}
           />
+          <McpInsertMenu insert={mcpInsert} disabled={disabled} />
           {voice.isSupported && (
             <Button
               size="icon"
@@ -2355,6 +2403,7 @@ export function ChatInput({
           </>
         )}
       </div>
+      {mcpInsert.dialogs}
     </div>
   );
 }

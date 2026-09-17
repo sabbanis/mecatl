@@ -142,9 +142,17 @@ import { QueuedMessageStrip } from "./queued-message-strip";
 import { PAGE_FRACTION, scrollPositionPercent } from "./scroll-position";
 import { ScrollToBottomPill } from "./scroll-to-bottom-pill";
 import {
+  CopySessionIdMenuItem,
+  CopySessionIdSheetItem,
+} from "./session-copy-menu-items";
+import {
   SessionDetailsMenuItem,
   SessionDetailsSheetItem,
 } from "./session-details-menu-item";
+import {
+  ForkChatMenuItem,
+  ForkChatSheetItem,
+} from "./session-row-action-items";
 import { SidePanel } from "./side-panel";
 import { StatusLine } from "./status-line";
 import { SteerTraceLine } from "./steer-trace-line";
@@ -307,6 +315,8 @@ function MobileChatMenu({
   onClear,
   clearDisabledReason,
   onSwitchWorktree,
+  session,
+  onFork,
   usage,
   transcript,
 }: {
@@ -332,6 +342,10 @@ function MobileChatMenu({
   /** Opens the worktree picker (the `/worktrees` built-in): present only
    *  when the daemon lists worktrees and the row may mint a successor. */
   onSwitchWorktree?: () => void;
+  /** The open session: the copy-ID and fork rows gate on its capabilities. */
+  session: AgentSession;
+  /** Fork the chat as-is (the TUI's `f`): present when the row may offer it. */
+  onFork?: () => void;
   usage?: UsageFigures | null;
   /** Select / copy the whole conversation (the TUI's ctrl+g / ctrl+y). */
   transcript?: TranscriptActionProps;
@@ -430,6 +444,17 @@ function MobileChatMenu({
               />
             )}
             <HelpSheetItem onSelect={() => setOpen(false)} />
+            <CopySessionIdSheetItem
+              session={session}
+              onDone={() => setOpen(false)}
+            />
+            {onFork && (
+              <ForkChatSheetItem
+                session={session}
+                onSelect={onFork}
+                onDone={() => setOpen(false)}
+              />
+            )}
             {onRename && (
               <button
                 type="button"
@@ -529,6 +554,10 @@ function ThreadPanel({
 }) {
   // The global Show Tools preference — shared with the chat's ··· menu.
   const { showToolCalls: showTools, setShowToolCalls } = useShowToolCalls();
+  // "Queue only" (Settings → Personalize) withdraws the queued row's Steer
+  // action here too — the thread's strip is the second QueuedMessageStrip.
+  const { behavior: threadEnterBehavior } = useEnterSendBehavior();
+  const threadSteerAllowed = threadEnterBehavior !== "queue-only";
   const rootKey = threadKeyForMessage(rootMessage);
   // The persisted thread session, when this root message already has one —
   // the hook rehydrates its transcript. A session minted DURING this panel's
@@ -780,7 +809,7 @@ function ThreadPanel({
             <QueuedMessageStrip
               queued={queuedMessages}
               isStreaming={isStreaming}
-              onSteer={steerQueued}
+              onSteer={threadSteerAllowed ? steerQueued : undefined}
               onEdit={handleEditQueued}
               onDelete={deleteQueued}
             />
@@ -1021,6 +1050,7 @@ export function ChatView({
   onCancelAuthorization,
   onRename,
   onDelete,
+  onFork,
   onOpenDetails,
   onSidePanelOpenChange,
   initialDraft,
@@ -1114,6 +1144,10 @@ export function ChatView({
   onCancelAuthorization?: () => Promise<unknown>;
   onRename?: () => void;
   onDelete?: () => void;
+  /** Fork the open chat as-is (the TUI's `f`): a copy on the same model,
+      effort and placement. The menu item gates itself on the row's `fork`
+      capability; the workspace withholds it for an AI-debug chat. */
+  onFork?: () => void;
   /** Opens the session details dialog (exact id + Copy, state, model,
       placement…) — the `/session` built-in's dialog, owned by the workspace.
       Offered for every real (non-mock) selected session. */
@@ -1332,7 +1366,11 @@ export function ChatView({
   );
   const [appendText, setAppendText] = useState<string | null>(null);
   // The Enter preference (Settings → Chat) decides the streaming placeholder.
+  // "Queue only" — the client-level never-steer switch (mecatui --no-steer) —
+  // also withdraws every steer affordance: the composer's steer action and
+  // the queued row's Steer, whatever the daemon supports.
   const { behavior: enterBehavior } = useEnterSendBehavior();
+  const steerAllowed = enterBehavior !== "queue-only";
   // Editing a queued message pulls it out of the queue into the composer —
   // text and staged files alike. Edit all merges the whole queue; Retract
   // pulls the never-applied steer bundle back the same way.
@@ -1484,6 +1522,20 @@ export function ChatView({
   // Expand / collapse details across the whole transcript (the TUI's
   // ctrl+t): flips the global preference every open disclosure follows.
   useShortcut("chat.expandDetails", () => setExpandDetails(!expandDetails));
+  // The MCP tools panel hotkey (the TUI's ctrl+o): toggles the panel, and is
+  // registered ONLY while the daemon serves an MCP inventory, so the chord
+  // keeps its native meaning against a daemon without MCP.
+  useShortcut(
+    "mcp.inventory",
+    () => {
+      if (panel?.kind === "mcp") {
+        closeSidePanel();
+        return;
+      }
+      openMcpPanel();
+    },
+    { enabled: mcpPanelAvailable(runtime.serverCapabilities) },
+  );
   // The header's Agents button appears once any child has run in this chat;
   // its badge counts the children still running (team members working).
   const delegationCounts = useMemo(() => {
@@ -1878,6 +1930,10 @@ export function ChatView({
                   <SessionDetailsMenuItem onSelect={onOpenDetails} />
                 )}
                 <HelpMenuItem />
+                <CopySessionIdMenuItem session={session} />
+                {onFork && (
+                  <ForkChatMenuItem session={session} onSelect={onFork} />
+                )}
                 {onRename && (
                   <DropdownMenuItem onClick={onRename}>
                     <Pencil className="size-4 mr-2 text-muted-foreground" />
@@ -1908,6 +1964,8 @@ export function ChatView({
               onClear={onClear}
               clearDisabledReason={clearDisabledReason}
               onSwitchWorktree={onSwitchWorktree}
+              session={session}
+              onFork={onFork}
               usage={usage}
               transcript={{
                 messages,
@@ -2068,7 +2126,11 @@ export function ChatView({
                 pendingSteers={pendingSteers}
                 paused={queuePaused}
                 isStreaming={isStreaming}
-                onSteer={(id) => onSteerQueued?.(id)}
+                onSteer={
+                  steerAllowed && onSteerQueued
+                    ? (id) => onSteerQueued(id)
+                    : undefined
+                }
                 onEdit={handleEditQueued}
                 onDelete={(id) => onDeleteQueued?.(id)}
                 onResume={onResumeQueue}
@@ -2113,7 +2175,7 @@ export function ChatView({
                 <ChatInput
                   onSend={onSend}
                   onQueue={onQueueMessage}
-                  onSteer={onSteerMessage}
+                  onSteer={steerAllowed ? onSteerMessage : undefined}
                   onLocalCommand={onLocalCommand}
                   builtinGates={builtinGates}
                   mediaCapabilities={mediaCapabilities}

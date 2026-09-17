@@ -54,9 +54,12 @@ export interface HarnessDiagnosticsState {
   /** The saved document the managed daemon was spawned with. */
   options: HarnessDiagnosticsOptions;
   productMetrics: {
-    /** Whether product metrics are actually on: the saved switch AND no
-     *  environment opt-out on the controller (mecated reads the inherited
-     *  DO_NOT_TRACK / MECATL_PRODUCT_METRICS regardless of Studio's flag). */
+    /** Whether product metrics are on as far as Studio can tell: the saved
+     *  switch AND no environment opt-out on the controller (DO_NOT_TRACK /
+     *  MECATL_PRODUCT_METRICS, which the spawned mecated inherits; the
+     *  controller never passes the out-ranking --product-metrics=true). The
+     *  settings.yaml opt-out is not readable here, so true means "not
+     *  disabled by Studio or the environment", not a definitive on. */
     effective: boolean;
     /** "environment" when the controller's env opts out — the switch in the
      *  UI cannot turn them back on from here. */

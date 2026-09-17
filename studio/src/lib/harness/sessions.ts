@@ -277,6 +277,31 @@ export async function createThreadHarnessSession(
   return forkHarnessSession(parentSessionId, { title }, signal);
 }
 
+/** The title a fork-as-is copy gets: the source's (or a plain floor) + " (copy)",
+ *  so the two otherwise identical rows read apart in the list. */
+function forkCopyTitle(sourceTitle: string): string {
+  return `${sourceTitle || "Untitled chat"} (copy)`;
+}
+
+/**
+ * Forks a chat AS-IS (the TUI's `f` on /sessions): a copy seeded from the
+ * source's history on the same model, provider, effort and placement — the
+ * body carries the title alone, so the daemon's own routing/defaults for the
+ * source apply unchanged. The source stays in the list. A running/awaiting
+ * source answers 412 (ThreadSourceBusyError).
+ */
+export async function forkHarnessSessionCopy(
+  sourceSessionId: string,
+  sourceTitle: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  return forkHarnessSession(
+    sourceSessionId,
+    { title: forkCopyTitle(sourceTitle) },
+    signal,
+  );
+}
+
 /**
  * Continues an existing chat in ANOTHER worktree of the repository: a fork
  * seeded from the source's history, carrying its title, rooted at the

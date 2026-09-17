@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { RESERVED_COMBOS } from "./keymap";
 import {
   comboFiresWhileTyping,
   describeShortcut,
@@ -69,6 +70,55 @@ describe("shortcut registry", () => {
     expect(byId.get("chat.clear")).toBe("mod+shift+x");
     expect(SHORTCUTS.find((s) => s.id === "chat.clear")?.group).toBe("Chats");
     expect(comboFiresWhileTyping("mod+shift+x")).toBe(true);
+    // The Tools group (the TUI's ctrl+o / ctrl+r / f8 MCP overlays): the
+    // punctuation keys beside Enter — no free mnemonic letter chord is left
+    // that every browser yields — all ⌘ chords, so they fire from the
+    // composer too.
+    expect(byId.get("mcp.inventory")).toBe("mod+.");
+    expect(byId.get("mcp.resources")).toBe("mod+;");
+    expect(byId.get("mcp.prompts")).toBe("mod+'");
+  });
+
+  it("binds the three MCP overlays (the TUI's ctrl+o, ctrl+r, f8) to preventable ⌘-punctuation chords in a Tools group", () => {
+    const tools = SHORTCUTS.filter((s) => s.group === "Tools");
+    expect(tools.map((s) => s.id)).toEqual([
+      "mcp.inventory",
+      "mcp.resources",
+      "mcp.prompts",
+    ]);
+    expect(SHORTCUT_GROUPS).toContain("Tools");
+    // The docs page renders groups in order; Tools is the last one.
+    expect(SHORTCUT_GROUPS[SHORTCUT_GROUPS.length - 1]).toBe("Tools");
+    for (const def of tools) {
+      // Dispatched (a component registers a handler), rebindable, and live
+      // while typing in the composer.
+      expect(def.fixed).toBeUndefined();
+      expect(def.locked).toBeUndefined();
+      expect(comboFiresWhileTyping(def.combo)).toBe(true);
+    }
+    expect(
+      SHORTCUTS.find((s) => s.id === "mcp.inventory")?.description,
+    ).toContain("ctrl+o");
+    expect(
+      SHORTCUTS.find((s) => s.id === "mcp.resources")?.description,
+    ).toContain("ctrl+r");
+    expect(
+      SHORTCUTS.find((s) => s.id === "mcp.prompts")?.description,
+    ).toContain("f8");
+    // The chords match by the produced character on either modifier, and a
+    // held shift on a symbol is layout noise, not a different chord (a
+    // German ";" is ⇧,) — while the bare key never matches.
+    expect(matchCombo("mod+.", ev(".", { meta: true }))).toBe(true);
+    expect(matchCombo("mod+.", ev(".", { ctrl: true }))).toBe(true);
+    expect(matchCombo("mod+.", ev("."))).toBe(false);
+    expect(matchCombo("mod+;", ev(";", { ctrl: true, shift: true }))).toBe(
+      true,
+    );
+    expect(matchCombo("mod+'", ev("'", { meta: true }))).toBe(true);
+    expect(matchCombo("mod+'", ev("Dead", { meta: true }))).toBe(false);
+    expect(keycaps("mod+.")).toEqual(["⌘", "."]);
+    expect(keycaps("mod+;")).toEqual(["⌘", ";"]);
+    expect(keycaps("mod+'")).toEqual(["⌘", "'"]);
   });
 
   it("binds Debug with AI (the TUI's F1) to a preventable, browser-free chord in the Chats group", () => {
@@ -114,6 +164,67 @@ describe("shortcut registry", () => {
     const live = SHORTCUTS.filter((s) => !s.fixed);
     const combos = live.map((s) => s.combo);
     expect(new Set(combos).size).toBe(combos.length);
+  });
+
+  it("binds the per-chat copy-ID and fork keys (the TUI's c / f) in the Chats group, off every browser chord", () => {
+    const copyId = SHORTCUTS.find((s) => s.id === "chat.copyId");
+    const fork = SHORTCUTS.find((s) => s.id === "chat.fork");
+    // Copy ID is a bare letter like the vim-style j/k rows: it never fires
+    // while typing. Fork is a ⌘ chord, so it fires from the composer too.
+    expect(copyId?.combo).toBe("c");
+    expect(fork?.combo).toBe("mod+shift+s");
+    for (const def of [copyId, fork]) {
+      expect(def?.group).toBe("Chats");
+      // Dispatched (the workspace registers handlers), so NOT documentation-only.
+      expect(def?.fixed).toBeUndefined();
+    }
+    expect(copyId?.description).toContain("session ID");
+    expect(fork?.description).toContain("Fork");
+    expect(comboFiresWhileTyping("c")).toBe(false);
+    expect(comboFiresWhileTyping("mod+shift+s")).toBe(true);
+    // Neither sits on a chord a browser answers before the page: the
+    // DevTools trio (⌘⇧I/J/C), the window/tab lifecycle (⌘⇧N/T/W), Firefox's
+    // Downloads (⌘⇧Y — Debug with AI's, which yields, but not ours) and
+    // Clear browsing data (⌘⇧Delete). ⌘⇧C — the copy mnemonic — is Inspect
+    // Element and is deliberately absent from the whole registry.
+    const BROWSER_CHORDS = [
+      "mod+shift+i",
+      "mod+shift+j",
+      "mod+shift+c",
+      "mod+shift+n",
+      "mod+shift+t",
+      "mod+shift+w",
+      "mod+shift+y",
+      "mod+shift+delete",
+    ];
+    for (const combo of [copyId?.combo, fork?.combo]) {
+      expect(BROWSER_CHORDS).not.toContain(combo);
+      expect(RESERVED_COMBOS.has(combo ?? "")).toBe(false);
+    }
+    expect(SHORTCUTS.some((s) => s.combo === "mod+shift+c")).toBe(false);
+    // Live matching: the letter without modifiers only; the chord on either
+    // modifier, with shift, and never without it.
+    expect(matchCombo("c", ev("c"))).toBe(true);
+    expect(matchCombo("c", ev("c", { meta: true }))).toBe(false);
+    expect(matchCombo("c", ev("C", { shift: true }))).toBe(false);
+    expect(
+      matchCombo("mod+shift+s", ev("S", { meta: true, shift: true })),
+    ).toBe(true);
+    expect(
+      matchCombo("mod+shift+s", ev("s", { ctrl: true, shift: true })),
+    ).toBe(true);
+    expect(matchCombo("mod+shift+s", ev("s", { ctrl: true }))).toBe(false);
+    expect(keycaps("mod+shift+s")).toEqual(["⌘", "⇧", "S"]);
+    expect(keycaps("c")).toEqual(["C"]);
+  });
+
+  it("binds Jump to the most recent chat (the --resume-latest analogue) to a bare l beside j/k", () => {
+    const def = SHORTCUTS.find((s) => s.id === "chat.latest");
+    expect(def?.combo).toBe("l");
+    expect(def?.group).toBe("Chats");
+    expect(def?.fixed).toBeUndefined();
+    // A bare letter, like the vim-style j/k rows: it keeps typing plain.
+    expect(comboFiresWhileTyping("l")).toBe(false);
   });
 
   it("binds the schedules list filter to a bare slash in its own group", () => {
@@ -537,6 +648,16 @@ describe("describeShortcut", () => {
     );
     expect(describeShortcut(byId("composer.newline"), "steer")).toBe(
       "Insert a new line — while the agent is replying: queue the message",
+    );
+  });
+
+  // "Queue only" is the never-steer switch: neither row may promise a steer.
+  it("promises no steer on either row under queue-only", () => {
+    expect(describeShortcut(byId("composer.send"), "queue-only")).toBe(
+      "Send — while the agent is replying: queue the message",
+    );
+    expect(describeShortcut(byId("composer.newline"), "queue-only")).toBe(
+      "Insert a new line — while the agent is replying: queue the message (steering is off)",
     );
   });
 

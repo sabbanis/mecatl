@@ -9,6 +9,7 @@ import {
   toolRawArgs,
 } from "@/lib/tool-summary";
 import { cn } from "@/lib/utils";
+import { HookChips } from "./hook-notice";
 import { isDiffTool, ToolDiff } from "./tool-diff";
 import { ToolResultParts } from "./tool-result-parts";
 import { useDetailsOpen } from "./use-details-open";
@@ -103,6 +104,7 @@ function ToolCallRow({
           {result}
         </span>
       )}
+      <HookChips hooks={call.hooks} />
     </>
   );
   const showDiff = rawArgs !== undefined && isDiffTool(call.name);

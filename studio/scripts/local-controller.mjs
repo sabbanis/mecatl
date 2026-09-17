@@ -1369,9 +1369,14 @@ async function daemonLogStatus(lines) {
 }
 
 /** The effective product-metrics verdict: the saved switch AND no opt-out
- *  in the controller's own environment, which mecated inherits and honours
- *  regardless of the flag Studio passes (the controller never passes
- *  --product-metrics=true, so the operator's env opt-out always wins). */
+ *  in the controller's own environment, which the spawned mecated inherits.
+ *  mecated's precedence is flag > MECATL_PRODUCT_METRICS > DO_NOT_TRACK >
+ *  settings.yaml (internal/cliconfig ResolveProductMetricsEnabled), so an
+ *  explicit --product-metrics=true WOULD out-rank the environment — which
+ *  is exactly why the controller never passes it (only =false when the
+ *  switch is off): the operator's env opt-out always wins. The settings.yaml
+ *  tier is not readable here, so `enabled: true` means "not disabled by
+ *  Studio or this environment", not a definitive on. */
 function diagnosticsStatus() {
   const envOptOut = productMetricsEnvOptOut(process.env);
   return {

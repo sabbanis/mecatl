@@ -20,6 +20,7 @@ import type {
 } from "@stacklok-oss/mecatl-sdk";
 import type {
   DelegationStopReason,
+  HookDecision,
   RetryDisposition,
   SteerEchoPart,
   StreamEvent,
@@ -258,7 +259,6 @@ const teamDispositions = (
 const SILENT_EVENT_KINDS = new Set([
   "session.init",
   "turn.start",
-  "hook",
   // The pre-compaction conversation archive: audit history for the durable
   // log, deliberately not re-rendered into the live transcript.
   "compaction.archive",
@@ -282,6 +282,17 @@ const unrenderedNotice = (kind: string): StreamEvent => ({
   type: "notice",
   text: `Mecatl sent an event this Studio version does not render yet: ${kind}`,
 });
+
+/**
+ * The wire's HookDecision enum, labelled. UNSPECIFIED (0) and any value the
+ * SDK has not named fall back to `info` — the daemon's own boundary default.
+ */
+const HOOK_DECISION: Record<number, HookDecision> = {
+  1: "info",
+  2: "blocked",
+  3: "modified",
+  4: "advisory",
+};
 
 /**
  * Translates one SDK-decoded event into zero or more StreamEvents.
@@ -716,6 +727,23 @@ function translateEventBody(event: SdkEvent, sessionId: string): StreamEvent[] {
           // uint64 crosses the SDK as bigint; the UI keeps a plain number.
           revision:
             typeof title.revision === "bigint" ? Number(title.revision) : null,
+        },
+      ];
+    }
+    case "hook": {
+      // A hook fired: phase, tool and decision ride the payload, the
+      // human-readable message rides `text`. It renders as a chip on the
+      // tool call it names, or as a marked transcript notice for a
+      // call-less lifecycle hook — never dropped.
+      const hook = event.payload;
+      return [
+        {
+          type: "hook",
+          phase: hook.phase,
+          tool: hook.tool,
+          decision: HOOK_DECISION[hook.decision] ?? "info",
+          callId: hook.callId,
+          text: event.text,
         },
       ];
     }

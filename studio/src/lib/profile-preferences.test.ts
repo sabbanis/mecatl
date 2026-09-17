@@ -2,7 +2,9 @@ import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { memoryStorage } from "@/test/memory-storage";
 import {
+  useEnterSendBehavior,
   useExpandDetails,
+  useLaunchTarget,
   useShowStarterPrompts,
   useShowToolCalls,
   useWelcomeDismissed,
@@ -158,5 +160,87 @@ describe("useShowStarterPrompts", () => {
     act(() => second.result.current.setShow(true));
     expect(second.result.current.show).toBe(true);
     expect(window.localStorage.getItem(HIDE_KEY)).toBeNull();
+  });
+});
+
+/**
+ * The Enter preference has THREE values: the two-way queue/steer default
+ * pair, and "queue-only" — the client-level never-steer switch (the web form
+ * of `mecatui --no-steer`). Only the non-default values are stored; a stale
+ * or unknown stored value reads as the "queue" default.
+ */
+describe("useEnterSendBehavior", () => {
+  const KEY = "mecatl-studio.enter-send-behavior";
+
+  beforeEach(() => {
+    vi.stubGlobal("localStorage", memoryStorage());
+  });
+
+  it("defaults to queue and stores nothing for it", () => {
+    const { result } = renderHook(() => useEnterSendBehavior());
+    expect(result.current.behavior).toBe("queue");
+    act(() => result.current.setBehavior("steer"));
+    expect(window.localStorage.getItem(KEY)).toBe("steer");
+    act(() => result.current.setBehavior("queue"));
+    expect(result.current.behavior).toBe("queue");
+    expect(window.localStorage.getItem(KEY)).toBeNull();
+  });
+
+  it("round-trips queue-only across mounts", () => {
+    const first = renderHook(() => useEnterSendBehavior());
+    act(() => first.result.current.setBehavior("queue-only"));
+    expect(first.result.current.behavior).toBe("queue-only");
+    expect(window.localStorage.getItem(KEY)).toBe("queue-only");
+    first.unmount();
+
+    const second = renderHook(() => useEnterSendBehavior());
+    expect(second.result.current.behavior).toBe("queue-only");
+  });
+
+  it("treats an unknown stored value as queue", () => {
+    window.localStorage.setItem(KEY, "never-heard-of-it");
+    const { result } = renderHook(() => useEnterSendBehavior());
+    expect(result.current.behavior).toBe("queue");
+  });
+});
+
+/**
+ * The launch preference (the `--resume-latest` analogue): a new draft by
+ * default with nothing stored, "latest" persisted only while chosen, and
+ * the key removed again on the way back — so a fresh browser always lands
+ * on a draft.
+ */
+describe("useLaunchTarget", () => {
+  const LAUNCH_KEY = "mecatl-studio.launch-target";
+
+  beforeEach(() => {
+    vi.stubGlobal("localStorage", memoryStorage());
+  });
+
+  it("defaults to a new draft and stores nothing", () => {
+    const { result } = renderHook(() => useLaunchTarget());
+    expect(result.current.target).toBe("draft");
+    expect(window.localStorage.getItem(LAUNCH_KEY)).toBeNull();
+  });
+
+  it("persists 'latest' across mounts and clears the key on draft", () => {
+    const first = renderHook(() => useLaunchTarget());
+    act(() => first.result.current.setTarget("latest"));
+    expect(first.result.current.target).toBe("latest");
+    expect(window.localStorage.getItem(LAUNCH_KEY)).toBe("latest");
+    first.unmount();
+
+    const second = renderHook(() => useLaunchTarget());
+    expect(second.result.current.target).toBe("latest");
+
+    act(() => second.result.current.setTarget("draft"));
+    expect(second.result.current.target).toBe("draft");
+    expect(window.localStorage.getItem(LAUNCH_KEY)).toBeNull();
+  });
+
+  it("treats an unknown stored value as draft", () => {
+    window.localStorage.setItem(LAUNCH_KEY, "elsewhere");
+    const { result } = renderHook(() => useLaunchTarget());
+    expect(result.current.target).toBe("draft");
   });
 });

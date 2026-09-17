@@ -54,6 +54,12 @@ export interface RuntimeStatus {
   serverCapabilities: Record<string, unknown>;
   /** Operator-set deployment label ("" when unset / older daemon). */
   deployment: string;
+  /** The daemon-REPORTED effective operator posture (`capabilities.posture`,
+   *  the SDK's `ServerPosture` ladder strict/trusted/auto/yolo); "" against
+   *  an older daemon that omits it — the capability gate for every posture
+   *  surface (the top-nav badge, the chat strip, Permissions, Diagnostics).
+   *  Same value as `serverCapabilities.posture`, already narrowed. */
+  posture: string;
   /** The SAVED permissions the managed daemon was spawned with (posture,
    *  project trust, shell-less mode); null in external mode or while the
    *  controller is unreachable. The EFFECTIVE posture is
@@ -185,6 +191,10 @@ export function RuntimeStatusProvider({ children }: { children: ReactNode }) {
         features: featureSet,
         serverCapabilities: compat?.capabilities ?? {},
         deployment: compat?.deployment ?? "",
+        posture:
+          typeof compat?.capabilities.posture === "string"
+            ? compat.capabilities.posture
+            : "",
         permissions: control?.permissions ?? null,
         trust: control?.trust ?? null,
         workspace: control?.workspace ?? "",
@@ -252,4 +262,13 @@ export function useRuntimeStatus(): RuntimeStatus {
     );
   }
   return context;
+}
+
+/**
+ * `useRuntimeStatus` for a component that may also render OUTSIDE the
+ * provider (a display-only composer, a unit test): null there, so a
+ * capability-gated affordance simply stays hidden instead of throwing.
+ */
+export function useOptionalRuntimeStatus(): RuntimeStatus | null {
+  return useContext(RuntimeStatusContext);
 }

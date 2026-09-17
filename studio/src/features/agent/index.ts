@@ -44,6 +44,8 @@ export type {
   FileContent,
   FileEntry,
   GitInfo,
+  HookDecision,
+  HookNotice,
   MemoryEntry,
   ModelInfo,
   Skill,

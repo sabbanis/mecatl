@@ -325,30 +325,38 @@ export function useExpandDetails() {
   return { expandDetails, setExpandDetails };
 }
 
-export type EnterSendBehavior = "queue" | "steer";
+/**
+ * What Enter does while the agent is replying. `queue` and `steer` are the
+ * two-way preference (Shift+Enter does the opposite); `queue-only` is the
+ * client-level "never steer" switch — the web analogue of `mecatui
+ * --no-steer`: Enter AND Shift+Enter queue, and every other steer affordance
+ * (the queued row's Steer action) is withdrawn, whatever the daemon
+ * supports.
+ */
+export type EnterSendBehavior = "queue" | "steer" | "queue-only";
 
 const ENTER_SEND_BEHAVIOR_KEY = "mecatl-studio.enter-send-behavior";
 
 /**
  * What Enter does while the agent is replying: queue the message for the next
- * run (the factory default) or steer it into the in-flight run at the next
- * step. Shift+Enter does the opposite. Hydrates on mount, so the first frame
- * always reads "queue" — the composer tolerates that.
+ * run (the factory default), steer it into the in-flight run at the next
+ * step, or `queue-only` — never steer, even with Shift+Enter. Hydrates on
+ * mount, so the first frame always reads "queue" — the composer tolerates
+ * that. Only the non-default values are stored; an unknown stored value
+ * reads as "queue".
  */
 export function useEnterSendBehavior() {
   const [behavior, setBehaviorState] = useState<EnterSendBehavior>("queue");
   useEffect(() => {
-    if (readLocalStorage(ENTER_SEND_BEHAVIOR_KEY) === "steer") {
-      setBehaviorState("steer");
+    const stored = readLocalStorage(ENTER_SEND_BEHAVIOR_KEY);
+    if (stored === "steer" || stored === "queue-only") {
+      setBehaviorState(stored);
     }
   }, []);
 
   const setBehavior = useCallback((next: EnterSendBehavior) => {
     setBehaviorState(next);
-    writeLocalStorage(
-      ENTER_SEND_BEHAVIOR_KEY,
-      next === "steer" ? "steer" : null,
-    );
+    writeLocalStorage(ENTER_SEND_BEHAVIOR_KEY, next === "queue" ? null : next);
   }, []);
 
   return { behavior, setBehavior };
@@ -372,4 +380,33 @@ export function useUserDisplayName() {
     writeLocalStorage(USER_NAME_KEY, trimmed ? value : null);
   }, []);
   return { name, setName };
+}
+
+export type LaunchTarget = "draft" | "latest";
+
+const LAUNCH_TARGET_KEY = "mecatl-studio.launch-target";
+
+/**
+ * What the bare chat route (`/workspace/chat`, no chat in the URL) opens —
+ * the web analogue of mecatui's `--resume-latest`: a new draft (the factory
+ * default) or the most recent eligible chat (`features/agent/latest-chat`).
+ * Browser-local like the other Personalize preferences; the key stores
+ * "latest" only while chosen. Hydrates on mount, so the first frame reads
+ * "draft" — the launch effect tolerates that (it decides once the daemon
+ * is connected and the inventory has loaded, well after hydration).
+ */
+export function useLaunchTarget() {
+  const [target, setTargetState] = useState<LaunchTarget>("draft");
+  useEffect(() => {
+    if (readLocalStorage(LAUNCH_TARGET_KEY) === "latest") {
+      setTargetState("latest");
+    }
+  }, []);
+
+  const setTarget = useCallback((next: LaunchTarget) => {
+    setTargetState(next);
+    writeLocalStorage(LAUNCH_TARGET_KEY, next === "latest" ? "latest" : null);
+  }, []);
+
+  return { target, setTarget };
 }

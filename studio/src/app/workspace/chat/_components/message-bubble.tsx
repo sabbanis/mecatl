@@ -29,6 +29,7 @@ import type {
   ToolCallInfo,
 } from "@/features/agent";
 import { DeliveryNoteCard } from "@/features/agent/components/delivery-note-card";
+import { isHookNotice } from "@/features/agent/hook-notice";
 import { isHarnessProceedMessage } from "@/features/agent/plan-ask";
 import { stopReasonLabel } from "@/features/agent/stop-reason";
 import { formatTurnStat, isTrivialTurn } from "@/features/agent/turn-stats";
@@ -44,6 +45,7 @@ import { cn } from "@/lib/utils";
 import { DelegationCardRow } from "./delegation-card";
 import { FailedTurnCard } from "./failed-turn-card";
 import { HarnessNote } from "./harness-note";
+import { HookNoticeLine } from "./hook-notice";
 import { mdComponents } from "./markdown-components";
 import { ReasoningDisclosure } from "./reasoning-disclosure";
 import { StopReasonChip } from "./stop-reason-chip";
@@ -616,7 +618,11 @@ export function MessageBubble({
         {notices.length > 0 && (
           <div className="mt-1.5 flex flex-col gap-0.5">
             {notices.map((notice) =>
-              notice.text.startsWith("[conversation compacted]") ? (
+              isHookNotice(notice.text) ? (
+                // A hook fire (blocked / modified / advisory / info): its
+                // decision glyph and tone, never a plain muted line.
+                <HookNoticeLine key={notice.id} text={notice.text} />
+              ) : notice.text.startsWith("[conversation compacted]") ? (
                 // Compaction is a milestone, not chatter: a labeled divider,
                 // with the daemon's full explanation on the tooltip.
                 <div

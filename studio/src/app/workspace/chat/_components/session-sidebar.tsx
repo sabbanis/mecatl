@@ -38,6 +38,12 @@ import {
   CopySessionIdMenuItem,
   CopySessionIdSheetItem,
 } from "./session-copy-menu-items";
+import {
+  ForkChatMenuItem,
+  ForkChatSheetItem,
+  ViewTranscriptMenuItem,
+  ViewTranscriptSheetItem,
+} from "./session-row-action-items";
 
 export interface SessionActions {
   onRename: (id: string) => void;
@@ -49,6 +55,17 @@ export interface SessionActions {
    * session never offers it (no debugging the debugger).
    */
   onDebug?: (id: string) => void;
+  /**
+   * "View transcript" (the TUI's `v`): the read-only transcript dialog for a
+   * chat row WITHOUT making it the live chat. Gated per row on the daemon's
+   * `view_transcript` capability; the menus render the disabled reason.
+   */
+  onViewTranscript?: (id: string) => void;
+  /**
+   * "Fork chat" (the TUI's `f`): a copy of the chat as-is. Gated per row on
+   * the daemon's `fork` capability; never offered on an AI-debug row.
+   */
+  onFork?: (id: string) => void;
 }
 
 export function SidebarGroup({
@@ -106,6 +123,18 @@ function SessionContextMenu({
         )}
         <CopySessionIdMenuItem session={session} />
         <CopyDebugTargetMenuItem session={session} />
+        {actions.onViewTranscript && (
+          <ViewTranscriptMenuItem
+            session={session}
+            onSelect={() => actions.onViewTranscript?.(session.id)}
+          />
+        )}
+        {actions.onFork && (
+          <ForkChatMenuItem
+            session={session}
+            onSelect={() => actions.onFork?.(session.id)}
+          />
+        )}
         <DropdownMenuItem
           disabled={!canRename}
           onClick={() => actions.onRename(session.id)}
@@ -248,6 +277,20 @@ function SessionActionsSheet({
           )}
           <CopySessionIdSheetItem session={session} onDone={onClose} />
           <CopyDebugTargetSheetItem session={session} onDone={onClose} />
+          {actions.onViewTranscript && (
+            <ViewTranscriptSheetItem
+              session={session}
+              onSelect={() => actions.onViewTranscript?.(session.id)}
+              onDone={onClose}
+            />
+          )}
+          {actions.onFork && (
+            <ForkChatSheetItem
+              session={session}
+              onSelect={() => actions.onFork?.(session.id)}
+              onDone={onClose}
+            />
+          )}
           <button
             type="button"
             className={row}

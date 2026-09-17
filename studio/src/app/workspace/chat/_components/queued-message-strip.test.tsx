@@ -160,4 +160,28 @@ describe("QueuedMessageStrip", () => {
       screen.getByRole("menuitem", { name: "Delete" }),
     ).toBeInTheDocument();
   });
+
+  // Steering off — the daemon does not support it, or the user chose "Queue
+  // only" (mecatui --no-steer) — is expressed as an ABSENT onSteer: the row
+  // menu keeps Edit / Delete and offers no Steer even while a run is live.
+  it("withdraws Steer when onSteer is absent, keeping Edit and Delete", () => {
+    const onEdit = vi.fn();
+    const onDelete = vi.fn();
+    render(
+      <QueuedMessageStrip
+        queued={[queued[0]]}
+        isStreaming
+        onEdit={onEdit}
+        onDelete={onDelete}
+      />,
+    );
+    fireEvent.keyDown(
+      screen.getByRole("button", { name: "Actions for queued message" }),
+      { key: "Enter" },
+    );
+    expect(screen.queryByRole("menuitem", { name: "Steer" })).toBeNull();
+    expect(screen.getByRole("menuitem", { name: "Edit" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+    expect(onDelete).toHaveBeenCalledWith("q1");
+  });
 });
