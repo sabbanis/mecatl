@@ -248735,6 +248735,45 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789652701243,
         "tool": "customSmallerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "4377202+samuv@users.noreply.github.com",
+            "name": "Samuele V",
+            "username": "samuv"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0bf37d08bfe0934ab5fa3caa1dd121624ca323b0",
+          "message": "feat(sdk): add run-ID-addressed controls (#1642)\n\nSigned-off-by: Samuele Verzi <samu@stacklok.com>\nCo-authored-by: OpenAI Codex <codex@openai.com>",
+          "timestamp": "2026-09-17T16:44:46+02:00",
+          "tree_id": "0d9a02ab80c68cd20abb9bc9a36f385bfaa7b426",
+          "url": "https://github.com/stacklok/mecatl/commit/0bf37d08bfe0934ab5fa3caa1dd121624ca323b0"
+        },
+        "date": 1789656976295,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3323,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 118,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1155,
+            "unit": "allocs/op"
+          }
+        ]
       }
     ],
     "mecatl scenarios (smaller-is-better)": [
@@ -326179,6 +326218,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789656973335,
+  "lastUpdate": 1789656977514,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
