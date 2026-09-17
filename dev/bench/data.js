@@ -249102,6 +249102,45 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789656976295,
         "tool": "customSmallerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9ccf838aee5740400190529707b71e89d77cd9e7",
+          "message": "feat: complete provider setup UX on unified configuration (#1441)\n\nCo-authored-by: mecatl <noreply@stacklok.com>\nCo-authored-by: Joe Beda <joe@stacklok.com>\nCo-authored-by: Mecatl <noreply@mecatl.dev>",
+          "timestamp": "2026-09-17T09:20:49-07:00",
+          "tree_id": "a434db766ccef61363b7d9dbc150b5f620f27a39",
+          "url": "https://github.com/stacklok/mecatl/commit/9ccf838aee5740400190529707b71e89d77cd9e7"
+        },
+        "date": 1789662718261,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3314,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 105,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1155,
+            "unit": "allocs/op"
+          }
+        ]
       }
     ],
     "mecatl scenarios (smaller-is-better)": [
@@ -326660,6 +326699,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789662715042,
+  "lastUpdate": 1789662719220,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
