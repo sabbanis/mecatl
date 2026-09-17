@@ -39,9 +39,9 @@ import { SidePanel } from "./side-panel";
 
 export const MCP_PANEL_TITLE = "MCP tools";
 export const MCP_PANEL_NO_INVENTORY_TEXT =
-  "This daemon reports no MCP inventory.";
+  "No tools are connected to this agent.";
 export const MCP_PANEL_NO_SESSION_TEXT =
-  "Start a chat with the daemon to see its connectors.";
+  "Start a chat to see the agent's connected tools.";
 export const MCP_CATALOGUE_CAPTION =
   "Catalogue status · not a live connection check";
 export const MCP_CONNECTORS_TRUNCATED_TEXT = "Connector list truncated.";

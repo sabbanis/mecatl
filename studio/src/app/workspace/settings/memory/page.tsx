@@ -1,6 +1,5 @@
 "use client";
 
-import { Brain } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo } from "react";
@@ -17,29 +16,30 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { type MemoryEntry, useAgentMemory } from "@/features/agent";
+import { Note, SettingsCard } from "../_components/settings-card";
 import { ConsolidateMemoryCard } from "./_components/consolidate-memory";
 import { MemoryFootprint } from "./_components/memory-footprint";
 import { MemoryStoresCard } from "./_components/memory-stores-card";
 
 /**
- * Settings → Memory: the two daemon memory STORES (on/off + location, the
- * controller's spawn flags — the TUI's --memory-dir / --no-user-model
- * controls) above the agent's remembered user-model facts, read-only. The
- * one content mutation offered is the daemon-curated consolidation flow
- * below the table (ADR 0227), which never accepts free-text content (memory
- * rule 8). The stores card renders whatever state the table is in: with the
- * user model off it is how a managed-mode operator turns it back on.
+ * Settings → Memory: the two memory switches, the facts the agent has
+ * remembered about you (read-only — the agent curates them, and Studio never
+ * composes memory content, memory rule 8), and the consolidation card. The
+ * consolidation card gates itself on the agent's capabilities and project
+ * memory can be consolidated with facts about you off, so it renders in
+ * every state the facts card is in.
  */
 export default function MemorySettingsPage() {
   return (
     <>
       <MemoryStoresCard />
-      <MemoryEntriesSection />
+      <FactsAboutYouCard />
+      <ConsolidateMemoryCard />
     </>
   );
 }
 
-function MemoryEntriesSection() {
+function FactsAboutYouCard() {
   const memory = useAgentMemory();
   const sort = useTableSort<"name" | "remembers">("name");
 
@@ -55,82 +55,54 @@ function MemoryEntriesSection() {
     );
   }, [memory.entries, sort.key, sort.dir]);
 
-  // The consolidation card gates itself on capabilities.manual_dream, and the
-  // project-memory target can be consolidatable even when the user model is
-  // disabled — so it renders as a sibling of every state below.
+  let body: React.ReactNode;
   if (!memory.isSupported) {
-    return (
-      <>
-        <div className="rounded-xl border bg-card p-5">
-          <div className="flex items-start gap-3">
-            <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted">
-              <Brain className="size-5 text-muted-foreground" />
-            </div>
-            <div className="min-w-0 space-y-1">
-              <h2 className="text-sm font-semibold">
-                Memory is disabled on this daemon
-              </h2>
-              <p className="text-sm text-muted-foreground">
-                The daemon is running without a user model (e.g. started with
-                --no-user-model), so there are no remembered facts to show.
-              </p>
-              {memory.disabledReason && (
-                <p className="rounded-md bg-muted px-2 py-1 font-mono text-xs text-muted-foreground">
-                  {memory.disabledReason}
-                </p>
-              )}
-            </div>
-          </div>
-        </div>
-        <ConsolidateMemoryCard />
-      </>
+    body = <Note>Facts about you is off, so there is nothing to show.</Note>;
+  } else if (memory.isLoading) {
+    body = <Note>Loading memory…</Note>;
+  } else if (entries.length === 0) {
+    body = (
+      <Note>The agent hasn&apos;t remembered anything about you yet.</Note>
     );
-  }
-
-  if (memory.isLoading) {
-    return (
-      <div className="rounded-xl border border-dashed py-12 text-center text-sm text-muted-foreground">
-        Loading memory…
+  } else {
+    body = (
+      <div className="space-y-3">
+        <MemoryFootprint store={memory.store} />
+        <div className="overflow-hidden rounded-lg border">
+          <Table>
+            <TableHeader className="max-[499px]:hidden">
+              <TableRow className="hover:bg-transparent">
+                <SortableHead
+                  label="Name"
+                  sortKey="name"
+                  sort={sort}
+                  className="w-[280px] lg:w-[320px]"
+                />
+                <SortableHead
+                  label="Remembers"
+                  sortKey="remembers"
+                  sort={sort}
+                />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {entries.map((entry) => (
+                <MemoryRow key={entry.id} entry={entry} />
+              ))}
+            </TableBody>
+          </Table>
+        </div>
       </div>
-    );
-  }
-
-  if (entries.length === 0) {
-    return (
-      <>
-        <div className="rounded-xl border border-dashed py-12 text-center text-sm text-muted-foreground">
-          The agent hasn&apos;t stored any facts yet.
-        </div>
-        <ConsolidateMemoryCard />
-      </>
     );
   }
 
   return (
-    <>
-      <MemoryFootprint store={memory.store} />
-      <div className="overflow-hidden rounded-lg border">
-        <Table>
-          <TableHeader className="max-[499px]:hidden">
-            <TableRow className="hover:bg-transparent">
-              <SortableHead
-                label="Name"
-                sortKey="name"
-                sort={sort}
-                className="w-[280px] lg:w-[320px]"
-              />
-              <SortableHead label="Remembers" sortKey="remembers" sort={sort} />
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {entries.map((entry) => (
-              <MemoryRow key={entry.id} entry={entry} />
-            ))}
-          </TableBody>
-        </Table>
-      </div>
-      <ConsolidateMemoryCard />
-    </>
+    <SettingsCard
+      title="Facts about you"
+      description="What the agent has remembered about you. Select a fact to see more."
+    >
+      {body}
+    </SettingsCard>
   );
 }
 

@@ -97,7 +97,7 @@ describe("useProviderManagement — definition write and scoped removal", () => 
     expect(listHarnessProviders).toHaveBeenCalledTimes(2);
     expect(outcome).toEqual({ ok: true, restarted: false, error: undefined });
     expect(result.current.notice).toMatch(
-      /Add its key to auth\.yaml, then restart the daemon/,
+      /^Saved\. Add the key for .+ to the agent's key file, then restart the agent\.$/,
     );
     expect(result.current.error).toBeNull();
     expect(result.current.busy).toBe("");
@@ -118,7 +118,7 @@ describe("useProviderManagement — definition write and scoped removal", () => 
       });
     });
     expect(outcome).toEqual({ ok: true, restarted: true, error: undefined });
-    expect(result.current.notice).toMatch(/the daemon restarted with it/);
+    expect(result.current.notice).toBe("Saved. The agent restarted.");
   });
 
   it("a saved definition whose restart failed keeps the save and surfaces the cause", async () => {
@@ -140,8 +140,8 @@ describe("useProviderManagement — definition write and scoped removal", () => 
       restarted: false,
       error: "mecated exited before the ready file",
     });
-    expect(result.current.notice).toMatch(/saved\./);
-    expect(result.current.error).toMatch(/failed to restart: mecated exited/);
+    expect(result.current.notice).toBe("Saved.");
+    expect(result.current.error).toMatch(/could not restart: mecated exited/);
   });
 
   it("a refused write (409: already configured / operator settings active) lands in error and returns ok:false", async () => {
@@ -177,14 +177,12 @@ describe("useProviderManagement — definition write and scoped removal", () => 
       "my-gw",
       "credential",
     );
-    expect(result.current.notice).toMatch(
-      /Key for my-gw removed from auth\.yaml; its definition stays/,
-    );
+    expect(result.current.notice).toBe("Key removed. The agent restarted.");
     await act(async () => {
       await result.current.removeProvider("my-gw");
     });
     expect(removeHarnessProvider).toHaveBeenLastCalledWith("my-gw", "all");
-    expect(result.current.notice).toMatch(/Provider my-gw removed/);
+    expect(result.current.notice).toBe("my-gw removed. The agent restarted.");
   });
 });
 

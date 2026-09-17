@@ -30,7 +30,7 @@ export type OfflineCauseKind =
 
 export interface OfflineCause {
   kind: OfflineCauseKind;
-  /** The banner heading: "Sign-in required", "Session expired", … */
+  /** The banner heading: "Sign-in required", "Sign-in expired", … */
   title: string;
   /** What the user (or the operator) can do about it. */
   remedy: string;
@@ -62,7 +62,7 @@ export function classifyOffline(probe: OfflineProbe): OfflineCause {
       kind: "login-required",
       title: "Sign-in required",
       remedy:
-        "This deployment requires OIDC sign-in, so Studio did not send the request. Sign in to reconnect — the open chat picks up where it left off.",
+        "Sign-in is required for this agent. Sign in to reconnect — the open chat picks up where it left off.",
       detail,
       signIn: "sign-in",
     };
@@ -70,9 +70,9 @@ export function classifyOffline(probe: OfflineProbe): OfflineCause {
   if (probe.code === OIDC_SESSION_EXPIRED) {
     return {
       kind: "session-expired",
-      title: "Session expired",
+      title: "Sign-in expired",
       remedy:
-        "The identity provider ended Studio's session. Sign in again to reconnect — the open chat picks up where it left off.",
+        "Your sign-in ended. Sign in again to reconnect — the open chat picks up where it left off.",
       detail,
       signIn: "sign-in-again",
     };
@@ -85,7 +85,7 @@ export function classifyOffline(probe: OfflineProbe): OfflineCause {
       kind: "idp-unavailable",
       title: "Identity provider unreachable",
       remedy:
-        "Studio could not refresh its OIDC access token. Check the identity provider, then retry.",
+        "Studio could not refresh your sign-in. Check the sign-in service, then retry.",
       detail,
       signIn: null,
     };
@@ -95,7 +95,7 @@ export function classifyOffline(probe: OfflineProbe): OfflineCause {
       kind: "credential-rejected",
       title: "Credential rejected",
       remedy:
-        "The deployment rejected Studio's credential — check MECATL_AUTH_TOKEN, or that MECATL_OIDC_AUDIENCE and MECATL_OIDC_ISSUER match the daemon's --auth-oidc settings.",
+        "The agent rejected Studio's credential. Ask the person who set up the agent to check its token or sign-in settings.",
       detail,
       signIn: null,
     };

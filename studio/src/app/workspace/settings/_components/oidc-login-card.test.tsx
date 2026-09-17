@@ -7,13 +7,12 @@ import {
 } from "./oidc-login-card";
 
 /**
- * The remote sign-in card's `mecatui login` parity: the discovered-profile
- * review step (values listed, default-deny until "Continue with browser
- * login" confirms — the popup is pointed at the authorize redirect only
- * AFTER the server accepted the hash, and closed on refusal), the
- * `--no-browser` copy-link flow, and the deployment rows (credential
- * ordering, token store, transport warnings, sign-in window). No token and
- * no daemon address ever render.
+ * The sign-in card, kept to what a user does: review a discovered identity
+ * provider (default-deny until "Continue to sign in" confirms — the popup is
+ * pointed at the authorize redirect only AFTER the server accepted the hash,
+ * and closed on refusal), sign in, sign in again, sign out. The copy-link
+ * flow and the deployment rows (credential ordering, token store, transport,
+ * sign-in window) are gone. No token and no deployment address ever render.
  */
 
 const json = (status: number, body: unknown) =>
@@ -32,7 +31,7 @@ const baseStatus: OidcStatus = {
   scopes: ["openid", "profile", "offline_access"],
   authMode: "oidc",
   store: { kind: "memory" },
-  transport: { tlsCa: false, insecure: false, privateIssuer: false },
+  transport: { tlsCa: false, insecure: true, privateIssuer: false },
   callbackTimeoutSeconds: 600,
 };
 
@@ -51,15 +50,6 @@ function stubFetch(handler: Handler) {
   return calls;
 }
 
-function stubClipboard() {
-  const writeText = vi.fn(async () => {});
-  Object.defineProperty(window.navigator, "clipboard", {
-    value: { writeText },
-    configurable: true,
-  });
-  return writeText;
-}
-
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -74,7 +64,7 @@ describe("OidcLoginCard — discovered profile review", () => {
     profileHash: "a".repeat(64),
   };
 
-  it("lists issuer, client id, audience and scopes and confirms BEFORE pointing the popup at the authorize redirect", async () => {
+  it("names the identity provider and confirms BEFORE pointing the popup at the authorize redirect", async () => {
     const popup = { location: { href: "about:blank" }, close: vi.fn() };
     const open = vi.fn(() => popup as unknown as Window);
     vi.stubGlobal("open", open);
@@ -89,23 +79,20 @@ describe("OidcLoginCard — discovered profile review", () => {
     expect(await screen.findByTestId("oidc-issuer")).toHaveTextContent(
       "https://idp.example.com/realms/mecatl",
     );
-    expect(screen.getByTestId("oidc-client-id")).toHaveTextContent(
-      "studio-client",
-    );
-    expect(screen.getByTestId("oidc-audience")).toHaveTextContent(
-      "mecatl-daemon",
-    );
-    expect(screen.getByTestId("oidc-scopes")).toHaveTextContent(
-      "openid profile offline_access",
-    );
+    expect(screen.getByText("Review before signing in")).toBeInTheDocument();
+    // Only the identity provider is listed — no client id, audience, scopes
+    // or deployment rows.
+    expect(screen.queryByText("studio-client")).not.toBeInTheDocument();
+    expect(screen.queryByText("mecatl-daemon")).not.toBeInTheDocument();
+    expect(screen.queryByText(/offline_access/)).not.toBeInTheDocument();
     expect(
-      screen.getByText(/Discovered from the deployment/),
-    ).toBeInTheDocument();
+      screen.queryByText(/Token store|Transport|Sign-in window/),
+    ).toBeNull();
     // Default-deny: no plain Sign in button while unconfirmed.
     expect(screen.queryByRole("button", { name: "Sign in" })).toBeNull();
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Continue with browser login" }),
+      screen.getByRole("button", { name: "Continue to sign in" }),
     );
     // The popup opens synchronously on the click (popup-blocker safe) but on
     // about:blank — the issuer is not reached before the confirmation.
@@ -145,9 +132,7 @@ describe("OidcLoginCard — discovered profile review", () => {
     });
     render(<OidcLoginCard />);
     fireEvent.click(
-      await screen.findByRole("button", {
-        name: "Continue with browser login",
-      }),
+      await screen.findByRole("button", { name: "Continue to sign in" }),
     );
     await waitFor(() => expect(popup.close).toHaveBeenCalled());
     expect(popup.location.href).toBe("about:blank");
@@ -155,109 +140,82 @@ describe("OidcLoginCard — discovered profile review", () => {
   });
 });
 
-describe("OidcLoginCard — copy sign-in link (no-browser flow)", () => {
-  it("fetches ?mode=link, writes the clipboard and says where the link works", async () => {
-    const writeText = stubClipboard();
-    const calls = stubFetch((url) => {
-      if (url === "/api/auth/oidc/status") return json(200, baseStatus);
-      if (url === `${OIDC_START_URL}?mode=link`)
-        return json(200, {
-          authorizationUrl:
-            "https://idp.example.com/authorize?client_id=studio-client&state=s1",
-          expiresAt: new Date(Date.now() + 600_000).toISOString(),
-        });
-      return undefined;
-    });
+describe("OidcLoginCard — sign in, sign in again, sign out", () => {
+  it("signed out: Sign in opens the popup on the click; no copy-link flow, no deployment rows", async () => {
+    const open = vi.fn(() => null);
+    vi.stubGlobal("open", open);
+    stubFetch((url) =>
+      url === "/api/auth/oidc/status" ? json(200, baseStatus) : undefined,
+    );
     render(<OidcLoginCard />);
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Copy sign-in link" }),
+    expect(await screen.findByText("Not signed in")).toBeInTheDocument();
+    expect(screen.getByText("Sign in opens a new window.")).toBeInTheDocument();
+    expect(screen.getByTestId("oidc-issuer")).toHaveTextContent(
+      "https://idp.example.com/realms/mecatl",
     );
-    await waitFor(() =>
-      expect(writeText).toHaveBeenCalledWith(
-        "https://idp.example.com/authorize?client_id=studio-client&state=s1",
-      ),
+    expect(
+      screen.queryByRole("button", { name: /Copy sign-in link/ }),
+    ).not.toBeInTheDocument();
+    // The transport warning and every other deployment row stay off the card.
+    expect(screen.queryByText(/verification is disabled/)).toBeNull();
+    expect(screen.queryByText(/MECATL_/)).toBeNull();
+    expect(
+      screen.queryByText(/Authentication|Token store|Transport/),
+    ).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
+    expect(open).toHaveBeenCalledWith(
+      OIDC_START_URL,
+      "mecatl-oidc-login",
+      expect.any(String),
     );
-    expect(calls.some((c) => c.url === `${OIDC_START_URL}?mode=link`)).toBe(
-      true,
-    );
-    expect(screen.getByRole("status")).toHaveTextContent(
-      /Sign-in link copied\. Open it in any browser that can reach this Studio/,
-    );
-    // The plain Sign in popup path is still there beside it.
-    expect(screen.getByRole("button", { name: "Sign in" })).toBeInTheDocument();
   });
 
-  it("shows the server's refusal instead of copying when the link cannot be minted", async () => {
-    const writeText = stubClipboard();
-    stubFetch((url) => {
-      if (url === "/api/auth/oidc/status") return json(200, baseStatus);
-      if (url === `${OIDC_START_URL}?mode=link`)
-        return json(400, { error: "OIDC discovery failed (HTTP 503)" });
-      return undefined;
-    });
-    render(<OidcLoginCard />);
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Copy sign-in link" }),
-    );
-    await waitFor(() =>
-      expect(screen.getByRole("status")).toHaveTextContent(/discovery failed/),
-    );
-    expect(writeText).not.toHaveBeenCalled();
-  });
-});
-
-describe("OidcLoginCard — deployment rows", () => {
-  it("renders the transport warnings, the anonymous credential mode, the file store and the sign-in window", async () => {
+  it("expired: says so in plain words and offers Sign in again", async () => {
     stubFetch((url) =>
       url === "/api/auth/oidc/status"
-        ? json(200, {
-            ...baseStatus,
-            state: "signed-in",
-            email: "op@example.com",
-            authMode: "anonymous",
-            store: { kind: "file" },
-            transport: {
-              tlsCa: true,
-              insecure: true,
-              privateIssuer: true,
-              problem:
-                "MECATL_TLS_CA and MECATL_TLS_INSECURE are mutually exclusive; the CA bundle is used and verification stays on.",
-            },
-            callbackTimeoutSeconds: 900,
-          })
+        ? json(200, { ...baseStatus, state: "expired" })
         : undefined,
     );
     render(<OidcLoginCard />);
-    expect(await screen.findByTestId("oidc-auth-mode")).toHaveTextContent(
-      /anonymously/,
-    );
-    expect(screen.getByText(/MECATL_AUTH_ANONYMOUS=1/)).toBeInTheDocument();
-    expect(screen.getByTestId("oidc-store-kind")).toHaveTextContent("file");
-    expect(screen.getByText(/survives a Studio restart/)).toBeInTheDocument();
-    expect(screen.getByTestId("oidc-transport-insecure")).toHaveTextContent(
-      /verification is disabled/,
-    );
-    expect(screen.getByTestId("oidc-transport-problem")).toHaveTextContent(
-      /mutually exclusive/,
-    );
-    expect(screen.getByText(/Private CA bundle/)).toBeInTheDocument();
+    expect(await screen.findByText("Sign-in expired")).toBeInTheDocument();
     expect(
-      screen.getByText(/MECATL_OIDC_PRIVATE_ISSUER=1/),
+      screen.getByText("Sign in again to keep using the agent."),
     ).toBeInTheDocument();
-    expect(screen.getByTestId("oidc-callback-timeout")).toHaveTextContent(
-      "15 minutes",
-    );
     expect(
-      screen.getByRole("button", { name: "Sign out" }),
+      screen.getByRole("button", { name: "Sign in again" }),
     ).toBeInTheDocument();
   });
 
-  it("names the discovery opt-in in the not-configured copy and still shows the deployment rows", async () => {
+  it("signed in: shows who is signed in and signs out through the server", async () => {
+    const calls = stubFetch((url, init) => {
+      if (url === "/api/auth/oidc/status")
+        return json(200, {
+          ...baseStatus,
+          state: "signed-in",
+          email: "op@example.com",
+        });
+      if (url === "/api/auth/oidc/logout" && init?.method === "POST")
+        return json(200, { ok: true });
+      return undefined;
+    });
+    render(<OidcLoginCard />);
+    expect(await screen.findByText("Signed in")).toBeInTheDocument();
+    expect(screen.getByText("op@example.com")).toBeInTheDocument();
+    expect(screen.queryByTestId("oidc-issuer")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
+    await waitFor(() =>
+      expect(calls.some((c) => c.url === "/api/auth/oidc/logout")).toBe(true),
+    );
+  });
+
+  it("not configured: one plain note, no environment variable names", async () => {
     stubFetch((url) =>
       url === "/api/auth/oidc/status"
         ? json(200, {
             configured: false,
             state: "not-configured",
+            problem: "MECATL_OIDC_ISSUER is set without MECATL_OIDC_CLIENT_ID",
             authMode: "static",
             store: { kind: "memory" },
             transport: { tlsCa: false, insecure: false, privateIssuer: false },
@@ -267,14 +225,19 @@ describe("OidcLoginCard — deployment rows", () => {
     );
     render(<OidcLoginCard />);
     expect(
-      await screen.findByText(/MECATL_OIDC_DISCOVERY=1/),
+      await screen.findByText("Sign-in is not set up for this agent."),
     ).toBeInTheDocument();
-    expect(screen.getByTestId("oidc-auth-mode")).toHaveTextContent(
-      /MECATL_AUTH_TOKEN/,
-    );
-    expect(screen.getByTestId("oidc-transport")).toHaveTextContent("default");
-    expect(screen.getByTestId("oidc-callback-timeout")).toHaveTextContent(
-      "10 minutes",
-    );
+    expect(screen.queryByText(/MECATL_/)).toBeNull();
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("says when the status could not be read", async () => {
+    stubFetch(() => json(500, { error: "boom" }));
+    render(<OidcLoginCard />);
+    expect(
+      await screen.findByText(
+        "The sign-in status could not be read right now.",
+      ),
+    ).toBeInTheDocument();
   });
 });

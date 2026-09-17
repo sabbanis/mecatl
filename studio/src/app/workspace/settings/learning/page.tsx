@@ -32,28 +32,40 @@ import { Note, SettingsCard } from "../_components/settings-card";
 import { ProposalRow } from "./_components/proposal-row";
 
 /**
- * Settings → Learning: the human half of the daemon's reflection loop
- * (ADR 0109). Pending proposals are reviewed here — approve promotes the
- * daemon-curated digest into memory, reject retires it, undo reverts a
+ * Settings → Learning: the human half of the agent's reflection loop
+ * (ADR 0109). Pending suggestions are reviewed here — approve promotes the
+ * agent-curated digest into memory, reject retires it, undo reverts a
  * promotion. Studio never composes memory content; it only decides on what
- * the daemon staged (the same posture as the read-only Memory panel).
+ * the agent staged (the same posture as the read-only Memory panel).
  */
 
 /**
- * Status pills over the daemon's proposal vocabulary ("staged" = pending;
- * "deferred_unsupported" = a procedure the daemon could not promote when it
- * was staged, approvable now as a learned-skill draft). The value is the
- * exact token the list filter sends.
+ * Status pills over the agent's proposal vocabulary ("staged" = pending;
+ * "deferred_unsupported" = a procedure the agent could not save when it was
+ * suggested, approvable now as a learned-skill draft; "promoted" = approved
+ * and remembered). The value is the exact token the list filter sends.
  */
 const PROPOSAL_FILTERS = [
   {
     value: PROPOSAL_STATUS_STAGED,
     label: "Pending",
-    empty: "waiting for review",
+    empty: "Nothing waiting for review.",
   },
-  { value: PROPOSAL_STATUS_DEFERRED, label: "Deferred", empty: "deferred" },
-  { value: PROPOSAL_STATUS_PROMOTED, label: "Promoted", empty: "promoted" },
-  { value: PROPOSAL_STATUS_REJECTED, label: "Rejected", empty: "rejected" },
+  {
+    value: PROPOSAL_STATUS_DEFERRED,
+    label: "Deferred",
+    empty: "No deferred suggestions.",
+  },
+  {
+    value: PROPOSAL_STATUS_PROMOTED,
+    label: "Approved",
+    empty: "No approved suggestions.",
+  },
+  {
+    value: PROPOSAL_STATUS_REJECTED,
+    label: "Rejected",
+    empty: "No rejected suggestions.",
+  },
 ] as const;
 type ProposalFilterValue = (typeof PROPOSAL_FILTERS)[number]["value"];
 
@@ -69,8 +81,8 @@ export default function LearningSettingsPage() {
   const learningSupported = proposalsSupported || reflectionSupported;
 
   // The mode control renders FIRST whatever the capabilities say: with
-  // learning off the daemon advertises neither proposals nor reflection, and
-  // this card is how a managed-mode operator turns it on.
+  // learning off the agent advertises neither proposals nor reflection, and
+  // this card is how the user turns it on.
   return (
     <>
       <LearningModeSection />
@@ -81,13 +93,9 @@ export default function LearningSettingsPage() {
               <GraduationCap className="size-5 text-muted-foreground" />
             </div>
             <div className="min-w-0 space-y-1">
-              <h2 className="text-sm font-semibold">
-                Learning is not enabled on this daemon
-              </h2>
+              <h2 className="text-sm font-semibold">Learning is off</h2>
               <p className="text-sm text-muted-foreground">
-                This daemon reports neither learning proposals nor reflection.
-                Turn learning on above (managed mode) or set learning.mode in
-                the daemon&rsquo;s settings, then review what the agent wants to
+                Turn learning on above, then review what the agent wants to
                 remember here.
               </p>
             </div>
@@ -98,8 +106,8 @@ export default function LearningSettingsPage() {
           {proposalsSupported ? (
             <ProposalQueueCard connected={runtime.connected} />
           ) : (
-            <SettingsCard title="Review queue">
-              <Note>Learning proposals are not enabled on this daemon.</Note>
+            <SettingsCard title="Suggestions">
+              <Note>Reviewing suggestions is not available right now.</Note>
             </SettingsCard>
           )}
           {reflectionSupported && (
@@ -116,7 +124,7 @@ function ProposalQueueCard({ connected }: { connected: boolean }) {
     PROPOSAL_STATUS_STAGED,
   );
   const [proposals, setProposals] = useState<LearningProposal[]>([]);
-  /** The daemon's cursor for the page after the last one shown; "" = end. */
+  /** The agent's cursor for the page after the last one shown; "" = end. */
   const [nextCursor, setNextCursor] = useState("");
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
@@ -125,7 +133,7 @@ function ProposalQueueCard({ connected }: { connected: boolean }) {
   const [busyId, setBusyId] = useState<string | null>(null);
 
   /** (Re)loads the FIRST page of the current filter, dropping any pages
-   *  appended after it — a refresh restarts the walk from the daemon's head. */
+   *  appended after it — a refresh restarts the walk from the agent's head. */
   const load = useCallback(
     async (signal?: AbortSignal) => {
       try {
@@ -162,7 +170,7 @@ function ProposalQueueCard({ connected }: { connected: boolean }) {
     void load();
   };
 
-  /** Appends the next page (the daemon's cursor); ids already shown are
+  /** Appends the next page (the agent's cursor); ids already shown are
    *  skipped so a queue that moved between pages never lists one twice. */
   const loadMore = async () => {
     if (!nextCursor || isLoadingMore) return;
@@ -217,7 +225,7 @@ function ProposalQueueCard({ connected }: { connected: boolean }) {
     } catch (caught) {
       if (isProposalConflict(caught)) {
         setNotice(
-          "That proposal changed since it was loaded — the queue was refreshed. Review it again before deciding.",
+          "That suggestion changed since it was loaded, so the list was refreshed. Review it again before deciding.",
         );
         await load();
       } else {
@@ -230,8 +238,8 @@ function ProposalQueueCard({ connected }: { connected: boolean }) {
 
   return (
     <SettingsCard
-      title="Review queue"
-      description="What the agent wants to remember. Approving promotes the daemon-curated digest into memory; nothing here is free-text."
+      title="Suggestions"
+      description="Things the agent would like to remember."
     >
       <div className="space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -260,8 +268,8 @@ function ProposalQueueCard({ connected }: { connected: boolean }) {
             type="button"
             variant="ghost"
             size="icon"
-            aria-label="Refresh proposals"
-            title="Refresh proposals"
+            aria-label="Refresh suggestions"
+            title="Refresh suggestions"
             disabled={!connected || isLoading}
             onClick={refresh}
           >
@@ -278,13 +286,12 @@ function ProposalQueueCard({ connected }: { connected: boolean }) {
 
         {isLoading && connected ? (
           <p className="py-6 text-center text-sm text-muted-foreground">
-            Loading proposals…
+            Loading suggestions…
           </p>
         ) : proposals.length === 0 ? (
           <p className="rounded-lg border border-dashed py-8 text-center text-sm text-muted-foreground">
-            {filter === PROPOSAL_STATUS_STAGED
-              ? "Nothing waiting for review."
-              : `No ${PROPOSAL_FILTERS.find((f) => f.value === filter)?.empty ?? filter} proposals.`}
+            {PROPOSAL_FILTERS.find((f) => f.value === filter)?.empty ??
+              "Nothing here."}
           </p>
         ) : (
           <ul className="space-y-3">
@@ -303,7 +310,7 @@ function ProposalQueueCard({ connected }: { connected: boolean }) {
                         "approve",
                         proposal.version,
                       ),
-                    "Proposal approved",
+                    "Suggestion approved",
                   )
                 }
                 onReject={() =>
@@ -315,14 +322,14 @@ function ProposalQueueCard({ connected }: { connected: boolean }) {
                         "reject",
                         proposal.version,
                       ),
-                    "Proposal rejected",
+                    "Suggestion rejected",
                   )
                 }
                 onUndo={() =>
                   act(
                     proposal,
                     () => undoLearningPromotion(proposal.id, proposal.version),
-                    "Promotion undone",
+                    "Approval undone",
                   )
                 }
               />
@@ -348,8 +355,8 @@ function ProposalQueueCard({ connected }: { connected: boolean }) {
 }
 
 /**
- * Explicit reflection over one completed chat: the daemon re-reads the
- * session and stages proposals from it (which then land in the queue above).
+ * Explicit reflection over one completed chat: the agent re-reads the
+ * session and stages proposals from it (which then land in the list above).
  * Synchronous and model-driven — it can take a minute.
  */
 function ReflectionCard({ connected }: { connected: boolean }) {
@@ -399,27 +406,27 @@ function ReflectionCard({ connected }: { connected: boolean }) {
   const summary = useMemo(() => {
     if (!receipt) return null;
     if (receipt.abstained) {
-      return "The daemon abstained — nothing in that session was worth remembering.";
+      return "Nothing in that chat was worth remembering.";
     }
-    const parts = [
-      `${receipt.staged} staged`,
-      `${receipt.promoted} promoted`,
-      `${receipt.conflicted} conflicted`,
-    ];
-    if (receipt.queued > 0) parts.push(`${receipt.queued} queued`);
-    return parts.join(" · ");
+    const parts = [`${receipt.staged} to review`];
+    if (receipt.promoted > 0) parts.push(`${receipt.promoted} remembered`);
+    if (receipt.conflicted > 0) {
+      parts.push(`${receipt.conflicted} clashed with existing memory`);
+    }
+    if (receipt.queued > 0) parts.push(`${receipt.queued} still being checked`);
+    return `Done: ${parts.join(" · ")}.`;
   }, [receipt]);
 
   return (
     <SettingsCard
-      title="Reflect on a session"
-      description="Asks the daemon to re-read a completed chat and stage anything worth remembering into the review queue."
+      title="Learn from a chat"
+      description="Pick a finished chat and the agent looks for things worth remembering."
     >
       <div className="space-y-3">
         <div className="flex flex-wrap items-center gap-2">
           <Select value={selected} onValueChange={setSelected}>
             <SelectTrigger className="w-full min-w-0 sm:w-96">
-              <SelectValue placeholder="Pick a completed chat…" />
+              <SelectValue placeholder="Choose a finished chat…" />
             </SelectTrigger>
             <SelectContent>
               {sessions.map((session) => (
@@ -434,23 +441,16 @@ function ReflectionCard({ connected }: { connected: boolean }) {
             disabled={!selected || isReflecting || !connected}
             onClick={() => void reflect()}
           >
-            {isReflecting ? "Reflecting…" : "Reflect"}
+            {isReflecting ? "Looking…" : "Find suggestions"}
           </Button>
         </div>
-        {sessions.length === 0 && (
-          <Note>No completed chats to reflect on yet.</Note>
-        )}
+        {sessions.length === 0 && <Note>No finished chats yet.</Note>}
         {isReflecting && (
           <p className="text-xs text-muted-foreground">
-            Reflection is model-driven and can take a minute — leave this page
-            open.
+            This can take a minute. Keep this page open.
           </p>
         )}
-        {summary && (
-          <p className="text-sm text-muted-foreground">
-            Reflection {receipt?.disposition || "finished"}: {summary}
-          </p>
-        )}
+        {summary && <p className="text-sm text-muted-foreground">{summary}</p>}
         {error && <p className="text-sm text-destructive">{error}</p>}
       </div>
     </SettingsCard>

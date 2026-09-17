@@ -311,25 +311,21 @@ test("server-renders Mecatl Studio", async () => {
   assert.match(html, /mecatl-studio\.palette/);
 });
 
-test("the About card server-renders Studio's own build stamp", async () => {
-  const response = await fetch(`${studioBaseURL}/workspace/settings/provider`);
+test("the About card server-renders Studio's own version", async () => {
+  const response = await fetch(`${studioBaseURL}/workspace/settings/help`);
   assert.equal(response.status, 200);
   const html = await response.text();
-  // The stamp is inlined at `next build` (next.config.ts `env`, read via
-  // src/lib/studio-build.ts), so the server-rendered card already names it
-  // — before any daemon call, and whatever the daemon answers. The value
-  // is whatever THIS build computed (MECATL_STUDIO_BUILD, else
-  // version+sha, else version+dev); the assertion is that a real, non-empty
-  // stamp is there, never the sanitizer's "unavailable".
-  const match = /data-testid="about-studio-build"[^>]*>([^<]+)</.exec(html);
-  assert.ok(match, "the About card's Studio row is server-rendered");
-  const stamp = match[1].trim();
-  assert.notEqual(stamp, "");
-  assert.notEqual(stamp, "unavailable");
-  assert.match(stamp, /^[A-Za-z0-9._/+-]+$/);
+  // The version is inlined at `next build` (src/lib/studio-version.ts), so
+  // the server-rendered card already names it — before any daemon call, and
+  // whatever the daemon answers. The assertion is that a real, non-empty
+  // semver is there, never a blank or "unknown".
+  const match = /data-testid="about-studio-version"[^>]*>([^<]+)</.exec(html);
+  assert.ok(match, "the About card's Studio version row is server-rendered");
+  const version = match[1].trim();
+  assert.match(version, /^\d+\.\d+\.\d+/);
 });
 
-test("Help & about reports Studio's configuration surface by name only", async () => {
+test("the about API reports Studio's configuration surface by name only; the About page names no variable", async () => {
   // GET /api/studio/about (src/app/api/studio/about/route.ts) answers which
   // reference names THIS deployment sets, as booleans — the token and the
   // workspace are set here, so the assertion that their VALUES are absent
@@ -354,14 +350,16 @@ test("Help & about reports Studio's configuration surface by name only", async (
     headers: { Origin: "http://evil.example" },
   });
   assert.equal(refused.status, 403);
-  // The page itself server-renders the version rows, the docs link and the
-  // reference table before any request runs.
+  // The page itself server-renders the About cards and the docs link before
+  // any request runs — and, written for office users, names no environment
+  // variable and no value.
   const page = await fetch(`${studioBaseURL}/workspace/settings/help`);
   assert.equal(page.status, 200);
   const html = await page.text();
-  assert.match(html, /Studio version/);
+  assert.match(html, /About Studio/);
+  assert.match(html, /data-testid="about-studio-version"/);
   assert.match(html, /https:\/\/mecatl\.dev\/docs\//);
-  assert.match(html, /MECATL_BASE_URL/);
+  assert.doesNotMatch(html, /MECATL_BASE_URL/);
   assert.doesNotMatch(html, /test-secret/);
 });
 

@@ -67,7 +67,7 @@ export const KNOWN_AUTH_PROVIDERS = [
     // non-problem.
     snippet:
       "providers:\n  openai-codex:\n    oauth:\n      access_token: <YOUR_ACCESS_TOKEN>\n      account_id: <YOUR_ACCOUNT_ID>\n      expires_at: <RFC3339_EXPIRY>\n",
-    note: "A manually supplied ChatGPT Codex subscription token; see the mecatl usage docs for the copy-in steps.",
+    note: "A ChatGPT Codex subscription token. Ask the person who set up the agent for it.",
   },
 ];
 
@@ -338,21 +338,10 @@ const yamlQuote = (value) => JSON.stringify(String(value ?? ""));
 
 /**
  * The operator settings.yaml `providers:` block for one custom provider —
- * the exact shape mecated's strict parse accepts (ADR 0238). Non-secret by
- * construction: the credential, if any, goes in auth.yaml via
- * customProviderAuthSnippet.
+ * the exact shape mecated's strict parse accepts (ADR 0238) and the shape
+ * `upsertSettingsProvider` writes. Non-secret by construction: a credential
+ * never appears in it.
  */
-/**
- * The settings.yaml provider_overrides block routing a BUILT-IN provider
- * through a gateway/proxy base URL (ADR 0238's settings equivalent of the
- * --*-base-url flags). Operator-tier only, like the providers: section.
- * Returns "" when the URL fails the same validation custom gateways use.
- */
-export function providerOverrideSnippet(name, baseURL) {
-  if (!name || !validCustomProviderBaseURL(baseURL)) return "";
-  return `provider_overrides:\n  ${name}:\n    base_url: "${baseURL.trim()}"\n`;
-}
-
 export function customProviderSettingsSnippet({
   id,
   baseURL,
@@ -370,13 +359,6 @@ export function customProviderSettingsSnippet({
     `      method: ${authMethod === "api_key" ? "api_key" : "none"}`,
     "",
   ].join("\n");
-}
-
-/** The auth.yaml key block for an api_key custom provider — a `<YOUR_KEY>`
- *  placeholder, never a real value (Studio rule 3), matching the built-in
- *  snippets above. */
-export function customProviderAuthSnippet(id) {
-  return `providers:\n  ${id}:\n    api_key: <YOUR_KEY>\n`;
 }
 
 /**

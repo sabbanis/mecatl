@@ -15,6 +15,7 @@ import {
   startHarnessToolhiveGateway,
   testHarnessProviderKey,
 } from "@/lib/harness/client";
+import { providerLabel } from "@/lib/provider-label";
 import { useRuntimeStatus } from "../runtime-status";
 
 /** The per-provider key-health dot, session-local: tests are on demand and
@@ -154,16 +155,14 @@ export function useProviderManagement() {
         await load();
         if (definition.authMethod === "api_key") {
           setNotice(
-            `Definition for ${definition.id} saved to the daemon's settings file. Add its key to auth.yaml, then restart the daemon.`,
+            `Saved. Add the key for ${providerLabel(definition.id)} to the agent's key file, then restart the agent.`,
           );
         } else if (saved.restarted) {
-          setNotice(
-            `Definition for ${definition.id} saved and the daemon restarted with it.`,
-          );
+          setNotice("Saved. The agent restarted.");
         } else {
-          setNotice(`Definition for ${definition.id} saved.`);
+          setNotice("Saved.");
           if (saved.restartError)
-            setError(`The daemon failed to restart: ${saved.restartError}`);
+            setError(`The agent could not restart: ${saved.restartError}`);
         }
         return {
           ok: true,
@@ -199,8 +198,8 @@ export function useProviderManagement() {
         await load();
         setNotice(
           scope === "credential"
-            ? `Key for ${name} removed from auth.yaml; its definition stays. The daemon restarted.`
-            : `Provider ${name} removed. The daemon restarted without it.`,
+            ? "Key removed. The agent restarted."
+            : `${providerLabel(name)} removed. The agent restarted.`,
         );
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : String(caught));
@@ -222,7 +221,7 @@ export function useProviderManagement() {
     try {
       await restartHarnessDaemon();
       await load();
-      setNotice("Daemon restarted with the current auth.yaml.");
+      setNotice("The agent restarted.");
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));
     } finally {
@@ -243,8 +242,8 @@ export function useProviderManagement() {
         await load();
         setNotice(
           kind === "mock"
-            ? "Switched to the offline mock. The daemon restarted."
-            : `Switched to ${kind}. The daemon restarted.`,
+            ? "Switched to offline mode. The agent restarted."
+            : `Switched to ${providerLabel(kind)}. The agent restarted.`,
         );
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : String(caught));

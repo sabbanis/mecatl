@@ -31,7 +31,7 @@ export default function MemoryDetailPage() {
       return (
         <div className="flex min-h-[40vh] flex-col items-center justify-center gap-2 px-6 text-center">
           <p className="text-sm font-medium">
-            Memory is disabled on this daemon
+            Memory is turned off for this agent.
           </p>
           {memory.disabledReason && (
             <p className="text-sm text-muted-foreground">
@@ -57,7 +57,7 @@ export default function MemoryDetailPage() {
                 have forgotten or renamed it.
               </>
             ) : (
-              "Studio can't reach the daemon, so this fact can't be looked up right now."
+              "Studio can't reach the agent, so this fact can't be looked up right now."
             )}
           </p>
           <Button

@@ -86,8 +86,8 @@ export default function ProviderModelsPage() {
     const current = daemonDefaults.defaults;
     if (!current) return;
     const confirmed = await confirm({
-      title: `Make ${model.displayName} the daemon default?`,
-      description: `Every session on ${providerName} that does not pick a model inherits ${model.id} (--default-model). ${RESTART_WARNING}`,
+      title: `Make ${model.displayName} the default model?`,
+      description: `Chats on ${providerName} that do not pick a model will use ${model.id}. ${RESTART_WARNING}`,
       confirmText: "Set default and restart",
     });
     if (!confirmed) return;

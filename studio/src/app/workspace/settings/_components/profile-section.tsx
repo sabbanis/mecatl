@@ -7,9 +7,11 @@ import { AvatarPicker } from "./avatar-picker";
 import { SettingsCard, SettingsRow } from "./settings-card";
 
 /**
- * The user's own identity preferences — browser-local only: there is no
- * daemon concept of a user profile to write back to. The agent's identity
- * lives on the separate Agent page.
+ * Settings → You: the user's own identity preferences, browser-local only.
+ * There is no agent-side user profile to write back to, and the agent does
+ * not read this name — it only labels your messages in chat, so the copy
+ * says exactly that and no more. The agent's identity lives on the separate
+ * Agent page.
  */
 export function ProfileSection() {
   const { avatarUrl, setAvatarUrl } = useUserAvatar();
@@ -21,7 +23,7 @@ export function ProfileSection() {
         <SettingsRow
           label="Your name"
           htmlFor="user-display-name"
-          description="What should the agent call you?"
+          description="Shown on your messages."
         >
           <Input
             id="user-display-name"

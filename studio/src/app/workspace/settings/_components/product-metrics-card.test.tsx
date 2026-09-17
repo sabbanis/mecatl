@@ -2,30 +2,24 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  DAEMON_LOG_ANCHOR_ID,
-  DRY_RUN_RESTART_WARNING,
   ENVIRONMENT_OPT_OUT_NOTE,
   EXTERNAL_PRODUCT_METRICS_NOTE,
-  NOT_DISABLED_NOTE,
-  PRODUCT_METRICS_RESTART_WARNING,
+  OPTIONS_UNAVAILABLE_NOTE,
   ProductMetricsCard,
-  SETTINGS_YAML_NOTE,
-  STUDIO_DISABLED_NOTE,
+  RESTART_NOTE,
+  SAVED_NOTICE,
+  SHARED_NOTE,
 } from "./product-metrics-card";
 
 /**
- * Settings → Diagnostics → "Product metrics": the web analogue of
- * `--product-metrics` / `--product-metrics-dry-run` and their opt-outs.
- * Pins that (1) the status badge reads the controller's EFFECTIVE verdict
- * — "Not disabled" (never a definitive On: settings.yaml is a third
- * opt-out Studio cannot read, and the card says so) or "Off" — with the
- * source spelled out, (2) an environment opt-out (DO_NOT_TRACK /
- * MECATL_PRODUCT_METRICS) disables both switches and explains why rather
- * than offering a switch the controller would never honour, (3) each
- * switch saves ONLY after the restart confirm and never on cancel, as a
- * partial `productMetrics` patch that keeps the other field, (4) the dry
- * run points at the Daemon log anchor, and (5) external, offline and
- * loading states render notes, not a form.
+ * Settings → Diagnostics → "Usage statistics": the anonymous-metrics
+ * opt-out switch. Pins that (1) the switch mirrors the saved setting and
+ * the row says in plain words what is shared, (2) an environment opt-out
+ * disables the switch and explains why rather than offering a switch the
+ * controller would never honour, (3) the switch saves ONLY after the
+ * restart confirm and never on cancel, as a partial `productMetrics` patch
+ * that keeps the other field, and (4) external, offline and loading states
+ * render notes, not a form.
  */
 
 const { runtime, diagnostics } = vi.hoisted(() => ({
@@ -81,9 +75,7 @@ function setProductMetrics(
 }
 
 const metricsSwitch = () =>
-  screen.getByRole("switch", { name: "Anonymous product metrics" });
-const dryRunSwitch = () => screen.getByRole("switch", { name: "Dry run" });
-const state = () => screen.getByTestId("product-metrics-state");
+  screen.getByRole("switch", { name: "Share anonymous usage statistics" });
 
 beforeEach(() => {
   runtime.connected = true;
@@ -101,30 +93,24 @@ beforeEach(() => {
 });
 
 describe("ProductMetricsCard", () => {
-  it("labels the default state 'Not disabled' (never On), names the settings.yaml opt-out and quotes the no-PII claim", () => {
+  it("shows the switch on by default, says what is shared, and offers no dry run", () => {
     render(<ProductMetricsCard />);
-    expect(state()).toHaveTextContent("Not disabled");
-    expect(state()).toHaveAttribute("data-source", "studio");
-    expect(screen.queryByText("On")).toBeNull();
     expect(metricsSwitch()).toBeChecked();
     expect(metricsSwitch()).toBeEnabled();
-    expect(dryRunSwitch()).not.toBeChecked();
-    expect(dryRunSwitch()).toBeEnabled();
-    expect(screen.getByText(NOT_DISABLED_NOTE)).toBeInTheDocument();
-    expect(screen.getByText(SETTINGS_YAML_NOTE)).toBeInTheDocument();
-    expect(
-      screen.getByText(/never a prompt, file path, tool name, or model id/),
-    ).toBeInTheDocument();
+    expect(screen.getByText(SHARED_NOTE)).toBeInTheDocument();
+    expect(screen.getAllByRole("switch")).toHaveLength(1);
+    expect(screen.queryByText(/Dry run/)).toBeNull();
+    expect(screen.queryByText(/daemon|mecated|--product-metrics/i)).toBeNull();
   });
 
-  it("turns the metrics off only after the restart confirm, as a partial patch that keeps the dry-run field", async () => {
+  it("turns the statistics off only after the restart confirm, as a partial patch that keeps the other field", async () => {
     const user = userEvent.setup();
     render(<ProductMetricsCard />);
 
     fireEvent.click(metricsSwitch());
     const dialog = await screen.findByRole("alertdialog");
-    expect(dialog).toHaveTextContent("Turn anonymous product metrics off?");
-    expect(dialog).toHaveTextContent(PRODUCT_METRICS_RESTART_WARNING);
+    expect(dialog).toHaveTextContent("Turn usage statistics off?");
+    expect(dialog).toHaveTextContent(RESTART_NOTE);
     expect(diagnostics.save).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: "Save and restart" }));
@@ -146,70 +132,20 @@ describe("ProductMetricsCard", () => {
     expect(diagnostics.save).not.toHaveBeenCalled();
   });
 
-  it("reads Off when Studio saved the opt-out, with the switch still usable to turn them back on", async () => {
+  it("shows the switch off when Studio saved the opt-out, still usable to turn it back on", async () => {
     const user = userEvent.setup();
     setProductMetrics(
-      { enabled: false, dryRun: false },
+      { enabled: false, dryRun: true },
       { effective: false, source: "studio" },
     );
     render(<ProductMetricsCard />);
 
-    expect(state()).toHaveTextContent("Off");
-    expect(state()).toHaveAttribute("data-source", "studio");
-    expect(screen.getByText(STUDIO_DISABLED_NOTE)).toBeInTheDocument();
     expect(metricsSwitch()).not.toBeChecked();
     expect(metricsSwitch()).toBeEnabled();
 
     fireEvent.click(metricsSwitch());
     const dialog = await screen.findByRole("alertdialog");
-    expect(dialog).toHaveTextContent("Turn anonymous product metrics on?");
-    await user.click(screen.getByRole("button", { name: "Save and restart" }));
-    await waitFor(() =>
-      expect(diagnostics.save).toHaveBeenCalledWith({
-        productMetrics: { enabled: true, dryRun: false },
-      }),
-    );
-  });
-
-  it("explains an environment opt-out and disables both switches, whatever Studio saved", () => {
-    setProductMetrics(
-      { enabled: true, dryRun: true },
-      { effective: false, source: "environment" },
-    );
-    render(<ProductMetricsCard />);
-
-    expect(state()).toHaveTextContent("Off");
-    expect(state()).toHaveAttribute("data-source", "environment");
-    expect(screen.getByText(ENVIRONMENT_OPT_OUT_NOTE)).toBeInTheDocument();
-    expect(screen.getByText(/DO_NOT_TRACK/)).toBeInTheDocument();
-    // The saved switch is on, but the card shows what mecated actually
-    // does: nothing Studio passes can out-rank the operator's variable.
-    expect(metricsSwitch()).not.toBeChecked();
-    expect(metricsSwitch()).toBeDisabled();
-    expect(dryRunSwitch()).toBeDisabled();
-    fireEvent.click(metricsSwitch());
-    expect(screen.queryByRole("alertdialog")).toBeNull();
-    expect(diagnostics.save).not.toHaveBeenCalled();
-  });
-
-  it("arms the dry run after its own confirm, keeping the enabled field, and links to the Daemon log anchor", async () => {
-    const user = userEvent.setup();
-    render(<ProductMetricsCard />);
-
-    expect(screen.getByTestId("product-metrics-log-link")).toHaveAttribute(
-      "href",
-      `#${DAEMON_LOG_ANCHOR_ID}`,
-    );
-    expect(
-      screen.getByText(/verify the no-PII claim yourself/),
-    ).toBeInTheDocument();
-
-    fireEvent.click(dryRunSwitch());
-    const dialog = await screen.findByRole("alertdialog");
-    expect(dialog).toHaveTextContent(
-      "Print observations to the daemon log instead of sending them?",
-    );
-    expect(dialog).toHaveTextContent(DRY_RUN_RESTART_WARNING);
+    expect(dialog).toHaveTextContent("Turn usage statistics on?");
     await user.click(screen.getByRole("button", { name: "Save and restart" }));
     await waitFor(() =>
       expect(diagnostics.save).toHaveBeenCalledWith({
@@ -218,53 +154,62 @@ describe("ProductMetricsCard", () => {
     );
   });
 
-  it("disables the switches while a save is in flight and shows the hook's error and notice", () => {
+  it("explains an environment opt-out and disables the switch, whatever Studio saved", () => {
+    setProductMetrics(
+      { enabled: true, dryRun: false },
+      { effective: false, source: "environment" },
+    );
+    render(<ProductMetricsCard />);
+
+    expect(screen.getByText(ENVIRONMENT_OPT_OUT_NOTE)).toBeInTheDocument();
+    // The saved switch is on, but the card shows what the agent actually
+    // does: nothing Studio passes can out-rank the computer's opt-out.
+    expect(metricsSwitch()).not.toBeChecked();
+    expect(metricsSwitch()).toBeDisabled();
+    fireEvent.click(metricsSwitch());
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(diagnostics.save).not.toHaveBeenCalled();
+  });
+
+  it("disables the switch while a save is in flight and shows the error and a plain saved notice", () => {
     diagnostics.busy = true;
     diagnostics.error = "mecated refused to start: bad flag";
-    diagnostics.notice =
-      "Diagnostics options saved. The daemon restarted with them.";
+    diagnostics.notice = "Saved. The agent restarted.";
     render(<ProductMetricsCard />);
     expect(metricsSwitch()).toBeDisabled();
-    expect(dryRunSwitch()).toBeDisabled();
     expect(
       screen.getByText("mecated refused to start: bad flag"),
     ).toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent(
-      "The daemon restarted with them.",
-    );
+    expect(screen.getByRole("status")).toHaveTextContent(SAVED_NOTICE);
   });
 
-  it("renders the deployment note in external mode, with the opt-out flags and no switches", () => {
+  it("renders the external note with no switch when the agent runs elsewhere", () => {
     runtime.mode = "external";
     render(<ProductMetricsCard />);
     expect(screen.getByText(EXTERNAL_PRODUCT_METRICS_NOTE)).toBeInTheDocument();
-    expect(screen.getByText(/--product-metrics=false/)).toBeInTheDocument();
     expect(screen.queryByRole("switch")).toBeNull();
-    expect(screen.queryByTestId("product-metrics-state")).toBeNull();
   });
 
-  it("renders the loading, offline and missing-controller notes instead of a form", () => {
+  it("renders the loading, offline and unavailable notes instead of a form", () => {
     diagnostics.options = null;
     diagnostics.productMetrics = null;
 
     diagnostics.isLoading = true;
     const { unmount } = render(<ProductMetricsCard />);
-    expect(
-      screen.getByText("Reading the diagnostics options…"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("Loading…")).toBeInTheDocument();
     expect(screen.queryByRole("switch")).toBeNull();
     unmount();
 
     diagnostics.isLoading = false;
     runtime.connected = false;
     const offline = render(<ProductMetricsCard />);
-    expect(screen.getByText(/The runtime is offline/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/The agent is offline, so these settings/),
+    ).toBeInTheDocument();
     offline.unmount();
 
     runtime.connected = true;
     render(<ProductMetricsCard />);
-    expect(
-      screen.getByText(/did not report diagnostics options/),
-    ).toBeInTheDocument();
+    expect(screen.getByText(OPTIONS_UNAVAILABLE_NOTE)).toBeInTheDocument();
   });
 });

@@ -5,14 +5,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AddProviderDialog } from "./add-provider-dialog";
 
 /**
- * The custom-gateway branch of the Add dialog now WRITES the non-secret
- * definition through the controller (`providers add`) when it can: the
- * primary "Save definition" posts exactly the normalized five fields, the
- * YAML collapses behind a disclosure, an api_key provider then continues to
- * the hand-paste key step, a keyless one is finished, a refusal renders in
- * place. With an imported operator settings file the flow stays copy-only.
- * Rule 3 holds throughout: no input is labelled or typed as a key, and the
- * posted definition has no key field.
+ * The guided add: pick a provider, copy its snippet into the agent's key
+ * file, re-check, restart. Rule 3 holds throughout: the dialog renders no
+ * input at all — the only field is the provider picker — and the snippet
+ * carries the `<YOUR_KEY>` placeholder, never a value. The custom-gateway
+ * form and the gateway base-URL override are gone.
  */
 
 const known = [
@@ -23,11 +20,17 @@ const known = [
     snippet: "providers:\n  anthropic:\n    api_key: <YOUR_KEY>\n",
     note: "An Anthropic API key.",
   },
+  {
+    name: "openrouter",
+    label: "OpenRouter",
+    testable: true,
+    snippet: "providers:\n  openrouter:\n    api_key: <YOUR_KEY>\n",
+    note: "Create a key at openrouter.ai/keys.",
+  },
 ];
 
 const reload = vi.fn(async () => []);
 const restartDaemon = vi.fn(async () => {});
-const saveDefinition = vi.fn();
 
 type Props = ComponentProps<typeof AddProviderDialog>;
 
@@ -35,14 +38,11 @@ function renderDialog(overrides: Partial<Props> = {}) {
   return render(
     <AddProviderDialog
       known={known}
-      configured={[]}
+      configured={["openrouter"]}
       authFile="/home/op/.config/mecatl/auth.yaml"
-      settingsFile="/home/op/.config/mecatl/settings.yaml"
-      operatorSettings={false}
       reload={reload}
       restartDaemon={restartDaemon}
       restarting={false}
-      saveDefinition={saveDefinition}
       {...overrides}
     />,
   );
@@ -57,212 +57,130 @@ async function flushTimers() {
   });
 }
 
-/** Picks one option from a Radix Select by its trigger and option name. */
-async function pick(
-  user: ReturnType<typeof userEvent.setup>,
-  trigger: HTMLElement,
-  option: RegExp,
-) {
-  await user.click(trigger);
-  await user.click(await screen.findByRole("option", { name: option }));
+async function openAndPick(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: /Add provider/ }));
+  await user.click(await screen.findByRole("combobox"));
+  await user.click(await screen.findByRole("option", { name: /Anthropic/ }));
   await flushTimers();
 }
 
-/** Opens the dialog on the custom-gateway branch and fills the definition. */
-async function describeGateway(
-  user: ReturnType<typeof userEvent.setup>,
-  { auth = "api_key" }: { auth?: "api_key" | "none" } = {},
-) {
-  await user.click(screen.getByRole("button", { name: /Add provider/ }));
-  await pick(user, await screen.findByRole("combobox"), /Custom gateway/);
-  if (auth === "none") {
-    await pick(user, screen.getByLabelText("Authentication"), /^None/);
-  }
-  await user.type(screen.getByLabelText("Provider id"), "my-gateway");
-  // Surrounding whitespace is normalized away before the post.
-  await user.type(screen.getByLabelText("Base URL"), " https://gw.example/v1 ");
-  await user.type(screen.getByLabelText("Default model"), "org/model ");
-}
-
 beforeEach(() => {
-  reload.mockClear();
+  reload.mockReset();
+  reload.mockResolvedValue([]);
   restartDaemon.mockClear();
-  saveDefinition.mockReset();
 });
 
-describe("AddProviderDialog — custom definition write", () => {
-  it("renders Save definition, posts the normalized definition, then continues to the key step", async () => {
-    saveDefinition.mockResolvedValue({ ok: true, restarted: false });
+describe("AddProviderDialog", () => {
+  it("lists the built-in providers only, marking the ones already added", async () => {
     const user = userEvent.setup();
     renderDialog();
-    await describeGateway(user);
-
-    expect(screen.getByText("2. Save the definition")).toBeInTheDocument();
-    // The YAML is still reachable, behind a disclosure rather than as the
-    // primary step.
-    expect(screen.getByText("Show YAML")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Add provider/ }));
+    expect(await screen.findByRole("dialog")).toHaveTextContent(
+      "Studio never sees your key. You add it to the agent’s own key file in three quick steps.",
+    );
+    await user.click(screen.getByRole("combobox"));
     expect(
-      screen.getByText(/api_flavor: openai-responses/),
+      await screen.findByRole("option", { name: /Anthropic/ }),
     ).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Save definition" }));
-    expect(saveDefinition).toHaveBeenCalledTimes(1);
-    expect(saveDefinition).toHaveBeenCalledWith({
-      id: "my-gateway",
-      apiFlavor: "openai-responses",
-      baseURL: "https://gw.example/v1",
-      defaultModel: "org/model",
-      authMethod: "api_key",
-    });
-    expect(await screen.findByText(/Definition saved ✓/)).toBeInTheDocument();
     expect(
-      screen.queryByRole("button", { name: "Save definition" }),
+      screen.getByRole("option", { name: "OpenRouter (already added)" }),
+    ).toHaveAttribute("aria-disabled", "true");
+    expect(
+      screen.queryByRole("option", { name: /Custom gateway/ }),
     ).not.toBeInTheDocument();
-    // An api_key provider still needs its key by hand, then Re-check.
+  });
+
+  it("shows the snippet and the plain steps for a picked provider, with no input anywhere", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+    await openAndPick(user);
+    expect(
+      screen.getByText("2. Add this to the agent’s key file"),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/An Anthropic API key\./)).toBeInTheDocument();
     expect(screen.getByText(/api_key: <YOUR_KEY>/)).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: "Re-check" }),
+      screen.getByText("3. Save the file, then re-check"),
     ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Copy snippet" }),
+    ).toBeInTheDocument();
+    // Rule 3: nothing to type a key into — and no gateway URL field either.
+    expect(document.querySelectorAll("input, textarea")).toHaveLength(0);
+    expect(
+      screen.queryByText(/Route through a gateway/),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/daemon/)).not.toBeInTheDocument();
   });
 
-  it("Re-check for a saved api_key definition waits for the KEY, not just the row", async () => {
-    saveDefinition.mockResolvedValue({ ok: true, restarted: false });
+  it("names the key file plainly when the agent did not report where it is", async () => {
+    const user = userEvent.setup();
+    renderDialog({ authFile: "" });
+    await openAndPick(user);
+    expect(
+      screen.getByText(/the person who set up the agent knows where it is/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/~\/\.config/)).not.toBeInTheDocument();
+  });
+
+  it("Re-check says when the key is not there yet, then offers the restart once it is", async () => {
     const user = userEvent.setup();
     renderDialog();
-    await describeGateway(user);
-    await user.click(screen.getByRole("button", { name: "Save definition" }));
-    await screen.findByText(/Definition saved ✓/);
+    await openAndPick(user);
 
-    // The definition lists at once (settings-defined) but has no key yet.
     reload.mockResolvedValueOnce([
       {
-        name: "my-gateway",
+        name: "anthropic",
         configured: true,
         keyPresent: false,
-        source: "settings.yaml",
+        source: "auth.yaml",
         testable: true,
       },
     ] as never);
     await user.click(screen.getByRole("button", { name: "Re-check" }));
     expect(
-      await screen.findByText(/The key is not in auth\.yaml yet/),
-    ).toBeInTheDocument();
-
-    reload.mockResolvedValueOnce([
-      {
-        name: "my-gateway",
-        configured: true,
-        keyPresent: true,
-        source: "settings.yaml + auth.yaml",
-        testable: true,
-      },
-    ] as never);
-    await user.click(screen.getByRole("button", { name: "Re-check" }));
-    expect(await screen.findByText(/found ✓/)).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Restart daemon to apply" }),
-    ).toBeInTheDocument();
-  });
-
-  it("a keyless definition is finished on save: restarted, ready, nothing to re-check", async () => {
-    saveDefinition.mockResolvedValue({ ok: true, restarted: true });
-    const user = userEvent.setup();
-    renderDialog();
-    await describeGateway(user, { auth: "none" });
-    expect(screen.getByText(/selectable right away/)).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Save definition" }));
-    expect(saveDefinition).toHaveBeenCalledWith(
-      expect.objectContaining({ authMethod: "none" }),
-    );
-    expect(
-      await screen.findByText(/the daemon restarted with it/),
-    ).toBeInTheDocument();
-    expect(screen.getByText(/is ready — set it as active/)).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Re-check" }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Restart daemon to apply" }),
-    ).not.toBeInTheDocument();
-    expect(screen.queryByText(/api_key: <YOUR_KEY>/)).not.toBeInTheDocument();
-  });
-
-  it("a refused write shows the controller's reason inside the dialog and keeps the button", async () => {
-    saveDefinition.mockResolvedValue({
-      ok: false,
-      restarted: false,
-      error:
-        "Refused while an imported operator settings file is active: Studio does not write the settings file then.",
-    });
-    const user = userEvent.setup();
-    renderDialog();
-    await describeGateway(user);
-    await user.click(screen.getByRole("button", { name: "Save definition" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      /Refused while an imported operator settings file is active/,
-    );
-    expect(
-      screen.getByRole("button", { name: "Save definition" }),
-    ).toBeInTheDocument();
-    expect(screen.queryByText(/Definition saved/)).not.toBeInTheDocument();
-  });
-
-  it("with an imported operator settings file the flow is copy-only, with the refusal note", async () => {
-    const user = userEvent.setup();
-    renderDialog({ operatorSettings: true });
-    await describeGateway(user);
-    expect(
-      screen.queryByRole("button", { name: "Save definition" }),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.getByText("2. Add this to the operator settings"),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        /Studio does not write the settings file while an imported operator settings file is active/,
+      await screen.findByText(
+        "Not found yet. Save the file on the agent’s computer, then try again.",
       ),
     ).toBeInTheDocument();
     expect(
-      screen.getByText(/api_flavor: openai-responses/),
-    ).toBeInTheDocument();
-    expect(saveDefinition).not.toHaveBeenCalled();
-  });
-
-  it("without a saveDefinition callback (older wiring) the flow is copy-only too", async () => {
-    const user = userEvent.setup();
-    renderDialog({ saveDefinition: undefined });
-    await describeGateway(user);
-    expect(
-      screen.queryByRole("button", { name: "Save definition" }),
+      screen.queryByRole("button", { name: "Save and restart" }),
     ).not.toBeInTheDocument();
+
+    reload.mockResolvedValueOnce([
+      {
+        name: "anthropic",
+        configured: true,
+        keyPresent: true,
+        source: "auth.yaml",
+        testable: true,
+      },
+    ] as never);
+    await user.click(screen.getByRole("button", { name: "Re-check" }));
+    expect(await screen.findByText(/found\./)).toHaveTextContent(
+      "Anthropic found. Changes restart the agent. Anything running will stop.",
+    );
     expect(
-      screen.getByText("2. Add this to the operator settings"),
-    ).toBeInTheDocument();
+      screen.queryByRole("button", { name: "Re-check" }),
+    ).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Save and restart" }));
+    expect(restartDaemon).toHaveBeenCalledTimes(1);
   });
 
-  it("rule 3: no input is labelled or typed as a key, and the posted definition has no key field", async () => {
-    saveDefinition.mockResolvedValue({ ok: true, restarted: false });
+  it("copies the exact snippet to the clipboard", async () => {
+    // user-event installs its own clipboard stub on setup; ours goes on top.
     const user = userEvent.setup();
+    const writeText = vi.fn(async () => {});
+    Object.defineProperty(window.navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
     renderDialog();
-    await describeGateway(user);
-    for (const input of document.querySelectorAll("input, textarea")) {
-      expect(input.getAttribute("type")).not.toBe("password");
-      expect(
-        `${input.getAttribute("id")} ${input.getAttribute("placeholder")} ${input.getAttribute("aria-label")}`,
-      ).not.toMatch(/key|token|secret/i);
-    }
-    for (const label of document.querySelectorAll("label")) {
-      expect(label.textContent ?? "").not.toMatch(/api key|token|secret/i);
-    }
-    await user.click(screen.getByRole("button", { name: "Save definition" }));
-    const posted = saveDefinition.mock.calls[0]?.[0] as Record<string, unknown>;
-    expect(Object.keys(posted).sort()).toEqual([
-      "apiFlavor",
-      "authMethod",
-      "baseURL",
-      "defaultModel",
-      "id",
-    ]);
+    await openAndPick(user);
+    await user.click(screen.getByRole("button", { name: "Copy snippet" }));
+    expect(writeText).toHaveBeenCalledWith(known[0].snippet);
+    expect(
+      await screen.findByRole("button", { name: "Copied" }),
+    ).toBeInTheDocument();
   });
 });

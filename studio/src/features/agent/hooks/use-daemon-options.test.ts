@@ -127,7 +127,7 @@ describe("useDaemonOptions", () => {
     });
     expect(fetchHarnessDaemonOptions).toHaveBeenCalledTimes(2);
     expect(runtime.refresh).toHaveBeenCalledTimes(1);
-    expect(result.current.notice).toMatch(/daemon restarted/);
+    expect(result.current.notice).toBe("Saved. The agent restarted.");
     expect(result.current.busy).toBe(false);
   });
 

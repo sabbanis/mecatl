@@ -30,8 +30,6 @@ import { apiError } from "./errors";
 
 const CONTROL_API = "/api/mecatl-control";
 
-export { MAX_REVIEW_INTERVAL };
-
 /** The controller's saved document (PUT /daemon-options body). */
 export interface HarnessDaemonOptions {
   /** The per-project Remember/Recall store: off → no `--memory-dir` at all. */

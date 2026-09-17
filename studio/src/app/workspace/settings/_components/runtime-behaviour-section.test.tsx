@@ -100,15 +100,13 @@ describe("RuntimeBehaviourSection", () => {
     const dialog = await screen.findByRole("alertdialog");
     expect(dialog).toHaveTextContent("Turn this off?");
     expect(dialog).toHaveTextContent(
-      "The agent restarts. Anything running will stop.",
+      "Changes restart the agent. Anything running will stop.",
     );
     // Nothing is saved (and the switch does not move) until the confirm.
     expect(runtimeSettings.save).not.toHaveBeenCalled();
     expect(toggle).toBeChecked();
 
-    await user.click(
-      screen.getByRole("button", { name: "Restart and turn off" }),
-    );
+    await user.click(screen.getByRole("button", { name: "Save and restart" }));
     expect(runtimeSettings.save).toHaveBeenCalledTimes(1);
     expect(runtimeSettings.save).toHaveBeenCalledWith({
       steer: { enabled: false },
@@ -135,9 +133,7 @@ describe("RuntimeBehaviourSection", () => {
     expect(await screen.findByRole("alertdialog")).toHaveTextContent(
       "Turn this on?",
     );
-    await user.click(
-      screen.getByRole("button", { name: "Restart and turn on" }),
-    );
+    await user.click(screen.getByRole("button", { name: "Save and restart" }));
     expect(runtimeSettings.save).toHaveBeenCalledWith({
       steer: { enabled: true },
     });
@@ -149,7 +145,7 @@ describe("RuntimeBehaviourSection", () => {
     expect(screen.queryByRole("switch")).not.toBeInTheDocument();
     expect(screen.getByText("Off")).toBeInTheDocument();
     expect(
-      screen.getByText(/turned off in the agent.s own settings file/),
+      screen.getByText(/turned off where the agent runs/),
     ).toBeInTheDocument();
     expect(screen.queryByText(/steer: false/)).toBeNull();
   });
@@ -187,7 +183,7 @@ describe("RuntimeBehaviourSection", () => {
     runtimeSettings.doc = null;
     render(<RuntimeBehaviourSection />);
     expect(
-      screen.getByText(/Managed by the external mecated deployment/),
+      screen.getByText(/The agent is run somewhere else/),
     ).toBeInTheDocument();
     expect(screen.queryByRole("switch")).not.toBeInTheDocument();
   });
@@ -196,7 +192,9 @@ describe("RuntimeBehaviourSection", () => {
     runtimeSettings.live = false;
     runtimeSettings.doc = null;
     render(<RuntimeBehaviourSection />);
-    expect(screen.getByText(/The runtime is offline/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/The agent is offline, so these settings/),
+    ).toBeInTheDocument();
     expect(screen.queryByRole("switch")).not.toBeInTheDocument();
   });
 

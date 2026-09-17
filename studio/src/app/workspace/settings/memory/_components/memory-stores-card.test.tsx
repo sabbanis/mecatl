@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -8,16 +8,15 @@ import {
 import { MemoryStoresCard } from "./memory-stores-card";
 
 /**
- * Settings → Memory → Memory stores: project memory (--memory-dir) and the
- * user model (--no-user-model / --user-model-dir /
- * --user-model-review-interval) as controller-owned flags, with the
- * DAEMON's own `memory` / `user_model` capability rows as the "memory is
- * on" status. Pins that (1) the status rows read the capability document
- * — on / off / not reported; (2) the controls show the saved document and
- * the placeholders are the controller's defaults; (3) turning a store off
- * disables its directory (and the interval) and the confirmed save sends
- * the merged whole document; (4) the interval is clamped to 1..1000; (5)
- * external mode renders the managed note plus the status rows, no switch.
+ * Settings → Memory → Memory: the two stores as two on/off switches over the
+ * shared options document. Pins that (1) the switches show the saved
+ * document and nothing else is offered — no directory, no interval, no
+ * link; (2) toggling shows the restart line and the confirmed save sends the
+ * WHOLE merged document, other saved values intact; (3) Discard drops the
+ * draft; (4) when the agent is run elsewhere the card is read-only — a plain
+ * note plus On / Off / Unknown per store from what the running agent
+ * reports; (5) offline and loading render a plain note; (6) nothing on the
+ * card names the daemon or a flag.
  */
 
 const hook = vi.hoisted(() => ({
@@ -70,121 +69,157 @@ const doc = (options = EMPTY_DAEMON_OPTIONS): HarnessDaemonOptionsDoc => ({
 
 const confirmSave = async (user: ReturnType<typeof userEvent.setup>) => {
   await user.click(screen.getByRole("button", { name: "Save and restart" }));
-  await screen.findByRole("alertdialog");
+  const dialog = await screen.findByRole("alertdialog");
   await user.click(
-    screen.getAllByRole("button", { name: "Save and restart" }).at(-1) ??
-      document.body,
+    within(dialog).getByRole("button", { name: "Save and restart" }),
   );
+  return dialog;
 };
 
 beforeEach(() => {
   hook.live = true;
   hook.manageable = true;
   hook.doc = doc();
+  hook.isLoading = false;
   hook.busy = false;
   hook.error = null;
   hook.notice = null;
   hook.save.mockClear();
+  runtime.connected = true;
   runtime.mode = "managed";
   runtime.serverCapabilities = { memory: true, user_model: false };
 });
 
 describe("MemoryStoresCard", () => {
-  it("reports both stores from the daemon's capability document", () => {
-    render(<MemoryStoresCard />);
-    expect(screen.getByTestId("memory-status-project")).toHaveTextContent("on");
-    expect(screen.getByTestId("memory-status-user-model")).toHaveTextContent(
-      "off",
-    );
-  });
-
-  it("says 'not reported' when the daemon advertised neither store", () => {
-    runtime.serverCapabilities = {};
-    render(<MemoryStoresCard />);
-    expect(screen.getByTestId("memory-status-project")).toHaveTextContent(
-      "not reported",
-    );
-  });
-
-  it("shows the saved document with the controller's defaults as placeholders", () => {
+  it("shows the two switches from the saved document and no other controls", () => {
     hook.doc = doc({
       ...EMPTY_DAEMON_OPTIONS,
-      userModel: { enabled: true, dir: "", reviewInterval: 3 },
+      userModel: { enabled: false, dir: "/somewhere", reviewInterval: 3 },
     });
     render(<MemoryStoresCard />);
     expect(
       screen.getByRole("switch", { name: "Project memory" }),
     ).toHaveAttribute("aria-checked", "true");
-    expect(screen.getByLabelText("Project memory directory")).toHaveAttribute(
-      "placeholder",
-      "/repo/.scratch/studio-memory",
-    );
-    expect(screen.getByLabelText("User model directory")).toHaveAttribute(
-      "placeholder",
-      "/home/me/.config/mecatl/usermodel",
-    );
-    expect(screen.getByLabelText("Review every Nth completion")).toHaveValue(3);
     expect(
-      screen.getByRole("link", { name: "Settings → Learning" }),
-    ).toHaveAttribute("href", "/workspace/settings/learning");
+      screen.getByRole("switch", { name: "Facts about you" }),
+    ).toHaveAttribute("aria-checked", "false");
+    expect(screen.getAllByRole("switch")).toHaveLength(2);
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+    expect(screen.queryByText("/somewhere")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Save and restart" }),
+    ).toBeDisabled();
+    expect(screen.queryByTestId("memory-stores-pending")).toBeNull();
   });
 
-  it("turning project memory off disables its directory and saves the merged document", async () => {
+  it("turning project memory off shows the restart line and saves the whole merged document", async () => {
     const user = userEvent.setup();
     render(<MemoryStoresCard />);
     await user.click(screen.getByRole("switch", { name: "Project memory" }));
-    expect(screen.getByLabelText("Project memory directory")).toBeDisabled();
-    expect(screen.getByTestId("memory-stores-pending")).toBeInTheDocument();
-    await confirmSave(user);
-    expect(hook.save).toHaveBeenCalledWith({
-      ...EMPTY_DAEMON_OPTIONS,
-      projectMemory: { enabled: false, dir: "" },
-    });
-  });
-
-  it("turning the user model off disables its directory and interval", async () => {
-    const user = userEvent.setup();
-    render(<MemoryStoresCard />);
-    await user.click(screen.getByRole("switch", { name: "User model" }));
-    expect(screen.getByLabelText("User model directory")).toBeDisabled();
-    expect(screen.getByLabelText("Review every Nth completion")).toBeDisabled();
-    await confirmSave(user);
-    expect(hook.save).toHaveBeenCalledWith({
-      ...EMPTY_DAEMON_OPTIONS,
-      userModel: { enabled: false, dir: "", reviewInterval: 1 },
-    });
-  });
-
-  it("clamps the review interval to 1..1000 and carries a typed directory", async () => {
-    const user = userEvent.setup();
-    render(<MemoryStoresCard />);
-    const interval = screen.getByLabelText("Review every Nth completion");
-    await user.clear(interval);
-    await user.type(interval, "5000");
-    expect(interval).toHaveValue(1000);
-    await user.type(
-      screen.getByLabelText("Project memory directory"),
-      ".memory",
+    expect(screen.getByTestId("memory-stores-pending")).toHaveTextContent(
+      "Changes restart the agent.",
     );
-    await confirmSave(user);
+    const dialog = await confirmSave(user);
+    expect(dialog).toHaveTextContent("Save memory settings?");
+    expect(dialog).toHaveTextContent(
+      "Changes restart the agent. Anything running will stop.",
+    );
     expect(hook.save).toHaveBeenCalledWith({
       ...EMPTY_DAEMON_OPTIONS,
-      projectMemory: { enabled: true, dir: ".memory" },
-      userModel: { enabled: true, dir: "", reviewInterval: 1000 },
+      projectMemory: { ...EMPTY_DAEMON_OPTIONS.projectMemory, enabled: false },
     });
   });
 
-  it("renders the managed note and the status rows in external mode, with no controls", () => {
+  it("turning facts about you off keeps its other saved values untouched", async () => {
+    const user = userEvent.setup();
+    hook.doc = doc({
+      ...EMPTY_DAEMON_OPTIONS,
+      userModel: { enabled: true, dir: "/kept", reviewInterval: 7 },
+    });
+    render(<MemoryStoresCard />);
+    await user.click(screen.getByRole("switch", { name: "Facts about you" }));
+    await confirmSave(user);
+    expect(hook.save).toHaveBeenCalledWith({
+      ...EMPTY_DAEMON_OPTIONS,
+      userModel: { enabled: false, dir: "/kept", reviewInterval: 7 },
+    });
+  });
+
+  it("Discard drops the unsaved change without saving", async () => {
+    const user = userEvent.setup();
+    render(<MemoryStoresCard />);
+    const projectMemory = screen.getByRole("switch", {
+      name: "Project memory",
+    });
+    await user.click(projectMemory);
+    expect(projectMemory).toHaveAttribute("aria-checked", "false");
+    await user.click(screen.getByRole("button", { name: "Discard" }));
+    expect(
+      screen.getByRole("switch", { name: "Project memory" }),
+    ).toHaveAttribute("aria-checked", "true");
+    expect(screen.queryByTestId("memory-stores-pending")).toBeNull();
+    expect(hook.save).not.toHaveBeenCalled();
+  });
+
+  it("is read-only with On / Off per store when the agent is run elsewhere", () => {
     hook.manageable = false;
     runtime.mode = "external";
     render(<MemoryStoresCard />);
     expect(
-      screen.getByText("Managed by the external mecated deployment", {
-        exact: false,
-      }),
+      screen.getByText(
+        "Memory is set where the agent runs and can't be changed here.",
+      ),
     ).toBeInTheDocument();
-    expect(screen.getByText(/--no-user-model/)).toBeInTheDocument();
-    expect(screen.getByTestId("memory-status-project")).toHaveTextContent("on");
+    expect(screen.getByTestId("memory-status-project")).toHaveTextContent("On");
+    expect(screen.getByTestId("memory-status-user-model")).toHaveTextContent(
+      "Off",
+    );
+    expect(screen.getByText("Project memory")).toBeInTheDocument();
+    expect(screen.getByText("Facts about you")).toBeInTheDocument();
     expect(screen.queryByRole("switch")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Save and restart" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("says Not available when the running agent reported neither store", () => {
+    hook.manageable = false;
+    runtime.mode = "external";
+    runtime.serverCapabilities = {};
+    render(<MemoryStoresCard />);
+    expect(screen.getByTestId("memory-status-project")).toHaveTextContent(
+      "Not available",
+    );
+    expect(screen.getByTestId("memory-status-user-model")).toHaveTextContent(
+      "Not available",
+    );
+  });
+
+  it("renders a plain note when offline", () => {
+    hook.live = false;
+    render(<MemoryStoresCard />);
+    expect(
+      screen.getByText("The agent is offline, so memory can't be changed."),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("switch")).not.toBeInTheDocument();
+  });
+
+  it("renders a plain note while the settings load", () => {
+    hook.doc = null;
+    hook.isLoading = true;
+    render(<MemoryStoresCard />);
+    expect(screen.getByText("Loading memory settings…")).toBeInTheDocument();
+  });
+
+  it("never names the daemon or a flag", () => {
+    const { unmount } = render(<MemoryStoresCard />);
+    expect(document.body.textContent).not.toMatch(/daemon|mecated|--/i);
+    unmount();
+    hook.manageable = false;
+    runtime.mode = "external";
+    render(<MemoryStoresCard />);
+    expect(document.body.textContent).not.toMatch(/daemon|mecated|--/i);
   });
 });

@@ -2,8 +2,6 @@ import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { memoryStorage } from "@/test/memory-storage";
 import {
-  bindingCaution,
-  comboFromKeyboardEvent,
   effectiveBindings,
   isRebindable,
   KEYMAP_STORAGE_KEY,
@@ -12,40 +10,16 @@ import {
   readOverrides,
   sanitizeOverrides,
   useShortcutBindings,
-  validateBinding,
   writeOverrides,
 } from "./keymap";
 import { SHORTCUTS } from "./registry";
 
 /**
  * The user keymap layer: name normalisation (the TUI's combo grammar for
- * the browser), the recorder's event → combo mapping, the browser-reserved
- * set, per-scope collision validation, the fail-safe storage read, and the
- * shared store every consumer (dispatcher, reference, ⌘K hint, Settings)
- * reads from.
+ * the browser), the browser-reserved set, the fail-safe storage read, and
+ * the shared store every consumer (dispatcher, reference, ⌘K hint) reads
+ * from.
  */
-
-function kb(
-  key: string,
-  mods: Partial<{
-    meta: boolean;
-    ctrl: boolean;
-    shift: boolean;
-    alt: boolean;
-    composing: boolean;
-  }> = {},
-): KeyboardEvent {
-  return {
-    key,
-    metaKey: mods.meta ?? false,
-    ctrlKey: mods.ctrl ?? false,
-    shiftKey: mods.shift ?? false,
-    altKey: mods.alt ?? false,
-    isComposing: mods.composing ?? false,
-  } as KeyboardEvent;
-}
-
-const DEFAULTS = effectiveBindings({});
 
 describe("normalizeCombo", () => {
   it("aliases modifier and key names onto the registry grammar", () => {
@@ -78,33 +52,6 @@ describe("normalizeCombo", () => {
     expect(normalizeCombo("k+j")).toBeNull();
     expect(normalizeCombo("mod+bogus")).toBeNull();
     expect(normalizeCombo("+")).toBeNull();
-  });
-});
-
-describe("comboFromKeyboardEvent", () => {
-  it("ignores a lone modifier press and an IME composition", () => {
-    expect(comboFromKeyboardEvent(kb("Shift", { shift: true }))).toBeNull();
-    expect(comboFromKeyboardEvent(kb("Meta", { meta: true }))).toBeNull();
-    expect(comboFromKeyboardEvent(kb("Control", { ctrl: true }))).toBeNull();
-    expect(comboFromKeyboardEvent(kb("Alt", { alt: true }))).toBeNull();
-    expect(comboFromKeyboardEvent(kb("k", { composing: true }))).toBeNull();
-  });
-
-  it("maps a live chord onto the canonical combo", () => {
-    expect(comboFromKeyboardEvent(kb("K", { meta: true, shift: true }))).toBe(
-      "mod+shift+k",
-    );
-    expect(comboFromKeyboardEvent(kb("k", { ctrl: true }))).toBe("mod+k");
-    expect(comboFromKeyboardEvent(kb(" "))).toBe("space");
-    expect(comboFromKeyboardEvent(kb("Escape"))).toBe("esc");
-    expect(comboFromKeyboardEvent(kb("ArrowDown", { alt: true }))).toBe(
-      "alt+down",
-    );
-    expect(comboFromKeyboardEvent(kb("PageUp", { ctrl: true }))).toBe(
-      "mod+pageup",
-    );
-    // A shifted symbol already carries its shift in `key`.
-    expect(comboFromKeyboardEvent(kb("?", { shift: true }))).toBe("?");
   });
 });
 
@@ -161,23 +108,6 @@ describe("RESERVED_COMBOS", () => {
     }
   });
 
-  it("is spelled the way the recorder spells a live press, so a reserved key is refused as pressed", () => {
-    const recorded = (e: KeyboardEvent) => comboFromKeyboardEvent(e) ?? "";
-    expect(RESERVED_COMBOS.has(recorded(kb("1", { meta: true })))).toBe(true);
-    expect(
-      RESERVED_COMBOS.has(recorded(kb("Delete", { ctrl: true, shift: true }))),
-    ).toBe(true);
-    expect(RESERVED_COMBOS.has(recorded(kb("F12")))).toBe(true);
-    expect(RESERVED_COMBOS.has(recorded(kb("ArrowLeft", { alt: true })))).toBe(
-      true,
-    );
-    expect(RESERVED_COMBOS.has(recorded(kb("=", { ctrl: true })))).toBe(true);
-    // …while a free chord recorded the same way is not.
-    expect(
-      RESERVED_COMBOS.has(recorded(kb("K", { meta: true, shift: true }))),
-    ).toBe(false);
-  });
-
   it("never reserves a rebindable registry default", () => {
     for (const def of SHORTCUTS) {
       if (!isRebindable(def)) continue;
@@ -196,44 +126,6 @@ describe("registry defaults", () => {
   it("the dispatched defaults are collision-free", () => {
     const live = SHORTCUTS.filter((s) => !s.fixed).map((s) => s.combo);
     expect(new Set(live).size).toBe(live.length);
-  });
-});
-
-describe("validateBinding", () => {
-  it("refuses a reserved or invalid combo", () => {
-    expect(validateBinding("chat.new", "mod+n", DEFAULTS)).toEqual({
-      reason: "reserved",
-    });
-    expect(validateBinding("chat.new", "mod", DEFAULTS)).toEqual({
-      reason: "invalid",
-    });
-  });
-
-  it("reports the other live shortcut on a collision, by description", () => {
-    expect(validateBinding("chat.new", "mod+k", DEFAULTS)).toEqual({
-      reason: "collision",
-      withId: "search.open",
-      withDescription: "Open search",
-    });
-    // Locked rows are dispatched, so they are in scope — Esc included.
-    expect(validateBinding("chat.new", "esc", DEFAULTS)).toMatchObject({
-      reason: "collision",
-      withId: "close.esc",
-    });
-  });
-
-  it("keeps a held shift distinct: ⇧J is not J, ⌘⇧K is not ⌘K", () => {
-    // `matchCombo` is strict about a held shift on letters, so these are
-    // free even though `j` (chat.next.vim) and `mod+k` (search.open) are live.
-    expect(validateBinding("chat.new", "shift+j", DEFAULTS)).toBeNull();
-    expect(validateBinding("chat.new", "mod+shift+k", DEFAULTS)).toBeNull();
-  });
-
-  it("does not collide with a documentation-only (fixed) row, nor with itself", () => {
-    // `@` is composer.mention — fixed, never dispatched.
-    expect(validateBinding("chat.new", "@", DEFAULTS)).toBeNull();
-    expect(validateBinding("chat.new", "mod+shift+o", DEFAULTS)).toBeNull();
-    expect(validateBinding("chat.new", "mod+shift+k", DEFAULTS)).toBeNull();
   });
 });
 
@@ -329,77 +221,30 @@ describe("useShortcutBindings", () => {
 
   it("starts from the registry defaults with nothing stored", () => {
     const { result } = renderHook(() => useShortcutBindings());
-    expect(result.current.hasOverrides).toBe(false);
     expect(
       result.current.bindings.find((b) => b.id === "chat.new"),
     ).toMatchObject({ effectiveCombo: "mod+shift+o", custom: false });
     expect(stored()).toBeNull();
   });
 
-  it("setBinding persists and keeps two mounted instances in sync", () => {
-    const settings = renderHook(() => useShortcutBindings());
+  it("a written override persists and keeps two mounted instances in sync", () => {
+    const reference = renderHook(() => useShortcutBindings());
     const dispatcher = renderHook(() => useShortcutBindings());
 
-    let error: unknown = "unset";
-    act(() => {
-      error = settings.result.current.setBinding("chat.new", "Cmd+Shift+K");
-    });
-    expect(error).toBeNull();
+    act(() => writeOverrides({ "chat.new": "Cmd+Shift+K" }));
     expect(stored()).toEqual({ "chat.new": "mod+shift+k" });
-    for (const hook of [settings, dispatcher]) {
+    for (const hook of [reference, dispatcher]) {
       expect(
         hook.result.current.bindings.find((b) => b.id === "chat.new"),
       ).toMatchObject({ effectiveCombo: "mod+shift+k", custom: true });
-      expect(hook.result.current.hasOverrides).toBe(true);
     }
-  });
 
-  it("setBinding returns the error and stores nothing when refused", () => {
-    const { result } = renderHook(() => useShortcutBindings());
-    let error: unknown = null;
-    act(() => {
-      error = result.current.setBinding("chat.new", "mod+k");
-    });
-    expect(error).toMatchObject({ reason: "collision", withId: "search.open" });
-    act(() => {
-      error = result.current.setBinding("close.esc", "mod+e");
-    });
-    expect(error).toEqual({ reason: "invalid" });
+    act(() => writeOverrides({}));
     expect(stored()).toBeNull();
-    expect(result.current.hasOverrides).toBe(false);
-  });
-
-  it("recording the default again clears the override", () => {
-    const { result } = renderHook(() => useShortcutBindings());
-    act(() => {
-      result.current.setBinding("chat.new", "mod+shift+k");
-    });
-    act(() => {
-      result.current.setBinding("chat.new", "mod+shift+o");
-    });
-    expect(stored()).toBeNull();
-    expect(result.current.hasOverrides).toBe(false);
-  });
-
-  it("resetBinding removes one override; resetAll removes the key", () => {
-    const { result } = renderHook(() => useShortcutBindings());
-    act(() => {
-      result.current.setBinding("chat.new", "mod+shift+k");
-      // ⌘⇧U: free — ⌘⇧D is "bookmark all tabs" and reserved, and ⌘⇧Y is
-      // the Debug with AI default (a collision is refused).
-      result.current.setBinding("chat.details", "mod+shift+u");
-    });
-    expect(Object.keys(stored())).toHaveLength(2);
-
-    act(() => result.current.resetBinding("chat.new"));
-    expect(stored()).toEqual({ "chat.details": "mod+shift+u" });
     expect(
-      result.current.bindings.find((b) => b.id === "chat.new")?.custom,
+      reference.result.current.bindings.find((b) => b.id === "chat.new")
+        ?.custom,
     ).toBe(false);
-
-    act(() => result.current.resetAll());
-    expect(stored()).toBeNull();
-    expect(result.current.hasOverrides).toBe(false);
   });
 
   it("returns a referentially stable snapshot while storage is unchanged", () => {
@@ -428,32 +273,5 @@ describe("useShortcutBindings", () => {
       custom: false,
     });
     expect(byId.get("search.open")?.effectiveCombo).toBe("mod+k");
-  });
-});
-
-describe("bindingCaution", () => {
-  it("flags a chord without ⌘ — the dispatcher suppresses it while typing", () => {
-    for (const combo of ["n", "shift+n", "alt+f5", "?", "down", "F3"]) {
-      expect(bindingCaution(combo)).toMatch(/Won't fire while typing/);
-    }
-    // The TUI refuses such a chord for a global action; Studio allows it and
-    // says so, since the while-typing suppression already protects typing.
-    expect(bindingCaution("n")).toMatch(/add ⌘ \(Ctrl\)/);
-  });
-
-  it("stays silent for ⌘ chords, Esc, the paging keys and a non-combo", () => {
-    for (const combo of [
-      "mod+shift+k",
-      "Cmd+K",
-      "Ctrl+,",
-      "esc",
-      "pageup",
-      "shift+pagedown",
-    ]) {
-      expect(bindingCaution(combo)).toBeNull();
-    }
-    // Not even a combo — validateBinding owns that verdict, not the caution.
-    expect(bindingCaution("")).toBeNull();
-    expect(bindingCaution("mod+shift")).toBeNull();
   });
 });

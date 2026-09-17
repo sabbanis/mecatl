@@ -99,14 +99,6 @@ export function isKnownPalette(
   );
 }
 
-/** The catalogue entry for `id`, or undefined when unknown. */
-export function findPalette(
-  id: string,
-  catalogue: readonly PaletteDef[] = BUILT_IN_PALETTES,
-): PaletteDef | undefined {
-  return catalogue.find((palette) => palette.id === id);
-}
-
 /**
  * Resolves a stored (or requested) id against the catalogue: a known id is
  * kept, anything else — null, an unknown or a removed palette — falls back.

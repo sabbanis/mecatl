@@ -18,6 +18,7 @@ import {
   ExternalManagedNote,
   Note,
   OfflineNote,
+  RESTART_SENTENCE,
   SettingsCard,
   SettingsRow,
 } from "./settings-card";
@@ -107,8 +108,8 @@ export function RuntimeBehaviourSection() {
         {inheritedOff ? (
           <div className="mt-3">
             <Note>
-              This was turned off in the agent&rsquo;s own settings file, so it
-              can&rsquo;t be changed here.
+              This was turned off where the agent runs, so it can&rsquo;t be
+              changed here.
             </Note>
           </div>
         ) : null}
@@ -133,7 +134,7 @@ export function RuntimeBehaviourSection() {
                   {pending ? "Turn this on?" : "Turn this off?"}
                 </AlertDialogTitle>
                 <AlertDialogDescription>
-                  The agent restarts. Anything running will stop.
+                  {RESTART_SENTENCE}
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
@@ -144,7 +145,7 @@ export function RuntimeBehaviourSection() {
                     setPending(null);
                   }}
                 >
-                  {pending ? "Restart and turn on" : "Restart and turn off"}
+                  Save and restart
                 </AlertDialogAction>
               </AlertDialogFooter>
             </AlertDialogContent>
@@ -157,7 +158,7 @@ export function RuntimeBehaviourSection() {
   return (
     <SettingsCard
       title="Agent behaviour"
-      description="Applies to everyone using this agent. Changes restart it."
+      description="Applies to everyone using this agent."
     >
       {body}
     </SettingsCard>

@@ -9,11 +9,11 @@ import type { HarnessRuntimeSettingsDoc } from "@/lib/harness/runtime-settings";
 import LearningSettingsPage from "./page";
 
 /**
- * Settings → Learning as a page: the Learning mode card (the web form of
- * `/learning` + `/learning-sensitivity`) renders FIRST whatever the daemon
- * advertises, so the page is never a dead end when learning is off — the
- * "not enabled" note sits BELOW the control that turns it on, and once the
- * daemon reports proposals the note yields to the review queue.
+ * Settings → Learning as a page: the Learning card renders FIRST whatever
+ * the agent advertises, so the page is never a dead end when learning is
+ * off — the "Learning is off" note sits BELOW the control that turns it on,
+ * and once the agent reports proposals the note yields to the suggestions
+ * list.
  */
 
 const runtimeStatus = vi.hoisted(() => ({
@@ -32,6 +32,15 @@ const runtimeSettings = vi.hoisted(() => ({
   error: null as string | null,
   notice: null as string | null,
   save: vi.fn(async () => true),
+}));
+
+/** The Learn-from-a-chat picker's inventory read; one finished chat. */
+const sessionsMock = vi.hoisted(() => ({
+  fetchAllSessions: vi.fn(),
+}));
+
+vi.mock("@/lib/harness/client", () => ({
+  fetchAllSessions: sessionsMock.fetchAllSessions,
 }));
 
 vi.mock("@/features/agent/runtime-status", () => ({
@@ -78,62 +87,86 @@ beforeEach(() => {
   runtimeSettings.live = true;
   runtimeSettings.manageable = true;
   runtimeSettings.doc = doc();
+  sessionsMock.fetchAllSessions.mockReset();
+  sessionsMock.fetchAllSessions.mockResolvedValue({
+    sessions: [
+      {
+        sessionId: "chat-1",
+        title: "Planning the offsite",
+        isChat: true,
+        state: "completed",
+      },
+    ],
+  });
 });
 
 describe("LearningSettingsPage", () => {
-  it("renders the Learning mode card above the not-enabled note when the daemon advertises neither capability", () => {
+  it("renders the Learning card above the off note when the agent advertises neither capability", () => {
     render(<LearningSettingsPage />);
     const modeControl = screen.getByRole("button", { name: "Learning mode" });
-    const note = screen.getByRole("heading", {
-      name: "Learning is not enabled on this daemon",
-    });
+    const note = screen.getByRole("heading", { name: "Learning is off" });
     expect(modeControl).toBeInTheDocument();
     expect(precedes(modeControl, note)).toBe(true);
     expect(
-      screen.getByText(/Turn learning on above \(managed mode\)/),
+      screen.getByText(/Turn learning on above, then review/),
     ).toBeInTheDocument();
     // The downstream cards wait for the capabilities.
     expect(
-      screen.queryByRole("heading", { name: "Review queue" }),
+      screen.queryByRole("heading", { name: "Suggestions" }),
     ).not.toBeInTheDocument();
   });
 
-  it("keeps the Learning mode card first and drops the note once proposals are advertised", async () => {
+  it("keeps the Learning card first and drops the note once proposals are advertised", async () => {
     runtimeStatus.serverCapabilities = { learning_proposals: true };
     render(<LearningSettingsPage />);
     const modeControl = screen.getByRole("button", { name: "Learning mode" });
-    const queue = await screen.findByRole("heading", { name: "Review queue" });
+    const queue = await screen.findByRole("heading", { name: "Suggestions" });
     expect(precedes(modeControl, queue)).toBe(true);
     expect(
-      screen.queryByRole("heading", {
-        name: "Learning is not enabled on this daemon",
-      }),
+      screen.queryByRole("heading", { name: "Learning is off" }),
     ).not.toBeInTheDocument();
   });
 
-  it("still offers the mode card in external mode, as the managed note", () => {
+  it("still offers the Learning card in external mode, as the managed note", () => {
     runtimeStatus.mode = "external";
     runtimeSettings.manageable = false;
     runtimeSettings.doc = null;
     render(<LearningSettingsPage />);
     expect(
-      screen.getByText(/Managed by the external mecated deployment/),
+      screen.getByText(/The agent is run somewhere else/),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("heading", {
-        name: "Learning is not enabled on this daemon",
-      }),
+      screen.getByRole("heading", { name: "Learning is off" }),
     ).toBeInTheDocument();
+  });
+
+  it("offers Learn from a chat when only reflection is advertised", async () => {
+    runtimeStatus.serverCapabilities = { reflection: true };
+    render(<LearningSettingsPage />);
+    expect(
+      screen.getByRole("heading", { name: "Learn from a chat" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Reviewing suggestions is not available right now."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Find suggestions" }),
+    ).toBeDisabled();
+    // The picker lists finished chats; once they arrive the empty note goes.
+    await waitFor(() =>
+      expect(screen.queryByText("No finished chats yet.")).toBeNull(),
+    );
+    expect(sessionsMock.fetchAllSessions).toHaveBeenCalledTimes(1);
   });
 });
 
 /**
- * The review queue's paging and refresh (the TUI's n/p and r): every list
- * request carries the page size, the Deferred pill sends the daemon's exact
- * status token, Load more appends the next page by cursor, and Refresh
- * restarts from the first page.
+ * The suggestions list's paging and refresh: every list request carries the
+ * page size, the Deferred pill sends the agent's exact status token, Load
+ * more appends the next page by cursor, and Refresh restarts from the first
+ * page.
  */
-describe("Review queue paging", () => {
+describe("Suggestions paging", () => {
   const listMock = vi.mocked(listLearningProposals);
   const proposal = (id: string, status = "staged"): LearningProposal => ({
     id,
@@ -184,6 +217,9 @@ describe("Review queue paging", () => {
       status: "staged",
       limit: 50,
     });
+    expect(
+      await screen.findByText("Nothing waiting for review."),
+    ).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Deferred" }));
     await waitFor(() => expect(listMock).toHaveBeenCalledTimes(2));
     expect(listMock.mock.calls[1]?.[0]).toEqual({
@@ -195,8 +231,24 @@ describe("Review queue paging", () => {
       "true",
     );
     expect(
-      await screen.findByText("No deferred proposals."),
+      await screen.findByText("No deferred suggestions."),
     ).toBeInTheDocument();
+  });
+
+  it("labels the promoted filter Approved and sends the promoted token", async () => {
+    const user = userEvent.setup();
+    render(<LearningSettingsPage />);
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole("button", { name: "Approved" }));
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(2));
+    expect(listMock.mock.calls[1]?.[0]).toEqual({
+      status: "promoted",
+      limit: 50,
+    });
+    expect(
+      await screen.findByText("No approved suggestions."),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Promoted" })).toBeNull();
   });
 
   it("appends the next page through Load more, sending the cursor", async () => {
@@ -206,7 +258,7 @@ describe("Review queue paging", () => {
         nextCursor: "cursor-2",
       })
       .mockResolvedValueOnce({
-        // The daemon may repeat a row that moved between pages; it is
+        // The agent may repeat a row that moved between pages; it is
         // listed once.
         proposals: [proposal("p1"), proposal("p2")],
         nextCursor: "",
@@ -253,7 +305,9 @@ describe("Review queue paging", () => {
     const user = userEvent.setup();
     render(<LearningSettingsPage />);
     await screen.findByText("key/p1");
-    await user.click(screen.getByRole("button", { name: "Refresh proposals" }));
+    await user.click(
+      screen.getByRole("button", { name: "Refresh suggestions" }),
+    );
     await screen.findByText("key/p3");
     expect(screen.queryByText("key/p1")).toBeNull();
     // A refresh restarts the walk: no cursor, same page size.

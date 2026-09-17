@@ -86,7 +86,7 @@ describe("useDaemonDefaults", () => {
     expect(ok).toBe(true);
     expect(saveHarnessDaemonDefaults).toHaveBeenCalledWith(draft);
     expect(result.current.defaults).toEqual(next);
-    expect(result.current.notice).toMatch(/Daemon defaults saved/);
+    expect(result.current.notice).toBe("Saved. The agent restarted.");
     expect(result.current.busy).toBe(false);
     // The echo stood in for a re-read: one fetch, the initial load.
     expect(fetchHarnessDaemonDefaults).toHaveBeenCalledTimes(1);

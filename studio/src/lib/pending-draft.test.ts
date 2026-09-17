@@ -1,14 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  PENDING_DRAFT_KEY,
-  stashPendingDraft,
-  takePendingDraft,
-} from "./pending-draft";
+import { PENDING_DRAFT_KEY, takePendingDraft } from "./pending-draft";
 
 /**
- * The cross-route composer handoff: stash → take round-trips the text
- * exactly once (take clears), an empty stash clears, and a browser without
- * usable storage degrades to "nothing pending" instead of throwing.
+ * The cross-route composer handoff: a stored text is taken exactly once
+ * (take clears), an empty value reads as nothing pending, and a browser
+ * without usable storage degrades to "nothing pending" instead of throwing.
  */
 
 afterEach(() => {
@@ -19,11 +15,9 @@ afterEach(() => {
 });
 
 describe("pending draft", () => {
-  it("round-trips the text and clears on take", () => {
-    expect(stashPendingDraft("Mecatl diagnostics:\nplatform: macOS")).toBe(
-      true,
-    );
-    expect(window.sessionStorage.getItem(PENDING_DRAFT_KEY)).toBe(
+  it("takes the stored text exactly once", () => {
+    window.sessionStorage.setItem(
+      PENDING_DRAFT_KEY,
       "Mecatl diagnostics:\nplatform: macOS",
     );
     expect(takePendingDraft()).toBe("Mecatl diagnostics:\nplatform: macOS");
@@ -35,10 +29,10 @@ describe("pending draft", () => {
     expect(takePendingDraft()).toBeNull();
   });
 
-  it("clears the stash when given empty text", () => {
-    stashPendingDraft("old");
-    expect(stashPendingDraft("")).toBe(true);
+  it("reads an empty stored value as nothing pending", () => {
+    window.sessionStorage.setItem(PENDING_DRAFT_KEY, "");
     expect(takePendingDraft()).toBeNull();
+    expect(window.sessionStorage.getItem(PENDING_DRAFT_KEY)).toBeNull();
   });
 
   it("degrades when storage is unusable", () => {
@@ -46,7 +40,6 @@ describe("pending draft", () => {
     vi.spyOn(window, "sessionStorage", "get").mockImplementation(() => {
       throw new Error("SecurityError");
     });
-    expect(stashPendingDraft("text")).toBe(false);
     expect(takePendingDraft()).toBeNull();
   });
 });

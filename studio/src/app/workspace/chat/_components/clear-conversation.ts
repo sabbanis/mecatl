@@ -33,7 +33,7 @@ export const CLEAR_ACTIVE_ELSEWHERE =
 
 /** The disabled-item reason when the row carries no successor verdict. */
 export const CLEAR_ELIGIBILITY_UNKNOWN =
-  "The daemon did not say whether this chat can be cleared";
+  "The agent did not say whether this chat can be cleared";
 
 /**
  * What the chat's menu shows for Clear conversation: nothing (not a chat),

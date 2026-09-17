@@ -5,12 +5,9 @@ import {
   CircleHelp,
   Database,
   FlaskConical,
-  FolderGit2,
   GraduationCap,
-  Keyboard,
   Network,
   Palette,
-  Route,
   Server,
   ShieldCheck,
   UserRound,
@@ -41,13 +38,8 @@ export const SETTINGS_GROUPS: Array<{
       },
       {
         href: "/workspace/settings/appearance",
-        label: "Personalize",
+        label: "Personalise",
         icon: Palette,
-      },
-      {
-        href: "/workspace/settings/keyboard",
-        label: "Keyboard",
-        icon: Keyboard,
       },
       // After Appearance: identity, then how the app looks, then how the chat
       // behaves, then when it interrupts you.
@@ -78,27 +70,15 @@ export const SETTINGS_GROUPS: Array<{
       },
       {
         href: "/workspace/settings/provider",
-        label: "Provider",
+        label: "Providers",
         icon: Server,
       },
       {
-        href: "/workspace/settings/model-router",
-        label: "Model router",
-        icon: Route,
-      },
-      {
         href: "/workspace/settings/gateway",
-        // The MCP inventory (sources, ToolHive groups) above the gateway
-        // connect form; the route keeps its historical name.
+        // The tools the agent can use, above the gateway sign-in; the route
+        // keeps its historical name.
         label: "MCP tools",
         icon: Network,
-      },
-      {
-        // The managed daemon's workspace root (the TUI's `--workspace`):
-        // shown in both modes, changeable in managed mode.
-        href: "/workspace/settings/workspace",
-        label: "Workspace",
-        icon: FolderGit2,
       },
       {
         href: "/workspace/settings/storage",
@@ -126,8 +106,7 @@ export const SETTINGS_GROUPS: Array<{
         icon: Activity,
       },
       {
-        // Studio's version, docs and source links, the daemon's identity and
-        // the configuration reference — the web analogue of --version/--help.
+        // Studio's version, docs link and the agent's version.
         href: "/workspace/settings/help",
         label: "About",
         icon: CircleHelp,

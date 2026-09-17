@@ -10,7 +10,7 @@ chats).
 Run through the root Taskfile, not bare npm:
 
 ```sh
-task build          # repo root first — studio's managed mode spawns ../bin/mecated against the configured root (default: the repo; Settings → Workspace)
+task build          # repo root first — studio's managed mode spawns ../bin/mecated against the configured root (default: the repo; the controller's `POST /workspace` — no settings page since Sept 2026)
 task studio:dev     # start Studio + its mecated supervisor (background; logs in studio/dev.log)
 task studio:stop    # stop web server + controller + the mecated it supervises
 task studio:test    # vitest run + the hermetic server-tier suite (builds first)
@@ -24,13 +24,21 @@ already-running controller). Setting `MECATL_BASE_URL` selects external mode.
 The hermetic suite (`npm run test:server`) builds Next first — a stale build is
 the usual reason it fails mysteriously.
 
-The draft chat shows only the greeting and starter prompts: the first-run
-welcome card, mascot and capability hints, the sidebar's Chats / Runs /
-Scheduled / Drafts tabs (chats only list now; runs and fires stay reachable
-through the read-only transcript dialog), the header's placement badge and
-the Settings → Status line / Tools / Persona surfaces were removed for a
-non-technical audience (September 2026). The status-line templates still
-render their DEFAULTS (`src/lib/statusline`), with no settings page.
+**Non-technical audience (September 2026).** Studio is written for office
+users. Removed from the UI, with the underlying controller documents and
+defaults kept: the first-run welcome card, mascot and capability hints; the
+sidebar's Chats / Runs / Scheduled / Drafts tabs (chats only list now; runs
+and fires stay reachable through the read-only transcript dialog); the chat
+header's placement badge and status strip (facts moved to ⋯ → Session
+details); the top-nav connection and posture chips; the composer's Memory
+pill; and the Settings pages Status line, Tools, Persona, Keyboard
+(rebinding), Model router and Workspace, plus the Preferences-file card, the
+Custom-palettes card, the performance/pprof card, the posture card, the
+store-location and retention cards and the configuration reference. The
+status-line templates still render their DEFAULTS (`src/lib/statusline`).
+Every settings card uses plain language ("the agent", one restart sentence:
+"Changes restart the agent. Anything running will stop."); the Mode menu
+carries the "Safety level" (operator posture) and Tools is its own pill.
 
 Studio's own build stamp (Settings → Provider → About's `Studio` row, the
 `/diagnostics` report's `client build:` line; `src/lib/studio-build.ts`) is
@@ -40,15 +48,15 @@ inlined at `next build` by `next.config.ts` (`NEXT_PUBLIC_STUDIO_BUILD` =
 `next start` reports the stamp of the build it serves, not the running
 checkout — a bug report wants the build.
 
-Settings → Help & about (`settings/help/page.tsx`) is the web
-`--version`/`--help`: Studio's plain version and the SDK version (inlined
-the same way as `NEXT_PUBLIC_STUDIO_VERSION`/`NEXT_PUBLIC_SDK_VERSION`,
-`src/lib/studio-version.ts`), the docs and repository links, the About card,
-and the configuration reference — `src/lib/studio-config-reference.ts` is the
-DATA (every env var the server tier, the controller or the build reads; its
-test scans the source for `process.env.X` reads, so a new knob must get a
-row), and `GET /api/studio/about` (same-origin, `requestIsTrusted`) answers
-which names are set as booleans — never a value. The ⌘K search lists the
+Settings → About (`settings/help/page.tsx`) is the web `--version`: Studio's
+plain version (inlined as `NEXT_PUBLIC_STUDIO_VERSION`,
+`src/lib/studio-version.ts`), the docs and support links, and a short
+"About the agent" card. The configuration reference is no longer rendered,
+but `src/lib/studio-config-reference.ts` stays the DATA (every env var the
+server tier, the controller or the build reads; its test scans the source
+for `process.env.X` reads, so a new knob must get a row), and
+`GET /api/studio/about` (same-origin, `requestIsTrusted`) answers which
+names are set as booleans — never a value. The ⌘K search lists the
 help pages (`src/lib/workspace-pages.ts`) under a Pages group.
 
 ## Module shape
@@ -93,7 +101,7 @@ Each rule is backed by a test; break the rule and its test names you.
 1. **Daemon-only: an unreachable daemon renders offline, never demo data.**
    There are no fixtures to fall back to — do not add any. The one sanctioned
    exception is the explicit, default-off, clearly-labeled Labs mock content
-   (Settings → Labs → "Show mock features", `src/features/agent/mock-tour.ts`)
+   (Settings → Labs → "Show demo chat", `src/features/agent/mock-tour.ts`)
    — an opt-in demo the user turns on, never a fallback for an unreachable
    daemon. Its sibling is Labs → "Developer tools" (mecatui's client debug
    mode): the `/debug-ask` built-in / "Inject fake approval" menu item park
@@ -111,8 +119,9 @@ Each rule is backed by a test; break the rule and its test names you.
    keyed by `session_id`). `MECATL_WORKSPACE` (external) and the controller's
    `/status` `workspace` are display-only labels in the browser: the latter
    is the spawn root the MANAGED controller owns (the TUI's `--workspace`),
-   changeable from Settings → Workspace via the header-gated
-   `POST /workspace` — validated on the controller's OWN filesystem
+   changeable ONLY through the controller's header-gated `POST /workspace`
+   (the Settings → Workspace page was removed; a path is operator
+   configuration) — validated on the controller's OWN filesystem
    (`src/lib/workspace-config.mjs`: absolute, exists, a directory, not the
    state dir), persisted in `studio-workspace.json`, a restart; a non-default
    root gets its OWN session store and memory dir keyed by a path hash UNDER
@@ -122,8 +131,7 @@ Each rule is backed by a test; break the rule and its test names you.
    carries `defaultWorkspace`; the About card shows a `Workspace` row in
    both modes. It is never sent to the daemon as a placement.
    (`workspace-config.test.ts`, `client-status.test.ts`,
-   `workspace-section.test.tsx`, `about-daemon-card.test.tsx`, hermetic 409
-   + header-gate rows.) The one placement CHOICE
+   `about-daemon-card.test.tsx`, hermetic 409 + header-gate rows.) The one placement CHOICE
    Studio offers — "Switch worktree…" in the chat menu
    (`worktree-picker-dialog.tsx`) — travels as the daemon's OPAQUE
    `worktree_selector` from `GET /v1/worktrees?session_id=`, on ClearSession
@@ -240,13 +248,14 @@ Each rule is backed by a test; break the rule and its test names you.
     under the controller's workspace, the dir is created first) and an
     in-memory store into the ABSENCE of the flag (mecated has no `--no-store`).
     `/status.storage` reports the saved AND default location; external mode:
-    `storage: null`, `POST /storage` 409. The card never invents a path an
-    older controller did not report. (`src/lib/storage-settings.test.ts`,
-    `store-location.test.ts`, `session-storage-section.test.tsx`, hermetic
+    `storage: null`, `POST /storage` 409. There is NO settings UI for the
+    location any more (operator configuration; the route and document stay).
+    (`src/lib/storage-settings.test.ts`, `store-location.test.ts`, hermetic
     409 + CSRF rows.)
 15. **Retention is spawn FLAGS too, and main-chat deletion needs the
-    acknowledgement — in Studio AND in mecated.** Settings → Storage →
-    Retention saves a Studio-owned `retention.json`; the controller turns
+    acknowledgement — in Studio AND in mecated.** The controller's
+    `POST /retention` saves a Studio-owned `retention.json` (no settings UI
+    since Sept 2026 — the write side stays for operators); the controller turns
     each SET field into its mecated flag (`--main-retention`,
     `--child-retention`, `--schedule-fire-retention`, their count caps,
     `--child-gc-interval` for the sweep cadence, `--acknowledge-main-retention`)
@@ -260,8 +269,7 @@ Each rule is backed by a test; break the rule and its test names you.
     `GET /v1/storage/health` (`policy`, `last/next_sweep_unix`), never the
     saved document. External mode: `retention: null`, `POST /retention` 409.
     (`src/lib/retention-settings.test.ts`, `harness/retention.test.ts`,
-    `harness/storage.test.ts`, `retention-section.test.tsx`, hermetic 409 +
-    CSRF rows.)
+    `harness/storage.test.ts`, hermetic 409 + CSRF rows.)
 16. **Daemon defaults are spawn FLAGS, keyed per provider, and the active
     provider is durable.** Settings → Model provider → "Daemon defaults" (and
     the provider page's "Make daemon default" kebab, the Add dialog's "Save
@@ -276,8 +284,8 @@ Each rule is backed by a test; break the rule and its test names you.
     never "unset"; `LLM_TIMEOUT_DEFAULTS` in `daemon-defaults.mjs`),
     `--no-prompt-cache`, `--anthropic-cache-ttl`, `--<kind>-base-url`,
     `--toolhive-llm=false`/`--toolhive-llm-base-url`/`--toolhive-llm-mode`,
-    repeated `--model-alias`/`--model-slot` (the `router` slot stays the
-    Model router page's), and `--api-key-file` (a `.yaml` INSIDE the mecatl
+    repeated `--model-alias`/`--model-slot` (the `router` slot is reserved
+    for model routing, whose settings page was removed), and `--api-key-file` (a `.yaml` INSIDE the mecatl
     config dir — the controller reads and rewrites that file for the
     provider routes, so the path is confined). A refused start rolls the
     previous document back and returns mecated's own refusal. `POST
@@ -346,9 +354,11 @@ Each rule is backed by a test; break the rule and its test names you.
     `diagnosticsOptions`, `diagnosticsOptionArgs`. External mode: both verbs
     409. (`src/lib/controller-diagnostics-options.test.ts`,
     `src/lib/posture.test.ts`, `harness/diagnostics.test.ts`,
-    `use-diagnostics-options.test.ts`, `posture-card.test.tsx`,
-    `product-metrics-card.test.tsx`, hermetic 409
-    rows, the Playwright diagnostics test.) The admin surface itself
+    `use-diagnostics-options.test.ts`, `product-metrics-card.test.tsx`,
+    hermetic 409 rows, the Playwright diagnostics test.) Settings →
+    Diagnostics (under Support) now shows only the log tail / download, the
+    metrics opt-out and Restart; the posture card (see Permissions) and the
+    performance card were removed. The admin surface itself
     reaches the browser ONLY through the controller: it probes a free
     loopback port per spawn (the ready file names only `http_address`; one
     re-probe + re-spawn when the failed start says address-in-use —
@@ -356,27 +366,23 @@ Each rule is backed by a test; break the rule and its test names you.
     paths and knobs (`/status.perf` mirrors it), and `GET /perf/metrics` /
     `GET /perf/vars` relay the two TEXT endpoints (409 while off, 503 while
     no child runs; `/debug/pprof` and `/debug/flightrecorder` are NEVER
-    relayed — `performance-card.tsx` shows them as loopback links that only
-    resolve on the daemon's host, and says so). All three are
-    studio-header-gated and 409 in external mode. `src/lib/prometheus-text.ts`
-    turns the exposition into the Goroutines / Heap / RSS / GC-pause tiles
-    and prints the `mecated perf-mcp print-config` snippet byte for byte.
-    Passing `--metrics-addr=` when the switch is off means a managed daemon
-    no longer opens mecated's default 127.0.0.1:9090 listener — that is
-    deliberate, and the card's copy says it. (`controller-perf.test.ts`,
-    `prometheus-text.test.ts`, `performance-card.test.tsx`, hermetic 409 +
+    relayed). All three are studio-header-gated and 409 in external mode.
+    No UI renders them any more (the performance card and
+    `prometheus-text.ts` were removed); the controller routes stay for
+    operators. Passing `--metrics-addr=` when the switch is off means a
+    managed daemon no longer opens mecated's default 127.0.0.1:9090 listener
+    — that is deliberate. (`controller-perf.test.ts`, hermetic 409 +
     header-gate rows.)
 18. **Storage maintenance is DAEMON-owned, capability-gated, and the
-    destructive step is typed-confirmed.** Settings → Storage ends in three
-    cards that talk to mecated ONLY through the SDK's `client.storage`
-    namespace (`src/lib/harness/storage.ts` — no controller document, no
-    spawn flag, nothing to roll back): Storage health (`GET
-    /v1/storage/health`, gated on `serverCapabilities.storage_health`, a
-    note when absent), Optimize storage (`/v1/storage/migrations/*`: plan →
-    apply → poll/cancel/resume, gated on `storage_migration`) and Clean up
-    sessions (`/v1/storage/cleanup:plan` → `cleanup:apply` →
-    `/v1/storage/cleanup/jobs/*`, gated on `storage_cleanup`); an ungated
-    card renders nothing. A running job is polled every
+    destructive step is typed-confirmed.** Settings → Storage is ONE card
+    that talks to mecated ONLY through the SDK's `client.storage` namespace
+    (`src/lib/harness/storage.ts` — no controller document, no spawn flag,
+    nothing to roll back): a plain health summary (`GET /v1/storage/health`,
+    gated on `serverCapabilities.storage_health`) and "Clean up old runs"
+    (`/v1/storage/cleanup:plan` → `cleanup:apply` →
+    `/v1/storage/cleanup/jobs/*`, gated on `storage_cleanup`); the Optimize
+    storage (migration) UI was removed — its fetchers stay in `storage.ts`
+    for operators. An ungated block renders nothing. A running job is polled every
     `JOB_POLL_INTERVAL_MS` (2 s) by `useStorageMaintenance`, stopped on a
     terminal state and on unmount, and health is re-read when it settles.
     Clean-up ticks every kind BUT `main` by default, applies with the PLAN's
@@ -513,23 +519,19 @@ Each rule is backed by a test; break the rule and its test names you.
     the resolved path (`project` / `user` / `studio` / `other`), never a
     hard-coded "project". Both verbs are studio-header-gated (the GET names
     directories on this machine; the proxy adds the header) and 409 in
-    external mode. The UI is two cards over ONE scaffold (the former Settings → Tools
-    page — skills directory, slash-command templates — was removed as
-    operator configuration; the document keeps those fields at their
-    defaults)
-    (`daemon-options-card.tsx`: draft, "Restart required", AlertDialog
-    confirm, Discard): Settings → MCP tools
-    (`mcp-discovery-card.tsx`) and Settings → Memory
-    (`memory-stores-card.tsx`, with the `capabilities.memory`/`user_model`
-    rows — the TUI's "memory is on" note). What the UI shows as ON is
+    external mode. The only UI left over this document is Settings →
+    Memory's two switches (`memory-stores-card.tsx`: project memory, facts
+    about you — the `capabilities.memory`/`user_model` rows); the former
+    Tools page (skills directory, slash-command templates) and the MCP
+    discovery flags card were removed as operator configuration, and the
+    shared `daemon-options-card.tsx` scaffold went with them. The document
+    keeps every other field at its default. What the UI shows as ON is
     always the daemon's capability document, never the saved document, and
     `useDaemonOptions().save` re-probes it after the restart.
     (`src/lib/daemon-options.test.ts`, `harness/daemon-options.test.ts`,
-    `use-daemon-options.test.ts`, `daemon-options-card.test.tsx`,
-    `tools-options-card.test.tsx`, `mcp-discovery-card.test.tsx`,
-    `memory-stores-card.test.tsx`, `skill-tool-disabled-banner.test.tsx`,
-    `controller-security.test.ts`, hermetic 409 + header-gate rows, the
-    Playwright external-mode Tools test.)
+    `use-daemon-options.test.ts`, `memory-stores-card.test.tsx`,
+    `skill-tool-disabled-banner.test.tsx`, `controller-security.test.ts`,
+    hermetic 409 + header-gate rows.)
 
 ## Gotchas
 

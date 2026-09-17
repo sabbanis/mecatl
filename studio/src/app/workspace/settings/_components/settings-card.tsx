@@ -81,15 +81,20 @@ export function Note({ children }: { children: React.ReactNode }) {
   return <p className="text-sm text-muted-foreground">{children}</p>;
 }
 
+/** The ONE restart sentence every settings surface uses — pending lines,
+ * confirm dialogs and card notes alike — so the warning reads the same
+ * wherever a save restarts the agent. */
+export const RESTART_SENTENCE =
+  "Changes restart the agent. Anything running will stop.";
+
 /** Shown in place of a form when the configuration is owned elsewhere: the
  * controller answers 409 for every write in external mode, so offering the
  * form would only manufacture errors. */
 export function ExternalManagedNote() {
   return (
     <Note>
-      Managed by the external mecated deployment. Configuration writes are not
-      available from this UI — change the deployment&rsquo;s own settings
-      instead.
+      The agent is run somewhere else, so these settings can&rsquo;t be changed
+      here.
     </Note>
   );
 }
@@ -97,7 +102,7 @@ export function ExternalManagedNote() {
 export function OfflineNote() {
   return (
     <Note>
-      The runtime is offline — its configuration cannot be read right now.
+      The agent is offline, so these settings can&rsquo;t be read right now.
     </Note>
   );
 }

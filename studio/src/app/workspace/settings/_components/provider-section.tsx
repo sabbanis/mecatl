@@ -21,7 +21,6 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import type { useDaemonDefaults } from "@/features/agent/hooks/use-daemon-defaults";
 import type { useHarnessRuntime } from "@/features/agent/hooks/use-harness-runtime";
 import type {
   ProviderKeyHealth,
@@ -30,165 +29,143 @@ import type {
 import type { useProviderStatus } from "@/features/agent/hooks/use-provider-status";
 import type {
   HarnessProviderInfo,
-  HarnessProviderRemovalScope,
   HarnessProviderStatus,
 } from "@/lib/harness/client";
+import { providerLabel } from "@/lib/provider-label";
 import { cn } from "@/lib/utils";
 import { AddProviderDialog } from "./add-provider-dialog";
-import {
-  AvailableProviderKinds,
-  DaemonProviderStatusList,
-  groupProviderRows,
-  NoProvidersNote,
-  ProviderRowDetails,
-  ToolhiveGatewayRow,
-} from "./provider-inventory";
+import { groupProviderRows } from "./provider-inventory";
 import {
   ExternalManagedNote,
   Note,
   OfflineNote,
+  RESTART_SENTENCE,
   SettingsCard,
 } from "./settings-card";
-import { SwitchToMockButton } from "./switch-to-mock-button";
 
 type Runtime = ReturnType<typeof useHarnessRuntime>;
 type Management = ReturnType<typeof useProviderManagement>;
-type DaemonDefaults = ReturnType<typeof useDaemonDefaults>;
 type ProviderStatus = ReturnType<typeof useProviderStatus>;
 
-/** Dot color + label for a row's key health. Green = a test passed, red =
- *  the provider rejected the key, amber = the test could not complete, gray
- *  = untested (or no key in the block yet). */
-function healthPresentation(
+/** The gateway row: its lifecycle is not managed here, so it lists only
+ *  once it can be used (reachable) or is already the one in use. */
+function isGatewayRow(row: HarnessProviderInfo): boolean {
+  return row.class === "external" || row.name === "toolhive";
+}
+
+/** Dot color + one plain status for a row. Green = the key was checked and
+ *  works (or the gateway answers), red = the provider rejected the key,
+ *  amber = the check could not complete, gray = not checked yet. */
+function keyPresentation(
   row: HarnessProviderInfo,
   health: ProviderKeyHealth | undefined,
-): { dot: string; label: string; detail?: string } {
+): { dot: string; label: string } {
+  if (isGatewayRow(row)) {
+    return row.reachable === true
+      ? { dot: "bg-emerald-500", label: "Ready" }
+      : { dot: "bg-muted-foreground/50", label: "Not reachable" };
+  }
+  if (row.authMethod === "none") {
+    return { dot: "bg-emerald-500", label: "No key needed" };
+  }
   if (!row.keyPresent) {
-    return { dot: "bg-muted-foreground/50", label: "no key in block" };
+    return { dot: "bg-muted-foreground/50", label: "No key added" };
   }
   switch (health?.state) {
     case "ok":
-      return { dot: "bg-emerald-500", label: "key OK" };
+      return { dot: "bg-emerald-500", label: "Key works" };
     case "rejected":
-      return {
-        dot: "bg-red-500",
-        label: "key rejected",
-        detail: health.detail,
-      };
+      return { dot: "bg-red-500", label: "Key rejected" };
     case "error":
-      return {
-        dot: "bg-amber-500",
-        label: "test failed",
-        detail: health.detail,
-      };
+      return { dot: "bg-amber-500", label: "Could not check the key" };
     default:
-      return { dot: "bg-muted-foreground/50", label: "untested" };
+      return { dot: "bg-muted-foreground/50", label: "Key added" };
   }
 }
 
+/** The agent's own verdict on a provider as one plain sentence; null when
+ *  it is fine (a healthy provider owes no extra line). */
+function providerProblem(
+  status: HarnessProviderStatus | null | undefined,
+): string | null {
+  if (!status || status.state === "ok") return null;
+  switch (status.state) {
+    case "unauthorized":
+      return "The provider did not accept the key.";
+    case "unreachable":
+      return "The provider could not be reached.";
+    case "empty":
+      return "The provider lists no models.";
+    default:
+      return "The provider is not available right now.";
+  }
+}
+
+const modelCountText = (count: number) =>
+  `${count} model${count === 1 ? "" : "s"}`;
+
 /**
- * Provider management, SERVER-MEDIATED end to end (Studio rule 3):
- * credentials never cross the browser/controller boundary, so there is no
- * key input anywhere on this surface — not on add, not on test, not on
- * remove. The controller owns auth.yaml server-side: it reports names and
- * key-present booleans, key-tests a STORED key with one bounded outbound
- * call (only the verdict reaches the browser), and removes with a
- * conservative line-range cut in the TUI's two scopes — the key alone
- * ("Remove key (keep provider)", `providers logout`) or the whole provider
- * (`providers remove`: the auth.yaml block plus a custom definition's
- * settings.yaml entry; a built-in has no definition, so its item reads
- * "Remove key"). Adding a built-in is a guided copy of a snippet (a
- * `<YOUR_KEY>` placeholder) into auth.yaml on the daemon's machine, then a
- * re-check + restart; a custom gateway's NON-secret definition is written
- * by the controller (`providers add`), its key still by hand. Every mutation
- * restarts the daemon and confirms first; external mode disables all of it
- * (the controller answers 409 there anyway).
+ * The providers the agent can use. Server-mediated end to end: there is no
+ * key input anywhere on this surface — adding a provider copies a snippet
+ * into the agent's own key file, checking a key runs on the server and only
+ * the verdict comes back, and removing cuts the provider from that file.
+ * Every change restarts the agent and confirms first; an external
+ * deployment manages its own providers, so the list is read-only there.
  */
 export function ProviderSection({
   runtime,
   management,
-  daemonDefaults,
   providerStatus,
 }: {
   runtime: Runtime;
   management: Management;
-  /** The shared daemon-defaults hook (the provider page's), so the Add
-   *  dialog can SAVE a base-URL override as a spawn flag instead of only
-   *  rendering the settings.yaml snippet. Optional: without it the dialog
-   *  falls back to copy-only. */
-  daemonDefaults?: DaemonDefaults;
-  /** The DAEMON's per-provider status hints (`provider_status`), merged
-   *  into each row in managed mode and listed read-only in external mode.
-   *  Optional: without it no daemon hint renders. */
+  /** The agent's per-provider status, merged into each row in managed mode
+   *  and listed read-only in external mode. Optional: without it no status
+   *  line renders. */
   providerStatus?: ProviderStatus;
 }) {
   const status = runtime.status;
-  // The pending removal awaiting confirmation: which row, and how much of
-  // it (the key line only, or the whole provider).
-  const [removing, setRemoving] = useState<{
-    row: HarnessProviderInfo;
-    scope: HarnessProviderRemovalScope;
-  } | null>(null);
-  // Writes ONE provider's base-URL override into the saved daemon defaults
-  // (the rest of the document is kept as saved). Managed mode only.
-  const saveBaseURL =
-    daemonDefaults?.manageable && daemonDefaults.defaults
-      ? async (kind: string, url: string) => {
-          const current = daemonDefaults.defaults;
-          if (!current) return false;
-          const { activeProvider: _owned, ...rest } = current;
-          const ok = await daemonDefaults.save({
-            ...rest,
-            baseUrls: { ...rest.baseUrls, [kind]: url },
-          });
-          if (ok) await runtime.refresh();
-          return ok;
-        }
-      : undefined;
+  const [removing, setRemoving] = useState<HarnessProviderInfo | null>(null);
 
   const modelsFor = (name: string) =>
     runtime.models.filter((model) => model.providerId === name).length;
 
-  // management.load() only re-reads the auth.yaml inventory; runtime.status
-  // (the top card's provider/running/selectedProvider) is a SEPARATE poll
-  // owned by useHarnessRuntime, so a mutation that restarts the daemon must
-  // explicitly refresh it too or the card shows the pre-mutation provider.
+  // management.load() only re-reads the provider inventory; runtime.status
+  // (which provider is active) is a separate poll, so a change that restarts
+  // the agent refreshes both.
   const refreshAll = async () => {
     await Promise.all([runtime.refresh(), providerStatus?.refresh()]);
   };
   const activateProvider = (kind: string) =>
     management.setActiveProvider(kind).then(refreshAll);
-  const removeProvider = (name: string, scope: HarnessProviderRemovalScope) =>
-    management.removeProvider(name, scope).then(refreshAll);
-  // The controller writes a custom DEFINITION only in managed mode (the
-  // dialog also withholds the button while an imported operator settings
-  // file is active — the controller would answer 409).
-  const saveDefinition = management.manageable
-    ? management.addCustomProvider
-    : undefined;
-  // The controller's rows grouped for rendering: configured providers, the
-  // ToolHive external row, and the unconfigured built-in kinds (which open
-  // the Add dialog preselected via `addRequest`).
+  const removeProvider = (name: string) =>
+    management.removeProvider(name, "all").then(refreshAll);
   const groups = groupProviderRows(management.providers);
-  const [addRequest, setAddRequest] = useState({ kind: "", seq: 0 });
-  const daemonStatusFor = (name: string) =>
-    providerStatus?.forProvider(name) ?? null;
+  const gateway =
+    groups.toolhive &&
+    (groups.toolhive.reachable === true ||
+      groups.toolhive.active === true ||
+      status?.selectedProvider === "toolhive")
+      ? groups.toolhive
+      : null;
+  const rows = gateway ? [...groups.configured, gateway] : groups.configured;
+  const statusFor = (name: string) => providerStatus?.forProvider(name) ?? null;
 
   return (
-    <SettingsCard title="Model provider">
+    <SettingsCard
+      title="Providers"
+      description="The services the agent uses to answer."
+    >
       {!runtime.live ? (
         <OfflineNote />
       ) : status === null ? (
-        <Note>Reading the controller&rsquo;s status…</Note>
+        <Note>Loading…</Note>
       ) : (
         <div className="flex flex-col gap-3">
           {runtime.mode === "external" ? (
             <>
               <ExternalManagedNote />
-              {/* The daemon's own per-provider hints are readable in every
-                  mode — they are the deployment's daemon speaking, not the
-                  (absent) controller. Read-only. */}
-              <DaemonProviderStatusList rows={providerStatus?.rows ?? []} />
+              <ExternalProviderList rows={providerStatus?.rows ?? []} />
             </>
           ) : (
             <>
@@ -203,86 +180,40 @@ export function ProviderSection({
                 </p>
               )}
 
-              {groups.configured.length === 0 && !management.isLoading ? (
-                <NoProvidersNote
-                  toolhive={
-                    groups.toolhive !== null &&
-                    (groups.toolhive.reachable === true ||
-                      groups.toolhive.thvOnPath === true)
-                  }
-                />
+              {rows.length === 0 && !management.isLoading ? (
+                <Note>No provider yet. Add one to start chatting.</Note>
               ) : null}
-              <ul className="divide-y overflow-hidden rounded-lg border">
-                {groups.configured.map((row) => (
-                  <ProviderRow
-                    key={row.name}
-                    row={row}
-                    active={row.name === status.selectedProvider}
-                    running={status.running}
-                    modelCount={modelsFor(row.name)}
-                    health={management.health[row.name]}
-                    daemonStatus={daemonStatusFor(row.name)}
-                    busy={management.busy}
-                    operatorSettings={status.operatorSettings}
-                    onTest={() => void management.testKey(row.name)}
-                    onActivate={() => void activateProvider(row.name)}
-                    onRemove={(scope) => setRemoving({ row, scope })}
-                  />
-                ))}
-                {groups.toolhive ? (
-                  <ToolhiveGatewayRow
-                    row={groups.toolhive}
-                    running={status.running}
-                    busy={management.busy}
-                    daemonStatus={daemonStatusFor("toolhive")}
-                    onActivate={() => void activateProvider("toolhive")}
-                    onStart={() => void management.startToolhive()}
-                    onRecheck={() =>
-                      void Promise.all([
-                        management.reload(),
-                        runtime.refresh(),
-                        providerStatus?.refresh(),
-                      ])
-                    }
-                  />
-                ) : null}
-              </ul>
-              <AvailableProviderKinds
-                rows={groups.available}
-                known={management.known}
-                onAdd={(kind) =>
-                  setAddRequest((previous) => ({
-                    kind,
-                    seq: previous.seq + 1,
-                  }))
-                }
-              />
+              {rows.length > 0 ? (
+                <ul className="divide-y overflow-hidden rounded-lg border">
+                  {rows.map((row) => (
+                    <ProviderRow
+                      key={row.name}
+                      row={row}
+                      active={
+                        row.name === status.selectedProvider ||
+                        (isGatewayRow(row) && row.active === true)
+                      }
+                      modelCount={modelsFor(row.name)}
+                      health={management.health[row.name]}
+                      problem={providerProblem(statusFor(row.name))}
+                      busy={management.busy}
+                      operatorSettings={status.operatorSettings}
+                      onTest={() => void management.testKey(row.name)}
+                      onActivate={() => void activateProvider(row.name)}
+                      onRemove={() => setRemoving(row)}
+                    />
+                  ))}
+                </ul>
+              ) : null}
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <AddProviderDialog
                   known={management.known}
                   configured={groups.configured.map((p) => p.name)}
                   authFile={status.authFile}
-                  settingsFile={status.settingsFile}
-                  operatorSettings={status.operatorSettings}
                   reload={management.reload}
                   restartDaemon={management.restartDaemon}
                   restarting={management.busy === "restart"}
-                  savedBaseUrls={daemonDefaults?.defaults?.baseUrls}
-                  saveBaseURL={saveBaseURL}
-                  savingBaseURL={daemonDefaults?.busy ?? false}
-                  saveDefinition={saveDefinition}
-                  savingDefinition={management.busy.startsWith("add:")}
-                  initialKind={addRequest.kind}
-                  openSignal={addRequest.seq}
                 />
-                {/* The explicit `--mock` control (hidden while the mock is
-                    already the active provider). */}
-                {!status.isMock && (
-                  <SwitchToMockButton
-                    busy={management.busy === "activate:mock"}
-                    onSwitch={() => activateProvider("mock")}
-                  />
-                )}
               </div>
             </>
           )}
@@ -297,41 +228,29 @@ export function ProviderSection({
           <AlertDialogContent>
             <AlertDialogHeader>
               <AlertDialogTitle>
-                {removing.scope === "credential"
-                  ? `Remove the key for ${removing.row.name}?`
-                  : isCustomRow(removing.row)
-                    ? `Remove ${removing.row.name}?`
-                    : `Remove the ${removing.row.name} key?`}
+                Remove {providerLabel(removing.name)}?
               </AlertDialogTitle>
               <AlertDialogDescription>
-                {/* Name exactly what is cut: the api_key line only, the
-                    settings definition (plus the key block when there is
-                    one), or a built-in's whole auth.yaml block. */}
-                {removing.scope === "credential"
-                  ? "Only its api_key line is cut from auth.yaml on the daemon's machine — the provider definition stays in settings.yaml, so the row lists as configured with no key — and the daemon restarts: in-flight runs and session ids die with it."
-                  : isCustomRow(removing.row)
-                    ? `Its definition is removed from settings.yaml${
-                        removing.row.source.includes("auth.yaml")
-                          ? ", and its key block from auth.yaml,"
-                          : ""
-                      } on the daemon's machine, and the daemon restarts: in-flight runs and session ids die with it.`
-                    : "Its block — key included — is removed from auth.yaml on the daemon's machine, and the daemon restarts: in-flight runs and session ids die with it."}
-                {removing.row.name === status?.selectedProvider &&
-                  " This is the SELECTED provider (MECATL_STUDIO_PROVIDER names it) — the daemon will fail to restart until the variable changes or the key returns."}
-                {removing.scope === "all" &&
-                  groups.configured.length === 1 &&
-                  " It is also the only configured provider: mecated will come back on the offline mock."}
+                {removing.keyPresent && removing.authMethod !== "none"
+                  ? "The agent forgets this provider and its key."
+                  : "The agent forgets this provider."}{" "}
+                {RESTART_SENTENCE}
+                {removing.name === status?.selectedProvider &&
+                  " It is the active provider, so choose another one afterwards."}
+                {groups.configured.length === 1 &&
+                  removing.name === groups.configured[0]?.name &&
+                  " It is the only provider, so the agent will be offline until you add one."}
               </AlertDialogDescription>
             </AlertDialogHeader>
             <AlertDialogFooter>
               <AlertDialogCancel>Cancel</AlertDialogCancel>
               <AlertDialogAction
                 onClick={() => {
-                  void removeProvider(removing.row.name, removing.scope);
+                  void removeProvider(removing.name);
                   setRemoving(null);
                 }}
               >
-                {removing.scope === "credential" ? "Remove key" : "Remove"}
+                Remove
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
@@ -341,39 +260,28 @@ export function ProviderSection({
   );
 }
 
-/** A settings-defined custom gateway (ADR 0238): it has a DEFINITION the
- *  controller can remove, distinct from its optional auth.yaml key block.
- *  The source fallback covers an older controller with no class field. */
+/** A custom provider defined in the agent's settings, as opposed to a
+ *  built-in kind. The source fallback covers an older server with no class
+ *  field. */
 function isCustomRow(row: HarnessProviderInfo): boolean {
   return row.class === "custom" || row.source.includes("settings.yaml");
 }
 
-const OPERATOR_SETTINGS_REMOVAL_TITLE =
-  "Refused while an imported operator settings file is active — remove the providers: entry from that file by hand, then restart the daemon";
+const MANAGED_ELSEWHERE_TITLE =
+  "This provider is set where the agent runs and can't be removed here.";
 
 /**
- * One provider row: health dot, mono name (a real anchor to its models
- * subpage), key-health label, model count, and the actions kebab. The
- * whole row is a Link so click-through works everywhere; kebab clicks stop
- * propagation. The built-in mock is deliberately NOT listed — it is the
- * daemon's silent fallback (and the Labs demo target), not a provider the
- * user manages here.
- *
- * Removal comes in the TUI's two scopes. A CUSTOM row offers "Remove key
- * (keep provider)" — enabled only when an api_key is actually in its
- * auth.yaml block — and "Remove provider" (definition + key block), which
- * is withheld while an imported operator settings file is active because
- * the controller refuses to edit the settings file then. A built-in has no
- * definition, so its single destructive item is "Remove key": the whole
- * auth.yaml block, disabled when there is no block to cut.
+ * One provider row: status dot, name (a link to its models page), one
+ * plain status line, and the actions menu. The whole row is a link so
+ * click-through works everywhere; menu clicks stop propagation. The
+ * built-in offline mode is deliberately not listed.
  */
 function ProviderRow({
   row,
   active,
-  running,
   modelCount,
   health,
-  daemonStatus = null,
+  problem,
   busy,
   operatorSettings = false,
   onTest,
@@ -382,63 +290,52 @@ function ProviderRow({
 }: {
   row: HarnessProviderInfo;
   active: boolean;
-  running: boolean;
   modelCount: number;
   health: ProviderKeyHealth | undefined;
-  /** The daemon's own status row for this provider, when it surfaced one. */
-  daemonStatus?: HarnessProviderStatus | null;
+  /** The agent's own problem with this provider, when it reports one. */
+  problem: string | null;
   busy: string;
-  /** An imported operator settings file is active (from /status). */
+  /** The agent runs on a settings file Studio does not edit. */
   operatorSettings?: boolean;
   onTest: () => void;
   onActivate: () => void;
-  onRemove: (scope: HarnessProviderRemovalScope) => void;
+  onRemove: () => void;
 }) {
-  const presentation = healthPresentation(row, health);
+  const presentation = keyPresentation(row, health);
   const testing = busy === `test:${row.name}`;
   const activating = busy === `activate:${row.name}`;
   const removingBusy = busy === `remove:${row.name}`;
   const href = `/workspace/provider/${encodeURIComponent(row.name)}`;
+  const gateway = isGatewayRow(row);
   const custom = isCustomRow(row);
   const hasAuthBlock = row.source.includes("auth.yaml");
-  // An older controller sends no authMethod; an auth.yaml block then holds
-  // an api_key unless it is the oauth kind.
-  const keyed = row.authMethod
-    ? row.authMethod === "api_key"
-    : row.name !== "openai-codex";
-  const keyRemovable = keyed && row.keyPresent && hasAuthBlock;
+  const canActivate = gateway
+    ? row.reachable === true
+    : row.keyPresent || row.envShadowed === true;
+  const canRemove = custom ? !operatorSettings : hasAuthBlock;
+  const label = providerLabel(row.name);
 
   return (
     <li className="flex items-center gap-3 px-4 py-3">
       <span
         aria-hidden="true"
         className={cn("size-2 shrink-0 rounded-full", presentation.dot)}
-        title={presentation.detail}
       />
       <Link href={href} className="min-w-0 flex-1">
         <span className="flex flex-wrap items-center gap-x-2">
-          <span className="truncate font-mono text-sm font-medium hover:underline">
-            {row.name}
+          <span className="truncate text-sm font-medium hover:underline">
+            {label}
           </span>
-          {active && <Badge variant="info">active</Badge>}
-          {active && (
-            <Badge variant={running ? "default" : "secondary"}>
-              {running ? "running" : "stopped"}
-            </Badge>
-          )}
+          {active && <Badge variant="info">Active</Badge>}
         </span>
-        <span
-          className="block truncate text-xs text-muted-foreground"
-          title={presentation.detail}
-        >
+        <span className="block truncate text-xs text-muted-foreground">
           {presentation.label}
-          {presentation.detail ? ` — ${presentation.detail}` : ""}
           {" · "}
-          {modelCount} model{modelCount === 1 ? "" : "s"}
-          {" · "}
-          {row.source}
+          {modelCountText(modelCount)}
         </span>
-        <ProviderRowDetails row={row} daemonStatus={daemonStatus} />
+        {problem ? (
+          <span className="block text-xs text-warning">{problem}</span>
+        ) : null}
       </Link>
       <DropdownMenu modal={false}>
         <DropdownMenuTrigger asChild>
@@ -446,35 +343,29 @@ function ProviderRow({
             variant="ghost"
             size="icon"
             className="size-8 shrink-0"
-            aria-label={`Actions for ${row.name}`}
+            aria-label={`Actions for ${label}`}
           >
             <Ellipsis className="size-4" />
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
+          {row.testable && !gateway ? (
+            <DropdownMenuItem
+              disabled={!row.keyPresent || testing}
+              title={row.keyPresent ? undefined : "Add a key first."}
+              onClick={onTest}
+            >
+              {testing ? "Checking key…" : "Check key"}
+            </DropdownMenuItem>
+          ) : null}
           <DropdownMenuItem
-            disabled={!row.testable || !row.keyPresent || testing}
+            disabled={active || !canActivate || activating}
             title={
-              row.testable
-                ? row.keyPresent
-                  ? undefined
-                  : "No key in the block to test"
-                : "Key testing is not supported for this provider"
-            }
-            onClick={onTest}
-          >
-            {testing ? "Testing key…" : "Test key"}
-          </DropdownMenuItem>
-          <DropdownMenuItem
-            disabled={
-              active || !(row.keyPresent || row.envShadowed) || activating
-            }
-            title={
-              active
+              active || canActivate
                 ? undefined
-                : !(row.keyPresent || row.envShadowed)
-                  ? "No key in the block to activate"
-                  : undefined
+                : gateway
+                  ? "The gateway is not reachable."
+                  : "Add a key first."
             }
             onClick={onActivate}
           >
@@ -483,48 +374,68 @@ function ProviderRow({
           <DropdownMenuItem asChild>
             <Link href={href}>View models</Link>
           </DropdownMenuItem>
-          {custom ? (
-            <>
-              <DropdownMenuItem
-                disabled={removingBusy || !keyRemovable}
-                title={
-                  keyRemovable
-                    ? "Cuts only the api_key line from auth.yaml; the definition stays"
-                    : "No api_key in auth.yaml to remove"
-                }
-                onClick={() => onRemove("credential")}
-              >
-                {removingBusy ? "Removing…" : "Remove key (keep provider)"}
-              </DropdownMenuItem>
-              <DropdownMenuItem
-                variant="destructive"
-                disabled={removingBusy || operatorSettings}
-                title={
-                  operatorSettings
-                    ? OPERATOR_SETTINGS_REMOVAL_TITLE
-                    : "Removes the settings.yaml definition and any auth.yaml key block"
-                }
-                onClick={() => onRemove("all")}
-              >
-                {removingBusy ? "Removing…" : "Remove provider"}
-              </DropdownMenuItem>
-            </>
-          ) : (
+          {!gateway ? (
             <DropdownMenuItem
               variant="destructive"
-              disabled={removingBusy || !hasAuthBlock}
-              title={
-                hasAuthBlock
-                  ? "Removes the whole auth.yaml block, key included"
-                  : "No auth.yaml block to remove (configured from the environment)"
-              }
-              onClick={() => onRemove("all")}
+              disabled={removingBusy || !canRemove}
+              title={canRemove ? undefined : MANAGED_ELSEWHERE_TITLE}
+              onClick={onRemove}
             >
-              {removingBusy ? "Removing…" : "Remove key"}
+              {removingBusy ? "Removing…" : "Remove provider"}
             </DropdownMenuItem>
-          )}
+          ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
     </li>
+  );
+}
+
+/**
+ * The agent's per-provider status on its own — the read-only external-mode
+ * list. A row carries a problem line only when it is not fine.
+ */
+function ExternalProviderList({ rows }: { rows: HarnessProviderStatus[] }) {
+  if (rows.length === 0) return null;
+  return (
+    <ul className="divide-y overflow-hidden rounded-lg border">
+      {rows.map((status) => {
+        const problem = providerProblem(status);
+        return (
+          <li
+            key={status.providerId}
+            className="flex items-center gap-3 px-4 py-2"
+            data-provider-status={status.providerId}
+          >
+            <span
+              aria-hidden="true"
+              className={cn(
+                "size-2 shrink-0 rounded-full",
+                problem ? "bg-amber-500" : "bg-emerald-500",
+              )}
+            />
+            <div className="min-w-0 flex-1">
+              <span className="flex flex-wrap items-center gap-x-2">
+                <span className="text-sm font-medium">
+                  {providerLabel(status.providerId)}
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  {problem ? "Not available" : "Ready"}
+                  {" · "}
+                  {modelCountText(status.modelCount)}
+                </span>
+              </span>
+              {problem ? (
+                <span
+                  className="block text-xs text-muted-foreground"
+                  data-role="hint"
+                >
+                  {problem}
+                </span>
+              ) : null}
+            </div>
+          </li>
+        );
+      })}
+    </ul>
   );
 }

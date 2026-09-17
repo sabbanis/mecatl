@@ -4,18 +4,17 @@ import { RefreshCw } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { formatBytes } from "@/lib/formatters";
-import { isStorageDegraded, type StorageHealth } from "@/lib/harness/storage";
+import type { StorageHealth } from "@/lib/harness/storage";
 import { Note, OfflineNote, SettingsCard } from "./settings-card";
-import { Stat } from "./storage-maintenance-shared";
 
 /**
- * The always-visible storage health readout (ADR 0226): the status pill and
- * its one-line reason, then the aggregate the daemon reports — sessions by
- * family, files, size, reclaimable space, layout generations, corrupt
- * families, the active maintenance job and the last failure. Unlike the
- * workspace banner, which appears only on a degraded signal, this card shows
- * a healthy store too, so the numbers the retention and maintenance cards
- * act on are never invisible.
+ * The Storage page's one card: a plain-words summary of what the agent has
+ * saved — a status pill with a one-line reason, how many chats and runs,
+ * the space they use and how much a clean-up could free — plus a Refresh,
+ * with the clean-up block passed in as `children` beneath it. Reads the
+ * same `StorageHealth` the workspace banner does, but shows a healthy store
+ * too. Files, layout generations, job ids and the last raw failure are not
+ * shown; the status line covers what a person needs to know.
  */
 
 export interface StorageHealthCardProps {
@@ -25,72 +24,90 @@ export interface StorageHealthCardProps {
   supported: boolean;
   health: StorageHealth | null;
   onRefresh: () => void;
+  /** The clean-up block, rendered under the summary while the runtime is live. */
+  children?: React.ReactNode;
 }
 
-/** The pill and its detail; exported for its vitest. */
+/** The status pill and its one-line detail; exported for its vitest. */
 export function storageHealthStatus(health: StorageHealth): {
-  label: "Healthy" | "Degraded";
+  label: "Healthy" | "Needs attention";
   detail: string;
 } {
   if (!health.available) {
     return {
-      label: "Degraded",
-      detail: health.unavailableReason
-        ? `The session store cannot be read: ${health.unavailableReason}`
-        : "The session store cannot be read.",
+      label: "Needs attention",
+      detail: "The agent cannot read its saved chats right now.",
     };
   }
   if (health.corruptCount > 0) {
     return {
-      label: "Degraded",
-      detail: `${health.corruptCount.toLocaleString()} stored session${
-        health.corruptCount === 1 ? "" : "s"
-      } can no longer be loaded.`,
+      label: "Needs attention",
+      detail: `${health.corruptCount.toLocaleString()} saved ${
+        health.corruptCount === 1 ? "item" : "items"
+      } can no longer be opened.`,
     };
   }
   if (health.lastFailure) {
     return {
-      label: "Degraded",
-      detail: `Last background job failed: ${health.lastFailure}`,
+      label: "Needs attention",
+      detail: "A recent automatic clean-up did not finish.",
     };
   }
   return {
     label: "Healthy",
-    detail:
-      health.v1Count > 0
-        ? `${health.v1Count.toLocaleString()} legacy-layout famil${
-            health.v1Count === 1 ? "y" : "ies"
-          } can be optimized.`
-        : "",
+    detail: health.activeJob ? "Storage maintenance is running." : "",
   };
 }
 
-/** "n/a" when the store could not size itself, the humanised size otherwise. */
-const bytesOrNA = (bytes: number | null) =>
-  bytes === null ? "n/a" : formatBytes(bytes);
+/** "5 chats · 4 agent runs · 2 scheduled runs · 1 other", zeros omitted.
+ *  Exported for its vitest. */
+export function describeSessionMix(health: StorageHealth): string {
+  const parts: string[] = [];
+  const add = (count: number, singular: string, plural: string) => {
+    if (count > 0) {
+      parts.push(
+        `${count.toLocaleString()} ${count === 1 ? singular : plural}`,
+      );
+    }
+  };
+  add(health.mainCount, "chat", "chats");
+  add(health.childCount, "agent run", "agent runs");
+  add(health.scheduledCount, "scheduled run", "scheduled runs");
+  add(health.unknownCount, "other", "other");
+  return parts.join(" · ");
+}
+
+function Stat({
+  label,
+  value,
+  testId,
+}: {
+  label: string;
+  value: React.ReactNode;
+  testId: string;
+}) {
+  return (
+    <>
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className="tabular-nums" data-testid={testId}>
+        {value}
+      </dd>
+    </>
+  );
+}
 
 export function StorageHealthCard({
   live,
   supported,
   health,
   onRefresh,
+  children,
 }: StorageHealthCardProps) {
-  const title = "Storage health";
+  const title = "Storage";
   if (!live) {
     return (
       <SettingsCard title={title}>
         <OfflineNote />
-      </SettingsCard>
-    );
-  }
-  if (!supported) {
-    return (
-      <SettingsCard title={title}>
-        <Note>
-          This daemon does not report storage health. It needs a durable session
-          store (see Session store above) and a daemon build with the{" "}
-          <code className="font-mono">storage_health</code> capability.
-        </Note>
       </SettingsCard>
     );
   }
@@ -107,33 +124,25 @@ export function StorageHealthCard({
     </Button>
   );
 
-  if (health === null) {
-    return (
-      <SettingsCard title={title}>
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <Note>
-            Storage health is not available right now — the daemon did not
-            answer, or refused the read.
-          </Note>
-          {refreshButton}
-        </div>
-      </SettingsCard>
+  let summary: React.ReactNode;
+  if (!supported) {
+    summary = <Note>This agent cannot report on its storage.</Note>;
+  } else if (health === null) {
+    summary = (
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <Note>Storage details are not available right now.</Note>
+        {refreshButton}
+      </div>
     );
-  }
-
-  const status = storageHealthStatus(health);
-  const degraded = isStorageDegraded(health);
-
-  return (
-    <SettingsCard
-      title={title}
-      description="What the daemon's session store holds right now, as the daemon reports it. Retention above and the maintenance cards below act on these numbers."
-    >
+  } else {
+    const status = storageHealthStatus(health);
+    const mix = describeSessionMix(health);
+    summary = (
       <div className="flex flex-col gap-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <Badge
-              variant={degraded ? "warning" : "success"}
+              variant={status.label === "Healthy" ? "success" : "warning"}
               data-testid="storage-health-status"
             >
               {status.label}
@@ -153,72 +162,47 @@ export function StorageHealthCard({
         {health.available && (
           <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
             <Stat
-              label="Sessions"
+              label="Saved chats and runs"
               testId="storage-health-sessions"
               value={
                 <>
                   {health.sessionCount.toLocaleString()}
-                  <span className="ml-2 text-muted-foreground">
-                    Main {health.mainCount.toLocaleString()} · Child runs{" "}
-                    {health.childCount.toLocaleString()} · Scheduled{" "}
-                    {health.scheduledCount.toLocaleString()} · Unknown{" "}
-                    {health.unknownCount.toLocaleString()}
-                  </span>
+                  {mix && (
+                    <span className="ml-2 text-muted-foreground">{mix}</span>
+                  )}
                 </>
               }
             />
             <Stat
-              label="Files"
-              testId="storage-health-files"
-              value={health.fileCount.toLocaleString()}
-            />
-            <Stat
-              label="Size"
+              label="Space used"
               testId="storage-health-size"
-              value={bytesOrNA(health.currentBytes)}
+              value={
+                health.currentBytes === null
+                  ? "Not available"
+                  : formatBytes(health.currentBytes)
+              }
             />
-            <Stat
-              label="Reclaimable"
-              testId="storage-health-reclaimable"
-              value={bytesOrNA(health.reclaimableBytes)}
-            />
-            <Stat
-              label="Layout"
-              testId="storage-health-layout"
-              value={`v2 ${health.v2Count.toLocaleString()} · v1 (legacy) ${health.v1Count.toLocaleString()}`}
-            />
-            <Stat
-              label="Corrupt families"
-              testId="storage-health-corrupt"
-              value={health.corruptCount.toLocaleString()}
-            />
-            <Stat
-              label="Active job"
-              testId="storage-health-active-job"
-              value={health.activeJob || "none"}
-            />
-            <Stat
-              label="Last failure"
-              testId="storage-health-last-failure"
-              value={health.lastFailure || "none"}
-            />
-            {health.ownerless && (
+            {health.reclaimableBytes !== null && (
               <Stat
-                label="Ownerless"
-                testId="storage-health-ownerless"
-                value={`${
-                  health.ownerless.sessions === null
-                    ? "n/a"
-                    : health.ownerless.sessions.toLocaleString()
-                } sessions · ${
-                  health.ownerless.schedules === null
-                    ? "n/a"
-                    : health.ownerless.schedules.toLocaleString()
-                } schedules`}
+                label="Can be freed"
+                testId="storage-health-reclaimable"
+                value={formatBytes(health.reclaimableBytes)}
               />
             )}
           </dl>
         )}
+      </div>
+    );
+  }
+
+  return (
+    <SettingsCard
+      title={title}
+      description="What the agent has saved, and a way to clear out old runs."
+    >
+      <div className="flex flex-col gap-4">
+        {summary}
+        {children}
       </div>
     </SettingsCard>
   );

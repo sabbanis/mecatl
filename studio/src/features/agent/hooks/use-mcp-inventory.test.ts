@@ -136,7 +136,7 @@ describe("useMcpInventory", () => {
     const { result } = renderHook(() => useMcpInventory());
     await waitFor(() => expect(result.current.isLoading).toBe(false));
     expect(result.current.error).toBe(
-      "No MCP provider is wired on this daemon.",
+      "MCP tools aren't set up for this agent.",
     );
     expect(result.current.sources).toEqual([]);
 

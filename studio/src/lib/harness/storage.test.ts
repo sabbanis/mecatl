@@ -18,7 +18,6 @@ import {
   fetchSessionCleanupJob,
   fetchStorageHealth,
   fetchStorageMigrationJob,
-  isMigrationResumable,
   isStorageDegraded,
   isStorageJobActive,
   planSessionCleanup,
@@ -241,13 +240,6 @@ describe("job state classification", () => {
     for (const state of ["completed", "cancelled", "failed", "stale", ""]) {
       expect(isStorageJobActive(state)).toBe(false);
     }
-  });
-  it("a cancelled, failed or paused migration can be resumed; a completed one cannot", () => {
-    expect(isMigrationResumable("cancelled")).toBe(true);
-    expect(isMigrationResumable("failed")).toBe(true);
-    expect(isMigrationResumable("paused")).toBe(true);
-    expect(isMigrationResumable("completed")).toBe(false);
-    expect(isMigrationResumable("running")).toBe(false);
   });
 });
 

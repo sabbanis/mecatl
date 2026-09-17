@@ -73,7 +73,7 @@ describe("RuntimeStatusProvider offline cause", () => {
       ),
     );
     const alert = screen.getByRole("alert");
-    expect(alert).toHaveTextContent("Session expired");
+    expect(alert).toHaveTextContent("Sign-in expired");
     expect(alert).not.toHaveTextContent("Mecatl is unreachable.");
     expect(
       screen.getByRole("link", { name: "Open sign-in settings" }),
@@ -107,7 +107,7 @@ describe("RuntimeStatusProvider offline cause", () => {
     );
     const alert = screen.getByRole("alert");
     expect(alert).toHaveTextContent("Credential rejected");
-    expect(alert).toHaveTextContent(/MECATL_AUTH_TOKEN/);
+    expect(alert).toHaveTextContent(/check its token or sign-in settings/);
     expect(
       screen.queryByRole("button", { name: /Sign in/ }),
     ).not.toBeInTheDocument();
@@ -142,7 +142,7 @@ describe("RuntimeStatusProvider offline cause", () => {
     const alert = screen.getByRole("alert");
     expect(alert).toHaveTextContent("Credential rejected");
     expect(alert).toHaveTextContent(/controller's token/);
-    expect(alert).not.toHaveTextContent(/MECATL_AUTH_TOKEN/);
+    expect(alert).not.toHaveTextContent(/check its token or sign-in settings/);
     expect(
       screen.getByRole("button", { name: "Restart daemon" }),
     ).toBeInTheDocument();

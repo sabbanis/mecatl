@@ -51,7 +51,6 @@ function fakeRuntime(overrides: Partial<Runtime> = {}): Runtime {
     live: true,
     mode: "managed",
     status: null,
-    router: null,
     permissions: {
       config: {
         posture: "strict",
@@ -69,7 +68,6 @@ function fakeRuntime(overrides: Partial<Runtime> = {}): Runtime {
     refresh: vi.fn(async () => {}),
     connectGateway: vi.fn(async () => {}),
     connectGatewayOAuth: vi.fn(async () => {}),
-    saveRouter: vi.fn(async () => {}),
     savePermissions,
     saveStorage: vi.fn(async () => {}),
     saveRetention: vi.fn(async () => {}),
@@ -197,7 +195,7 @@ describe("PermissionsSection", () => {
     const dialog = await screen.findByRole("alertdialog");
     expect(dialog).toHaveTextContent(/Switch to Yolo\?/);
     expect(dialog).toHaveTextContent(/removes every safeguard/);
-    expect(dialog).toHaveTextContent(/anything running will stop/);
+    expect(dialog).toHaveTextContent(/Anything running will stop/);
     expect(savePermissions).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: "Cancel" }));
@@ -327,7 +325,7 @@ describe("PermissionsSection", () => {
       />,
     );
     expect(
-      screen.getByText(/Managed by the external mecated deployment/),
+      screen.getByText(/The agent is run somewhere else/),
     ).toBeInTheDocument();
     expect(screen.getByText("Safety level")).toBeInTheDocument();
     expect(screen.getByText("Auto")).toBeInTheDocument();
@@ -340,7 +338,9 @@ describe("PermissionsSection", () => {
 
   it("renders the offline note when the runtime is unreachable", () => {
     render(<PermissionsSection runtime={fakeRuntime({ live: false })} />);
-    expect(screen.getByText(/The runtime is offline/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/The agent is offline, so these settings/),
+    ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
   });
 

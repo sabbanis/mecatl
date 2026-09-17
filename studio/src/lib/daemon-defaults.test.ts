@@ -1,14 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  ANTHROPIC_CACHE_TTLS,
   BASE_URL_KINDS,
   DAEMON_DEFAULTS_EMPTY,
   daemonDefaultArgs,
-  LLM_TIMEOUT_DEFAULTS,
   normalizeDaemonDefaults,
-  REASONING_EFFORTS,
   RESERVED_SLOTS,
-  TOOLHIVE_MODES,
   validDaemonBaseURL,
   validModelKey,
   validToolhiveBaseURL,
@@ -62,17 +58,23 @@ const full = {
 };
 
 describe("normalizeDaemonDefaults", () => {
-  it("exposes the closed vocabularies the UI offers", () => {
-    expect(REASONING_EFFORTS).toEqual([
-      "",
-      "low",
-      "medium",
-      "high",
-      "xhigh",
-      "max",
-    ]);
-    expect(ANTHROPIC_CACHE_TTLS).toEqual(["", "5m", "1h"]);
-    expect(TOOLHIVE_MODES).toEqual(["auto", "proxy", "direct"]);
+  it("accepts exactly the closed vocabularies mecated knows", () => {
+    for (const effort of ["", "low", "medium", "high", "xhigh", "max"]) {
+      expect(
+        normalizeDaemonDefaults({ reasoningEffort: effort }).reasoningEffort,
+      ).toBe(effort);
+    }
+    for (const anthropicTtl of ["", "5m", "1h"]) {
+      expect(
+        normalizeDaemonDefaults({ promptCache: { anthropicTtl } }).promptCache
+          .anthropicTtl,
+      ).toBe(anthropicTtl);
+    }
+    for (const mode of ["auto", "proxy", "direct"]) {
+      expect(
+        normalizeDaemonDefaults({ toolhive: { mode } }).toolhive.mode,
+      ).toBe(mode);
+    }
     expect(BASE_URL_KINDS).toEqual([
       "openrouter",
       "openai",
@@ -161,21 +163,17 @@ describe("normalizeDaemonDefaults", () => {
   });
 
   it("reads an absent or blank LLM timeout as mecated's own default and 0 as disabled", () => {
-    expect(LLM_TIMEOUT_DEFAULTS).toEqual({
-      perAttemptSeconds: 300,
-      streamIdleSeconds: 180,
-    });
-    expect(normalizeDaemonDefaults({}).llmTimeouts).toEqual(
-      LLM_TIMEOUT_DEFAULTS,
-    );
+    const defaults = { perAttemptSeconds: 300, streamIdleSeconds: 180 };
+    expect(DAEMON_DEFAULTS_EMPTY.llmTimeouts).toEqual(defaults);
+    expect(normalizeDaemonDefaults({}).llmTimeouts).toEqual(defaults);
     expect(normalizeDaemonDefaults({ llmTimeouts: {} }).llmTimeouts).toEqual(
-      LLM_TIMEOUT_DEFAULTS,
+      defaults,
     );
     expect(
       normalizeDaemonDefaults({
         llmTimeouts: { perAttemptSeconds: "", streamIdleSeconds: null },
       }).llmTimeouts,
-    ).toEqual(LLM_TIMEOUT_DEFAULTS);
+    ).toEqual(defaults);
     // 0 is a real value — the bound disabled — never "unset".
     expect(
       normalizeDaemonDefaults({
@@ -317,7 +315,7 @@ describe("normalizeDaemonDefaults", () => {
     expect(
       thrown(() => normalizeDaemonDefaults({ slots: { router: "fast" } }))
         .message,
-    ).toMatch(/"router" slot is owned by the Model router page/);
+    ).toMatch(/"router" slot is reserved for model routing/);
     expect(
       thrown(() => normalizeDaemonDefaults({ aliases: { fast: "  " } }))
         .message,

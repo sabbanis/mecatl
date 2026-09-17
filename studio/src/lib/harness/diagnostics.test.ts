@@ -4,13 +4,8 @@ import {
   fetchHarnessControlStatus,
   fetchHarnessDaemonLog,
   fetchHarnessDiagnosticsOptions,
-  fetchHarnessPerfMetrics,
-  fetchHarnessPerfStatus,
   HarnessApiError,
-  PERF_METRICS_URL,
-  PERF_VARS_URL,
   readDiagnosticsOptions,
-  readPerfStatus,
   saveHarnessDiagnosticsOptions,
 } from "./client";
 import { resetHarnessClient } from "./sdk";
@@ -264,112 +259,5 @@ describe("fetchHarnessControlStatus startupError", () => {
     );
     const malformed = await fetchHarnessControlStatus();
     expect(malformed?.startupError).toBeUndefined();
-  });
-});
-
-/**
- * The runtime admin surface (`GET /perf`, the `/perf/metrics` relay): the
- * decoded live facts (null on external mode's 409 / an older controller's
- * 404 / a non-payload), and the metrics relay as PLAIN TEXT with a non-OK
- * answer surfacing as a typed HarnessApiError carrying the controller's
- * words — 409 while the surface is off is the one the card shows inline.
- */
-describe("fetchHarnessPerfStatus", () => {
-  it("decodes the live admin-surface facts from the controller route", async () => {
-    const calls: string[] = [];
-    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
-      calls.push(String(input));
-      return jsonResponse(200, {
-        enabled: true,
-        adminUrl: "http://127.0.0.1:41234",
-        paths: [
-          "/metrics",
-          "/debug/pprof",
-          "/debug/vars",
-          "/debug/flightrecorder",
-          "/mcp",
-          7,
-        ],
-        perfMcp: true,
-        goroutineWarnThreshold: 10000,
-        goroutineWarnIntervalSeconds: 30,
-      });
-    });
-    await expect(fetchHarnessPerfStatus()).resolves.toEqual({
-      enabled: true,
-      adminUrl: "http://127.0.0.1:41234",
-      paths: [
-        "/metrics",
-        "/debug/pprof",
-        "/debug/vars",
-        "/debug/flightrecorder",
-        "/mcp",
-      ],
-      perfMcp: true,
-      goroutineWarnThreshold: 10000,
-      goroutineWarnIntervalSeconds: 30,
-    });
-    expect(calls).toEqual(["/api/mecatl-control/perf"]);
-  });
-
-  it("fills an off surface's sparse payload and returns null for 409/404 or a non-payload", async () => {
-    vi.stubGlobal("fetch", async () => jsonResponse(200, { enabled: false }));
-    await expect(fetchHarnessPerfStatus()).resolves.toEqual({
-      enabled: false,
-      adminUrl: "",
-      paths: [],
-      perfMcp: false,
-      goroutineWarnThreshold: 0,
-      goroutineWarnIntervalSeconds: 0,
-    });
-
-    vi.stubGlobal("fetch", async () =>
-      jsonResponse(409, { error: "owned by the external deployment" }),
-    );
-    await expect(fetchHarnessPerfStatus()).resolves.toBeNull();
-
-    vi.stubGlobal("fetch", async () => new Response("", { status: 404 }));
-    await expect(fetchHarnessPerfStatus()).resolves.toBeNull();
-
-    vi.stubGlobal("fetch", async () => jsonResponse(200, { running: true }));
-    await expect(fetchHarnessPerfStatus()).resolves.toBeNull();
-    expect(readPerfStatus("enabled")).toBeNull();
-  });
-});
-
-describe("fetchHarnessPerfMetrics", () => {
-  it("relays mecated's exposition as plain text from the controller route", async () => {
-    const calls: string[] = [];
-    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
-      calls.push(String(input));
-      return new Response("# TYPE go_goroutines gauge\ngo_goroutines 143\n", {
-        status: 200,
-        headers: { "Content-Type": "text/plain; charset=utf-8" },
-      });
-    });
-    await expect(fetchHarnessPerfMetrics()).resolves.toBe(
-      "# TYPE go_goroutines gauge\ngo_goroutines 143\n",
-    );
-    expect(calls).toEqual([PERF_METRICS_URL]);
-    expect(PERF_METRICS_URL).toBe("/api/mecatl-control/perf/metrics");
-    expect(PERF_VARS_URL).toBe("/api/mecatl-control/perf/vars");
-  });
-
-  it("throws the controller's own words as a HarnessApiError when the surface is off or the listener is silent", async () => {
-    vi.stubGlobal("fetch", async () =>
-      jsonResponse(409, { error: "the runtime admin surface is off" }),
-    );
-    await expect(fetchHarnessPerfMetrics()).rejects.toMatchObject({
-      status: 409,
-      message: "the runtime admin surface is off",
-    });
-    vi.stubGlobal("fetch", async () =>
-      jsonResponse(502, {
-        error: "mecated's admin listener did not answer: fetch failed",
-      }),
-    );
-    const failure = await fetchHarnessPerfMetrics().catch((error) => error);
-    expect(failure).toBeInstanceOf(HarnessApiError);
-    expect(failure.status).toBe(502);
   });
 });

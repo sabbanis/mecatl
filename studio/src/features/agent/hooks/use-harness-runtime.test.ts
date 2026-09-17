@@ -15,7 +15,6 @@ import { useHarnessRuntime } from "./use-harness-runtime";
 
 const mocks = vi.hoisted(() => ({
   fetchHarnessControlStatus: vi.fn(),
-  fetchHarnessRouter: vi.fn(),
   fetchHarnessPermissions: vi.fn(),
   listHarnessModels: vi.fn(),
   saveHarnessPermissions: vi.fn(),
@@ -27,12 +26,10 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/lib/harness/client", () => ({
   connectHarnessGateway: vi.fn(),
   fetchHarnessControlStatus: mocks.fetchHarnessControlStatus,
-  fetchHarnessRouter: mocks.fetchHarnessRouter,
   fetchHarnessPermissions: mocks.fetchHarnessPermissions,
   listHarnessModels: mocks.listHarnessModels,
   saveHarnessPermissions: mocks.saveHarnessPermissions,
   saveHarnessRetention: vi.fn(),
-  saveHarnessRouter: vi.fn(),
   saveHarnessStorageSettings: vi.fn(),
   startHarnessGatewayOAuth: vi.fn(),
   waitForHarnessGateway: vi.fn(),
@@ -87,7 +84,6 @@ beforeEach(() => {
     if (typeof fn === "function" && "mockReset" in fn) fn.mockReset();
   }
   mocks.fetchHarnessControlStatus.mockResolvedValue(statusWith("untrusted"));
-  mocks.fetchHarnessRouter.mockResolvedValue(null);
   mocks.fetchHarnessPermissions.mockResolvedValue(null);
   mocks.listHarnessModels.mockResolvedValue([]);
   mocks.trustWorkspace.mockResolvedValue(undefined);
@@ -119,7 +115,7 @@ describe("useHarnessRuntime", () => {
     expect(result.current.trustProjectOnce).toEqual(expect.any(Function));
   });
 
-  it("trustProject grants the remembered trust, re-reads the status and says the daemon restarted", async () => {
+  it("trustProject grants the remembered trust, re-reads the status and says the agent restarted", async () => {
     const { result } = await connected();
     let release: () => void = () => {};
     mocks.trustWorkspace.mockImplementation(
@@ -146,8 +142,8 @@ describe("useHarnessRuntime", () => {
 
     expect(result.current.busy).toBe("");
     expect(result.current.error).toBeNull();
-    expect(result.current.notice).toMatch(/^Project trusted\./);
-    expect(result.current.notice).toMatch(/daemon restarted/i);
+    expect(result.current.notice).toMatch(/^This project is now trusted\./);
+    expect(result.current.notice).toMatch(/agent restarted/i);
     // The re-read is what makes the page show the NEW spawn's decision.
     expect(mocks.fetchHarnessControlStatus).toHaveBeenCalledTimes(2);
     expect(result.current.status?.trust?.decision).toBe("trusted");
@@ -166,7 +162,7 @@ describe("useHarnessRuntime", () => {
     expect(mocks.trustWorkspaceOnce).toHaveBeenCalledWith();
     expect(mocks.trustWorkspace).not.toHaveBeenCalled();
     expect(result.current.error).toBeNull();
-    expect(result.current.notice).toMatch(/this Studio session/);
+    expect(result.current.notice).toMatch(/until Studio restarts/);
     expect(result.current.notice).toMatch(/nothing (is|was) saved/i);
     expect(result.current.status?.trust?.decision).toBe("once");
   });
@@ -206,7 +202,7 @@ describe("useHarnessRuntime", () => {
       trustProject: false,
       noShell: false,
     });
-    expect(result.current.notice).toMatch(/^Permissions saved\./);
+    expect(result.current.notice).toBe("Saved. The agent restarted.");
     expect(mocks.trustWorkspace).not.toHaveBeenCalled();
   });
 });

@@ -1,11 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  knownPostureTier,
-  POSTURE_TIERS,
-  postureDefenses,
-  postureSummary,
-  postureTone,
-} from "./posture";
+import { POSTURE_TIERS, postureSummary, postureTone } from "./posture";
 
 /**
  * The posture helper mirrors the TUI's `/posture` builtin
@@ -53,44 +47,11 @@ describe("postureSummary", () => {
   });
 });
 
-describe("postureDefenses", () => {
-  it("matches the ladder: allow-all and main substitution at auto+, child substitution at yolo, trust at trusted+", () => {
+describe("POSTURE_TIERS", () => {
+  it("is mecated's ladder, lowest tier first", () => {
     expect(POSTURE_TIERS).toEqual(["strict", "trusted", "auto", "yolo"]);
-    expect(postureDefenses("strict")).toEqual({
-      allowAll: false,
-      mainSubstitution: false,
-      childSubstitution: false,
-      projectTrust: false,
-    });
-    expect(postureDefenses("trusted")).toEqual({
-      allowAll: false,
-      mainSubstitution: false,
-      childSubstitution: false,
-      projectTrust: true,
-    });
-    expect(postureDefenses("auto")).toEqual({
-      allowAll: true,
-      mainSubstitution: true,
-      childSubstitution: false,
-      projectTrust: true,
-    });
-    expect(postureDefenses("yolo")).toEqual({
-      allowAll: true,
-      mainSubstitution: true,
-      childSubstitution: true,
-      projectTrust: true,
-    });
-  });
-
-  it("reads an unknown tier as everything off, never guessing in the unsafe direction", () => {
-    expect(postureDefenses("")).toEqual(postureDefenses("strict"));
-    expect(postureDefenses("YOLO")).toEqual(postureDefenses("strict"));
-    expect(knownPostureTier("YOLO")).toBeNull();
-    expect(knownPostureTier(42)).toBeNull();
-    expect(knownPostureTier("auto")).toBe("auto");
   });
 });
-
 describe("postureTone", () => {
   it("is quiet for the asking tiers, a warning for auto, danger for yolo", () => {
     expect(postureTone("strict")).toBe("muted");

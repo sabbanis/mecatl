@@ -8,9 +8,9 @@ import { RuntimeBehaviourSection } from "../_components/runtime-behaviour-sectio
 import { SettingsCard, SettingsRow } from "../_components/settings-card";
 
 /**
- * The agent's cosmetic identity — display name and picture, browser-local
- * (no daemon concept of either). The picture replaces the default bot mark
- * in chat. Below it, the DAEMON-side agent's runtime behaviour.
+ * Settings → Agent: how the agent appears in chat — its name and picture,
+ * both stored in this browser only — followed by the agent-wide behaviour
+ * card that applies to everyone using the agent.
  */
 export default function AgentSettingsPage() {
   const { name, setName, defaultName } = useAgentDisplayName();
@@ -18,12 +18,12 @@ export default function AgentSettingsPage() {
 
   return (
     <>
-      <SettingsCard title="Agent">
+      <SettingsCard title="Agent" description="How the agent appears in chat.">
         <div className="divide-y divide-border/60">
           <SettingsRow
             label="Agent name"
             htmlFor="agent-display-name"
-            description="Labels the agent's replies in chat."
+            description="Shown on the agent's replies."
           >
             <Input
               id="agent-display-name"
@@ -47,9 +47,8 @@ export default function AgentSettingsPage() {
           </SettingsRow>
         </div>
       </SettingsCard>
-      {/* The managed DAEMON's behaviour, for every client — the operator half
-          of the steer opt-out (mecated --no-steer). The browser-local "Queue
-          only" Enter preference lives on Settings → Personalize. */}
+      {/* Behaviour shared by everyone using this agent. The browser-only
+          "Queue only" Enter preference lives on Settings → Personalize. */}
       <RuntimeBehaviourSection />
     </>
   );

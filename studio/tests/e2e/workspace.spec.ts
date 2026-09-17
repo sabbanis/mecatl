@@ -179,9 +179,9 @@ test("memory renders the user model, read-only", async ({ page }) => {
       .getByText("prefers tabs over spaces", { exact: false })
       .filter({ visible: true }),
   ).toBeVisible();
-  // The footprint line: N facts · M bytes · sha256 <12 hex> (renderUserModelMeta).
+  // The footprint line is the count only.
   await expect(page.getByTestId("memory-footprint")).toHaveText(
-    "1 fact · 64 bytes · sha256 ffffffffffff",
+    "1 fact remembered",
   );
 });
 
@@ -207,19 +207,15 @@ test("memory detail shows the fact value and history", async ({ page }) => {
 test("learning queue shows evidence provenance", async ({ page }) => {
   await page.goto("/workspace/settings/learning");
   // The Pending pill lists the staged fact; its Details disclosure shows
-  // where the daemon read the evidence and that it still resolves.
+  // the chat the evidence came from and that it still resolves.
   const row = page.locator("li[data-proposal-id='prop-1']");
   await expect(row).toContainText("scheduler/flaky-test");
   await expect(row.getByRole("button", { name: "Approve" })).toBeEnabled();
   await row.getByRole("button", { name: "Details" }).click();
   const details = row.getByTestId("proposal-details");
-  await expect(details).toContainText("tool:1");
-  await expect(details).toContainText("seq 42");
-  await expect(details).toContainText("call call-fixture-1");
-  await expect(details).toContainText("digest sha256:012");
   await expect(details.getByText("Available", { exact: true })).toBeVisible();
   await expect(
-    details.getByRole("link", { name: "session-fixture-1" }),
+    details.getByRole("link", { name: "View chat" }),
   ).toHaveAttribute("href", "/workspace/chat/session-fixture-1");
   await expect(details).toContainText("go test ./internal/scheduler");
   // The Deferred pill requests that status: a procedure whose evidence is
@@ -243,43 +239,15 @@ test("external mode marks runtime settings as deployment-owned", async ({
   // routes, so the assertion targets the provider page directly.
   await page.goto("/workspace/settings/provider");
   await expect(
-    page.getByText("Managed by the external mecated deployment").first(),
+    page.getByText("The agent is run somewhere else").first(),
   ).toBeVisible();
   // The daemon's own provider_status rows still render read-only in
-  // external mode; the fixture's row is state=ok, so it carries NO hint line.
+  // external mode; the fixture's row is state=ok, so it reads Ready and
+  // carries NO hint line.
   const fixtureStatus = page.locator("li[data-provider-status='fixture']");
   await expect(fixtureStatus).toBeVisible();
-  await expect(fixtureStatus).toContainText("ok");
+  await expect(fixtureStatus).toContainText("Ready");
   await expect(fixtureStatus.locator("[data-role='hint']")).toHaveCount(0);
-  // The About card puts Studio's own build stamp (inlined at `next build`)
-  // and the external server mode next to the daemon's safe identity from
-  // GET /v1/info — the fixture's build id and composition family.
-  await expect(page.getByTestId("about-studio-build")).not.toBeEmpty();
-  await expect(page.getByTestId("about-server-mode")).toHaveText("external");
-  await expect(page.getByTestId("about-server-build")).toHaveText("fixture");
-  await expect(page.getByTestId("about-server-implementation")).toHaveText(
-    "fixture-daemon",
-  );
-  await expect(page.getByTestId("about-posture")).toHaveText("trusted");
-});
-
-test("diagnostics shows the daemon-reported posture and its defenses", async ({
-  page,
-}) => {
-  // The fixture advertises `posture: "trusted"` in its compatibility
-  // document; the card renders that tier and the four defense rows off it
-  // (project trust on at trusted+), with the external-mode managed note in
-  // place of a change link.
-  await page.goto("/workspace/settings/diagnostics");
-  await expect(page.getByTestId("posture-tier")).toHaveText("trusted");
-  await expect(page.getByText("Project trust")).toBeVisible();
-  await expect(page.getByTestId("posture-defense-projectTrust")).toHaveText(
-    "on",
-  );
-  await expect(page.getByTestId("posture-defense-allowAll")).toHaveText("off");
-  await expect(
-    page.getByText("Managed by the external mecated deployment").first(),
-  ).toBeVisible();
 });
 
 test("the help reference reflects the daemon's features", async ({ page }) => {
@@ -293,25 +261,6 @@ test("the help reference reflects the daemon's features", async ({ page }) => {
   await expect(steer.getByText("not enabled")).toHaveCount(0);
   const image = page.locator("li[data-feature='image']");
   await expect(image.getByText("not enabled")).toBeVisible();
-});
-
-test("Settings → Keyboard lists the keymap with a recorder per rebindable row", async ({
-  page,
-}) => {
-  await page.goto("/workspace/settings/keyboard");
-  const card = page.locator("section", {
-    has: page.getByRole("heading", { name: "Keyboard shortcuts" }),
-  });
-  await expect(
-    card.getByRole("heading", { name: "Keyboard shortcuts" }),
-  ).toBeVisible();
-  await expect(card.getByText("New chat", { exact: true })).toBeVisible();
-  await expect(
-    card.getByRole("button", { name: /Change shortcut for New chat/ }),
-  ).toBeVisible();
-  // Esc is dispatched but locked: listed read-only, no recorder.
-  await expect(card.getByText(/Not rebindable — Esc/)).toBeVisible();
-  await expect(card.getByRole("button", { name: "Reset all" })).toBeDisabled();
 });
 
 test("typing /help in the composer opens the help reference", async ({
@@ -511,28 +460,16 @@ test("a scheduled task's delivery note renders as an attributed card", async ({
 test("storage settings show aggregate health and the clean-up plan", async ({
   page,
 }) => {
-  // The fixture advertises storage_health / storage_migration /
-  // storage_cleanup, so the maintenance block renders: the always-visible
-  // health card off GET /v1/storage/health, the read-only migration estimate,
-  // and the clean-up plan → typed CLEAN UP → apply flow over its static jobs.
+  // The fixture advertises storage_health / storage_cleanup, so the Storage
+  // card renders: the health summary off GET /v1/storage/health and the
+  // find old runs → typed CLEAN UP → apply flow over its static jobs.
   await page.goto("/workspace/settings/storage");
   await expect(page.getByTestId("storage-health-status")).toHaveText("Healthy");
   await expect(page.getByTestId("storage-health-sessions")).toContainText("3");
   await expect(page.getByTestId("storage-health-size")).toHaveText("20 KB");
-  await expect(page.getByTestId("storage-health-active-job")).toHaveText(
-    "none",
-  );
-
-  await page.getByRole("button", { name: "Estimate", exact: true }).click();
-  await expect(page.getByTestId("storage-migration-plan")).toContainText(
-    "Legacy (v1) families",
-  );
-  await expect(
-    page.getByRole("button", { name: "Optimize now", exact: true }),
-  ).toBeVisible();
 
   await page
-    .getByRole("button", { name: "Plan clean-up", exact: true })
+    .getByRole("button", { name: "Find old runs", exact: true })
     .click();
   await expect(page.getByTestId("storage-cleanup-eligible")).toContainText("1");
   await expect(page.getByTestId("storage-cleanup-protected")).toContainText(
@@ -644,7 +581,7 @@ test("the Permissions page reads the daemon-reported posture in external mode an
     effectiveRow.getByText("Trusted", { exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByText("Managed by the external mecated deployment").first(),
+    page.getByText("The agent is run somewhere else").first(),
   ).toBeVisible();
   await expect(page.getByRole("switch")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Safety level" })).toHaveCount(
@@ -716,65 +653,46 @@ test("Fork chat in the row menu continues in a copy of the chat", async ({
   ).toBeVisible();
 });
 
-test("Settings → Help & about shows Studio's version, the docs link and the configuration reference", async ({
+test("Settings → About shows Studio's version and the docs link", async ({
   page,
 }) => {
   await page.goto("/workspace/settings/help");
-  // The web `--version`: Studio's own version and the SDK's, inlined at
-  // `next build`, so they are real values before any daemon call.
+  // The web `--version`: Studio's own version, inlined at `next build`, so
+  // it is a real value before any daemon call.
   await expect(page.getByTestId("about-studio-version")).toHaveText(
     /^\d+\.\d+\.\d+/,
   );
-  await expect(page.getByTestId("about-sdk-version")).not.toHaveText("unknown");
   await expect(
     page.getByRole("link", { name: "Documentation" }),
   ).toHaveAttribute("href", "https://mecatl.dev/docs/");
   await expect(
     page.getByRole("link", { name: "Keyboard shortcuts" }),
   ).toHaveAttribute("href", "/workspace/shortcuts");
-  // The daemon's identity card shares the page (the fixture answers /v1/info).
+  // The agent's version card shares the page (the fixture answers /v1/info).
   await expect(page.getByTestId("about-server-build")).toHaveText("fixture");
-  // The configuration reference names what THIS deployment set — the e2e
-  // stack sets MECATL_BASE_URL and MECATL_STUDIO_PUBLIC_ORIGIN — and never a
-  // value: the fixture's base URL does not appear anywhere on the page.
-  const table = page.getByRole("table", {
-    name: "Studio configuration reference",
-  });
-  await expect(table).toBeVisible();
-  await expect(page.getByTestId("config-status-MECATL_BASE_URL")).toHaveText(
-    "Set",
-  );
-  await expect(
-    page.getByTestId("config-status-MECATL_STUDIO_PUBLIC_ORIGIN"),
-  ).toHaveText("Set");
+  // No endpoint is rendered anywhere on the page.
   await expect(page.getByText("127.0.0.1:8099")).toHaveCount(0);
 });
 
-test("Settings → MCP tools renders the resolved sources, their diagnostics and the ToolHive groups", async ({
+test("Settings → MCP tools lists the resolved sources with their tools and skipped count", async ({
   page,
 }) => {
   await page.goto("/workspace/settings/gateway");
-  // The fixture advertises `mcp`: the card lists both sources by name with
-  // their servers and skip reasons (GET /v1/mcp/sources) and the groups
-  // line (GET /v1/mcp/toolhive/groups) under them.
+  // The fixture advertises `mcp`: the card lists both sources by a readable
+  // name with their tools and a plain skipped count (GET /v1/mcp/sources).
   const card = page.getByRole("heading", { name: "MCP tools" }).locator("..");
-  await expect(page.getByText("toolhive(default)")).toBeVisible();
-  await expect(page.getByText("http://127.0.0.1:1/mcp")).toBeVisible();
-  await expect(
-    page.getByText("fixture-stdio: skipped, unsupported transport stdio"),
-  ).toBeVisible();
-  await expect(page.getByTestId("mcp-groups")).toHaveText(
-    "ToolHive groups: default, research",
+  await expect(page.getByText("ToolHive", { exact: true })).toBeVisible();
+  await expect(page.getByText("http://127.0.0.1:1/mcp")).toHaveCount(0);
+  await expect(page.getByTestId("mcp-skipped")).toHaveText(
+    "One tool couldn't be connected.",
   );
-  // The footer carries the startup-snapshot caveat until a manual refresh
-  // lands, then reads "updated" (the TUI's r-refresh indicator).
+  // The footer carries the refresh caveat until a manual refresh lands,
+  // then reads up to date.
   await expect(page.getByTestId("mcp-footer")).toContainText(
-    "Snapshot from daemon startup",
+    "appear after you refresh",
   );
-  await page.getByRole("button", { name: "Refresh MCP sources" }).click();
-  await expect(page.getByTestId("mcp-footer")).toHaveText(
-    "Updated — live MCP source status.",
-  );
+  await page.getByRole("button", { name: "Refresh" }).click();
+  await expect(page.getByTestId("mcp-footer")).toHaveText("Up to date.");
   // The gateway connect form still shares the page below the inventory.
   await expect(card).toBeVisible();
   await expect(page.getByText("MCP gateway", { exact: true })).toBeVisible();

@@ -11,9 +11,9 @@ import AppearanceSettingsPage from "./page";
 
 const HIDE_STARTER_PROMPTS_KEY = "mecatl-studio.hide-starter-prompts";
 
-// The page hosts the Custom palettes section, whose mount starts the
-// one-per-page /api/palettes fetch: stub it and let it settle up front so no
-// state update lands outside act in the tests below.
+// The palette picker's mount starts the one-per-page /api/palettes fetch:
+// stub it and let it settle up front so no state update lands outside act in
+// the tests below.
 beforeEach(async () => {
   vi.stubGlobal("localStorage", memoryStorage());
   resetCustomPalettesForTests();
@@ -31,9 +31,8 @@ beforeEach(async () => {
 afterEach(() => resetCustomPalettesForTests());
 
 /**
- * Personalize owns the new-chat preference: the starter-prompt switch (the
- * --no-banner analogue, default ON). Browser-local, so the page writes the
- * same key the chat reads.
+ * Personalize owns the new-chat preference: the starter-prompt switch
+ * (default ON). Browser-local, so the page writes the same key the chat reads.
  */
 describe("AppearanceSettingsPage — new chat preferences", () => {
   beforeEach(() => {
@@ -57,81 +56,144 @@ describe("AppearanceSettingsPage — new chat preferences", () => {
 });
 
 /**
- * The Enter preference changes what a key DOES; which keys fire what is the
- * keymap on Settings → Keyboard. Personalize points there so the two are
- * found together.
+ * The page is for office users: key rebinding and the preferences file
+ * import/export are gone, and the remaining controls are grouped into three
+ * plain cards.
  */
-describe("AppearanceSettingsPage — keyboard shortcuts", () => {
+describe("AppearanceSettingsPage — layout", () => {
   beforeEach(() => {
     vi.stubGlobal("localStorage", memoryStorage());
   });
 
-  it("links to Settings → Keyboard for rebinding", () => {
+  it("groups the controls into Appearance and Chat cards with no technical extras", () => {
     render(<AppearanceSettingsPage />);
-    expect(screen.getByText("Keyboard shortcuts")).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: /Customize/ })).toHaveAttribute(
-      "href",
-      "/workspace/settings/keyboard",
+    expect(
+      screen.getByRole("heading", { name: "Appearance" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Chat" })).toBeInTheDocument();
+
+    expect(screen.queryByText("Keyboard shortcuts")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+    expect(screen.queryByText("Preferences file")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Export" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Import/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("hides the Notifications card where the browser has no Notification API", () => {
+    render(<AppearanceSettingsPage />);
+    expect(
+      screen.queryByRole("heading", { name: "Notifications" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Browser notifications")).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * Text size (the interface scale multiplier) steps in 5% increments between
+ * the bounds, and the buttons carry the visible row's words.
+ */
+describe("AppearanceSettingsPage — text size", () => {
+  const SCALE_KEY = "mecatl-studio.ui-scale";
+
+  beforeEach(() => {
+    vi.stubGlobal("localStorage", memoryStorage());
+  });
+
+  it("steps the size up and down and persists it", async () => {
+    const user = userEvent.setup();
+    render(<AppearanceSettingsPage />);
+    expect(screen.getByText("Text size")).toBeInTheDocument();
+    expect(screen.getByText("100%")).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: "Increase text size" }),
+    );
+    expect(screen.getByText("105%")).toBeInTheDocument();
+    expect(window.localStorage.getItem(SCALE_KEY)).toBe("1.05");
+
+    await user.click(
+      screen.getByRole("button", { name: "Decrease text size" }),
+    );
+    expect(screen.getByText("100%")).toBeInTheDocument();
+  });
+});
+
+/**
+ * "Messages while the agent works" is the Enter preference in plain words:
+ * the three stored values ("queue", "steer", "queue-only") are unchanged, so
+ * the composer reads exactly what it always did.
+ */
+describe("AppearanceSettingsPage — messages while the agent works", () => {
+  const ENTER_KEY = "mecatl-studio.enter-send-behavior";
+  const ROW = "Messages while the agent works";
+
+  beforeEach(() => {
+    vi.stubGlobal("localStorage", memoryStorage());
+  });
+
+  it("offers Always wait and persists it with a matching description", async () => {
+    const user = userEvent.setup();
+    render(<AppearanceSettingsPage />);
+    const trigger = screen.getByRole("button", { name: ROW });
+    expect(trigger).toHaveTextContent("Wait for the agent");
+    expect(
+      screen.getByText(/Shift\+Enter interrupts instead/),
+    ).toBeInTheDocument();
+
+    await user.click(trigger);
+    for (const label of [
+      "Wait for the agent",
+      "Interrupt the agent",
+      "Always wait",
+    ]) {
+      expect(
+        await screen.findByRole("menuitem", { name: new RegExp(label) }),
+      ).toBeInTheDocument();
+    }
+    await user.click(screen.getByRole("menuitem", { name: /Always wait/ }));
+
+    expect(screen.getByRole("button", { name: ROW })).toHaveTextContent(
+      "Always wait",
+    );
+    expect(window.localStorage.getItem(ENTER_KEY)).toBe("queue-only");
+    expect(
+      screen.getByText(/Every message waits until the agent finishes/),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/Shift\+Enter interrupts instead/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("persists Interrupt the agent as the stored steer value", async () => {
+    const user = userEvent.setup();
+    render(<AppearanceSettingsPage />);
+    await user.click(screen.getByRole("button", { name: ROW }));
+    await user.click(
+      await screen.findByRole("menuitem", { name: /Interrupt the agent/ }),
+    );
+    expect(window.localStorage.getItem(ENTER_KEY)).toBe("steer");
+    expect(
+      screen.getByText(/interrupts the agent; Shift\+Enter makes it wait/),
+    ).toBeInTheDocument();
+  });
+
+  it("shows a stored Always wait choice on load", () => {
+    window.localStorage.setItem(ENTER_KEY, "queue-only");
+    render(<AppearanceSettingsPage />);
+    expect(screen.getByRole("button", { name: ROW })).toHaveTextContent(
+      "Always wait",
     );
   });
 });
 
 /**
- * The Message queuing row carries the client-level never-steer switch as a
- * third option, "Queue only" (the web form of `mecatui --no-steer`): picking
- * it persists the "queue-only" preference the composer reads, and the row's
- * description stops promising that Shift+Enter "does the opposite".
- */
-describe("AppearanceSettingsPage — message queuing", () => {
-  const ENTER_KEY = "mecatl-studio.enter-send-behavior";
-
-  beforeEach(() => {
-    vi.stubGlobal("localStorage", memoryStorage());
-  });
-
-  it("offers Queue only and persists it with an honest description", async () => {
-    const user = userEvent.setup();
-    render(<AppearanceSettingsPage />);
-    const trigger = screen.getByRole("button", { name: "Message queuing" });
-    expect(trigger).toHaveTextContent("Queue message");
-    expect(
-      screen.getByText(/Shift\+Enter does the opposite/),
-    ).toBeInTheDocument();
-
-    await user.click(trigger);
-    for (const label of ["Queue message", "Steer the agent", "Queue only"]) {
-      expect(
-        await screen.findByRole("menuitem", { name: new RegExp(label) }),
-      ).toBeInTheDocument();
-    }
-    await user.click(screen.getByRole("menuitem", { name: /Queue only/ }));
-
-    expect(
-      screen.getByRole("button", { name: "Message queuing" }),
-    ).toHaveTextContent("Queue only");
-    expect(window.localStorage.getItem(ENTER_KEY)).toBe("queue-only");
-    expect(
-      screen.getByText(/Never steer the in-flight run/),
-    ).toBeInTheDocument();
-    expect(screen.queryByText(/does the opposite/)).not.toBeInTheDocument();
-  });
-
-  it("shows a stored Queue only choice on load", () => {
-    window.localStorage.setItem(ENTER_KEY, "queue-only");
-    render(<AppearanceSettingsPage />);
-    expect(
-      screen.getByRole("button", { name: "Message queuing" }),
-    ).toHaveTextContent("Queue only");
-  });
-});
-
-/**
- * The Palette row is the web form of mecatui's `--theme` / `--list-themes`:
- * it enumerates every built-in palette by name and description, and picking
- * one lands `data-palette` on <html> at once AND persists it, while the
- * light/dark Theme row stays a separate axis. A deployment pin
- * (`BRAND_PALETTE`) is named in the row so a user knows why a fresh browser
- * is not Stacklok green.
+ * The Palette row enumerates every built-in palette by name and description,
+ * and picking one lands `data-palette` on <html> at once AND persists it,
+ * while the light/dark Theme row stays a separate axis.
  */
 describe("AppearanceSettingsPage — palette", () => {
   const PALETTE_KEY = "mecatl-studio.palette";
@@ -171,7 +233,7 @@ describe("AppearanceSettingsPage — palette", () => {
     );
   });
 
-  it("shows the stored palette on load and names a deployment pin", () => {
+  it("shows the stored palette on load under a deployment default, in one plain sentence", () => {
     window.localStorage.setItem(PALETTE_KEY, "solar");
     render(
       <PaletteProvider defaultPalette="mono">
@@ -182,8 +244,9 @@ describe("AppearanceSettingsPage — palette", () => {
       "Solar",
     );
     expect(
-      screen.getByText(/This deployment's default is Mono\./),
+      screen.getByText("Accent colours for buttons and highlights."),
     ).toBeInTheDocument();
+    expect(screen.queryByText(/deployment/)).not.toBeInTheDocument();
   });
 });
 
@@ -201,7 +264,7 @@ describe("AppearanceSettingsPage — start on", () => {
     expect(trigger).toHaveTextContent("New chat");
     expect(window.localStorage.getItem(LAUNCH_KEY)).toBeNull();
     expect(
-      screen.getByText(/skips chats that are running or waiting/),
+      screen.getByText("What opens when you go to Chat."),
     ).toBeInTheDocument();
 
     await user.click(trigger);
@@ -224,5 +287,64 @@ describe("AppearanceSettingsPage — start on", () => {
     expect(
       await screen.findByRole("button", { name: "Start on" }),
     ).toHaveTextContent("Most recent chat");
+  });
+});
+
+/**
+ * Browser notifications appear only where the browser supports them, and the
+ * row's words follow the permission state.
+ */
+describe("AppearanceSettingsPage — browser notifications", () => {
+  beforeEach(() => {
+    vi.stubGlobal("localStorage", memoryStorage());
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function stubNotification(permission: NotificationPermission) {
+    const requestPermission = vi.fn(async () => permission);
+    vi.stubGlobal(
+      "Notification",
+      Object.assign(vi.fn(), { permission, requestPermission }),
+    );
+    return requestPermission;
+  }
+
+  it("offers Enable when permission has not been asked yet", async () => {
+    stubNotification("default");
+    render(<AppearanceSettingsPage />);
+    expect(
+      await screen.findByRole("heading", { name: "Notifications" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Browser notifications")).toBeInTheDocument();
+    expect(
+      screen.getByText("Get an alert when the agent finishes a task."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Enable" })).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "Send a test notification" }),
+    ).toBeDisabled();
+  });
+
+  it("explains a blocked permission in plain words", async () => {
+    stubNotification("denied");
+    render(<AppearanceSettingsPage />);
+    expect(
+      await screen.findByText(
+        "Blocked in your browser — allow notifications for this site to turn them on.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("shows Enabled and arms the test button once granted", async () => {
+    stubNotification("granted");
+    render(<AppearanceSettingsPage />);
+    expect(
+      await screen.findByRole("button", { name: "Enabled" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Send a test notification" }),
+    ).toBeEnabled();
   });
 });

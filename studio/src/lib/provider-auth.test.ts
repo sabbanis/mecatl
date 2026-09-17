@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   CUSTOM_PROVIDER_API_FLAVORS,
-  customProviderAuthSnippet,
   customProviderProbeURL,
   customProviderSettingsSnippet,
   describeProviderRow,
@@ -317,12 +316,6 @@ describe("custom provider snippets", () => {
     });
     expect(snippet).toContain("      method: none");
     expect(snippet).not.toContain("api_key");
-  });
-
-  it("emits an auth.yaml key block with a placeholder, never a value", () => {
-    expect(customProviderAuthSnippet("my-gateway")).toBe(
-      "providers:\n  my-gateway:\n    api_key: <YOUR_KEY>\n",
-    );
   });
 
   it("round-trips: the emitted settings snippet lists back verbatim", () => {

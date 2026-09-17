@@ -1,9 +1,9 @@
 /**
  * A one-shot handoff of composer text ACROSS a route change: a surface
- * outside the chat (Settings → About → "Send to a new chat") stashes the text
- * it wants sent, navigates to the draft chat, and the workspace pre-fills its
- * composer from the stash on mount. The user still presses Enter — in a web
- * UI the report is visible before it leaves.
+ * outside the chat stores the text it wants sent under `PENDING_DRAFT_KEY`,
+ * navigates to the draft chat, and the workspace pre-fills its composer from
+ * the stash on mount. The user still presses Enter — in a web UI the text is
+ * visible before it leaves.
  *
  * sessionStorage, like draft-store.ts: survives the in-app navigation, dies
  * with the tab. Take-once semantics (`takePendingDraft` clears on read) so a
@@ -20,23 +20,6 @@ function storage(): Storage | null {
     return window.sessionStorage ?? null;
   } catch {
     return null;
-  }
-}
-
-/** Stores `text` for the next draft composer to pick up. False when the
- *  browser has no usable storage — the caller then tells the user to paste. */
-export function stashPendingDraft(text: string): boolean {
-  const store = storage();
-  if (!store) return false;
-  try {
-    if (text === "") {
-      store.removeItem(PENDING_DRAFT_KEY);
-    } else {
-      store.setItem(PENDING_DRAFT_KEY, text);
-    }
-    return true;
-  } catch {
-    return false;
   }
 }
 

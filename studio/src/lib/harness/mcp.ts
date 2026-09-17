@@ -103,7 +103,7 @@ export function isNoMcpProvider(error: unknown): boolean {
 }
 
 /** The user-facing sentence for `isNoMcpProvider`. */
-export const NO_MCP_PROVIDER_TEXT = "No MCP provider is wired on this daemon.";
+export const NO_MCP_PROVIDER_TEXT = "MCP tools aren't set up for this agent.";
 
 // ── Broker connector labels (verbatim from cmd/mecatui/ui/mcp.go) ──────────
 

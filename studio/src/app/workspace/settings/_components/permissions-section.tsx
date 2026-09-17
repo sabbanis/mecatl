@@ -23,6 +23,7 @@ import {
   ExternalManagedNote,
   Note,
   OfflineNote,
+  RESTART_SENTENCE,
   SettingsCard,
   SettingsRow,
 } from "./settings-card";
@@ -270,8 +271,8 @@ export function PermissionsSection({ runtime }: { runtime: Runtime }) {
         title: `Switch to ${selected.label}?`,
         description:
           view.posture === "yolo"
-            ? "Yolo removes every safeguard: the agent runs everything without asking, for everyone using it. Only use this on a throwaway machine. The agent restarts and anything running will stop."
-            : "Auto lets the agent make changes and run commands without asking, for everyone using it. The agent restarts and anything running will stop.",
+            ? `Yolo removes every safeguard: the agent runs everything without asking, for everyone using it. Only use this on a throwaway machine. ${RESTART_SENTENCE}`
+            : `Auto lets the agent make changes and run commands without asking, for everyone using it. ${RESTART_SENTENCE}`,
         confirmText: `Switch to ${selected.label}`,
         destructive: true,
       });
@@ -313,7 +314,7 @@ export function PermissionsSection({ runtime }: { runtime: Runtime }) {
   return (
     <SettingsCard
       title="Permissions"
-      description="How much the agent may do on its own. Changes restart the agent."
+      description="How much the agent may do on its own."
     >
       <div className="flex flex-col gap-4">
         <div className="divide-y divide-border/60">
@@ -415,7 +416,7 @@ export function PermissionsSection({ runtime }: { runtime: Runtime }) {
           </Note>
         )}
 
-        <Note>Saving restarts the agent. Anything running will stop.</Note>
+        <Note>{RESTART_SENTENCE}</Note>
 
         <div className="flex flex-wrap items-center justify-end gap-2">
           {dirty && (

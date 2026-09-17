@@ -3,6 +3,7 @@
 import { Info, Loader2 } from "lucide-react";
 import type { useHarnessRuntime } from "@/features/agent/hooks/use-harness-runtime";
 import { useRuntimeStatus } from "@/features/agent/runtime-status";
+import { useDeveloperTools } from "@/lib/profile-preferences";
 
 /**
  * The shared status strip for the runtime subpages: load/busy state and the
@@ -17,8 +18,13 @@ export function RuntimeStatusLine({
   runtime: ReturnType<typeof useHarnessRuntime>;
 }) {
   const { deployment } = useRuntimeStatus();
+  const { enabled: developerTools } = useDeveloperTools();
+  // The operator's deployment label is a technical detail: shown only once
+  // Labs → Developer tools is on, for people running more than one agent.
+  const deploymentLabel = developerTools && deployment ? deployment : null;
   const working = runtime.isLoading || Boolean(runtime.busy);
-  if (!working && !runtime.error && !runtime.notice && !deployment) return null;
+  if (!working && !runtime.error && !runtime.notice && !deploymentLabel)
+    return null;
   return (
     <div className="space-y-2">
       {working && (
@@ -40,11 +46,9 @@ export function RuntimeStatusLine({
           <span>{runtime.notice}</span>
         </div>
       )}
-      {/* The operator's --deployment-id label — which daemon this is, for
-          people running more than one. */}
-      {deployment && (
+      {deploymentLabel && (
         <p className="text-xs text-muted-foreground">
-          Deployment: <span className="font-mono">{deployment}</span>
+          Agent: <span className="font-mono">{deploymentLabel}</span>
         </p>
       )}
     </div>

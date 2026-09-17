@@ -62,8 +62,8 @@ export interface HarnessDaemonDefaults {
   };
   /** `--model-alias name=model`. */
   aliases: Record<string, string>;
-  /** `--model-slot slot=selector` (the `router` slot is the Model router
-   *  page's). */
+  /** `--model-slot slot=selector` (the `router` slot is reserved for model
+   *  routing). */
   slots: Record<string, string>;
   /** `--api-key-file`; "" = the XDG default the controller reports as
    *  `/status.authFile`. A PATH on the daemon's machine, never a key. */

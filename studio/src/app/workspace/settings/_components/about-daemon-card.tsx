@@ -1,85 +1,60 @@
 "use client";
 
-import { Copy, MessageSquarePlus } from "lucide-react";
-import { useRouter } from "next/navigation";
+import { Copy } from "lucide-react";
 import { useEffect, useState } from "react";
-import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { useDiagnosticsReport } from "@/features/agent/hooks/use-diagnostics-report";
 import { useRuntimeStatus } from "@/features/agent/runtime-status";
 import { copyToClipboard } from "@/lib/clipboard";
 import {
   type HarnessServerInfoProbe,
   probeHarnessServerInfo,
 } from "@/lib/harness/server-info";
-import { stashPendingDraft } from "@/lib/pending-draft";
-import { knownPostureTier } from "@/lib/posture";
-import { studioBuild } from "@/lib/studio-build";
+import { studioVersion } from "@/lib/studio-version";
 import { SettingsCard } from "./settings-card";
 
-/** How the daemon-identity half of the card stands: the probe's lookup
- *  class, or the two states before/without a probe. */
+/** How the agent-identity probe stands: its lookup class, or the two states
+ *  before/without a probe. */
 export type AboutLookup =
   | HarnessServerInfoProbe["lookup"]
   | "loading"
   | "offline";
 
-/** The `Server identity` row when the daemon rows cannot be shown — one
- *  plain sentence per lookup class, so the card is never blank. */
-function serverIdentityText(lookup: AboutLookup): string {
+/** The `Version` cell in plain words, so the card is never blank. */
+function agentVersionText(
+  lookup: AboutLookup,
+  info: HarnessServerInfoProbe["info"],
+): string {
   switch (lookup) {
     case "ok":
-      return "ok";
+      return info?.buildId || "Not available";
     case "loading":
-      return "loading…";
+      return "Checking…";
     case "offline":
-      return "unavailable — the daemon is offline";
+      return "The agent is offline";
     case "not-supported":
-      return "unavailable on this daemon (GET /v1/info not supported)";
     case "unreachable":
-      return "unavailable — the daemon did not answer";
     case "invalid-response":
-      return "unavailable — the daemon answered, but not with its identity";
+      return "Not available";
   }
 }
 
-export const HANDOFF_FAILED =
-  "Couldn't hand the report to a new chat — copy it instead";
-
-interface AboutRow {
-  label: string;
-  value: string;
-  testId?: string;
-}
-
 /**
- * Studio's own identity next to the daemon's safe identity (ADR 0245) — the
- * payload a bug report wants, and the web analogue of `mecatui --version`
- * plus the TUI's `/diagnostics`.
- *
- * Always rendered: the Studio build stamp, the managed/external server
- * mode, then EITHER the daemon rows (opaque build id, composition family,
- * the sanitized endpoint of the selected provider) OR one `Server identity`
- * row naming why they are missing (an older daemon without GET /v1/info, an
- * unreachable one, an invalid answer, offline), then the operator's
- * deployment label and the daemon-reported effective posture.
- *
- * Two actions: copy the rows, or hand the full sanitized `/diagnostics`
- * report to a NEW chat's composer (the user still presses Enter).
+ * The agent's identity next to Studio's: its version (the safe build id
+ * from GET /v1/info) and whether Studio runs it (managed mode) or connects
+ * to one running elsewhere (external mode). One action copies the details
+ * — with Studio's own version — for a support request. The probe result,
+ * the runtime status and the copy path are unchanged; only the rows and
+ * words are the short set an office user needs.
  */
 export function AboutDaemonCard({
   selectedProviderId,
 }: {
-  /** Names the provider whose sanitized endpoint the probe should project. */
+  /** Names the provider whose identity projection the probe should read. */
   selectedProviderId?: string;
 }) {
-  const router = useRouter();
-  const { state, mode, deployment, serverCapabilities, workspace } =
-    useRuntimeStatus();
+  const { state, mode } = useRuntimeStatus();
   const connected = state === "connected";
-  const { compose } = useDiagnosticsReport();
   const [probe, setProbe] = useState<HarnessServerInfoProbe | null>(null);
-  const [handingOff, setHandingOff] = useState(false);
 
   useEffect(() => {
     if (!connected) {
@@ -97,118 +72,57 @@ export function AboutDaemonCard({
 
   const lookup: AboutLookup =
     state === "offline" ? "offline" : (probe?.lookup ?? "loading");
-  const info = lookup === "ok" ? probe?.info : null;
+  const agentVersion = agentVersionText(
+    lookup,
+    lookup === "ok" ? (probe?.info ?? null) : null,
+  );
+  const managed = mode === "managed" ? "Yes" : "No";
 
-  const reportedPosture = serverCapabilities.posture;
-  const posture =
-    knownPostureTier(reportedPosture) ??
-    (typeof reportedPosture === "string" && reportedPosture.trim()
-      ? reportedPosture.trim()
-      : "not reported");
-
-  const rows: AboutRow[] = [
-    { label: "Studio", value: studioBuild(), testId: "about-studio-build" },
-    { label: "Server mode", value: mode, testId: "about-server-mode" },
-  ];
-  // The root the daemon was spawned against (the TUI's `--workspace`):
-  // display only (Studio rule 2), in either mode, when the controller /
-  // deployment reported one.
-  if (workspace) {
-    rows.push({
-      label: "Workspace",
-      value: workspace,
-      testId: "about-workspace",
-    });
-  }
-  if (info) {
-    rows.push({
-      label: "Build",
-      value: info.buildId || "unavailable",
-      testId: "about-server-build",
-    });
-    rows.push({
-      label: "Implementation",
-      value: info.serverImplementation || "unavailable",
-      testId: "about-server-implementation",
-    });
-    if (info.providerEndpoint) {
-      rows.push({ label: "Provider endpoint", value: info.providerEndpoint });
-    }
-  } else {
-    rows.push({
-      label: "Server identity",
-      value: serverIdentityText(lookup),
-      testId: "about-server-identity",
-    });
-  }
-  rows.push({ label: "Deployment", value: deployment || "not set" });
-  rows.push({ label: "Posture", value: posture, testId: "about-posture" });
-
-  const debugBlob = rows.map((row) => `${row.label}: ${row.value}`).join("\n");
-
-  const sendToNewChat = async () => {
-    setHandingOff(true);
-    try {
-      // The card's own probe is the report's server half when it has one;
-      // otherwise compose probes (a still-loading card reads its class).
-      const report = await compose({ server: probe ?? undefined });
-      if (!stashPendingDraft(report)) {
-        toast.error(HANDOFF_FAILED);
-        return;
-      }
-      router.push("/workspace/chat");
-    } finally {
-      setHandingOff(false);
-    }
-  };
+  const details = [
+    `Studio version: ${studioVersion()}`,
+    `Agent version: ${agentVersion}`,
+    `Managed by Studio: ${managed}`,
+  ].join("\n");
 
   return (
     <SettingsCard
-      title="About"
-      description="Studio's build and the daemon's safe identity — what a bug report needs."
+      title="About the agent"
+      description="The agent's version, and whether Studio runs it for you."
     >
       <div className="flex flex-col gap-3">
         <div className="divide-y rounded-lg border bg-background">
-          {rows.map(({ label, value, testId }) => (
-            <div
-              key={label}
-              className="flex items-center justify-between gap-3 px-4 py-3"
+          <div className="flex items-center justify-between gap-3 px-4 py-3">
+            <span className="text-sm">Version</span>
+            <span
+              className="break-all text-right text-sm text-muted-foreground"
+              data-testid="about-server-build"
             >
-              <span className="text-sm">{label}</span>
-              <span
-                className="break-all text-right font-mono text-sm text-muted-foreground"
-                data-testid={testId}
-              >
-                {value}
-              </span>
-            </div>
-          ))}
+              {agentVersion}
+            </span>
+          </div>
+          <div className="flex items-center justify-between gap-3 px-4 py-3">
+            <span className="text-sm">Managed by Studio</span>
+            <span
+              className="text-right text-sm text-muted-foreground"
+              data-testid="about-server-mode"
+            >
+              {managed}
+            </span>
+          </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button
             variant="outline"
             size="sm"
             className="rounded-full"
-            onClick={() => void copyToClipboard(debugBlob, "Debug info")}
+            onClick={() => void copyToClipboard(details, "Details")}
           >
             <Copy className="size-4" />
-            Copy debug info
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            className="rounded-full"
-            disabled={!connected || handingOff}
-            onClick={() => void sendToNewChat()}
-          >
-            <MessageSquarePlus className="size-4" />
-            Send to a new chat
+            Copy details
           </Button>
         </div>
         <p className="text-xs text-muted-foreground">
-          Send to a new chat opens a chat with the same sanitized report the{" "}
-          <code>/diagnostics</code> command sends — review it in the composer,
-          then press Enter.
+          Include these details when you report a problem.
         </p>
       </div>
     </SettingsCard>

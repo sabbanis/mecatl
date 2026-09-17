@@ -20,7 +20,7 @@ const CONTROL_API = "/api/mecatl-control";
 /** One family's limits. `null` leaves mecated's own default for that flag;
  *  a duration is Go grammar ("168h", "30m", "0" = off), a count a whole
  *  number (0 = off). */
-export interface HarnessRetentionFamily {
+interface HarnessRetentionFamily {
   maxAge: string | null;
   maxCount: number | null;
 }

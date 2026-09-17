@@ -13,35 +13,43 @@ import {
   defaultsFromDraft,
   draftFromDefaults,
   modelDefaultsKind,
+  RESTART_WARNING,
 } from "./daemon-defaults-card";
 
 type Runtime = ReturnType<typeof useHarnessRuntime>;
 type DefaultsHook = ReturnType<typeof useDaemonDefaults>;
 
 /**
- * Settings → Model provider → "Daemon defaults": the web analogue of
- * mecated's --default-model / --subagent-model / --reasoning-effort /
- * --context-window-override / --llm-per-attempt-timeout /
- * --llm-stream-idle-timeout / --no-prompt-cache / --anthropic-cache-ttl /
- * --*-base-url / --toolhive-llm* / --model-alias / --model-slot /
- * --api-key-file. Pins that (1) the controls render from the saved document
- * for the ACTIVE provider, (2) Save stays disabled until the draft differs,
- * validates with the controller's grammar BEFORE confirming, and always
- * confirms with the restart warning, (3) the body sent is the normalised
- * document with the active provider's model pair folded into `models`,
- * (4) the Anthropic TTL row appears only when anthropic is configured, and
- * (5) external, offline and older-controller states render notes, not a
- * form.
+ * Settings → Provider → "Default model": the one control an office user
+ * needs from the saved defaults document — the default model for the
+ * ACTIVE provider. Pins that (1) only that picker renders (no effort,
+ * window, timeout, caching or advanced rows), (2) Save stays disabled until
+ * the draft differs and always confirms with the restart sentence, (3) the
+ * body sent is the whole saved document with the active provider's pair
+ * folded into `models` — every other field rides along unchanged, and
+ * (4) offline, missing and offline-mode states render notes, not a form,
+ * while external mode renders nothing at all.
  */
 
 const saved: HarnessDaemonDefaults = {
   ...EMPTY_DAEMON_DEFAULTS,
   models: {
-    openrouter: { defaultModel: "anthropic/claude", subagentModel: "" },
+    openrouter: { defaultModel: "anthropic/claude", subagentModel: "x/y" },
     anthropic: { defaultModel: "claude-sonnet-4-5", subagentModel: "" },
   },
   reasoningEffort: "high",
+  contextWindowOverride: 32_000,
+  promptCache: { disabled: true, anthropicTtl: "1h" },
+  // The validator normalises every built-in kind's override, blank or not.
+  baseUrls: {
+    openrouter: "https://gw.example/v1",
+    openai: "",
+    anthropic: "",
+    opencode: "",
+  },
   aliases: { fast: "openai/gpt-4o-mini" },
+  slots: { compaction: "fast" },
+  apiKeyFile: "/home/op/.config/mecatl/team.yaml",
   activeProvider: "openrouter",
 };
 
@@ -63,7 +71,7 @@ function controlStatus(
     operatorSettings: false,
     skillsDir: "",
     memoryDir: "",
-    configuredProviders: ["openrouter"],
+    configuredProviders: ["openrouter", "anthropic"],
     selectedProvider: "openrouter",
     authFile: "/home/op/.config/mecatl/auth.yaml",
     workspace: "/repo",
@@ -82,7 +90,6 @@ function fakeRuntime(overrides: Partial<Runtime> = {}): Runtime {
     live: true,
     mode: "managed",
     status: controlStatus(),
-    router: null,
     permissions: null,
     models: [
       {
@@ -117,7 +124,6 @@ function fakeRuntime(overrides: Partial<Runtime> = {}): Runtime {
     refresh,
     connectGateway: vi.fn(async () => {}),
     connectGatewayOAuth: vi.fn(async () => {}),
-    saveRouter: vi.fn(async () => {}),
     savePermissions: vi.fn(async () => {}),
     saveStorage: vi.fn(async () => {}),
     ...overrides,
@@ -147,66 +153,56 @@ beforeEach(() => {
 });
 
 describe("DaemonDefaultsCard", () => {
-  it("renders the active provider's saved model pair, effort and caching from the document", () => {
+  it("renders only the active provider's default model picker, in plain words", () => {
     render(
       <DaemonDefaultsCard runtime={fakeRuntime()} defaults={fakeDefaults()} />,
     );
     expect(
+      screen.getByRole("heading", { name: "Default model" }),
+    ).toBeVisible();
+    expect(
+      screen.getByText(
+        "The model the agent uses when a chat does not pick one.",
+      ),
+    ).toBeInTheDocument();
+    expect(
       screen.getByRole("combobox", { name: "Default model" }),
     ).toHaveTextContent("Claude");
+    expect(screen.getAllByRole("combobox")).toHaveLength(1);
     expect(
-      screen.getByRole("combobox", { name: "Subagent model" }),
-    ).toHaveTextContent("Inherit the session model");
+      document.querySelectorAll("input, textarea, [role=switch]"),
+    ).toHaveLength(0);
+    // The removed rows are gone with their jargon.
+    expect(screen.queryByText(/Subagent/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/reasoning effort/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Context window/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/timeout/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/caching/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Advanced" })).toBeNull();
+    expect(screen.queryByText(/--|daemon|mecated|spawn|flag/)).toBeNull();
     expect(
-      screen.getByRole("combobox", { name: "Default reasoning effort" }),
-    ).toHaveTextContent("High");
-    expect(
-      screen.getByRole("textbox", { name: "Context window override" }),
-    ).toHaveValue("");
-    expect(
-      screen.getByRole("switch", { name: "Provider-side prompt caching" }),
-    ).toBeChecked();
-    expect(screen.getByText(/Saving restarts the daemon/)).toBeInTheDocument();
+      screen.getByText(
+        "Changes restart the agent. Anything running will stop.",
+      ),
+    ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
-    // Anthropic is not configured: its TTL row stays out of the way.
-    expect(
-      screen.queryByRole("combobox", { name: "Anthropic cache TTL" }),
-    ).toBeNull();
-    // Advanced is collapsed until asked for.
-    expect(screen.queryByLabelText("OpenRouter base URL")).toBeNull();
   });
 
-  it("shows the Anthropic TTL picker only when anthropic is a configured provider", () => {
-    render(
-      <DaemonDefaultsCard
-        runtime={fakeRuntime({
-          status: controlStatus({
-            configuredProviders: ["openrouter", "anthropic"],
-          }),
-        })}
-        defaults={fakeDefaults()}
-      />,
-    );
-    expect(
-      screen.getByRole("combobox", { name: "Anthropic cache TTL" }),
-    ).toHaveTextContent("API default (5 minutes)");
-  });
-
-  it("picks a default model, confirms the restart, and PUTs the pair folded into models", async () => {
+  it("picks a default model, confirms the restart, and PUTs the pair folded into models with the rest of the document unchanged", async () => {
     const user = userEvent.setup();
     render(
       <DaemonDefaultsCard runtime={fakeRuntime()} defaults={fakeDefaults()} />,
     );
     await user.click(screen.getByRole("combobox", { name: "Default model" }));
-    await user.click(await screen.findByRole("option", { name: /GPT-5/ }));
+    await user.click(await screen.findByRole("option", { name: "GPT-5" }));
     const saveButton = screen.getByRole("button", { name: "Save" });
     expect(saveButton).toBeEnabled();
 
     await user.click(saveButton);
     const dialog = await screen.findByRole("alertdialog");
-    expect(dialog).toHaveTextContent(/Save the daemon defaults\?/);
-    expect(dialog).toHaveTextContent(/The daemon restarts/);
-    expect(dialog).toHaveTextContent(/refused at startup/);
+    expect(dialog).toHaveTextContent("Save and restart the agent?");
+    expect(dialog).toHaveTextContent(RESTART_WARNING);
+    expect(dialog).not.toHaveTextContent(/daemon|mecated|refused/);
     expect(save).not.toHaveBeenCalled();
     await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(save).not.toHaveBeenCalled();
@@ -216,211 +212,61 @@ describe("DaemonDefaultsCard", () => {
       await screen.findByRole("button", { name: "Save and restart" }),
     );
     expect(save).toHaveBeenCalledTimes(1);
+    // Everything an operator configured elsewhere — the helper model, the
+    // effort tier, the window, caching, base URLs, aliases, slots, the key
+    // file — rides along byte for byte.
     expect(save.mock.calls[0][0]).toEqual({
       ...saved,
       models: {
         anthropic: { defaultModel: "claude-sonnet-4-5", subagentModel: "" },
-        openrouter: { defaultModel: "openai/gpt-5", subagentModel: "" },
+        openrouter: { defaultModel: "openai/gpt-5", subagentModel: "x/y" },
       },
       activeProvider: null,
     });
-    // The status poll is refreshed so the top card reads the new spawn.
+    // The status poll is refreshed so the provider list reads the new state.
     expect(refresh).toHaveBeenCalled();
   });
 
-  it("renders the LLM stream timeouts from the saved document with mecated's defaults filled in", () => {
+  it("offers the provider's own default and keeps a saved model the inventory no longer lists", async () => {
+    const user = userEvent.setup();
     render(
-      <DaemonDefaultsCard runtime={fakeRuntime()} defaults={fakeDefaults()} />,
+      <DaemonDefaultsCard
+        runtime={fakeRuntime()}
+        defaults={fakeDefaults({
+          defaults: {
+            ...saved,
+            models: {
+              ...saved.models,
+              openrouter: { defaultModel: "gone/model", subagentModel: "" },
+            },
+          },
+        })}
+      />,
     );
-    // The empty document holds mecated's own bounds, shown as real values
-    // (not blanks) so the operator sees what the daemon actually runs with.
+    const picker = screen.getByRole("combobox", { name: "Default model" });
+    expect(picker).toHaveTextContent("gone/model (saved, no longer listed)");
+    await user.click(picker);
     expect(
-      screen.getByRole("textbox", { name: "LLM connect timeout" }),
-    ).toHaveValue("300");
-    expect(
-      screen.getByRole("textbox", { name: "LLM idle timeout" }),
-    ).toHaveValue("180");
-    expect(screen.getByText(/--llm-per-attempt-timeout/)).toBeInTheDocument();
-    expect(screen.getByText(/--llm-stream-idle-timeout/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+      await screen.findByRole("option", { name: "Provider's default" }),
+    ).toBeInTheDocument();
   });
 
-  it("edits the idle timeout, confirms the restart, and PUTs whole-second llmTimeouts", async () => {
+  it("Discard returns to the saved value and disables Save again", async () => {
     const user = userEvent.setup();
     render(
       <DaemonDefaultsCard runtime={fakeRuntime()} defaults={fakeDefaults()} />,
     );
-    const idle = screen.getByRole("textbox", { name: "LLM idle timeout" });
-    await user.clear(idle);
-    await user.type(idle, "600");
-    const saveButton = screen.getByRole("button", { name: "Save" });
-    expect(saveButton).toBeEnabled();
-    await user.click(saveButton);
-    const dialog = await screen.findByRole("alertdialog");
-    expect(dialog).toHaveTextContent(/The daemon restarts/);
-    await user.click(
-      within(dialog).getByRole("button", { name: "Save and restart" }),
-    );
-    expect(save).toHaveBeenCalledTimes(1);
-    expect(save.mock.calls[0][0]).toMatchObject({
-      llmTimeouts: { perAttemptSeconds: 300, streamIdleSeconds: 600 },
-    });
-    // The untouched connect bound stays mecated's default, the rest of the
-    // document rides along unchanged.
-    expect(save.mock.calls[0][0]).toMatchObject({
-      reasoningEffort: "high",
-      aliases: { fast: "openai/gpt-4o-mini" },
-    });
-  });
-
-  it("disables a bound with 0 and refuses a fractional or suffixed timeout before any confirm", async () => {
-    const user = userEvent.setup();
-    render(
-      <DaemonDefaultsCard runtime={fakeRuntime()} defaults={fakeDefaults()} />,
-    );
-    const connect = screen.getByRole("textbox", {
-      name: "LLM connect timeout",
-    });
-    await user.clear(connect);
-    await user.type(connect, "1.5");
-    await user.click(screen.getByRole("button", { name: "Save" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      /LLM connect timeout must be a whole number of seconds/,
-    );
-    expect(screen.queryByRole("alertdialog")).toBeNull();
-    expect(save).not.toHaveBeenCalled();
-
-    await user.clear(connect);
-    await user.type(connect, "0");
-    await user.click(screen.getByRole("button", { name: "Save" }));
-    await user.click(
-      await screen.findByRole("button", { name: "Save and restart" }),
-    );
-    expect(save.mock.calls[0][0]).toMatchObject({
-      llmTimeouts: { perAttemptSeconds: 0, streamIdleSeconds: 180 },
-    });
-  });
-
-  it("switches caching off, shows the ADR 0100 note, and sends promptCache.disabled", async () => {
-    const user = userEvent.setup();
-    render(
-      <DaemonDefaultsCard runtime={fakeRuntime()} defaults={fakeDefaults()} />,
-    );
-    await user.click(
-      screen.getByRole("switch", { name: "Provider-side prompt caching" }),
-    );
-    expect(screen.getByText(/ADR 0100/)).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Save" }));
-    await user.click(
-      await screen.findByRole("button", { name: "Save and restart" }),
-    );
-    expect(save.mock.calls[0][0]).toMatchObject({
-      promptCache: { disabled: true, anthropicTtl: "" },
-    });
-  });
-
-  it("refuses an invalid draft with the controller's message before any confirm", async () => {
-    const user = userEvent.setup();
-    render(
-      <DaemonDefaultsCard runtime={fakeRuntime()} defaults={fakeDefaults()} />,
-    );
-    const window = screen.getByRole("textbox", {
-      name: "Context window override",
-    });
-    await user.type(window, "-5");
-    await user.click(screen.getByRole("button", { name: "Save" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      /context window override must be a whole number/,
-    );
-    expect(screen.queryByRole("alertdialog")).toBeNull();
-    expect(save).not.toHaveBeenCalled();
-  });
-
-  it("edits the advanced knobs: a base-URL override, ToolHive, an alias and the credentials file", async () => {
-    const user = userEvent.setup();
-    render(
-      <DaemonDefaultsCard runtime={fakeRuntime()} defaults={fakeDefaults()} />,
-    );
-    const advanced = screen.getByRole("button", { name: "Advanced" });
-    expect(advanced).toHaveAttribute("aria-expanded", "false");
-    await user.click(advanced);
-    expect(advanced).toHaveAttribute("aria-expanded", "true");
-
-    await user.type(
-      screen.getByLabelText("OpenRouter base URL"),
-      "https://gw.example/v1",
-    );
-    await user.click(
-      screen.getByRole("switch", { name: /Detect the gateway/ }),
-    );
-    // The saved alias renders as a row; add a slot too.
-    expect(screen.getByDisplayValue("fast")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Add slot" }));
-    await user.type(screen.getByLabelText("Slot"), "compaction");
-    await user.type(screen.getByLabelText("Model or alias"), "fast");
-    await user.type(
-      screen.getByLabelText("Credentials file"),
-      "/home/op/.config/mecatl/team.yaml",
-    );
-    // Rule 3: nothing on this surface is password-shaped or key-named.
-    for (const input of document.querySelectorAll("input")) {
-      expect(input.getAttribute("type")).not.toBe("password");
-      expect(
-        `${input.getAttribute("id")} ${input.getAttribute("placeholder")}`,
-      ).not.toMatch(/secret|token|api[-_]?key(?!-file)/i);
-    }
-
-    await user.click(screen.getByRole("button", { name: "Save" }));
-    await user.click(
-      await screen.findByRole("button", { name: "Save and restart" }),
-    );
-    expect(save.mock.calls[0][0]).toMatchObject({
-      baseUrls: {
-        openrouter: "https://gw.example/v1",
-        openai: "",
-        anthropic: "",
-        opencode: "",
-      },
-      toolhive: { enabled: false, baseUrl: "", mode: "auto" },
-      aliases: { fast: "openai/gpt-4o-mini" },
-      slots: { compaction: "fast" },
-      apiKeyFile: "/home/op/.config/mecatl/team.yaml",
-    });
-  });
-
-  it("refuses the router slot with the Model router page's ownership message", async () => {
-    const user = userEvent.setup();
-    render(
-      <DaemonDefaultsCard runtime={fakeRuntime()} defaults={fakeDefaults()} />,
-    );
-    await user.click(screen.getByRole("button", { name: "Advanced" }));
-    await user.click(screen.getByRole("button", { name: "Add slot" }));
-    await user.type(screen.getByLabelText("Slot"), "router");
-    await user.type(screen.getByLabelText("Model or alias"), "fast");
-    await user.click(screen.getByRole("button", { name: "Save" }));
-    expect(await screen.findByRole("alert")).toHaveTextContent(
-      /owned by the Model router page/,
-    );
-    expect(save).not.toHaveBeenCalled();
-  });
-
-  it("Discard returns to the saved values and disables Save again", async () => {
-    const user = userEvent.setup();
-    render(
-      <DaemonDefaultsCard runtime={fakeRuntime()} defaults={fakeDefaults()} />,
-    );
-    await user.click(
-      screen.getByRole("switch", { name: "Provider-side prompt caching" }),
-    );
+    await user.click(screen.getByRole("combobox", { name: "Default model" }));
+    await user.click(await screen.findByRole("option", { name: "GPT-5" }));
     expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
     await user.click(screen.getByRole("button", { name: "Discard" }));
     expect(
-      screen.getByRole("switch", { name: "Provider-side prompt caching" }),
-    ).toBeChecked();
+      screen.getByRole("combobox", { name: "Default model" }),
+    ).toHaveTextContent("Claude");
     expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
   });
 
-  it("hides the model rows on the offline mock and explains why", () => {
+  it("shows a note instead of the picker while the agent is in offline mode", () => {
     render(
       <DaemonDefaultsCard
         runtime={fakeRuntime({
@@ -433,19 +279,16 @@ describe("DaemonDefaultsCard", () => {
         defaults={fakeDefaults()}
       />,
     );
+    expect(screen.queryByRole("combobox")).toBeNull();
     expect(
-      screen.queryByRole("combobox", { name: "Default model" }),
-    ).toBeNull();
-    expect(
-      screen.getByText(/set a provider as active above/),
+      screen.getByText(
+        "Set a provider as active above to choose its default model.",
+      ),
     ).toBeInTheDocument();
-    // The rest of the flags are still editable on the mock.
-    expect(
-      screen.getByRole("combobox", { name: "Default reasoning effort" }),
-    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
   });
 
-  it("surfaces the hook's error and notice, and shows Saving… while busy", () => {
+  it("surfaces the hook's error and shows Saving… while busy", () => {
     render(
       <DaemonDefaultsCard
         runtime={fakeRuntime()}
@@ -460,8 +303,8 @@ describe("DaemonDefaultsCard", () => {
     expect(screen.getByRole("button", { name: "Saving…" })).toBeDisabled();
   });
 
-  it("renders the managed note and no form in external mode", () => {
-    render(
+  it("renders nothing in external mode", () => {
+    const { container } = render(
       <DaemonDefaultsCard
         runtime={fakeRuntime({
           mode: "external",
@@ -470,11 +313,7 @@ describe("DaemonDefaultsCard", () => {
         defaults={fakeDefaults({ manageable: false, defaults: null })}
       />,
     );
-    expect(
-      screen.getByText(/Managed by the external mecated deployment/),
-    ).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
-    expect(document.querySelectorAll("input, textarea")).toHaveLength(0);
+    expect(container).toBeEmptyDOMElement();
   });
 
   it("renders the offline note when the runtime is unreachable", () => {
@@ -484,11 +323,13 @@ describe("DaemonDefaultsCard", () => {
         defaults={fakeDefaults()}
       />,
     );
-    expect(screen.getByText(/The runtime is offline/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/The agent is offline, so these settings/),
+    ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
   });
 
-  it("reports a controller that did not answer with defaults instead of inventing them", () => {
+  it("says the default model could not be read instead of inventing one", () => {
     render(
       <DaemonDefaultsCard
         runtime={fakeRuntime()}
@@ -496,7 +337,7 @@ describe("DaemonDefaultsCard", () => {
       />,
     );
     expect(
-      screen.getByText(/controller did not report its daemon defaults/),
+      screen.getByText("The default model could not be read right now."),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
   });
@@ -506,10 +347,11 @@ describe("draftFromDefaults / defaultsFromDraft", () => {
   it("round-trips the saved document for the active provider and keeps other providers' pairs", () => {
     const draft = draftFromDefaults(saved, "openrouter");
     expect(draft.defaultModel).toBe("anthropic/claude");
+    expect(draft.subagentModel).toBe("x/y");
     expect(draft.aliases).toEqual([
       { key: "fast", value: "openai/gpt-4o-mini" },
     ]);
-    expect(draft.contextWindowOverride).toBe("");
+    expect(draft.contextWindowOverride).toBe("32000");
     expect(defaultsFromDraft(draft, saved, "openrouter")).toEqual({
       ...saved,
       activeProvider: null,
@@ -530,7 +372,7 @@ describe("draftFromDefaults / defaultsFromDraft", () => {
     const document = defaultsFromDraft(
       {
         ...draft,
-        contextWindowOverride: " 32000 ",
+        contextWindowOverride: " 64000 ",
         aliases: [
           { key: "fast", value: "openai/gpt-4o-mini" },
           { key: "", value: "" },
@@ -539,13 +381,13 @@ describe("draftFromDefaults / defaultsFromDraft", () => {
       saved,
       null,
     );
-    expect(document.contextWindowOverride).toBe(32_000);
+    expect(document.contextWindowOverride).toBe(64_000);
     expect(document.aliases).toEqual({ fast: "openai/gpt-4o-mini" });
-    // A null kind (the mock) leaves every saved pair alone.
+    // A null kind (offline mode) leaves every saved pair alone.
     expect(document.models).toEqual(saved.models);
   });
 
-  it("renders the LLM timeouts as digit strings and reads a blanked field as mecated's default", () => {
+  it("renders the LLM timeouts as digit strings and reads a blanked field as the agent's default", () => {
     const draft = draftFromDefaults(
       {
         ...saved,
@@ -568,7 +410,7 @@ describe("draftFromDefaults / defaultsFromDraft", () => {
 });
 
 describe("modelDefaultsKind", () => {
-  it("is the active provider, the ToolHive fallback, and never the mock", () => {
+  it("is the active provider, the ToolHive fallback, and never the offline mode", () => {
     expect(modelDefaultsKind(controlStatus())).toBe("openrouter");
     expect(
       modelDefaultsKind(

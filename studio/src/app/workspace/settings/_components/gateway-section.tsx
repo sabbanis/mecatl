@@ -7,7 +7,9 @@ import { Label } from "@/components/ui/label";
 import type { useHarnessRuntime } from "@/features/agent/hooks/use-harness-runtime";
 import {
   ExternalManagedNote,
+  Note,
   OfflineNote,
+  RESTART_SENTENCE,
   SettingsCard,
   SettingsRow,
 } from "./settings-card";
@@ -18,10 +20,11 @@ type Runtime = ReturnType<typeof useHarnessRuntime>;
 const SUGGESTED_GATEWAY_URL = "https://connector-gateway.stacklok.dev/gw/mcp";
 
 /**
- * Connects an MCP gateway by name and URL. The URL is validated by the
- * controller (HTTPS only, no credentials in the URL), and its errors are
- * surfaced verbatim through the shared runtime error. Both connect paths
- * restart the daemon; a failed handshake rolls the previous gateway back.
+ * Connects an MCP gateway by name and address through its sign-in flow.
+ * The address is validated by the controller (HTTPS only, no credentials in
+ * the URL), and its errors are surfaced verbatim through the shared runtime
+ * error. Connecting restarts the daemon; a failed handshake rolls the
+ * previous gateway back.
  */
 export function GatewaySection({ runtime }: { runtime: Runtime }) {
   const [name, setName] = useState("");
@@ -49,18 +52,21 @@ export function GatewaySection({ runtime }: { runtime: Runtime }) {
   };
 
   const connectedRow = gateway ? (
-    <SettingsRow label="Connected as">
+    <SettingsRow label="Connected to">
       <div className="min-w-0 text-right">
         <p className="text-sm font-medium">{gateway.name}</p>
-        <code className="block max-w-72 break-all font-mono text-xs text-muted-foreground">
+        <p className="max-w-72 break-all text-xs text-muted-foreground">
           {gateway.url}
-        </code>
+        </p>
       </div>
     </SettingsRow>
   ) : null;
 
   return (
-    <SettingsCard title="MCP gateway">
+    <SettingsCard
+      title="MCP gateway"
+      description="Sign in to a gateway to give the agent its tools."
+    >
       {!runtime.live ? (
         <OfflineNote />
       ) : runtime.mode === "external" ? (
@@ -82,19 +88,18 @@ export function GatewaySection({ runtime }: { runtime: Runtime }) {
               value={name}
               onChange={(event) => setName(event.target.value)}
               placeholder="connector-gateway"
-              className="font-mono"
             />
           </div>
           <div className="flex flex-col gap-3">
-            <Label htmlFor="gw-url">Gateway URL</Label>
+            <Label htmlFor="gw-url">Gateway address</Label>
             <Input
               id="gw-url"
               value={url}
               onChange={(event) => setUrl(event.target.value)}
               placeholder={SUGGESTED_GATEWAY_URL}
-              className="font-mono"
             />
           </div>
+          <Note>{RESTART_SENTENCE}</Note>
           <Button
             type="button"
             variant="action"

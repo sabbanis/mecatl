@@ -17,10 +17,10 @@ import { cn } from "@/lib/utils";
  * tools panel so both surfaces say the same thing.
  */
 
-export const MCP_SOURCES_EMPTY_TEXT = "No MCP sources are configured.";
-export const MCP_SNAPSHOT_FOOTER =
+const MCP_SOURCES_EMPTY_TEXT = "No MCP sources are configured.";
+const MCP_SNAPSHOT_FOOTER =
   "Snapshot from daemon startup — servers started later won't appear until you refresh.";
-export const MCP_UPDATED_FOOTER = "Updated — live MCP source status.";
+const MCP_UPDATED_FOOTER = "Updated — live MCP source status.";
 const MCP_REFRESHING_FOOTER = "Refreshing…";
 
 /** The footer sentence for the current refresh state (the TUI's `mcpPanelFooter`). */

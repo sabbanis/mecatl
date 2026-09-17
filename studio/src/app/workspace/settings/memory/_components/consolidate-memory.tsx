@@ -29,9 +29,6 @@ import {
   type DreamReceipt,
   type DreamTarget,
   decideDreamPlan,
-  describeDreamDecisionPending,
-  describeDreamUnavailable,
-  describeStaleDreamPlan,
   dreamTargetCapability,
   generateDreamPlan,
   isDreamInProgress,
@@ -41,43 +38,51 @@ import {
 import { SettingsCard } from "../../_components/settings-card";
 
 /**
- * Manual memory consolidation (ADR 0227): the daemon curates a bounded merge
- * plan over its own memory store; the human applies or dismisses the WHOLE
- * plan. This stays inside memory rule 8 — Studio never composes memory
- * content, it only decides on what the daemon proposed.
- *
- * Parity with mecatui's /dream overlay:
- * - Generating (and regenerating) is confirmed first — it sends the memory to
- *   the model and spends tokens.
- * - A decision whose outcome is still open (`dream_in_progress`, or a dropped
- *   connection) locks the card to retrying the SAME decision: the daemon's
- *   decide is idempotent and answers the authoritative receipt. The opposite
- *   decision and a fresh plan stay unavailable until it settles.
- * - A plan that is no longer actionable (vanished, expired, a conflicting or
- *   terminal decision) clears with a "generate a new one" notice.
- * - Targets the daemon reports but cannot serve render disabled with the
- *   daemon's reason instead of being hidden.
+ * Consolidate memory: the agent suggests which of its memories to merge and
+ * the person applies or dismisses the WHOLE suggestion — Studio never
+ * composes memory content (memory rule 8). The calls are unchanged: generate
+ * a plan (confirmed first, because it runs the model), then decide on it
+ * once. A decision whose outcome is still open locks the card to retrying
+ * that SAME decision; a suggestion that is no longer valid clears with a
+ * "consolidate again" notice; a memory the agent cannot consolidate is
+ * offered disabled, not hidden. The agent's own reason categories are
+ * operator-facing and stay off the page.
  */
 
 const TARGET_LABELS: Record<DreamTarget, string> = {
-  user_model: "User model (facts about you)",
+  user_model: "Facts about you",
   project_memory: "Project memory",
 };
 
-const DECISION_RUNNING = "A decision on this plan is still running.";
+const STILL_WORKING =
+  "The agent is still working on that. Press Try again to see the result.";
+const NO_LONGER_VALID =
+  "That suggestion is no longer valid, so nothing changed. Consolidate again for a new one.";
+const CANNOT_SUGGEST =
+  "Consolidation isn't available for this memory right now.";
+const CANNOT_APPLY =
+  "Suggestions for this memory can be viewed but not applied.";
+const DECISION_RUNNING = "Waiting for the other decision to finish.";
 
-/** The receipt's one-line count summary — every bucket, planned first. */
+/** The result as one line: what merged, then anything left out. */
 export function describeDreamReceipt(receipt: DreamReceipt): string {
-  return `${receipt.planned} planned · ${receipt.applied} applied · ${receipt.conflicted} conflicted · ${receipt.skipped} skipped · ${receipt.failed} failed`;
+  const noun = receipt.planned === 1 ? "memory" : "memories";
+  const parts = [`${receipt.applied} of ${receipt.planned} ${noun} merged`];
+  if (receipt.conflicted > 0) parts.push(`${receipt.conflicted} left alone`);
+  if (receipt.skipped > 0) parts.push(`${receipt.skipped} skipped`);
+  if (receipt.failed > 0) parts.push(`${receipt.failed} failed`);
+  return parts.join(" · ");
 }
 
 const errorMessage = (caught: unknown) =>
   caught instanceof Error ? caught.message : String(caught);
 
-/** The daemon's disposition is the decision it took (`apply`/`dismiss`);
- *  a dismissal mutates nothing, so it carries no per-entry outcome notes. */
+/** A dismissal changes nothing, so it carries no per-memory outcome. */
 const isDismissed = (receipt: DreamReceipt) =>
   receipt.disposition === "dismiss" || receipt.disposition === "dismissed";
+
+const plural = (count: number, one: string, many: string) =>
+  `${count} ${count === 1 ? one : many}`;
 
 export function ConsolidateMemoryCard() {
   const { connected, serverCapabilities } = useRuntimeStatus();
@@ -85,7 +90,7 @@ export function ConsolidateMemoryCard() {
 
   const targets = useMemo(() => listDreamTargets(manualDream), [manualDream]);
 
-  // null = "not chosen": the first target that can generate, else the first.
+  // null = "not chosen": the first memory that can be consolidated, else the first.
   const [chosenTarget, setChosenTarget] = useState<DreamTarget | null>(null);
   const [plan, setPlan] = useState<DreamPlan | null>(null);
   const [receipt, setReceipt] = useState<DreamReceipt | null>(null);
@@ -101,7 +106,7 @@ export function ConsolidateMemoryCard() {
   const [confirmGenerate, setConfirmGenerate] = useState(false);
   const [confirmApply, setConfirmApply] = useState(false);
 
-  // Absent capability → the surface hides entirely (older/leaner daemon).
+  // Absent capability → the card hides entirely (an older agent).
   if (targets.length === 0) return null;
 
   const effectiveTarget: DreamTarget =
@@ -111,7 +116,6 @@ export function ConsolidateMemoryCard() {
           (candidate) => dreamTargetCapability(manualDream, candidate).generate,
         ) ?? targets[0]);
   const capability = dreamTargetCapability(manualDream, effectiveTarget);
-  const unavailable = describeDreamUnavailable(capability.unavailableReason);
 
   const generate = async () => {
     setConfirmGenerate(false);
@@ -141,16 +145,16 @@ export function ConsolidateMemoryCard() {
       setPendingDecision(null);
     } catch (caught) {
       if (isDreamInProgress(caught)) {
-        // Outcome still open: keep the plan, lock to this same decision.
+        // Outcome still open: keep the suggestion, lock to this same decision.
         setPendingDecision(decision);
-        setNotice(describeDreamDecisionPending(caught, decision));
+        setNotice(STILL_WORKING);
       } else if (isStaleDreamPlan(caught)) {
         // Vanished, expired, or a conflicting/terminal decision won.
         setPlan(null);
         setPendingDecision(null);
-        setNotice(describeStaleDreamPlan(caught));
+        setNotice(NO_LONGER_VALID);
       } else {
-        // Unknown failure: the plan stays reviewable; an already-open
+        // Unknown failure: the suggestion stays reviewable; an already-open
         // decision stays locked until a terminal answer arrives.
         setError(errorMessage(caught));
       }
@@ -159,25 +163,13 @@ export function ConsolidateMemoryCard() {
     }
   };
 
-  const generateBlocked = pendingDecision
-    ? "A decision on the current plan is still running — retry it first."
-    : capability.generate
-      ? undefined
-      : unavailable || "This daemon cannot generate plans for this memory.";
-  const generateLabel = isGenerating
-    ? "Generating…"
-    : plan
-      ? "Regenerate plan"
-      : "Generate plan";
-
+  const generateBlocked = capability.generate ? undefined : CANNOT_SUGGEST;
   const applyBlocked =
     pendingDecision === "dismiss"
       ? DECISION_RUNNING
       : capability.decide
         ? undefined
-        : unavailable
-          ? `This daemon does not permit applying plans: ${unavailable}`
-          : "This daemon does not permit applying plans.";
+        : CANNOT_APPLY;
   const dismissBlocked =
     pendingDecision === "apply" ? DECISION_RUNNING : undefined;
 
@@ -189,81 +181,72 @@ export function ConsolidateMemoryCard() {
   return (
     <SettingsCard
       title="Consolidate memory"
-      description="The daemon proposes merging duplicate or overlapping memories; nothing changes until you apply its plan."
+      description="Merge duplicate or overlapping memories. Nothing changes until you approve."
     >
       <div className="space-y-3">
-        <div className="flex flex-wrap items-center gap-2">
-          {targets.length > 1 ? (
-            <Select
-              value={effectiveTarget}
-              onValueChange={(value) => setChosenTarget(value as DreamTarget)}
-            >
-              <SelectTrigger
-                className="w-64"
-                aria-label="Memory to consolidate"
+        {!plan && (
+          <div className="flex flex-wrap items-center gap-2">
+            {targets.length > 1 ? (
+              <Select
+                value={effectiveTarget}
+                onValueChange={(value) => setChosenTarget(value as DreamTarget)}
               >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {targets.map((value) => {
-                  const targetCapability = dreamTargetCapability(
-                    manualDream,
-                    value,
-                  );
-                  const reason = describeDreamUnavailable(
-                    targetCapability.unavailableReason,
-                  );
-                  return (
-                    <SelectItem
-                      key={value}
-                      value={value}
-                      disabled={!targetCapability.generate}
-                      title={
-                        targetCapability.generate
-                          ? undefined
-                          : reason || undefined
-                      }
-                    >
-                      {TARGET_LABELS[value]}
-                      {!targetCapability.generate && " (unavailable)"}
-                    </SelectItem>
-                  );
-                })}
-              </SelectContent>
-            </Select>
-          ) : (
-            <span className="text-sm text-muted-foreground">
-              {TARGET_LABELS[effectiveTarget]}
-            </span>
-          )}
-          <Button
-            size="sm"
-            disabled={
-              !connected ||
-              isGenerating ||
-              isDeciding ||
-              Boolean(generateBlocked)
-            }
-            title={generateBlocked}
-            onClick={() => setConfirmGenerate(true)}
-          >
-            {generateLabel}
-          </Button>
-        </div>
+                <SelectTrigger
+                  className="w-56"
+                  aria-label="Memory to consolidate"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {targets.map((value) => {
+                    const canGenerate = dreamTargetCapability(
+                      manualDream,
+                      value,
+                    ).generate;
+                    return (
+                      <SelectItem
+                        key={value}
+                        value={value}
+                        disabled={!canGenerate}
+                      >
+                        {TARGET_LABELS[value]}
+                        {!canGenerate && " (unavailable)"}
+                      </SelectItem>
+                    );
+                  })}
+                </SelectContent>
+              </Select>
+            ) : (
+              <span className="text-sm text-muted-foreground">
+                {TARGET_LABELS[effectiveTarget]}
+              </span>
+            )}
+            <Button
+              size="sm"
+              disabled={
+                !connected ||
+                isGenerating ||
+                isDeciding ||
+                Boolean(generateBlocked)
+              }
+              title={generateBlocked}
+              onClick={() => setConfirmGenerate(true)}
+            >
+              {isGenerating ? "Reviewing…" : "Consolidate memory"}
+            </Button>
+          </div>
+        )}
         {(!capability.generate || !capability.decide) && (
           <p
             className="text-xs text-muted-foreground"
             data-testid="dream-unavailable"
           >
-            {capability.generate
-              ? "Plans can be generated but not applied here"
-              : "Plans cannot be generated for this memory"}
-            {unavailable ? `: ${unavailable}` : "."}
+            {capability.generate ? CANNOT_APPLY : CANNOT_SUGGEST}
           </p>
         )}
         {isGenerating && (
           <p className="text-xs text-muted-foreground">
-            The daemon is reviewing its memories — this can take a minute.
+            The agent is reviewing its memory. This can take a minute.
           </p>
         )}
         {notice && (
@@ -283,7 +266,7 @@ export function ConsolidateMemoryCard() {
         {plan && plan.operations.length === 0 && (
           <div className="flex flex-wrap items-center gap-3 rounded-lg border border-dashed px-4 py-3">
             <p className="text-sm text-muted-foreground">
-              Nothing to consolidate — this memory is already tidy.
+              Nothing to merge. Memory is already tidy.
             </p>
             <Button
               size="sm"
@@ -291,7 +274,7 @@ export function ConsolidateMemoryCard() {
               disabled={isDeciding}
               onClick={() => void decide("dismiss")}
             >
-              {pendingDecision === "dismiss" ? "Retry — fetch receipt" : "Done"}
+              {pendingDecision === "dismiss" ? "Try again" : "OK"}
             </Button>
           </div>
         )}
@@ -299,11 +282,13 @@ export function ConsolidateMemoryCard() {
         {plan && plan.operations.length > 0 && (
           <div className="space-y-3">
             <p className="text-sm" data-testid="dream-plan-summary">
-              {plan.plannedOperationCount} operation
-              {plan.plannedOperationCount === 1 ? "" : "s"} over{" "}
-              {plan.plannedSourceCount} memor
-              {plan.plannedSourceCount === 1 ? "y" : "ies"}. Review, then apply
-              or dismiss the whole plan.
+              {plural(
+                plan.plannedOperationCount,
+                "suggested change",
+                "suggested changes",
+              )}{" "}
+              across {plural(plan.plannedSourceCount, "memory", "memories")}.
+              Apply or dismiss them all together.
               {expiresIn && (
                 <span className="text-muted-foreground">
                   {" "}
@@ -343,7 +328,7 @@ export function ConsolidateMemoryCard() {
                       {operation.sources.length > 0 && (
                         <>
                           {" "}
-                          — absorbs{" "}
+                          and merges in{" "}
                           {operation.sources.map((source, i) => (
                             <span key={source.key} className="font-mono">
                               {i > 0 && ", "}
@@ -375,7 +360,7 @@ export function ConsolidateMemoryCard() {
                         {operation.sources.map((source) => (
                           <DreamParticipantDetail
                             key={source.key}
-                            label="Absorbs"
+                            label="Merges in"
                             participant={source}
                           />
                         ))}
@@ -396,9 +381,7 @@ export function ConsolidateMemoryCard() {
                     : setConfirmApply(true)
                 }
               >
-                {pendingDecision === "apply"
-                  ? "Retry apply — fetch receipt"
-                  : "Apply plan"}
+                {pendingDecision === "apply" ? "Try again" : "Apply"}
               </Button>
               <Button
                 size="sm"
@@ -407,9 +390,7 @@ export function ConsolidateMemoryCard() {
                 title={dismissBlocked}
                 onClick={() => void decide("dismiss")}
               >
-                {pendingDecision === "dismiss"
-                  ? "Retry dismiss — fetch receipt"
-                  : "Dismiss"}
+                {pendingDecision === "dismiss" ? "Try again" : "Dismiss"}
               </Button>
             </div>
           </div>
@@ -422,20 +403,19 @@ export function ConsolidateMemoryCard() {
           >
             <p>
               {isDismissed(receipt)
-                ? "Plan dismissed — nothing changed."
-                : `Applied: ${describeDreamReceipt(receipt)}.`}
+                ? "Dismissed. Nothing changed."
+                : `Done: ${describeDreamReceipt(receipt)}.`}
             </p>
             {!isDismissed(receipt) && receipt.conflicted > 0 && (
               <p>
-                Memory changed after the plan was generated; the conflicted
-                entries were left as they are — generate a new plan to review
-                them again.
+                Some memories changed while you were reviewing, so they were
+                left alone. Consolidate again to review them.
               </p>
             )}
             {!isDismissed(receipt) && receipt.failed > 0 && (
               <p>
-                Partial result: some entries failed to merge. The counts above
-                are the authoritative outcome.
+                Some memories couldn&apos;t be merged. The counts above are the
+                final result.
               </p>
             )}
           </div>
@@ -445,22 +425,16 @@ export function ConsolidateMemoryCard() {
       <AlertDialog open={confirmGenerate} onOpenChange={setConfirmGenerate}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>
-              {plan
-                ? "Regenerate the consolidation plan?"
-                : "Generate a consolidation plan?"}
-            </AlertDialogTitle>
+            <AlertDialogTitle>Consolidate memory?</AlertDialogTitle>
             <AlertDialogDescription>
-              The daemon asks the model to review this memory — it sends the
-              memory&apos;s full values and descriptions to the configured model
-              and spends tokens.
-              {plan && " The plan shown now is discarded."}
+              The agent reads everything it remembers and suggests which entries
+              to merge. Nothing changes until you approve.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={() => void generate()}>
-              {plan ? "Regenerate" : "Generate"}
+              Continue
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -469,11 +443,10 @@ export function ConsolidateMemoryCard() {
       <AlertDialog open={confirmApply} onOpenChange={setConfirmApply}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Apply the consolidation plan?</AlertDialogTitle>
+            <AlertDialogTitle>Apply these changes?</AlertDialogTitle>
             <AlertDialogDescription>
-              The daemon merges the listed memories exactly as shown. Absorbed
-              entries are replaced by their survivor; a memory that changed
-              since planning is skipped as conflicted, never overwritten.
+              The memories are merged exactly as shown. Anything that changed in
+              the meantime is left alone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -493,8 +466,8 @@ export function ConsolidateMemoryCard() {
   );
 }
 
-/** One participant's current stored value + description, as the daemon
- *  holds it now — what the operation keeps or absorbs. */
+/** One memory's current stored value and description — what the change
+ *  keeps or merges in. */
 function DreamParticipantDetail({
   label,
   participant,

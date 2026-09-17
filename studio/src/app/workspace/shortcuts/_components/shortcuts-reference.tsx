@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Kbd } from "@/components/ui/kbd";
 import { STUDIO_BUILTIN_COMMANDS } from "@/features/agent/composer-capabilities";
@@ -125,16 +124,6 @@ export function ShortcutsReference() {
         </section>
       </div>
 
-      <p className="text-xs text-muted-foreground">
-        Keys you have remapped are tagged &ldquo;custom&rdquo;.{" "}
-        <Link
-          href="/workspace/settings/keyboard"
-          className="font-medium text-foreground underline-offset-4 hover:underline"
-        >
-          Change shortcuts →
-        </Link>
-      </p>
-
       <section className={CARD_CLASS} aria-labelledby="daemon-features">
         <h2 id="daemon-features" className={CARD_HEADING_CLASS}>
           Features on this daemon
@@ -165,14 +154,14 @@ export function ShortcutsReference() {
             <p className="mt-4 text-xs text-muted-foreground">
               Rows describe the deployment as a whole; the open chat&rsquo;s
               model may still decline a media kind the deployment allows.
-              {deployment ? ` Deployment: ${deployment}.` : ""}
+              {deployment ? ` Agent: ${deployment}.` : ""}
             </p>
           </>
         ) : (
           <p className="text-sm text-muted-foreground">
             {state === "connecting"
-              ? "Checking which features the daemon enables…"
-              : "Connect to a daemon to see which features it enables."}
+              ? "Checking which features are turned on…"
+              : "Connect to an agent to see which features are turned on."}
           </p>
         )}
       </section>

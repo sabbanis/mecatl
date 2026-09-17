@@ -112,7 +112,7 @@ describe("useAgentChat on a refused credential", () => {
       await result.current.sendMessage("go");
     });
     await waitFor(() => expect(result.current.status).toBe("error"));
-    expect(result.current.error).toMatch(/^Session expired — /);
+    expect(result.current.error).toMatch(/^Sign-in expired — /);
     expect(result.current.error).toMatch(/Sign in again to reconnect/);
     expect(mocks.refreshRuntime).toHaveBeenCalledTimes(1);
     // The failed exchange is still a failed bubble with Retry available.
@@ -133,7 +133,7 @@ describe("useAgentChat on a refused credential", () => {
     });
     await waitFor(() => expect(result.current.status).toBe("error"));
     expect(result.current.error).toMatch(/^Credential rejected — /);
-    expect(result.current.error).toMatch(/MECATL_AUTH_TOKEN/);
+    expect(result.current.error).toMatch(/check its token or sign-in settings/);
     expect(mocks.refreshRuntime).toHaveBeenCalledTimes(1);
   });
 

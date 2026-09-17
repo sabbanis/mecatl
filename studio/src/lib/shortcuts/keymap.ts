@@ -1,18 +1,17 @@
 "use client";
 
-import { useCallback, useSyncExternalStore } from "react";
-import { comboFiresWhileTyping, SHORTCUTS, type ShortcutDef } from "./registry";
+import { useSyncExternalStore } from "react";
+import { SHORTCUTS, type ShortcutDef } from "./registry";
 
 /**
- * User-remappable shortcuts — the TUI's `keymap` setting, for the browser.
+ * The effective shortcut bindings, for the browser.
  *
  * The registry stays the source of truth for WHAT each shortcut does; this
  * module owns WHICH keys fire it. Overrides live in this browser's
- * localStorage (a keymap is a per-person UI preference, the same tier as the
- * UI scale or the Enter behaviour — not an operator `settings.yaml` knob), and
- * the dispatcher, the help reference and the ⌘K hint all read EFFECTIVE
- * bindings from here, so a remapped key is dispatched, documented and hinted
- * consistently.
+ * localStorage (a per-person UI preference, the same tier as the text size or
+ * the Enter behaviour), and the dispatcher, the help reference and the ⌘K
+ * hint all read EFFECTIVE bindings from here, so an override is dispatched,
+ * documented and hinted consistently.
  *
  * Reading is fail-safe: an unknown id, an invalid or browser-reserved combo,
  * or an override that would collide with another live shortcut is dropped, so
@@ -27,11 +26,6 @@ export type ShortcutBinding = ShortcutDef & {
   /** True when a user override (not the registry default) is in effect. */
   readonly custom: boolean;
 };
-
-export type BindingError =
-  | { reason: "invalid" }
-  | { reason: "reserved" }
-  | { reason: "collision"; withId: string; withDescription: string };
 
 /** True for rows a user may rebind: not documentation-only, not locked. */
 export function isRebindable(def: ShortcutDef): boolean {
@@ -142,46 +136,6 @@ export function normalizeCombo(input: string): string | null {
     .join("+");
 }
 
-/** `KeyboardEvent.key` values that are modifiers or non-keys: never a combo. */
-const NON_KEYS: ReadonlySet<string> = new Set([
-  "shift",
-  "meta",
-  "control",
-  "alt",
-  "altgraph",
-  "capslock",
-  "fn",
-  "fnlock",
-  "hyper",
-  "super",
-  "os",
-  "symbol",
-  "symbollock",
-  "numlock",
-  "scrolllock",
-  "dead",
-  "unidentified",
-]);
-
-/**
- * The combo a live key press records, for the Settings recorder. Null for a
- * modifier-only press (the user is still forming the chord) and while an IME
- * composition is in flight. `mod` is ⌘ or Ctrl, matching `matchCombo`.
- */
-export function comboFromKeyboardEvent(e: KeyboardEvent): string | null {
-  if (e.isComposing) return null;
-  const raw = e.key;
-  if (!raw) return null;
-  const lower = raw.toLowerCase();
-  if (NON_KEYS.has(lower)) return null;
-  const parts: string[] = [];
-  if (e.metaKey || e.ctrlKey) parts.push("mod");
-  if (e.shiftKey) parts.push("shift");
-  if (e.altKey) parts.push("alt");
-  parts.push(lower === " " ? "space" : lower);
-  return normalizeCombo(parts.join("+"));
-}
-
 /**
  * Combos a page handler can never own, so recording one would produce a
  * shortcut that silently never fires — or, worse, one that DOES fire and
@@ -192,7 +146,7 @@ export function comboFromKeyboardEvent(e: KeyboardEvent): string | null {
  * - DevTools chords on Windows/Linux (⌘⇧I/J/C never reach the page there);
  * - clipboard, undo, find, print, reload, location and save — every `mod`
  *   combo fires inside the composer too (`comboFiresWhileTyping`), so binding
- *   "New chat" to ⌘C would break copy app-wide with no way back but Settings;
+ *   "New chat" to ⌘C would break copy app-wide;
  * - bookmarks, history/hide, downloads, open, view-source, zoom and the
  *   ⌘1…⌘9 tab switches (not preventable in Chrome), ⌘⇧⌫ (clear browsing
  *   data — never reaches the page), ⌘⇧P (a private window in Firefox);
@@ -202,10 +156,9 @@ export function comboFromKeyboardEvent(e: KeyboardEvent): string | null {
  * - the native focus-movement and activation keys, which assistive
  *   technology and every focused control depend on.
  *
- * The wording the UI shows is deliberately "may never reach Studio": whether
- * a given chord is preventable differs by browser and OS, and a shortcut that
- * works on one machine and silently doesn't on another is worse than a
- * refused recording.
+ * Whether a given chord is preventable differs by browser and OS, and a
+ * shortcut that works on one machine and silently doesn't on another is
+ * worse than a refused override.
  */
 export const RESERVED_COMBOS: ReadonlySet<string> = new Set([
   // Window / tab lifecycle
@@ -276,58 +229,6 @@ export const RESERVED_COMBOS: ReadonlySet<string> = new Set([
   "enter",
   "space",
 ]);
-
-/**
- * A non-blocking caution for a combo that VALIDATES but has a catch worth
- * knowing before relying on it. Today there is one: a combo without `mod` (a
- * bare letter, symbol, arrow or function key) never fires while the caret is
- * in a text field — the dispatcher keeps typing plain
- * (`comboFiresWhileTyping`), which is the browser form of the TUI keymap's
- * "global actions require a modified chord so normal typing remains
- * available". The TUI refuses such a chord outright; Studio allows it, since
- * the suppression already protects typing, but says so — otherwise a
- * shortcut moved off a ⌘ chord would just stop working from the composer with
- * no explanation. Null when there is nothing to flag (or the combo is not
- * even valid — `validateBinding` owns that verdict).
- */
-export function bindingCaution(combo: string): string | null {
-  const canonical = normalizeCombo(combo);
-  if (!canonical || comboFiresWhileTyping(canonical)) return null;
-  return "Won't fire while typing in a text field — add ⌘ (Ctrl) to use it from the composer too.";
-}
-
-/**
- * Whether `combo` may become the binding for `id`, given the live bindings.
- * Collision scope is the whole app — any two dispatched shortcuts can be live
- * on the same page — so every non-`fixed` row counts, INCLUDING locked rows
- * such as `close.esc` (dispatched, just not rebindable). Documentation-only
- * (`fixed`) rows never reach the dispatcher, so they cannot collide.
- *
- * Two canonical combos collide exactly when they are EQUAL: `matchCombo`
- * treats a held shift on a letter or named key as a different chord (⌘⇧K is
- * not ⌘K), and a shifted symbol drops its `shift` at canonicalisation (`?`,
- * never `shift+?`), so no two distinct canonical combos share a key press.
- */
-export function validateBinding(
-  id: string,
-  combo: string,
-  bindings: readonly ShortcutBinding[],
-): BindingError | null {
-  const canonical = normalizeCombo(combo);
-  if (!canonical) return { reason: "invalid" };
-  if (RESERVED_COMBOS.has(canonical)) return { reason: "reserved" };
-  for (const b of bindings) {
-    if (b.id === id || b.fixed) continue;
-    if (b.effectiveCombo === canonical) {
-      return {
-        reason: "collision",
-        withId: b.id,
-        withDescription: b.description,
-      };
-    }
-  }
-  return null;
-}
 
 // ---------------------------------------------------------------------------
 // Overrides → effective bindings
@@ -518,55 +419,18 @@ function subscribe(callback: () => void): () => void {
 }
 
 /**
- * The effective shortcut bindings plus the mutators the Settings page needs.
- * Every mounted instance (the dispatcher, the help reference, the ⌘K hint,
- * the Settings rows) shares one store, so a change lands everywhere at once.
- * SSR renders the defaults and patches up after hydration.
+ * The effective shortcut bindings. Every mounted instance (the dispatcher,
+ * the help reference, the ⌘K hint) shares one store, so a change to the
+ * stored overrides lands everywhere at once. SSR renders the defaults and
+ * patches up after hydration.
  */
 export function useShortcutBindings(): {
   bindings: readonly ShortcutBinding[];
-  setBinding: (id: string, combo: string) => BindingError | null;
-  resetBinding: (id: string) => void;
-  resetAll: () => void;
-  hasOverrides: boolean;
 } {
   const snapshot = useSyncExternalStore(
     subscribe,
     getSnapshot,
     getServerSnapshot,
   );
-
-  const setBinding = useCallback(
-    (id: string, combo: string): BindingError | null => {
-      const def = DEFS_BY_ID.get(id);
-      if (!def || !isRebindable(def)) return { reason: "invalid" };
-      const current = getSnapshot();
-      const error = validateBinding(id, combo, current.bindings);
-      if (error) return error;
-      const canonical = normalizeCombo(combo);
-      if (!canonical) return { reason: "invalid" };
-      const next: Record<string, string> = { ...current.overrides };
-      if (canonical === def.combo) delete next[id];
-      else next[id] = canonical;
-      writeOverrides(next);
-      return null;
-    },
-    [],
-  );
-
-  const resetBinding = useCallback((id: string) => {
-    const next: Record<string, string> = { ...getSnapshot().overrides };
-    delete next[id];
-    writeOverrides(next);
-  }, []);
-
-  const resetAll = useCallback(() => writeOverrides({}), []);
-
-  return {
-    bindings: snapshot.bindings,
-    setBinding,
-    resetBinding,
-    resetAll,
-    hasOverrides: Object.keys(snapshot.overrides).length > 0,
-  };
+  return { bindings: snapshot.bindings };
 }

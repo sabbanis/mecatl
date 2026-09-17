@@ -99,7 +99,7 @@ export function useDaemonOptions() {
         // re-probe now so the capability-gated status lines and pages update
         // without waiting for the poll. Best-effort — the save stood.
         await refreshRuntime().catch(() => undefined);
-        setNotice("Saved. The daemon restarted with the new options.");
+        setNotice("Saved. The agent restarted.");
         return true;
       } catch (caught) {
         const message =

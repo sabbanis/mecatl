@@ -100,7 +100,7 @@ describe("AuthRecoveryBanner", () => {
     const open = vi.spyOn(window, "open").mockImplementation(() => null);
     render(<AuthRecoveryBanner cause={sessionExpired} onRetry={vi.fn()} />);
 
-    expect(screen.getByRole("alert")).toHaveTextContent("Session expired");
+    expect(screen.getByRole("alert")).toHaveTextContent("Sign-in expired");
     const button = await screen.findByRole("button", {
       name: "Sign in again",
     });
@@ -146,7 +146,7 @@ describe("AuthRecoveryBanner", () => {
       <AuthRecoveryBanner cause={credentialRejected} onRetry={vi.fn()} />,
     );
     expect(screen.getByRole("alert")).toHaveTextContent("Credential rejected");
-    expect(screen.getByRole("alert")).toHaveTextContent(/MECATL_AUTH_TOKEN/);
+    expect(screen.getByRole("alert")).toHaveTextContent(/check its token or sign-in settings/);
     await screen.findByText("https://idp.example.com/realms/mecatl");
     expect(
       screen.queryByRole("button", { name: /Sign in/ }),
@@ -223,7 +223,7 @@ describe("AuthRecoveryBanner", () => {
         mode="external"
       />,
     );
-    expect(screen.getByRole("alert")).toHaveTextContent(/MECATL_AUTH_TOKEN/);
+    expect(screen.getByRole("alert")).toHaveTextContent(/check its token or sign-in settings/);
     expect(
       screen.getByRole("link", { name: "Open sign-in settings" }),
     ).toHaveAttribute("href", SIGN_IN_SETTINGS_HREF);
@@ -252,7 +252,7 @@ describe("AuthRecoveryBanner", () => {
     expect(alert).toHaveTextContent("Credential rejected");
     expect(alert).toHaveTextContent(MANAGED_CREDENTIAL_REMEDY);
     // The external-mode env remediation would mislead here.
-    expect(alert).not.toHaveTextContent(/MECATL_AUTH_TOKEN/);
+    expect(alert).not.toHaveTextContent(/check its token or sign-in settings/);
     // The provider page mounts no sign-in card in managed mode: no link to it.
     expect(
       screen.queryByRole("link", { name: "Open sign-in settings" }),

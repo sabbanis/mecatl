@@ -68,28 +68,6 @@ export function formatDurationMs(ms: number): string {
   return `${seconds}s`;
 }
 
-/**
- * A retention span in whole seconds, humanised to its two largest units
- * ("7d", "1d 12h", "1h 30m", "45s"); 0 reads "0s". The daemon reports
- * retention ages and the sweep cadence in seconds, so the unit ladder is
- * d/h/m/s. Negatives and non-finite values clamp to "0s".
- */
-export function formatDuration(seconds: number): string {
-  const total =
-    Number.isFinite(seconds) && seconds > 0 ? Math.round(seconds) : 0;
-  if (total === 0) return "0s";
-  const parts: string[] = [];
-  const days = Math.floor(total / 86_400);
-  const hours = Math.floor((total % 86_400) / 3600);
-  const minutes = Math.floor((total % 3600) / 60);
-  const secs = total % 60;
-  if (days) parts.push(`${days}d`);
-  if (hours) parts.push(`${hours}h`);
-  if (minutes) parts.push(`${minutes}m`);
-  if (secs) parts.push(`${secs}s`);
-  return parts.slice(0, 2).join(" ");
-}
-
 const BYTE_UNITS = ["B", "KB", "MB", "GB", "TB", "PB"];
 
 /**

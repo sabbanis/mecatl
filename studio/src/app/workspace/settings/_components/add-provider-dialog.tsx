@@ -11,7 +11,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
   Select,
@@ -20,260 +19,72 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { CustomProviderSaveResult } from "@/features/agent/hooks/use-provider-management";
-import { BASE_URL_KINDS } from "@/lib/daemon-defaults.mjs";
 import type {
-  HarnessCustomProviderDefinition,
   HarnessProviderInfo,
   KnownHarnessProvider,
 } from "@/lib/harness/client";
-import {
-  CUSTOM_PROVIDER_API_FLAVORS,
-  customProviderAuthSnippet,
-  customProviderSettingsSnippet,
-  providerOverrideSnippet,
-  validCustomProviderBaseURL,
-  validCustomProviderId,
-} from "@/lib/provider-auth.mjs";
-
-/** The synthetic Select value for the custom-gateway flow — double
- *  underscores keep it outside the daemon's provider-id grammar, so it can
- *  never collide with a real kind. */
-const CUSTOM_KIND = "__custom__";
-
-/** Human labels for the daemon's closed api_flavor enum (ADR 0238). */
-const FLAVOR_LABELS: Record<string, string> = {
-  "openai-responses": "OpenAI Responses",
-  "openai-chat-completions": "OpenAI Chat Completions",
-  "anthropic-messages": "Anthropic Messages",
-};
+import { RESTART_SENTENCE } from "./settings-card";
 
 /**
  * Guided provider add, with deliberately NO key input anywhere (Studio rule
- * 3: credentials never cross the browser/controller boundary): pick a kind,
- * copy the exact snippet — `<YOUR_KEY>` placeholder and all — into the file
- * on the daemon's machine, then Re-check reads the inventory back through
- * the controller and offers the restart that makes mecated see it.
- *
- * Two flows share that shape:
- * - a BUILT-IN kind copies one auth.yaml block;
- * - "Custom gateway" (ADR 0238: an operator-defined provider) collects the
- *   NON-secret definition — id, API flavor, base URL, default model, auth
- *   method. With `saveDefinition` wired (managed mode, no imported operator
- *   settings file) a primary "Save definition" has the controller WRITE the
- *   settings `providers:` entry — the TUI's `providers add` — with the YAML
- *   behind a "Show YAML" disclosure; otherwise the entry is a copyable
- *   snippet as before. For api_key auth the auth.yaml key block follows
- *   either way. The id/URL/model fields hold identifiers, never
- *   credentials; the key still travels only by hand into auth.yaml.
+ * 3: credentials never cross the browser/controller boundary): pick a
+ * provider, copy the exact snippet — `<YOUR_KEY>` placeholder and all —
+ * into the agent's own key file, then Re-check reads the inventory back
+ * through the server and offers the restart that makes the agent see it.
  */
 export function AddProviderDialog({
   known,
   configured,
   authFile,
-  settingsFile,
-  operatorSettings,
   reload,
   restartDaemon,
   restarting,
-  savedBaseUrls,
-  saveBaseURL,
-  savingBaseURL = false,
-  saveDefinition,
-  savingDefinition = false,
-  initialKind = "",
-  openSignal = 0,
 }: {
   known: KnownHarnessProvider[];
   configured: string[];
-  /** Writes a custom provider's NON-secret definition into the daemon's
-   *  user-global settings.yaml through the controller (RESTARTS the daemon
-   *  for a keyless provider). Managed mode only; absent = copy-only. Not
-   *  used while `operatorSettings` is true: the controller refuses then. */
-  saveDefinition?: (
-    definition: HarnessCustomProviderDefinition,
-  ) => Promise<CustomProviderSaveResult>;
-  savingDefinition?: boolean;
-  /** The kind to PRESELECT when the dialog is opened from outside (an
-   *  "Available kinds" row); "" starts on the chooser. Read only when
-   *  `openSignal` changes. */
-  initialKind?: string;
-  /** Bumping this counter opens the dialog preselected on `initialKind` —
-   *  the section's unconfigured-kind rows drive it; the built-in trigger
-   *  button still opens a blank chooser. 0 = never requested. */
-  openSignal?: number;
-  /** The auth.yaml path on the controller's machine (from /status). */
+  /** The key file's path on the agent's machine (from /status). */
   authFile: string;
-  /** Where a `provider_overrides:` / `providers:` block lands (from
-   *  /status.settingsFile); derived from authFile when absent. */
-  settingsFile?: string;
-  /** True when an imported operator-settings.yaml drives the daemon — its
-   *  providers: section, if any, wins over the user-global settings file. */
-  operatorSettings: boolean;
   /** Re-reads the inventory; resolves to the fresh rows. */
   reload: () => Promise<HarnessProviderInfo[]>;
-  /** Restarts the daemon so the new block takes effect. */
+  /** Restarts the agent so the new key takes effect. */
   restartDaemon: () => Promise<void>;
   restarting: boolean;
-  /** The base-URL overrides already saved as daemon defaults, by kind. */
-  savedBaseUrls?: Record<string, string>;
-  /** Saves one kind's base-URL override as the `--<kind>-base-url` spawn
-   *  flag (RESTARTS the daemon). Managed mode only; absent = copy-only. */
-  saveBaseURL?: (kind: string, url: string) => Promise<boolean>;
-  savingBaseURL?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [kind, setKind] = useState("");
-  const [copied, setCopied] = useState("");
+  const [copied, setCopied] = useState(false);
   const [checking, setChecking] = useState(false);
   const [checked, setChecked] = useState<"appeared" | "missing" | null>(null);
 
-  // The custom-gateway definition (non-secret by construction).
-  const [customId, setCustomId] = useState("");
-  const [customFlavor, setCustomFlavor] = useState(
-    CUSTOM_PROVIDER_API_FLAVORS[0],
-  );
-  const [customBaseURL, setCustomBaseURL] = useState("");
-  const [customModel, setCustomModel] = useState("");
-  const [customAuth, setCustomAuth] = useState<"api_key" | "none">("api_key");
-  // The controller's answer once the definition was WRITTEN (null until
-  // then); a refused write's reason renders in place, inside the dialog.
-  const [definitionSaved, setDefinitionSaved] =
-    useState<CustomProviderSaveResult | null>(null);
-  const [saveError, setSaveError] = useState("");
-  // Optional base-URL override for a BUILT-IN provider (provider_overrides).
-  const [overrideURL, setOverrideURL] = useState("");
-  // Whether the override was just SAVED as a spawn flag (managed mode).
-  const [overrideSaved, setOverrideSaved] = useState(false);
-
   const selected = known.find((provider) => provider.name === kind) ?? null;
-  const isCustom = kind === CUSTOM_KIND;
   const alreadyConfigured = new Set(configured);
-  const path = authFile || "~/.config/mecatl/auth.yaml";
-  // The controller reports where a settings block lands (/status
-  // .settingsFile — the imported operator file when active). The suffix
-  // derivation is only the fallback for an older controller: the auth file
-  // can now be any .yaml under the config dir (--api-key-file), so its name
-  // no longer implies the settings file's.
-  const settingsPath =
-    settingsFile ||
-    (path.endsWith("auth.yaml")
-      ? `${path.slice(0, -"auth.yaml".length)}settings.yaml`
-      : "~/.config/mecatl/settings.yaml");
-
-  const customIdValid = validCustomProviderId(customId);
-  const customURLValid = validCustomProviderBaseURL(customBaseURL);
-  const customModelValid = customModel.trim() !== "";
-  const customComplete = customIdValid && customURLValid && customModelValid;
-  const customTaken = customIdValid && alreadyConfigured.has(customId);
-  const targetName = isCustom ? customId : (selected?.name ?? "");
-  const targetLabel = isCustom
-    ? customId || "the custom provider"
-    : (selected?.label ?? "");
-
-  const settingsSnippet = customComplete
-    ? customProviderSettingsSnippet({
-        id: customId,
-        baseURL: customBaseURL.trim(),
-        defaultModel: customModel.trim(),
-        apiFlavor: customFlavor,
-        authMethod: customAuth,
-      })
-    : "";
-  const authSnippet = customComplete ? customProviderAuthSnippet(customId) : "";
-  const overrideSnippet = selected
-    ? providerOverrideSnippet(selected.name, overrideURL)
-    : "";
-
-  /** Resets every step to a fresh dialog, starting on `nextKind` ("" =
-   *  the chooser). */
-  function resetForm(nextKind: string) {
-    setKind(nextKind);
-    setCopied("");
-    setChecked(null);
-    setCustomId("");
-    setCustomFlavor(CUSTOM_PROVIDER_API_FLAVORS[0]);
-    setCustomBaseURL("");
-    setCustomModel("");
-    setCustomAuth("api_key");
-    setDefinitionSaved(null);
-    setSaveError("");
-    setOverrideURL("");
-    setOverrideSaved(false);
-  }
-
-  // The controller writes the definition only in managed mode and never
-  // while an imported operator settings file is active (it answers 409:
-  // that CLI-tier file wins the whole providers: section when it has one),
-  // so the dialog falls back to the copyable snippet there.
-  const canSaveDefinition = Boolean(saveDefinition) && !operatorSettings;
-  const definition: HarnessCustomProviderDefinition = {
-    id: customId,
-    apiFlavor: customFlavor,
-    baseURL: customBaseURL.trim(),
-    defaultModel: customModel.trim(),
-    authMethod: customAuth,
-  };
-
-  async function saveCustomDefinition() {
-    if (!saveDefinition || !customComplete || customTaken) return;
-    setSaveError("");
-    const result = await saveDefinition(definition);
-    if (result.ok) {
-      setDefinitionSaved(result);
-      if (result.error) setSaveError(result.error);
-    } else {
-      setSaveError(result.error || "The controller refused the definition.");
-    }
-  }
-  // A keyless definition is complete on write and the daemon restarted
-  // with it: nothing left to re-check or restart.
-  const finished = definitionSaved?.restarted === true;
 
   function handleOpenChange(next: boolean) {
     setOpen(next);
-    if (next) resetForm("");
-  }
-
-  // An outside open request (an "Available kinds" row): open preselected on
-  // `initialKind` once per `openSignal` bump. Derived-state pattern — the
-  // previous signal is remembered in state and compared during render, so
-  // the request is honoured exactly once with no effect.
-  const [seenOpenSignal, setSeenOpenSignal] = useState(openSignal);
-  if (openSignal !== seenOpenSignal) {
-    setSeenOpenSignal(openSignal);
-    if (openSignal > 0) {
-      resetForm(
-        known.some((provider) => provider.name === initialKind)
-          ? initialKind
-          : "",
-      );
-      setOpen(true);
+    if (next) {
+      setKind("");
+      setCopied(false);
+      setChecked(null);
     }
   }
 
-  async function copyText(which: string, text: string) {
+  async function copySnippet(text: string) {
     try {
       await navigator.clipboard.writeText(text);
-      setCopied(which);
-      setTimeout(() => setCopied(""), 2_000);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2_000);
     } catch {
       // Clipboard unavailable — the block is selectable text either way.
     }
   }
 
   async function recheck() {
-    if (!targetName) return;
+    if (!selected) return;
     setChecking(true);
     try {
       const rows = await reload();
-      // A custom api_key provider lists as soon as its DEFINITION is saved,
-      // so "appeared" there means its key landed in auth.yaml too.
-      const needsKey = isCustom && customAuth === "api_key";
       setChecked(
-        rows.some(
-          (row) => row.name === targetName && (!needsKey || row.keyPresent),
-        )
+        rows.some((row) => row.name === selected.name && row.keyPresent)
           ? "appeared"
           : "missing",
       );
@@ -281,8 +92,6 @@ export function AddProviderDialog({
       setChecking(false);
     }
   }
-
-  const showSteps = selected !== null || (isCustom && customComplete);
 
   return (
     <>
@@ -300,8 +109,8 @@ export function AddProviderDialog({
           <DialogHeader className="text-left">
             <DialogTitle>Add a provider</DialogTitle>
             <DialogDescription>
-              Studio never handles API keys — you add the key to the
-              daemon&rsquo;s own config file in three quick steps.
+              Studio never sees your key. You add it to the agent&rsquo;s own
+              key file in three quick steps.
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-5">
@@ -316,11 +125,11 @@ export function AddProviderDialog({
                 onValueChange={(next) => {
                   setKind(next);
                   setChecked(null);
-                  setCopied("");
+                  setCopied(false);
                 }}
               >
                 <SelectTrigger id="add-provider-kind" className="w-full">
-                  <SelectValue placeholder="Choose a provider kind…" />
+                  <SelectValue placeholder="Choose a provider…" />
                 </SelectTrigger>
                 <SelectContent>
                   {known.map((provider) => (
@@ -331,377 +140,50 @@ export function AddProviderDialog({
                     >
                       {provider.label}
                       {alreadyConfigured.has(provider.name) &&
-                        " (already configured)"}
+                        " (already added)"}
                     </SelectItem>
                   ))}
-                  <SelectItem value={CUSTOM_KIND}>
-                    Custom gateway (OpenAI/Anthropic-compatible)
-                  </SelectItem>
                 </SelectContent>
               </Select>
             </div>
 
-            {isCustom && (
-              <div className="flex flex-col gap-3">
-                <p className="text-sm font-medium">
-                  Describe the gateway
-                  <span className="block text-xs font-normal text-muted-foreground">
-                    The definition is not a secret — it names the endpoint and
-                    wire protocol. Any API key is still added by hand, in the
-                    next step.
-                  </span>
-                </p>
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="custom-provider-id">Provider id</Label>
-                  <Input
-                    id="custom-provider-id"
-                    placeholder="my-gateway"
-                    autoComplete="off"
-                    spellCheck={false}
-                    value={customId}
-                    onChange={(event) => {
-                      setCustomId(event.target.value.trim());
-                      setChecked(null);
-                    }}
-                  />
-                  {customId !== "" && !customIdValid && (
-                    <p className="text-xs text-destructive">
-                      Lower-case letters, digits, and hyphens (start with a
-                      letter, max 63 characters); built-in names like
-                      &ldquo;openai&rdquo; are reserved.
-                    </p>
-                  )}
-                  {customTaken && (
-                    <p className="text-xs text-destructive">
-                      A provider named &ldquo;{customId}&rdquo; is already
-                      configured.
-                    </p>
-                  )}
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="custom-provider-flavor">API flavor</Label>
-                  <Select
-                    value={customFlavor}
-                    onValueChange={(next) => {
-                      setCustomFlavor(next);
-                      setChecked(null);
-                    }}
-                  >
-                    <SelectTrigger
-                      id="custom-provider-flavor"
-                      className="w-full"
-                    >
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {CUSTOM_PROVIDER_API_FLAVORS.map((flavor: string) => (
-                        <SelectItem key={flavor} value={flavor}>
-                          {FLAVOR_LABELS[flavor] ?? flavor}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="custom-provider-url">Base URL</Label>
-                  <Input
-                    id="custom-provider-url"
-                    placeholder="https://gateway.example.com/v1"
-                    autoComplete="off"
-                    spellCheck={false}
-                    value={customBaseURL}
-                    onChange={(event) => {
-                      setCustomBaseURL(event.target.value);
-                      setChecked(null);
-                    }}
-                  />
-                  {customBaseURL !== "" && !customURLValid && (
-                    <p className="text-xs text-destructive">
-                      An HTTPS URL without credentials, query, or fragment.
-                    </p>
-                  )}
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="custom-provider-model">Default model</Label>
-                  <Input
-                    id="custom-provider-model"
-                    placeholder="the model id the gateway serves"
-                    autoComplete="off"
-                    spellCheck={false}
-                    value={customModel}
-                    onChange={(event) => {
-                      setCustomModel(event.target.value);
-                      setChecked(null);
-                    }}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Required by the daemon — the model used when a session does
-                    not pick one.
-                  </p>
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="custom-provider-auth">Authentication</Label>
-                  <Select
-                    value={customAuth}
-                    onValueChange={(next) => {
-                      setCustomAuth(next === "none" ? "none" : "api_key");
-                      setChecked(null);
-                    }}
-                  >
-                    <SelectTrigger id="custom-provider-auth" className="w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="api_key">
-                        API key (added to auth.yaml by hand)
-                      </SelectItem>
-                      <SelectItem value="none">
-                        None (the gateway needs no key)
-                      </SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-            )}
-
-            {isCustom && customComplete && !customTaken && (
-              <>
-                <div className="flex flex-col gap-3">
-                  {canSaveDefinition && definitionSaved ? (
-                    <p className="text-sm">
-                      Definition saved ✓ to{" "}
-                      <code className="font-mono">{settingsPath}</code>
-                      {definitionSaved.restarted
-                        ? " — the daemon restarted with it."
-                        : "."}
-                    </p>
-                  ) : canSaveDefinition ? (
-                    <>
-                      <p className="text-sm font-medium">
-                        2. Save the definition
-                        <span className="block text-xs font-normal text-muted-foreground">
-                          Studio writes this{" "}
-                          <code className="font-mono">providers:</code> entry
-                          into <code className="font-mono">{settingsPath}</code>{" "}
-                          on the daemon&rsquo;s machine — it names the endpoint
-                          and wire protocol, never a key.{" "}
-                          {customAuth === "none"
-                            ? "The daemon restarts so the gateway is selectable right away."
-                            : "The daemon restarts after the key is in place (next step)."}
-                        </span>
-                      </p>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Button
-                          size="sm"
-                          variant="action"
-                          className="rounded-full"
-                          disabled={savingDefinition}
-                          onClick={() => void saveCustomDefinition()}
-                        >
-                          {savingDefinition ? "Saving…" : "Save definition"}
-                        </Button>
-                        <details className="text-xs">
-                          <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
-                            Show YAML
-                          </summary>
-                          <div className="pt-2">
-                            <CopyableSnippet
-                              text={settingsSnippet}
-                              copied={copied === "settings"}
-                              onCopy={() =>
-                                void copyText("settings", settingsSnippet)
-                              }
-                            />
-                          </div>
-                        </details>
-                      </div>
-                    </>
-                  ) : (
-                    <>
-                      <p className="text-sm font-medium">
-                        2. Add this to the operator settings
-                        <span className="block text-xs font-normal text-muted-foreground">
-                          Paste the block into{" "}
-                          <code className="font-mono">{settingsPath}</code>{" "}
-                          (merge it under an existing{" "}
-                          <code className="font-mono">providers:</code> key if
-                          one exists).
-                          {operatorSettings &&
-                            " Studio does not write the settings file while an imported operator settings file is active — and if that file already defines a providers: section, add the entry THERE instead: it wins the whole section."}
-                        </span>
-                      </p>
-                      <CopyableSnippet
-                        text={settingsSnippet}
-                        copied={copied === "settings"}
-                        onCopy={() =>
-                          void copyText("settings", settingsSnippet)
-                        }
-                      />
-                    </>
-                  )}
-                  {saveError && (
-                    <p
-                      role="alert"
-                      className="whitespace-pre-wrap text-xs text-destructive"
-                    >
-                      {saveError}
-                    </p>
-                  )}
-                </div>
-                {customAuth === "api_key" && (
-                  <div className="flex flex-col gap-3">
-                    <p className="text-sm font-medium">
-                      3. Add the key to the credentials file
-                      <span className="block text-xs font-normal text-muted-foreground">
-                        Paste into <code className="font-mono">{path}</code>{" "}
-                        under its <code className="font-mono">providers:</code>{" "}
-                        key, and swap{" "}
-                        <code className="font-mono">&lt;YOUR_KEY&gt;</code> for
-                        your real key.
-                      </span>
-                    </p>
-                    <CopyableSnippet
-                      text={authSnippet}
-                      copied={copied === "auth"}
-                      onCopy={() => void copyText("auth", authSnippet)}
-                    />
-                  </div>
-                )}
-              </>
-            )}
-
             {selected && (
               <div className="flex flex-col gap-3">
                 <p className="text-sm font-medium">
-                  2. Add this to the config file
+                  2. Add this to the agent&rsquo;s key file
                   <span className="block text-xs font-normal text-muted-foreground">
                     {selected.note} Paste the snippet into{" "}
-                    <code className="font-mono">{path}</code> under its{" "}
-                    <code className="font-mono">providers:</code> key, and swap{" "}
-                    <code className="font-mono">&lt;YOUR_KEY&gt;</code> for your
-                    real key.
+                    {authFile ? (
+                      <code className="font-mono">{authFile}</code>
+                    ) : (
+                      "the agent’s key file (the person who set up the agent knows where it is)"
+                    )}{" "}
+                    under <code className="font-mono">providers:</code>, and
+                    replace <code className="font-mono">&lt;YOUR_KEY&gt;</code>{" "}
+                    with your key.
                   </span>
                 </p>
                 <CopyableSnippet
                   text={selected.snippet}
-                  copied={copied === "known"}
-                  onCopy={() => void copyText("known", selected.snippet)}
+                  copied={copied}
+                  onCopy={() => void copySnippet(selected.snippet)}
                 />
-                {/* provider_overrides (ADR 0238): route this built-in through
-                    a gateway/proxy without redefining it — optional, and a
-                    settings.yaml (operator-tier) block, unlike the key. */}
-                <div className="flex flex-col gap-3 pt-1">
-                  <Label htmlFor="add-provider-override">
-                    Route through a gateway
-                    <span className="block text-xs font-normal text-muted-foreground">
-                      Optional. A base-URL override sends {selected.label}
-                      &nbsp;traffic through your proxy or gateway.
-                    </span>
-                  </Label>
-                  <Input
-                    id="add-provider-override"
-                    value={overrideURL}
-                    onChange={(event) => {
-                      setOverrideURL(event.target.value);
-                      setOverrideSaved(false);
-                    }}
-                    placeholder="https://gateway.example/v1"
-                    autoComplete="off"
-                    spellCheck={false}
-                  />
-                  {selected && savedBaseUrls?.[selected.name] && (
-                    <p className="text-xs text-muted-foreground">
-                      Saved override in effect:{" "}
-                      <code className="font-mono">
-                        {savedBaseUrls[selected.name]}
-                      </code>{" "}
-                      (Daemon defaults → Advanced clears it).
-                    </p>
-                  )}
-                  {overrideSnippet && (
-                    <>
-                      {saveBaseURL &&
-                        BASE_URL_KINDS.includes(selected.name) &&
-                        (overrideSaved ? (
-                          <p className="text-sm">
-                            Override saved ✓ — the daemon restarted with{" "}
-                            <code className="font-mono">
-                              --{selected.name}-base-url
-                            </code>
-                            .
-                          </p>
-                        ) : (
-                          <div className="flex flex-wrap items-center gap-2">
-                            <Button
-                              size="sm"
-                              variant="action"
-                              className="rounded-full"
-                              disabled={savingBaseURL}
-                              onClick={async () => {
-                                const ok = await saveBaseURL(
-                                  selected.name,
-                                  overrideURL.trim(),
-                                );
-                                setOverrideSaved(ok);
-                              }}
-                            >
-                              {savingBaseURL
-                                ? "Saving…"
-                                : "Save override (restarts the daemon)"}
-                            </Button>
-                            <span className="text-xs text-muted-foreground">
-                              Saved as a spawn flag — no settings.yaml edit
-                              needed. Or paste the snippet below instead:
-                            </span>
-                          </div>
-                        ))}
-                      <p className="text-xs text-muted-foreground">
-                        Add to <code className="font-mono">{settingsPath}</code>
-                        {operatorSettings &&
-                          " — or the imported operator settings file, which wins the whole section"}
-                        :
-                      </p>
-                      <CopyableSnippet
-                        text={overrideSnippet}
-                        copied={copied === "override"}
-                        onCopy={() =>
-                          void copyText("override", overrideSnippet)
-                        }
-                      />
-                    </>
-                  )}
-                </div>
               </div>
             )}
 
-            {finished && (
-              <p className="text-sm">
-                <span className="font-medium">{targetLabel}</span> is ready —
-                set it as active from its row to use it.
-              </p>
-            )}
-            {showSteps &&
-              !customTaken &&
-              !finished &&
+            {selected &&
               (checked === "appeared" ? (
                 <p className="text-sm">
-                  <span className="font-medium">{targetLabel}</span> found ✓ —
-                  restart the daemon to start using it. In-flight runs end with
-                  the restart.
+                  <span className="font-medium">{selected.label}</span> found.{" "}
+                  {RESTART_SENTENCE}
                 </p>
               ) : (
                 <p className="text-sm font-medium">
-                  {isCustom && customAuth === "api_key" ? "4" : "3"}. Save the
-                  file
-                  {isCustom && customAuth === "api_key" && !definitionSaved
-                    ? "s"
-                    : ""}
-                  , then Re-check
+                  3. Save the file, then re-check
                   {checked === "missing" && (
                     <span className="block text-xs font-normal text-muted-foreground">
-                      {definitionSaved
-                        ? "The key is not in auth.yaml yet — save the file on the daemon's machine, then try again."
-                        : "Not found yet — make sure the file is saved on the daemon's machine, then try again."}
+                      Not found yet. Save the file on the agent&rsquo;s
+                      computer, then try again.
                     </span>
                   )}
                 </p>
@@ -715,20 +197,17 @@ export function AddProviderDialog({
             >
               Done
             </Button>
-            {showSteps &&
-              !customTaken &&
-              !finished &&
-              checked !== "appeared" && (
-                <Button
-                  variant="action"
-                  className="rounded-full"
-                  disabled={checking}
-                  onClick={() => void recheck()}
-                >
-                  {checking ? "Checking…" : "Re-check"}
-                </Button>
-              )}
-            {showSteps && !finished && checked === "appeared" && (
+            {selected && checked !== "appeared" && (
+              <Button
+                variant="action"
+                className="rounded-full"
+                disabled={checking}
+                onClick={() => void recheck()}
+              >
+                {checking ? "Checking…" : "Re-check"}
+              </Button>
+            )}
+            {selected && checked === "appeared" && (
               <Button
                 variant="action"
                 disabled={restarting}
@@ -737,7 +216,7 @@ export function AddProviderDialog({
                   setOpen(false);
                 }}
               >
-                {restarting ? "Restarting…" : "Restart daemon to apply"}
+                {restarting ? "Restarting…" : "Save and restart"}
               </Button>
             )}
           </DialogFooter>
@@ -747,7 +226,7 @@ export function AddProviderDialog({
   );
 }
 
-/** One copyable, read-only snippet block (shared by both flows). */
+/** One copyable, read-only snippet block. */
 function CopyableSnippet({
   text,
   copied,

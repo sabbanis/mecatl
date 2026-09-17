@@ -45,7 +45,7 @@ export interface McpInventoryView {
 }
 
 export const MCP_INVENTORY_UNSUPPORTED_TEXT =
-  "This daemon does not serve an MCP inventory.";
+  "This agent can't list its MCP tools.";
 
 function sourcesErrorText(error: unknown): string {
   if (isNoMcpProvider(error)) return NO_MCP_PROVIDER_TEXT;

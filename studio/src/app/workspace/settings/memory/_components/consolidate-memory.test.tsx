@@ -14,13 +14,13 @@ import {
 } from "./consolidate-memory";
 
 /**
- * The Consolidate memory card over the SDK-backed dream module (ADR 0227),
- * at parity with mecatui's /dream overlay: capability-gated targets with the
- * daemon's unavailable reason; generation confirmed first (it spends tokens);
- * the operation review with current values; whole-plan apply/dismiss; an
- * open decision (`dream_in_progress` or a dropped connection) locked to
- * retrying the SAME decision; a no-longer-actionable plan (`dream_conflict`,
- * vanished) cleared with the regenerate notice; the receipt counts.
+ * The Consolidate memory card over the SDK-backed dream module: memories the
+ * agent cannot consolidate offered disabled; one confirmed button that
+ * generates the suggestion; the change list with current values; whole-plan
+ * Apply / Dismiss; an open decision (`dream_in_progress` or a dropped
+ * connection) locked to retrying the SAME decision; a no-longer-valid plan
+ * (`dream_conflict`, vanished) cleared with the consolidate-again notice;
+ * the plain result line. Nothing on the card names the daemon.
  */
 
 const runtime = vi.hoisted(() => ({
@@ -56,7 +56,7 @@ const BOTH_AVAILABLE = {
   project_memory: { generate: true, decide: true },
 };
 
-/** A merge plan expiring a quarter of an hour out, as the daemon sends it. */
+/** A merge plan expiring a quarter of an hour out, as the agent sends it. */
 const planBody = () => ({
   plan: {
     id: "plan1",
@@ -123,15 +123,18 @@ function stubDream(...decisionAnswers: Array<() => unknown>): FetchStub {
   });
 }
 
+const consolidateButton = () =>
+  screen.getByRole("button", { name: "Consolidate memory" });
+
 async function generatePlan(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(screen.getByRole("button", { name: "Generate plan" }));
+  await user.click(consolidateButton());
   const dialog = await screen.findByRole("alertdialog");
-  await user.click(within(dialog).getByRole("button", { name: "Generate" }));
+  await user.click(within(dialog).getByRole("button", { name: "Continue" }));
   await screen.findByTestId("dream-plan-summary");
 }
 
 async function applyPlan(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(screen.getByRole("button", { name: "Apply plan" }));
+  await user.click(screen.getByRole("button", { name: "Apply" }));
   const dialog = await screen.findByRole("alertdialog");
   await user.click(within(dialog).getByRole("button", { name: "Apply" }));
 }
@@ -146,19 +149,41 @@ afterEach(async () => {
 });
 
 describe("describeDreamReceipt", () => {
-  it("lists every bucket, planned first", () => {
+  const receipt = {
+    id: "p",
+    target: "user_model",
+    disposition: "apply",
+    planned: 4,
+    applied: 2,
+    conflicted: 1,
+    skipped: 1,
+    failed: 0,
+  };
+
+  it("says what merged, then only the buckets that are not empty", () => {
+    expect(describeDreamReceipt(receipt)).toBe(
+      "2 of 4 memories merged · 1 left alone · 1 skipped",
+    );
     expect(
       describeDreamReceipt({
-        id: "p",
-        target: "user_model",
-        disposition: "apply",
-        planned: 4,
-        applied: 2,
-        conflicted: 1,
-        skipped: 1,
-        failed: 0,
+        ...receipt,
+        conflicted: 0,
+        skipped: 0,
+        failed: 2,
       }),
-    ).toBe("4 planned · 2 applied · 1 conflicted · 1 skipped · 0 failed");
+    ).toBe("2 of 4 memories merged · 2 failed");
+  });
+
+  it("singularises one memory", () => {
+    expect(
+      describeDreamReceipt({
+        ...receipt,
+        planned: 1,
+        applied: 1,
+        conflicted: 0,
+        skipped: 0,
+      }),
+    ).toBe("1 of 1 memory merged");
   });
 });
 
@@ -169,7 +194,7 @@ describe("ConsolidateMemoryCard", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("lists a target the daemon cannot generate for as disabled with its reason, and picks a capable one by default", async () => {
+  it("offers a memory the agent cannot consolidate as disabled, without its reason, and picks a usable one by default", async () => {
     const user = userEvent.setup();
     setManualDream({
       user_model: {
@@ -187,23 +212,21 @@ describe("ConsolidateMemoryCard", () => {
     });
     expect(picker).toHaveTextContent("Project memory");
     expect(screen.queryByTestId("dream-unavailable")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Generate plan" })).toBeEnabled();
+    expect(consolidateButton()).toBeEnabled();
 
     await user.click(picker);
     const disabled = await screen.findByRole("option", {
-      name: /User model .* \(unavailable\)/,
+      name: "Facts about you (unavailable)",
     });
     expect(disabled).toHaveAttribute("aria-disabled", "true");
-    expect(disabled).toHaveAttribute(
-      "title",
-      "This memory store is not available on this daemon.",
-    );
+    expect(disabled).not.toHaveAttribute("title");
     expect(
       screen.getByRole("option", { name: "Project memory" }),
     ).not.toHaveAttribute("aria-disabled");
+    expect(document.body.textContent).not.toMatch(/daemon|store/i);
   });
 
-  it("shows the daemon's reason and disables Generate when the only target cannot generate", () => {
+  it("disables the button with a plain sentence when the only memory cannot be consolidated", () => {
     setManualDream({
       user_model: {
         generate: false,
@@ -213,27 +236,28 @@ describe("ConsolidateMemoryCard", () => {
     });
     render(<ConsolidateMemoryCard />);
     expect(screen.getByTestId("dream-unavailable")).toHaveTextContent(
-      "Plans cannot be generated for this memory: No consolidation planner is configured on this daemon — it needs a model to review memories.",
+      "Consolidation isn't available for this memory right now.",
     );
-    const generate = screen.getByRole("button", { name: "Generate plan" });
-    expect(generate).toBeDisabled();
-    expect(generate).toHaveAttribute(
+    expect(screen.getByText("Facts about you")).toBeInTheDocument();
+    const button = consolidateButton();
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute(
       "title",
-      "No consolidation planner is configured on this daemon — it needs a model to review memories.",
+      "Consolidation isn't available for this memory right now.",
     );
+    expect(document.body.textContent).not.toMatch(/daemon|planner/i);
   });
 
-  it("confirms before generating (it spends tokens), then POSTs the target; a shown plan turns the button into Regenerate", async () => {
+  it("confirms before generating, then POSTs the target; the shown suggestion replaces the button", async () => {
     const user = userEvent.setup();
     setManualDream({ user_model: { generate: true, decide: true } });
     const stub = stubDream();
     render(<ConsolidateMemoryCard />);
 
-    await user.click(screen.getByRole("button", { name: "Generate plan" }));
-    let dialog = await screen.findByRole("alertdialog");
-    expect(dialog).toHaveTextContent("Generate a consolidation plan?");
-    expect(dialog).toHaveTextContent("spends tokens");
-    expect(dialog).not.toHaveTextContent("discarded");
+    await user.click(consolidateButton());
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent("Consolidate memory?");
+    expect(dialog).toHaveTextContent("Nothing changes until you approve.");
     expect(stub.requests).toHaveLength(0);
     await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(stub.requests).toHaveLength(0);
@@ -245,45 +269,41 @@ describe("ConsolidateMemoryCard", () => {
       body: { target: "user_model" },
     });
     expect(screen.getByTestId("dream-plan-summary")).toHaveTextContent(
-      /1 operation over 2 memories\. .*Expires in 1[45]m\./,
+      /1 suggested change across 2 memories\. Apply or dismiss them all together\. Expires in 1[45]m\./,
     );
-
-    const regenerate = screen.getByRole("button", { name: "Regenerate plan" });
-    await user.click(regenerate);
-    dialog = await screen.findByRole("alertdialog");
-    expect(dialog).toHaveTextContent("Regenerate the consolidation plan?");
-    expect(dialog).toHaveTextContent("The plan shown now is discarded.");
     expect(
-      within(dialog).getByRole("button", { name: "Regenerate" }),
-    ).toBeInTheDocument();
+      screen.queryByRole("button", { name: "Consolidate memory" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Apply" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Dismiss" })).toBeEnabled();
   });
 
-  it("shows each operation's detail: the exact-duplicate badge, the replacement description, and the current values of survivor and sources", async () => {
+  it("shows each change: the exact-duplicate badge, the merged text, and the current values it keeps and merges in", async () => {
     const user = userEvent.setup();
     stubDream();
     render(<ConsolidateMemoryCard />);
     await generatePlan(user);
 
-    const operation = screen.getByRole("listitem");
-    expect(within(operation).getByText("exact duplicate")).toBeInTheDocument();
-    expect(operation).toHaveTextContent("near-duplicates");
-    expect(operation).toHaveTextContent("Keeps editor — absorbs editor_2");
-    expect(operation).toHaveTextContent("Uses vim with vim keybindings");
-    expect(operation).toHaveTextContent("Merged editor preference");
+    const change = screen.getByRole("listitem");
+    expect(within(change).getByText("exact duplicate")).toBeInTheDocument();
+    expect(change).toHaveTextContent("near-duplicates");
+    expect(change).toHaveTextContent("Keeps editor and merges in editor_2");
+    expect(change).toHaveTextContent("Uses vim with vim keybindings");
+    expect(change).toHaveTextContent("Merged editor preference");
 
-    const summary = within(operation).getByText("Show current values");
+    const summary = within(change).getByText("Show current values");
     const details = summary.closest("details");
     expect(details).not.toBeNull();
     await user.click(summary);
     expect(details).toHaveTextContent("Keeps editor");
     expect(details).toHaveTextContent("Uses vim");
     expect(details).toHaveTextContent("Editor preference");
-    expect(details).toHaveTextContent("Absorbs editor_2");
+    expect(details).toHaveTextContent("Merges in editor_2");
     expect(details).toHaveTextContent("Prefers vim keybindings");
     expect(details).toHaveTextContent("Older note");
   });
 
-  it("dream_in_progress keeps the plan, disables the opposite decision, and the relabelled button re-POSTs the identical decision to fetch the receipt", async () => {
+  it("dream_in_progress keeps the suggestion, disables the other decision, and Try again re-POSTs the identical decision", async () => {
     const user = userEvent.setup();
     const stub = stubDream(
       () => problemResponse(409, "dream_in_progress", "still running"),
@@ -295,27 +315,19 @@ describe("ConsolidateMemoryCard", () => {
     await applyPlan(user);
     const notice = await screen.findByRole("status");
     expect(notice).toHaveTextContent(
-      "The daemon is still applying that plan — retry the same decision to retrieve its receipt.",
+      "The agent is still working on that. Press Try again to see the result.",
     );
-    // The plan stays reviewable; only the same decision is offered.
     expect(screen.getByTestId("dream-plan-summary")).toBeInTheDocument();
     const dismiss = screen.getByRole("button", { name: "Dismiss" });
     expect(dismiss).toBeDisabled();
     expect(dismiss).toHaveAttribute(
       "title",
-      "A decision on this plan is still running.",
+      "Waiting for the other decision to finish.",
     );
-    expect(
-      screen.getByRole("button", { name: "Regenerate plan" }),
-    ).toBeDisabled();
-    const decisions = stub.requests.filter(isDecision);
-    expect(decisions).toHaveLength(1);
+    expect(stub.requests.filter(isDecision)).toHaveLength(1);
 
     // The retry: no confirmation dialog, the same {decision} to the same id.
-    const retry = screen.getByRole("button", {
-      name: "Retry apply — fetch receipt",
-    });
-    await user.click(retry);
+    await user.click(screen.getByRole("button", { name: "Try again" }));
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
     const receipt = await screen.findByTestId("dream-receipt");
     const retried = stub.requests.filter(isDecision);
@@ -328,16 +340,16 @@ describe("ConsolidateMemoryCard", () => {
     expect(retried[1]?.body).toEqual(retried[0]?.body);
 
     expect(receipt).toHaveTextContent(
-      "Applied: 2 planned · 1 applied · 1 conflicted · 0 skipped · 0 failed.",
+      "Done: 1 of 2 memories merged · 1 left alone.",
     );
     expect(receipt).toHaveTextContent(
-      "Memory changed after the plan was generated",
+      "Some memories changed while you were reviewing, so they were left alone.",
     );
     expect(screen.queryByTestId("dream-plan-summary")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Generate plan" })).toBeEnabled();
+    expect(consolidateButton()).toBeEnabled();
   });
 
-  it("a connection dropped mid-decision is indeterminate: same-decision retry only, worded as unknown", async () => {
+  it("a connection dropped mid-decision locks to the same decision and Try again fetches the result", async () => {
     const user = userEvent.setup();
     stubDream(
       () => {
@@ -350,49 +362,44 @@ describe("ConsolidateMemoryCard", () => {
 
     await user.click(screen.getByRole("button", { name: "Dismiss" }));
     const notice = await screen.findByRole("status");
-    expect(notice).toHaveTextContent(
-      /connection dropped before the daemon answered .* may already be dismissing that plan/,
-    );
-    expect(screen.getByRole("button", { name: "Apply plan" })).toBeDisabled();
-    await user.click(
-      screen.getByRole("button", { name: "Retry dismiss — fetch receipt" }),
-    );
+    expect(notice).toHaveTextContent("The agent is still working on that.");
+    expect(screen.getByRole("button", { name: "Apply" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Try again" }));
     const receipt = await screen.findByTestId("dream-receipt");
-    expect(receipt).toHaveTextContent("Plan dismissed — nothing changed.");
-    // A dismissal carries no per-entry outcome notes.
-    expect(receipt).not.toHaveTextContent("Memory changed");
+    expect(receipt).toHaveTextContent("Dismissed. Nothing changed.");
+    // A dismissal carries no per-memory outcome notes.
+    expect(receipt).not.toHaveTextContent("Some memories changed");
     expect(screen.queryByTestId("dream-plan-summary")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Generate plan" })).toBeEnabled();
+    expect(consolidateButton()).toBeEnabled();
   });
 
-  it("dream_conflict clears the plan with the regenerate notice", async () => {
+  it("dream_conflict clears the suggestion with the consolidate-again notice", async () => {
     const user = userEvent.setup();
     stubDream(() => problemResponse(412, "dream_conflict", "conflict"));
     render(<ConsolidateMemoryCard />);
     await generatePlan(user);
 
     await user.click(screen.getByRole("button", { name: "Dismiss" }));
-    const notice = await screen.findByRole("status");
-    expect(notice).toHaveTextContent(
-      "A different decision on that plan is already active — it is no longer actionable for this one. Generate a new plan once that decision settles.",
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "That suggestion is no longer valid, so nothing changed. Consolidate again for a new one.",
     );
     expect(screen.queryByTestId("dream-plan-summary")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Generate plan" })).toBeEnabled();
+    expect(consolidateButton()).toBeEnabled();
   });
 
-  it("a vanished plan (dream_not_found) clears with the vanished-plan notice", async () => {
+  it("a vanished plan (dream_not_found) clears with the same notice", async () => {
     const user = userEvent.setup();
     stubDream(() => problemResponse(404, "dream_not_found", "unknown plan"));
     render(<ConsolidateMemoryCard />);
     await generatePlan(user);
     await applyPlan(user);
     expect(await screen.findByRole("status")).toHaveTextContent(
-      "That plan is no longer valid (the daemon restarted or the plan expired) — generate a new one.",
+      "That suggestion is no longer valid, so nothing changed.",
     );
     expect(screen.queryByTestId("dream-plan-summary")).not.toBeInTheDocument();
   });
 
-  it("an unclassified decide error is shown verbatim with the plan kept and both decisions available", async () => {
+  it("an unclassified decide error is shown verbatim with the suggestion kept and both decisions available", async () => {
     const user = userEvent.setup();
     stubDream(() => problemResponse(500, "internal", "boom"));
     render(<ConsolidateMemoryCard />);
@@ -401,12 +408,12 @@ describe("ConsolidateMemoryCard", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("boom");
     expect(screen.getByTestId("dream-plan-summary")).toBeInTheDocument();
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Apply plan" })).toBeEnabled(),
+      expect(screen.getByRole("button", { name: "Apply" })).toBeEnabled(),
     );
     expect(screen.getByRole("button", { name: "Dismiss" })).toBeEnabled();
   });
 
-  it("decide:false disables Apply with the daemon's reason and notes it under the picker", async () => {
+  it("decide:false disables Apply with a plain sentence and notes it on the card", async () => {
     const user = userEvent.setup();
     setManualDream({
       user_model: {
@@ -418,14 +425,15 @@ describe("ConsolidateMemoryCard", () => {
     stubDream();
     render(<ConsolidateMemoryCard />);
     expect(screen.getByTestId("dream-unavailable")).toHaveTextContent(
-      "Plans can be generated but not applied here: This memory store does not support reviewed consolidation.",
+      "Suggestions for this memory can be viewed but not applied.",
     );
     await generatePlan(user);
-    const apply = screen.getByRole("button", { name: "Apply plan" });
+    const apply = screen.getByRole("button", { name: "Apply" });
     expect(apply).toBeDisabled();
     expect(apply).toHaveAttribute(
       "title",
-      "This daemon does not permit applying plans: This memory store does not support reviewed consolidation.",
+      "Suggestions for this memory can be viewed but not applied.",
     );
+    expect(document.body.textContent).not.toMatch(/daemon|atomic/i);
   });
 });

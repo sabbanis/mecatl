@@ -4,7 +4,6 @@ import { describe, expect, it } from "vitest";
 import {
   configuredEnvNames,
   STUDIO_ENV_REFERENCE,
-  STUDIO_ENV_TIER_LABEL,
 } from "./studio-config-reference";
 
 /**
@@ -66,7 +65,6 @@ describe("STUDIO_ENV_REFERENCE", () => {
       expect(entry.name).toMatch(/^[A-Z][A-Z0-9_]*$/);
       expect(entry.purpose.trim().length).toBeGreaterThan(20);
       expect(entry.purpose.trim().endsWith(".")).toBe(true);
-      expect(STUDIO_ENV_TIER_LABEL[entry.tier]).toBeTruthy();
     }
   });
 

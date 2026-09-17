@@ -3,16 +3,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AboutStudioCard } from "./about-studio-card";
 
 /**
- * The About Studio card is the web `mecatui --version` plus the docs
- * pointer: three build-time rows that never wait on the daemon, and three
- * links — the documentation site, the repository, and the in-app shortcuts
- * reference (the page's first visible entry point).
+ * The About Studio card: one build-time version row that never waits on the
+ * agent, and three links — the documentation site, the support page, and
+ * the in-app shortcuts reference.
  */
 
 beforeEach(() => {
   vi.stubEnv("NEXT_PUBLIC_STUDIO_VERSION", "0.1.0");
-  vi.stubEnv("NEXT_PUBLIC_SDK_VERSION", "0.2.0");
-  vi.stubEnv("NEXT_PUBLIC_STUDIO_BUILD", "0.1.0+abc1234");
 });
 
 afterEach(() => {
@@ -20,44 +17,40 @@ afterEach(() => {
 });
 
 describe("AboutStudioCard", () => {
-  it("renders the inlined Studio, build and SDK versions", () => {
+  it("renders the inlined Studio version and nothing more technical", () => {
     render(<AboutStudioCard />);
     expect(screen.getByText("About Studio")).toBeInTheDocument();
+    expect(screen.getByText("Version")).toBeInTheDocument();
     expect(screen.getByTestId("about-studio-version")).toHaveTextContent(
       "0.1.0",
     );
-    expect(screen.getByTestId("about-studio-build-stamp")).toHaveTextContent(
-      "0.1.0+abc1234",
-    );
-    expect(screen.getByTestId("about-sdk-version")).toHaveTextContent("0.2.0");
+    // The build stamp and the SDK version are not for this audience.
+    expect(screen.queryByText("Build")).toBeNull();
+    expect(screen.queryByText("SDK version")).toBeNull();
   });
 
-  it("reads 'unknown' rather than an empty cell when a version was not inlined", () => {
-    vi.stubEnv("NEXT_PUBLIC_STUDIO_VERSION", "");
-    vi.stubEnv("NEXT_PUBLIC_SDK_VERSION", "   ");
+  it("reads 'unknown' rather than an empty cell when the version was not inlined", () => {
+    vi.stubEnv("NEXT_PUBLIC_STUDIO_VERSION", "   ");
     render(<AboutStudioCard />);
     expect(screen.getByTestId("about-studio-version")).toHaveTextContent(
       "unknown",
     );
-    expect(screen.getByTestId("about-sdk-version")).toHaveTextContent(
-      "unknown",
-    );
   });
 
-  it("links to the documentation, the repository (new tab) and the shortcuts reference", () => {
+  it("links to the documentation, the support page (new tab) and the shortcuts reference", () => {
     render(<AboutStudioCard />);
     const docs = screen.getByRole("link", { name: /Documentation/ });
     expect(docs).toHaveAttribute("href", "https://mecatl.dev/docs/");
     expect(docs).toHaveAttribute("target", "_blank");
     expect(docs).toHaveAttribute("rel", "noreferrer");
 
-    const source = screen.getByRole("link", { name: /Source & issues/ });
-    expect(source).toHaveAttribute(
+    const support = screen.getByRole("link", { name: /Report a problem/ });
+    expect(support).toHaveAttribute(
       "href",
-      "https://github.com/stacklok/mecatl",
+      "https://github.com/stacklok/mecatl/issues",
     );
-    expect(source).toHaveAttribute("target", "_blank");
-    expect(source).toHaveAttribute("rel", "noreferrer");
+    expect(support).toHaveAttribute("target", "_blank");
+    expect(support).toHaveAttribute("rel", "noreferrer");
 
     const shortcuts = screen.getByRole("link", { name: /Keyboard shortcuts/ });
     expect(shortcuts).toHaveAttribute("href", "/workspace/shortcuts");

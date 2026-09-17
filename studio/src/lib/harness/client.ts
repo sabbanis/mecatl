@@ -6,7 +6,7 @@
  * this file re-exports them so importers keep one entry point.
  *
  * CONTROLLER capabilities — Studio's own local supervisor process behind the
- * /api/mecatl-control proxy (provider keys, model router, MCP gateway, skills
+ * /api/mecatl-control proxy (provider keys, MCP gateway, skills
  * on disk, daemon restart) — are NOT engine capabilities and stay here as
  * plain fetch calls; the SDK has no notion of the controller.
  */
@@ -33,7 +33,7 @@ export * from "./store-location";
 export * from "./trust";
 export * from "./worktrees";
 
-// ── Controller: provider, model router, MCP gateway ─────────────────────────
+// ── Controller: provider, MCP gateway ───────────────────────────────────────
 
 const CONTROL_API = "/api/mecatl-control";
 
@@ -297,81 +297,6 @@ export async function saveHarnessPermissions(
       trustProject: config.trustProject,
       noShell: config.noShell,
     }),
-  });
-  if (!response.ok) throw await apiError(response);
-}
-
-/**
- * Points the managed daemon at another workspace root — the TUI's
- * `--workspace` deployment choice (Settings → Workspace). RESTARTS the
- * daemon against `path`; the controller validates it on ITS filesystem
- * (absolute, exists, a directory, not Studio's state dir) and a start
- * mecated refuses is rolled back there and surfaces here as the thrown
- * error. The path is a controller-side operator setting — it is never a
- * session placement input (Studio rule 2).
- */
-export async function saveHarnessWorkspace(path: string): Promise<void> {
-  const response = await fetch(`${CONTROL_API}/workspace`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path }),
-  });
-  if (!response.ok) throw await apiError(response);
-}
-
-export interface HarnessRouterCategory {
-  name: string;
-  description: string;
-  model: string;
-}
-
-export interface HarnessRouterConfig {
-  enabled: boolean;
-  classifierModel: string;
-  defaultCategory: string;
-  categories: HarnessRouterCategory[];
-  /** True when routing comes from an imported operator settings file, which this UI must not overwrite. */
-  managedByOperator: boolean;
-}
-
-export async function fetchHarnessRouter(
-  signal?: AbortSignal,
-): Promise<HarnessRouterConfig | null> {
-  const response = await fetch(`${CONTROL_API}/model-router`, {
-    signal,
-    cache: "no-store",
-  });
-  if (!response.ok) return null;
-  const body = (await response.json()) as {
-    config?: {
-      enabled?: boolean;
-      classifierModel?: string;
-      defaultCategory?: string;
-      categories?: { name?: string; description?: string; model?: string }[];
-    } | null;
-    managedBy?: string;
-  };
-  return {
-    enabled: Boolean(body.config?.enabled),
-    classifierModel: body.config?.classifierModel ?? "",
-    defaultCategory: body.config?.defaultCategory ?? "",
-    categories: (body.config?.categories ?? []).map((category) => ({
-      name: category.name ?? "",
-      description: category.description ?? "",
-      model: category.model ?? "",
-    })),
-    managedByOperator: body.managedBy === "operator-settings",
-  };
-}
-
-/** Saves routing config. RESTARTS the daemon. */
-export async function saveHarnessRouter(
-  config: Omit<HarnessRouterConfig, "managedByOperator">,
-): Promise<void> {
-  const response = await fetch(`${CONTROL_API}/model-router`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(config),
   });
   if (!response.ok) throw await apiError(response);
 }

@@ -15,7 +15,7 @@
  */
 
 /** Which process reads the variable, and when. */
-export type StudioEnvTier = "server" | "controller" | "build";
+type StudioEnvTier = "server" | "controller" | "build";
 
 export interface StudioEnvEntry {
   readonly name: string;
@@ -25,16 +25,6 @@ export interface StudioEnvEntry {
   /** A credential: the reference says "Set (hidden)" and nothing more. */
   readonly secret: boolean;
 }
-
-/** The tier badge's words. */
-export const STUDIO_ENV_TIER_LABEL: Readonly<Record<StudioEnvTier, string>> = {
-  server: "Server tier",
-  controller: "Local controller",
-  build: "Build",
-};
-
-/** Where the browser asks which names are set. */
-export const ABOUT_STUDIO_URL = "/api/studio/about";
 
 export const STUDIO_ENV_REFERENCE: readonly StudioEnvEntry[] = [
   // ---- Server tier: read by the Next server (proxies, auth, branding). ----

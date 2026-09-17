@@ -152,7 +152,7 @@ describe("useRuntimeSettings", () => {
     // is re-probed once, after the re-read, so capability gates flip now.
     expect(runtime.refresh).toHaveBeenCalledTimes(1);
     expect(result.current.doc?.config.learning.mode).toBe("review");
-    expect(result.current.notice).toMatch(/daemon restarted/);
+    expect(result.current.notice).toBe("Saved. The agent restarted.");
     expect(result.current.busy).toBe("");
   });
 
@@ -189,7 +189,7 @@ describe("useRuntimeSettings", () => {
     });
     expect(approveHarnessSoulBaseline).toHaveBeenCalledTimes(1);
     expect(fetchHarnessRuntimeSettings).toHaveBeenCalledTimes(2);
-    expect(result.current.notice).toMatch(/baseline accepted/);
+    expect(result.current.notice).toBe("Saved. The agent restarted.");
     expect(result.current.busy).toBe("");
   });
 

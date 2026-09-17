@@ -37,7 +37,7 @@ describe("classifyOffline", () => {
         "The OIDC session expired — sign in again from Settings to keep using this deployment.",
     });
     expect(cause.kind).toBe("session-expired");
-    expect(cause.title).toBe("Session expired");
+    expect(cause.title).toBe("Sign-in expired");
     expect(cause.signIn).toBe("sign-in-again");
   });
 
@@ -49,9 +49,9 @@ describe("classifyOffline", () => {
     });
     expect(cause.kind).toBe("credential-rejected");
     expect(cause.title).toBe("Credential rejected");
-    expect(cause.remedy).toMatch(/MECATL_AUTH_TOKEN/);
-    expect(cause.remedy).toMatch(/MECATL_OIDC_AUDIENCE/);
-    expect(cause.remedy).toMatch(/--auth-oidc/);
+    expect(cause.remedy).toMatch(/check its token or sign-in settings/);
+    expect(cause.remedy).toMatch(/sign-in settings/);
+    expect(cause.remedy).toMatch(/sign-in settings/);
     expect(cause.signIn).toBeNull();
     expect(cause.detail).toBe("missing or invalid bearer token");
   });

@@ -1,8 +1,9 @@
 /**
  * The daemon-wide operator posture ladder and what each tier switches on —
- * the pure half of the Diagnostics page's posture card, mirroring the TUI's
- * `/posture` one-liner (`cmd/mecatui/ui/builtins.go` `postureSummary`) so a
- * Studio user and a mecatui user read the SAME sentence for the same tier.
+ * the pure half of the chat status strip's posture summary, mirroring the
+ * TUI's `/posture` one-liner (`cmd/mecatui/ui/builtins.go` `postureSummary`)
+ * so a Studio user and a mecatui user read the SAME sentence for the same
+ * tier.
  *
  * The tier itself arrives as `serverCapabilities.posture` off the daemon's
  * compatibility document (the SDK's `ServerPosture` values); nothing here
@@ -14,14 +15,14 @@
 /** mecated's posture ladder, lowest tier first (`--posture`). */
 export const POSTURE_TIERS = ["strict", "trusted", "auto", "yolo"] as const;
 
-export type PostureTier = (typeof POSTURE_TIERS)[number];
+type PostureTier = (typeof POSTURE_TIERS)[number];
 
 /** The label the TUI prints for an empty tier (`cmd/mecatui/ui/model.go`
  *  `unknownLabel`). */
 const UNKNOWN_POSTURE_LABEL = "unknown";
 
 /** The four defenses a tier switches on or off, as booleans (true = on). */
-export interface PostureDefenses {
+interface PostureDefenses {
   /** Allow-all: the built-in ask before every mutating tool is waived
    *  (auto and yolo). */
   allowAll: boolean;
@@ -37,7 +38,7 @@ export interface PostureDefenses {
 }
 
 /** Narrows an arbitrary wire value to a known tier, or null. */
-export function knownPostureTier(value: unknown): PostureTier | null {
+function knownPostureTier(value: unknown): PostureTier | null {
   return typeof value === "string" &&
     (POSTURE_TIERS as readonly string[]).includes(value)
     ? (value as PostureTier)
@@ -50,7 +51,7 @@ export function knownPostureTier(value: unknown): PostureTier | null {
  * claiming a defense is waived on a tier Studio does not know would be a
  * guess in the unsafe direction.
  */
-export function postureDefenses(tier: string): PostureDefenses {
+function postureDefenses(tier: string): PostureDefenses {
   const known = knownPostureTier(tier);
   const allowAll = known === "auto" || known === "yolo";
   return {

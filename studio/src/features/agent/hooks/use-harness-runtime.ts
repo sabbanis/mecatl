@@ -5,18 +5,14 @@ import {
   connectHarnessGateway,
   fetchHarnessControlStatus,
   fetchHarnessPermissions,
-  fetchHarnessRouter,
   type HarnessControlStatus,
   type HarnessPermissionsConfig,
   type HarnessPermissionsState,
   type HarnessRetentionSettings,
-  type HarnessRouterCategory,
-  type HarnessRouterConfig,
   type HarnessStorageSettings,
   listHarnessModels,
   saveHarnessPermissions,
   saveHarnessRetention,
-  saveHarnessRouter,
   saveHarnessStorageSettings,
   startHarnessGatewayOAuth,
   trustWorkspace,
@@ -54,7 +50,6 @@ export interface HarnessModel {
 export function useHarnessRuntime() {
   const { connected, mode, provider } = useRuntimeStatus();
   const [status, setStatus] = useState<HarnessControlStatus | null>(null);
-  const [router, setRouter] = useState<HarnessRouterConfig | null>(null);
   const [permissions, setPermissions] = useState<{
     config: HarnessPermissionsState;
     operatorSettings: boolean;
@@ -69,16 +64,13 @@ export function useHarnessRuntime() {
     setIsLoading(true);
     try {
       // Independent reads, so they go out together rather than in a waterfall.
-      const [nextStatus, nextRouter, nextPermissions, nextModels] =
-        await Promise.all([
-          fetchHarnessControlStatus(signal),
-          fetchHarnessRouter(signal).catch(() => null),
-          fetchHarnessPermissions(signal).catch(() => null),
-          listHarnessModels(signal).catch(() => []),
-        ]);
+      const [nextStatus, nextPermissions, nextModels] = await Promise.all([
+        fetchHarnessControlStatus(signal),
+        fetchHarnessPermissions(signal).catch(() => null),
+        listHarnessModels(signal).catch(() => []),
+      ]);
       if (signal?.aborted) return;
       setStatus(nextStatus);
-      setRouter(nextRouter);
       setPermissions(nextPermissions);
       setModels(nextModels);
     } finally {
@@ -130,7 +122,7 @@ export function useHarnessRuntime() {
       runWrite(
         "gateway",
         () => connectHarnessGateway(name, url, token),
-        "MCP gateway connected. Its tools are now in the agent's catalog.",
+        "Gateway connected. The agent can now use its tools.",
       ),
     [runWrite],
   );
@@ -159,7 +151,7 @@ export function useHarnessRuntime() {
         await load();
         setNotice(
           gatewayConnected
-            ? "Gateway connected. Its tools are now in the agent's catalog."
+            ? "Gateway connected. The agent can now use its tools."
             : "Sign-in did not complete — no gateway was connected.",
         );
       } catch (caught) {
@@ -169,21 +161,6 @@ export function useHarnessRuntime() {
       }
     },
     [load],
-  );
-
-  const saveRouter = useCallback(
-    async (config: {
-      enabled: boolean;
-      classifierModel: string;
-      defaultCategory: string;
-      categories: HarnessRouterCategory[];
-    }) =>
-      runWrite(
-        "router",
-        () => saveHarnessRouter(config),
-        "Routing saved. The daemon restarted with the new tiers.",
-      ),
-    [runWrite],
   );
 
   /**
@@ -196,7 +173,7 @@ export function useHarnessRuntime() {
       runWrite(
         "permissions",
         () => saveHarnessPermissions(config),
-        "Permissions saved. The daemon restarted with the new posture.",
+        "Saved. The agent restarted.",
       ),
     [runWrite],
   );
@@ -215,7 +192,7 @@ export function useHarnessRuntime() {
       runWrite(
         "trust",
         () => trustWorkspace(),
-        "Project trusted. The daemon restarted with --trust-project and now honours this project's configuration.",
+        "This project is now trusted. The agent restarted.",
       ),
     [runWrite],
   );
@@ -230,7 +207,7 @@ export function useHarnessRuntime() {
       runWrite(
         "trust",
         () => trustWorkspaceOnce(),
-        "Project trusted for this Studio session. Nothing is saved: the grant lasts until Studio's controller exits. The daemon restarted.",
+        "Trusted until Studio restarts. Nothing is saved. The agent restarted.",
       ),
     [runWrite],
   );
@@ -247,7 +224,7 @@ export function useHarnessRuntime() {
         async () => {
           await saveHarnessStorageSettings(settings);
         },
-        "Storage settings saved. The daemon restarted.",
+        "Saved. The agent restarted.",
       ),
     [runWrite],
   );
@@ -265,7 +242,7 @@ export function useHarnessRuntime() {
         async () => {
           await saveHarnessRetention(settings);
         },
-        "Retention saved. The daemon restarted and will sweep on the new policy.",
+        "Saved. The agent restarted.",
       ),
     [runWrite],
   );
@@ -275,7 +252,6 @@ export function useHarnessRuntime() {
     /** "external": config is owned by the deployment; writes answer 409. */
     mode,
     status,
-    router,
     /** The saved permissions document + whether an imported operator
      *  settings file is active; null in external mode / before the load. */
     permissions,
@@ -287,7 +263,6 @@ export function useHarnessRuntime() {
     refresh,
     connectGateway,
     connectGatewayOAuth,
-    saveRouter,
     savePermissions,
     /** The remembered project-trust grant (restarts the daemon); `busy`
      *  reads "trust" while either grant runs. */

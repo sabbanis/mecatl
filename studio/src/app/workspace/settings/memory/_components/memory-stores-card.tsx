@@ -1,180 +1,210 @@
 "use client";
 
-import Link from "next/link";
-import { Input } from "@/components/ui/input";
+import { useState } from "react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import {
+  type DaemonOptionsPatch,
+  mergeDaemonOptions,
+  useDaemonOptions,
+} from "@/features/agent/hooks/use-daemon-options";
 import { useRuntimeStatus } from "@/features/agent/runtime-status";
-import { MAX_REVIEW_INTERVAL } from "@/lib/harness/daemon-options";
+import type { HarnessDaemonOptions } from "@/lib/harness/daemon-options";
 import { readMemoryStores } from "../../../_components/memory-indicator";
 import {
-  DaemonOptionsCard,
-  StatusRow,
-} from "../../_components/daemon-options-card";
-import { SettingsRow } from "../../_components/settings-card";
+  Note,
+  RESTART_SENTENCE,
+  SettingsCard,
+  SettingsRow,
+} from "../../_components/settings-card";
 
 /**
- * Settings → Memory → Memory stores: the two daemon memory stores as the
- * TUI documents them — the per-project cross-session store behind the
- * Remember/Recall tools (`--memory-dir`; off = the flag omitted) and the
- * cross-project user model whose facts the table below lists
- * (`--no-user-model`, `--user-model-dir`, `--user-model-review-interval`).
- *
- * The status rows are the daemon's own `capabilities.memory` /
- * `user_model` — the TUI's "memory is on" welcome note — in both modes; the
- * controls are managed-mode only and every save restarts the daemon. The
- * review interval only matters once learning mode is Auto (Settings →
- * Learning owns the mode). Directories are trust decisions confined by the
- * controller to the workspace / default root / mecatl config dir.
+ * Settings → Memory → Memory: the two things the agent can remember, as two
+ * switches. The saved values come from the same options document every other
+ * agent-options card edits, and a save sends the WHOLE merged document and
+ * restarts the agent; only the on/off switches are offered here. When the
+ * agent is run elsewhere the switches give way to a read-only On/Off line
+ * per store, read from what the running agent reports.
  */
 
-const STORE_WORD = { on: "on", off: "off" };
+/** The two stores, in display order, keyed by the options-document section. */
+const STORES = [
+  {
+    section: "projectMemory",
+    id: "project-memory-enabled",
+    label: "Project memory",
+    description: "Remember things about this project between chats.",
+    statusTestId: "memory-status-project",
+    capability: "project",
+    patch: (enabled: boolean): DaemonOptionsPatch => ({
+      projectMemory: { enabled },
+    }),
+  },
+  {
+    section: "userModel",
+    id: "user-model-enabled",
+    label: "Facts about you",
+    description: "Remember your preferences across every project.",
+    statusTestId: "memory-status-user-model",
+    capability: "userModel",
+    patch: (enabled: boolean): DaemonOptionsPatch => ({
+      userModel: { enabled },
+    }),
+  },
+] as const;
 
-const clampInterval = (raw: string, fallback: number) => {
-  const value = Number.parseInt(raw, 10);
-  if (!Number.isFinite(value)) return fallback;
-  return Math.min(MAX_REVIEW_INTERVAL, Math.max(1, value));
-};
+const statusWord = (value: boolean | null) =>
+  value === null ? "Not available" : value ? "On" : "Off";
+
+const sameOptions = (a: HarnessDaemonOptions, b: HarnessDaemonOptions) =>
+  JSON.stringify(a) === JSON.stringify(b);
 
 export function MemoryStoresCard() {
   const { serverCapabilities } = useRuntimeStatus();
-  const stores = readMemoryStores(serverCapabilities);
-  const word = (value: boolean | null) =>
-    value === null ? "not reported" : value ? STORE_WORD.on : STORE_WORD.off;
-  return (
-    <DaemonOptionsCard
-      title="Memory stores"
-      description="Whether the managed daemon keeps per-project memory and a cross-project user model, and where. Changes restart it."
-      testId="memory-stores"
-      confirmTitle="Change the memory stores and restart the daemon?"
-      externalNote={
-        <>
-          Pass <code>--memory-dir</code>, <code>--no-user-model</code>,{" "}
-          <code>--user-model-dir</code> or{" "}
-          <code>--user-model-review-interval</code> to the server host&rsquo;s
-          mecated and restart that server.
-        </>
-      }
-      status={
-        <>
-          <StatusRow
-            label="Project memory (Remember/Recall)"
-            testId="memory-status-project"
-            value={word(stores.project)}
-            description="Cross-session memory for this project, as the running daemon reports it."
-          />
-          <StatusRow
-            label="User model (facts about you)"
-            testId="memory-status-user-model"
-            value={word(stores.userModel)}
-            description="The cross-project store the table below lists."
-          />
-        </>
-      }
-    >
-      {({ options, doc, busy, update }) => (
-        <div className="divide-y divide-border/60">
-          <SettingsRow
-            label="Project memory"
-            htmlFor="project-memory-enabled"
-            description="Register the Remember/Recall/SearchMemory tools over a per-project store. Off omits --memory-dir, which is how mecated turns them off. Automatic consolidation stays off; the card below runs it on demand."
-          >
-            <Switch
-              id="project-memory-enabled"
-              checked={options.projectMemory.enabled}
-              disabled={busy}
-              onCheckedChange={(enabled) =>
-                update({ projectMemory: { enabled } })
-              }
-            />
-          </SettingsRow>
-          <SettingsRow
-            label="Project memory directory"
-            htmlFor="project-memory-dir"
-            description="Absolute, or relative to the workspace. Empty keeps Studio's per-project location beside the session store."
-          >
-            <Input
-              id="project-memory-dir"
-              value={options.projectMemory.dir}
-              placeholder={doc.defaults.memoryDir}
-              disabled={busy || !options.projectMemory.enabled}
-              spellCheck={false}
-              onChange={(event) =>
-                update({ projectMemory: { dir: event.target.value } })
-              }
-              className="w-56 font-mono text-xs min-[500px]:w-80"
-            />
-          </SettingsRow>
-          <SettingsRow
-            label="User model"
-            htmlFor="user-model-enabled"
-            description="Keep durable facts about you across projects and expose the explicit user-memory tools. Off passes --no-user-model; the table below then has nothing to list."
-          >
-            <Switch
-              id="user-model-enabled"
-              checked={options.userModel.enabled}
-              disabled={busy}
-              onCheckedChange={(enabled) => update({ userModel: { enabled } })}
-            />
-          </SettingsRow>
-          <SettingsRow
-            label="User model directory"
-            htmlFor="user-model-dir"
-            description="Empty keeps mecated's conventional location."
-          >
-            <Input
-              id="user-model-dir"
-              value={options.userModel.dir}
-              placeholder={doc.defaults.userModelDir}
-              disabled={busy || !options.userModel.enabled}
-              spellCheck={false}
-              onChange={(event) =>
-                update({ userModel: { dir: event.target.value } })
-              }
-              className="w-56 font-mono text-xs min-[500px]:w-80"
-            />
-          </SettingsRow>
-          <SettingsRow
-            label="Review every Nth completion"
-            htmlFor="user-model-review-interval"
-            description={
-              <>
-                The debounce for automatic user-model review: 1 reviews every
-                eligible completed run. Applies only while learning mode is Auto
-                (
-                <Link
-                  href="/workspace/settings/learning"
-                  className="underline underline-offset-2"
-                >
-                  Settings → Learning
-                </Link>
-                ).
-              </>
-            }
-          >
-            <Input
-              id="user-model-review-interval"
-              type="number"
-              inputMode="numeric"
-              min={1}
-              max={MAX_REVIEW_INTERVAL}
-              step={1}
-              value={options.userModel.reviewInterval}
-              disabled={busy || !options.userModel.enabled}
-              onChange={(event) =>
-                update({
-                  userModel: {
-                    reviewInterval: clampInterval(
-                      event.target.value,
-                      options.userModel.reviewInterval,
-                    ),
-                  },
-                })
-              }
-              className="w-24"
-            />
-          </SettingsRow>
+  const { live, manageable, doc, isLoading, busy, error, notice, save } =
+    useDaemonOptions();
+  const [draft, setDraft] = useState<HarnessDaemonOptions | null>(null);
+  const [confirming, setConfirming] = useState(false);
+
+  let body: React.ReactNode;
+  if (!live) {
+    body = <Note>The agent is offline, so memory can&apos;t be changed.</Note>;
+  } else if (!manageable) {
+    const stores = readMemoryStores(serverCapabilities);
+    body = (
+      <div className="space-y-4">
+        <Note>
+          Memory is set where the agent runs and can&apos;t be changed here.
+        </Note>
+        <div className="divide-y divide-border/60 rounded-lg border px-4">
+          {STORES.map((store) => (
+            <div
+              key={store.id}
+              className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 py-2.5"
+            >
+              <p className="text-sm">{store.label}</p>
+              <span
+                className="text-sm text-muted-foreground"
+                data-testid={store.statusTestId}
+              >
+                {statusWord(stores[store.capability])}
+              </span>
+            </div>
+          ))}
         </div>
-      )}
-    </DaemonOptionsCard>
+      </div>
+    );
+  } else if (!doc) {
+    body = (
+      <Note>
+        {isLoading
+          ? "Loading memory settings…"
+          : (error ?? "Memory settings couldn't be loaded right now.")}
+      </Note>
+    );
+  } else {
+    const shown = draft ?? doc.options;
+    const dirty = !sameOptions(shown, doc.options);
+    const update = (patch: DaemonOptionsPatch) =>
+      setDraft(mergeDaemonOptions(shown, patch));
+    const submit = async () => {
+      setConfirming(false);
+      const ok = await save(shown);
+      if (ok) setDraft(null);
+    };
+    body = (
+      <>
+        <div className="divide-y divide-border/60">
+          {STORES.map((store) => (
+            <SettingsRow
+              key={store.id}
+              label={store.label}
+              htmlFor={store.id}
+              description={store.description}
+            >
+              <Switch
+                id={store.id}
+                checked={shown[store.section].enabled}
+                disabled={busy}
+                onCheckedChange={(enabled) => update(store.patch(enabled))}
+              />
+            </SettingsRow>
+          ))}
+        </div>
+        {dirty ? (
+          <p
+            className="mt-3 text-xs text-muted-foreground"
+            data-testid="memory-stores-pending"
+          >
+            {RESTART_SENTENCE}
+          </p>
+        ) : null}
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            size="sm"
+            disabled={!dirty || busy}
+            onClick={() => setConfirming(true)}
+          >
+            Save and restart
+          </Button>
+          {dirty ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              disabled={busy}
+              onClick={() => setDraft(null)}
+            >
+              Discard
+            </Button>
+          ) : null}
+        </div>
+        {error ? (
+          <p role="alert" className="mt-3 text-sm text-destructive">
+            {error}
+          </p>
+        ) : null}
+        {notice ? (
+          <p role="status" className="mt-3 text-sm text-muted-foreground">
+            {notice}
+          </p>
+        ) : null}
+        <AlertDialog open={confirming} onOpenChange={setConfirming}>
+          {confirming && (
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Save memory settings?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  {RESTART_SENTENCE}
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction onClick={() => void submit()}>
+                  Save and restart
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          )}
+        </AlertDialog>
+      </>
+    );
+  }
+
+  return (
+    <SettingsCard title="Memory" description="Choose what the agent remembers.">
+      <div data-testid="memory-stores">{body}</div>
+    </SettingsCard>
   );
 }

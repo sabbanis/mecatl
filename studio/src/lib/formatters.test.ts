@@ -3,7 +3,6 @@ import {
   describeCron,
   formatBytes,
   formatContextWindow,
-  formatDuration,
   formatDurationMs,
 } from "./formatters";
 
@@ -20,26 +19,6 @@ describe("formatContextWindow", () => {
     expect(formatContextWindow(0)).toBe("");
     expect(formatContextWindow(-1)).toBe("");
     expect(formatContextWindow(Number.NaN)).toBe("");
-  });
-});
-
-describe("formatDuration", () => {
-  it("humanises retention spans to their two largest units", () => {
-    expect(formatDuration(0)).toBe("0s");
-    expect(formatDuration(45)).toBe("45s");
-    expect(formatDuration(3600)).toBe("1h");
-    expect(formatDuration(5400)).toBe("1h 30m");
-    expect(formatDuration(86_400)).toBe("1d");
-    expect(formatDuration(604_800)).toBe("7d");
-    expect(formatDuration(129_600)).toBe("1d 12h");
-    // The third unit is dropped, not rounded into the second.
-    expect(formatDuration(90_061)).toBe("1d 1h");
-  });
-
-  it("clamps negatives and non-finite values to 0s", () => {
-    expect(formatDuration(-5)).toBe("0s");
-    expect(formatDuration(Number.NaN)).toBe("0s");
-    expect(formatDuration(Number.POSITIVE_INFINITY)).toBe("0s");
   });
 });
 

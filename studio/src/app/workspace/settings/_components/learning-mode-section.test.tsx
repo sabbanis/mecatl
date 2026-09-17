@@ -6,21 +6,18 @@ import {
   currentLearning,
   LearningModeSection,
   learningChangeReport,
-  learningSourceHint,
-  learningValueSource,
 } from "./learning-mode-section";
 
 /**
- * Settings → Learning → Learning mode: the web form of the TUI's `/learning`
- * + `/learning-sensitivity`. Pins that (1) the two selects show the
- * EFFECTIVE values (what mecated runs with), each row naming where its value
- * comes from; (2) picking a new value renders the TUI's from → to report and
- * the restart notice and enables Save, which saves nothing until the confirm
+ * Settings → Learning → Learning: two plain choices. Pins that (1) the two
+ * choices show the EFFECTIVE values (what the agent runs with) with no
+ * source/file hints; (2) picking a new value shows what changed and the
+ * restart sentence and enables Save, which saves nothing until the confirm
  * — the confirm calls `save` with BOTH values; Cancel and Discard save
  * nothing; (3) an imported operator settings file renders the values
- * read-only with the edit-that-file note; (4) external mode renders the
- * managed note plus the remote-refusal wording and offline the offline note,
- * neither with a control; (5) busy disables Save; error and notice render.
+ * read-only with a plain note; (4) external mode renders only the managed
+ * note and offline the offline note, neither with a control; (5) busy
+ * disables Save; error and notice render.
  */
 
 const runtimeSettings = vi.hoisted(() => ({
@@ -107,7 +104,7 @@ beforeEach(() => {
 });
 
 describe("LearningModeSection", () => {
-  it("shows the effective mode and sensitivity, names their source, and keeps Save disabled", () => {
+  it("shows the effective mode and sensitivity without source hints, and keeps Save disabled", () => {
     runtimeSettings.doc = doc({
       effectiveMode: "review",
       effectiveSensitivity: "eager",
@@ -116,14 +113,11 @@ describe("LearningModeSection", () => {
     render(<LearningModeSection />);
     expect(modeTrigger()).toHaveTextContent("Review");
     expect(sensitivityTrigger()).toHaveTextContent("Eager");
-    // The mode comes from the operator's own file, the sensitivity from
-    // nowhere — the daemon default.
-    expect(
-      screen.getByText(/From your settings\.yaml \(learning\.mode\)\./),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(/Daemon default — nothing sets it yet\./),
-    ).toBeInTheDocument();
+    // Where a value comes from (Studio's file, the operator's file, the
+    // default) is not the user's concern.
+    expect(screen.queryByText(/settings\.yaml/)).toBeNull();
+    expect(screen.queryByText(/Set by Studio/)).toBeNull();
+    expect(screen.queryByText(/default/i)).toBeNull();
     expect(saveButton()).toBeDisabled();
     expect(screen.queryByTestId("learning-pending")).not.toBeInTheDocument();
     expect(
@@ -131,35 +125,59 @@ describe("LearningModeSection", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("reports from → to on a pending change and saves both values only after the confirm", async () => {
+  it("describes each choice in one plain sentence", async () => {
+    const user = userEvent.setup();
+    render(<LearningModeSection />);
+    await user.click(modeTrigger());
+    const modeMenu = await screen.findByRole("menu");
+    expect(modeMenu).toHaveTextContent("The agent does not learn from chats.");
+    expect(modeMenu).toHaveTextContent(
+      "The agent suggests things to remember; you approve each one.",
+    );
+    expect(modeMenu).toHaveTextContent(
+      "The agent suggests things and remembers clear-cut facts on its own.",
+    );
+    // The old multi-clause explanations are gone.
+    expect(modeMenu).not.toHaveTextContent(/reflection provider/);
+    expect(modeMenu).not.toHaveTextContent(/standard-policy/);
+    await user.keyboard("{Escape}");
+    await user.click(sensitivityTrigger());
+    const sensitivityMenu = await screen.findByRole("menu");
+    expect(sensitivityMenu).toHaveTextContent(
+      "Fewer suggestions, only when the evidence is strong.",
+    );
+    expect(sensitivityMenu).toHaveTextContent(
+      "The standard amount of suggestions.",
+    );
+    expect(sensitivityMenu).toHaveTextContent(
+      "More suggestions, with less evidence needed.",
+    );
+    expect(sensitivityMenu).not.toHaveTextContent(/points/);
+  });
+
+  it("shows what changed on a pending change and saves both values only after the confirm", async () => {
     const user = userEvent.setup();
     render(<LearningModeSection />);
     expect(modeTrigger()).toHaveTextContent("Off");
 
-    await user.click(modeTrigger());
-    for (const label of ["Off", "Review", "Auto"]) {
-      expect(
-        await screen.findByRole("menuitem", { name: new RegExp(`^${label}`) }),
-      ).toBeInTheDocument();
-    }
-    await user.click(screen.getByRole("menuitem", { name: /^Review/ }));
+    await pick(user, modeTrigger(), /^Review/);
 
     expect(modeTrigger()).toHaveTextContent("Review");
     const pending = screen.getByTestId("learning-pending");
+    expect(pending).toHaveTextContent("Learning mode: Off → Review");
+    expect(pending).not.toHaveTextContent(/Sensitivity/);
     expect(pending).toHaveTextContent(
-      "Off (sensitivity Balanced) → Review (sensitivity Balanced)",
+      "Changes restart the agent. Anything running will stop.",
     );
-    expect(pending).toHaveTextContent(/Restart required/);
     expect(saveButton()).toBeEnabled();
     expect(runtimeSettings.save).not.toHaveBeenCalled();
 
     await user.click(saveButton());
     const dialog = await screen.findByRole("alertdialog");
+    expect(dialog).toHaveTextContent("Save and restart the agent?");
+    expect(dialog).toHaveTextContent("Learning mode: Off → Review");
     expect(dialog).toHaveTextContent(
-      "Change learning settings and restart the daemon?",
-    );
-    expect(dialog).toHaveTextContent(
-      "Off (sensitivity Balanced) → Review (sensitivity Balanced)",
+      "Changes restart the agent. Anything running will stop.",
     );
     expect(runtimeSettings.save).not.toHaveBeenCalled();
 
@@ -179,7 +197,7 @@ describe("LearningModeSection", () => {
     render(<LearningModeSection />);
     await pick(user, sensitivityTrigger(), /^Eager/);
     expect(screen.getByTestId("learning-pending")).toHaveTextContent(
-      "Auto (sensitivity Balanced) → Auto (sensitivity Eager)",
+      "Sensitivity: Balanced → Eager",
     );
     await user.click(saveButton());
     await screen.findByRole("alertdialog");
@@ -220,7 +238,7 @@ describe("LearningModeSection", () => {
     expect(screen.queryByTestId("learning-pending")).not.toBeInTheDocument();
   });
 
-  it("renders the values read-only with the operator note when an imported settings file owns learning", () => {
+  it("renders the values read-only with a plain note when an imported settings file owns learning", () => {
     runtimeSettings.doc = doc({
       managedBy: "operator-settings",
       effectiveMode: "review",
@@ -236,23 +254,22 @@ describe("LearningModeSection", () => {
     expect(screen.getByText("Review")).toBeInTheDocument();
     expect(screen.getByText("Conservative")).toBeInTheDocument();
     expect(
-      screen.getByText(/managed by the imported operator settings file/),
+      screen.getByText(
+        /Learning is set where the agent runs and can’t be changed here\./,
+      ),
     ).toBeInTheDocument();
-    expect(screen.getByText("learning:")).toBeInTheDocument();
+    expect(screen.queryByText("learning:")).toBeNull();
   });
 
-  it("renders the managed note plus the remote wording, and no control, in external mode", () => {
+  it("renders only the managed note, and no control, in external mode", () => {
     runtimeSettings.manageable = false;
     runtimeSettings.doc = null;
     render(<LearningModeSection />);
     expect(
-      screen.getByText(/Managed by the external mecated deployment/),
+      screen.getByText(/The agent is run somewhere else/),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText(/settings\.yaml and restart that server\./),
-    ).toBeInTheDocument();
-    expect(screen.getByText("learning.mode")).toBeInTheDocument();
-    expect(screen.getByText("learning.sensitivity")).toBeInTheDocument();
+    expect(screen.queryByText(/settings\.yaml/)).toBeNull();
+    expect(screen.queryByText("learning.mode")).toBeNull();
     expect(
       screen.queryByRole("button", { name: "Learning mode" }),
     ).not.toBeInTheDocument();
@@ -262,25 +279,31 @@ describe("LearningModeSection", () => {
     runtimeSettings.live = false;
     runtimeSettings.doc = null;
     render(<LearningModeSection />);
-    expect(screen.getByText(/The runtime is offline/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/The agent is offline, so these settings/),
+    ).toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Learning mode" }),
     ).not.toBeInTheDocument();
   });
 
-  it("says it is reading while the document loads, and names a read failure", () => {
+  it("says it is loading while the document loads, and names a read failure", () => {
     runtimeSettings.doc = null;
     runtimeSettings.isLoading = true;
     const { unmount } = render(<LearningModeSection />);
-    expect(
-      screen.getByText(/Reading the daemon's runtime settings/),
-    ).toBeInTheDocument();
+    expect(screen.getByText("Loading…")).toBeInTheDocument();
     unmount();
 
     runtimeSettings.isLoading = false;
     runtimeSettings.error = "controller unreachable";
     render(<LearningModeSection />);
     expect(screen.getByText("controller unreachable")).toBeInTheDocument();
+
+    runtimeSettings.error = null;
+    render(<LearningModeSection />);
+    expect(
+      screen.getByText("Learning settings could not be loaded right now."),
+    ).toBeInTheDocument();
   });
 
   it("disables Save while a save is in flight", async () => {
@@ -299,39 +322,38 @@ describe("LearningModeSection", () => {
       effectiveMode: "review",
     });
     runtimeSettings.error = "mecated refused to start";
-    runtimeSettings.notice =
-      "Saved. The daemon restarted with the new settings.";
+    runtimeSettings.notice = "Saved. The agent restarted.";
     render(<LearningModeSection />);
     expect(screen.getByRole("alert")).toHaveTextContent(
       "mecated refused to start",
     );
-    expect(screen.getByRole("status")).toHaveTextContent(
-      /The daemon restarted/,
-    );
-    expect(screen.getByText(/Set by Studio\./)).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(/The agent restarted/);
   });
 });
 
 describe("learning helpers", () => {
-  it("formats the TUI's from → to report", () => {
+  it("names only what changed in the pending report", () => {
     expect(
       learningChangeReport(
         { mode: "off", sensitivity: "balanced" },
         { mode: "review", sensitivity: "eager" },
       ),
-    ).toBe("Off (sensitivity Balanced) → Review (sensitivity Eager)");
+    ).toBe("Learning mode: Off → Review · Sensitivity: Balanced → Eager");
+    expect(
+      learningChangeReport(
+        { mode: "off", sensitivity: "balanced" },
+        { mode: "off", sensitivity: "conservative" },
+      ),
+    ).toBe("Sensitivity: Balanced → Conservative");
+    expect(
+      learningChangeReport(
+        { mode: "auto", sensitivity: "eager" },
+        { mode: "auto", sensitivity: "eager" },
+      ),
+    ).toBe("");
   });
 
-  it("resolves the value source: Studio's file first, then settings.yaml, then the default", () => {
-    expect(learningValueSource("review", "auto")).toBe("studio");
-    expect(learningValueSource("", "auto")).toBe("settings.yaml");
-    expect(learningValueSource("", "")).toBe("default");
-    expect(learningSourceHint("learning.sensitivity", "settings.yaml")).toBe(
-      "From your settings.yaml (learning.sensitivity).",
-    );
-  });
-
-  it("falls back to the daemon defaults for an unknown effective value", () => {
+  it("falls back to the defaults for an unknown effective value", () => {
     expect(
       currentLearning(
         doc({ effectiveMode: "weird", effectiveSensitivity: "" }),

@@ -21,7 +21,7 @@ import { validProviderName } from "./provider-auth.mjs";
  */
 
 /** mecated's `--reasoning-effort` tiers; "" is auto (flag omitted). */
-export const REASONING_EFFORTS = Object.freeze([
+const REASONING_EFFORTS = Object.freeze([
   "",
   "low",
   "medium",
@@ -31,10 +31,10 @@ export const REASONING_EFFORTS = Object.freeze([
 ]);
 
 /** `--anthropic-cache-ttl` values; "" omits the flag (the API's 5m default). */
-export const ANTHROPIC_CACHE_TTLS = Object.freeze(["", "5m", "1h"]);
+const ANTHROPIC_CACHE_TTLS = Object.freeze(["", "5m", "1h"]);
 
 /** `--toolhive-llm-mode` values; "auto" is mecated's default (flag omitted). */
-export const TOOLHIVE_MODES = Object.freeze(["auto", "proxy", "direct"]);
+const TOOLHIVE_MODES = Object.freeze(["auto", "proxy", "direct"]);
 
 /** The built-in kinds mecated exposes a `--<kind>-base-url` flag for. */
 export const BASE_URL_KINDS = Object.freeze([
@@ -44,7 +44,7 @@ export const BASE_URL_KINDS = Object.freeze([
   "opencode",
 ]);
 
-/** Slot names another Studio page owns: the Model router page writes
+/** Slot names the model router owns: semantic routing writes
  *  `models.slots.router`, so a daemon-defaults `--model-slot router=…` would
  *  fight it. */
 export const RESERVED_SLOTS = Object.freeze(["router"]);
@@ -57,7 +57,7 @@ export const RESERVED_SLOTS = Object.freeze(["router"]);
  * bound (mecated: "≤0 disables"), which is why "not set" cannot ride 0 here
  * the way the context window does.
  */
-export const LLM_TIMEOUT_DEFAULTS = Object.freeze({
+const LLM_TIMEOUT_DEFAULTS = Object.freeze({
   perAttemptSeconds: 300,
   streamIdleSeconds: 180,
 });
@@ -217,7 +217,7 @@ function modelMap(raw, noun) {
       );
     if (noun === "slot" && RESERVED_SLOTS.includes(key))
       throw badRequest(
-        `The "${key}" slot is owned by the Model router page — configure it there`,
+        `The "${key}" slot is reserved for model routing and cannot be set here`,
       );
     const model = modelValue(value, `The model for ${noun} "${key}"`);
     if (!model) throw badRequest(`The ${noun} "${key}" needs a model`);

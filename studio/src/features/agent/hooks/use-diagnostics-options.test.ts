@@ -104,7 +104,7 @@ describe("useDiagnosticsOptions", () => {
     });
     await waitFor(() => expect(result.current.options?.logLevel).toBe("debug"));
     expect(runtime.refresh).toHaveBeenCalled();
-    expect(result.current.notice).toMatch(/daemon restarted/);
+    expect(result.current.notice).toBe("Saved. The agent restarted.");
     expect(result.current.busy).toBe(false);
   });
 
@@ -115,9 +115,7 @@ describe("useDiagnosticsOptions", () => {
     await waitFor(async () => {
       await result.current.save({ quiet: true });
     });
-    await waitFor(() =>
-      expect(result.current.notice).toBe("Diagnostics options saved."),
-    );
+    await waitFor(() => expect(result.current.notice).toBe("Saved."));
   });
 
   it("surfaces a refused save as error and re-reads the running document", async () => {

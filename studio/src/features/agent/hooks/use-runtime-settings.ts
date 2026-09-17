@@ -112,7 +112,7 @@ export function useRuntimeSettings() {
         // now so the gates update without waiting for the poll. Best-effort
         // — the save itself has already succeeded.
         await refreshRuntime().catch(() => undefined);
-        setNotice("Saved. The daemon restarted with the new settings.");
+        setNotice("Saved. The agent restarted.");
         return true;
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : String(caught));
@@ -133,7 +133,7 @@ export function useRuntimeSettings() {
     try {
       await approveHarnessSoulBaseline();
       await load();
-      setNotice("Persona baseline accepted. The daemon restarted.");
+      setNotice("Saved. The agent restarted.");
       return true;
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : String(caught));

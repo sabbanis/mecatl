@@ -78,7 +78,7 @@ export function useDaemonDefaults() {
         const saved = await saveHarnessDaemonDefaults(next);
         if (saved) setDefaults(saved);
         else await load();
-        setNotice("Daemon defaults saved. The daemon restarted with them.");
+        setNotice("Saved. The agent restarted.");
         return true;
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : String(caught));

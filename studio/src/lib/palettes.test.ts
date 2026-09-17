@@ -6,7 +6,6 @@ import {
   buildPaletteBootScript,
   CUSTOM_PALETTE_ID,
   DEFAULT_PALETTE_ID,
-  findPalette,
   isCustomPaletteId,
   isKnownPalette,
   PALETTE_ATTRIBUTE,
@@ -42,8 +41,6 @@ describe("BUILT_IN_PALETTES", () => {
       expect(palette.swatch.trim()).not.toBe("");
       expect(palette.source).toBe("built-in");
     }
-    expect(findPalette("aztec")?.label).toBe("Aztec");
-    expect(findPalette("nope")).toBeUndefined();
   });
 });
 

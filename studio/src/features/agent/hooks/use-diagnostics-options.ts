@@ -80,8 +80,8 @@ export function useDiagnosticsOptions() {
         await refresh();
         setNotice(
           Object.keys(patch).every((key) => key === "quiet")
-            ? "Diagnostics options saved."
-            : "Diagnostics options saved. The daemon restarted with them.",
+            ? "Saved."
+            : "Saved. The agent restarted.",
         );
         return true;
       } catch (caught) {

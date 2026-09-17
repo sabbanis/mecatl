@@ -88,7 +88,7 @@ describe("ShortcutsReference", () => {
   it("shows the deployment label when the daemon sets one", () => {
     runtime.deployment = "staging-eu";
     render(<ShortcutsReference />);
-    expect(screen.getByText(/Deployment: staging-eu/)).toBeInTheDocument();
+    expect(screen.getByText(/Agent: staging-eu/)).toBeInTheDocument();
   });
 
   it("renders the usage legend with the chat menu's own labels", () => {
@@ -113,7 +113,9 @@ describe("ShortcutsReference", () => {
     runtime.state = "offline";
     render(<ShortcutsReference />);
     expect(
-      screen.getByText("Connect to a daemon to see which features it enables."),
+      screen.getByText(
+        "Connect to an agent to see which features are turned on.",
+      ),
     ).toBeInTheDocument();
     expect(screen.queryByText("Steer")).toBeNull();
     expect(screen.queryByText("not enabled")).toBeNull();
@@ -125,16 +127,9 @@ describe("ShortcutsReference", () => {
     runtime.state = "connecting";
     render(<ShortcutsReference />);
     expect(
-      screen.getByText("Checking which features the daemon enables…"),
+      screen.getByText("Checking which features are turned on…"),
     ).toBeInTheDocument();
     expect(screen.queryByText("Steer")).toBeNull();
-  });
-
-  it("links to Settings → Keyboard for remapping", () => {
-    render(<ShortcutsReference />);
-    expect(
-      screen.getByRole("link", { name: "Change shortcuts →" }),
-    ).toHaveAttribute("href", "/workspace/settings/keyboard");
   });
 
   it("renders a remapped key's own keycaps with a custom tag; untouched rows stay plain", () => {

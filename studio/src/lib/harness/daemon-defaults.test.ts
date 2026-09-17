@@ -157,6 +157,6 @@ describe("validateDaemonDefaults", () => {
     ).toEqual({ ...saved, reasoningEffort: "low", activeProvider: null });
     expect(() =>
       validateDaemonDefaults({ ...saved, slots: { router: "fast" } }),
-    ).toThrow(/owned by the Model router page/);
+    ).toThrow(/reserved for model routing/);
   });
 });

@@ -23,29 +23,25 @@ import {
   ExternalManagedNote,
   Note,
   OfflineNote,
+  RESTART_SENTENCE,
   SettingsCard,
   SettingsRow,
 } from "./settings-card";
 
 /**
- * Settings → Learning → Learning mode: the web form of mecatui's `/learning`
- * and `/learning-sensitivity`. Two selects over the daemon's closed
- * vocabularies, a from → to report of the pending change, and one "Save and
- * restart" that writes both values through the controller (Studio's own
- * CLI-tier settings file — the operator's `~/.config/mecatl/settings.yaml`
- * is never edited) and restarts the daemon.
+ * Settings → Learning → Learning: two plain choices (mode and sensitivity)
+ * over the agent's closed vocabularies, a summary of the pending change, and
+ * one "Save and restart" that writes both values through the controller and
+ * restarts the agent.
  *
  * The values shown as CURRENT are the controller's `effective` fold — what
- * mecated actually runs with (Studio's override, else the operator's
- * settings.yaml, else the daemon default) — never just Studio's own file,
- * so a daemon already in Review from settings.yaml reads Review here. Each
- * row says where its value comes from.
+ * the agent actually runs with (Studio's override, else the operator's
+ * settings file, else the default) — never just Studio's own file.
  *
  * Managed mode only. An imported operator settings file owns learning
  * (`managedBy.learning === "operator-settings"`): the values render
- * read-only with the instruction to edit that file. External mode renders
- * the managed note plus the TUI's remote wording (edit the server host's
- * settings.yaml and restart that server); offline renders the offline note.
+ * read-only. External mode renders the managed note; offline the offline
+ * note.
  */
 
 type LearningMode = Exclude<HarnessLearningMode, "">;
@@ -56,48 +52,42 @@ interface LearningDraft {
   sensitivity: LearningSensitivity;
 }
 
-/** The three modes, worded as the TUI documents them (docs/tui.md). */
 const MODE_OPTIONS: readonly (OptionItem & { value: LearningMode })[] = [
   {
     value: "off",
     label: "Off",
-    description:
-      "No automatic reflection. Explicit Reflect still works when a reflection provider is configured.",
+    description: "The agent does not learn from chats.",
   },
   {
     value: "review",
     label: "Review",
-    description:
-      "Stages bounded, evidence-backed proposals for your approval; writes nothing to memory on its own.",
+    description: "The agent suggests things to remember; you approve each one.",
   },
   {
     value: "auto",
     label: "Auto",
     description:
-      "Stages proposals and additionally promotes only standard-policy-eligible, non-conflicting facts.",
+      "The agent suggests things and remembers clear-cut facts on its own.",
   },
 ];
 
-/** The evidence thresholds are the daemon's (user-docs/features/learning.md). */
 const SENSITIVITY_OPTIONS: readonly (OptionItem & {
   value: LearningSensitivity;
 })[] = [
   {
     value: "conservative",
     label: "Conservative",
-    description:
-      "Needs the strongest evidence (6 points) before a proposal is staged.",
+    description: "Fewer suggestions, only when the evidence is strong.",
   },
   {
     value: "balanced",
     label: "Balanced",
-    description: "The daemon default: 4 points of evidence stage a proposal.",
+    description: "The standard amount of suggestions.",
   },
   {
     value: "eager",
     label: "Eager",
-    description:
-      "Stages a proposal on 3 points of evidence — more proposals, more to review.",
+    description: "More suggestions, with less evidence needed.",
   },
 ];
 
@@ -107,8 +97,8 @@ const isMode = (value: string): value is LearningMode =>
 const isSensitivity = (value: string): value is LearningSensitivity =>
   SENSITIVITY_OPTIONS.some((option) => option.value === value);
 
-/** The daemon's defaults stand in for a value the controller could not
- *  report (an older controller, an unparseable settings.yaml). */
+/** The agent's defaults stand in for a value the controller could not
+ *  report (an older controller, an unparseable settings file). */
 const asLearningMode = (value: string): LearningMode =>
   isMode(value) ? value : "off";
 
@@ -123,49 +113,30 @@ const learningSensitivityLabel = (value: string): string =>
   SENSITIVITY_OPTIONS.find((option) => option.value === value)?.label ??
   learningSensitivityLabel(asLearningSensitivity(value));
 
-/** `Off (sensitivity Balanced)` — the TUI's complete pending-state label. */
-function describeLearning(settings: LearningDraft): string {
-  return `${learningModeLabel(settings.mode)} (sensitivity ${learningSensitivityLabel(settings.sensitivity)})`;
-}
-
-/** The TUI's from → to report line for a pending change. */
+/**
+ * The pending change in plain words, naming only what changed:
+ * `Learning mode: Off → Review · Sensitivity: Balanced → Eager`.
+ * Empty when nothing changed.
+ */
 export function learningChangeReport(
   from: LearningDraft,
   to: LearningDraft,
 ): string {
-  return `${describeLearning(from)} → ${describeLearning(to)}`;
+  const parts: string[] = [];
+  if (from.mode !== to.mode) {
+    parts.push(
+      `Learning mode: ${learningModeLabel(from.mode)} → ${learningModeLabel(to.mode)}`,
+    );
+  }
+  if (from.sensitivity !== to.sensitivity) {
+    parts.push(
+      `Sensitivity: ${learningSensitivityLabel(from.sensitivity)} → ${learningSensitivityLabel(to.sensitivity)}`,
+    );
+  }
+  return parts.join(" · ");
 }
 
-export type LearningValueSource = "studio" | "settings.yaml" | "default";
-
-/**
- * Where an effective value comes from: Studio's own file when it carries one
- * (the CLI tier out-ranks the user-global file), else the operator's
- * settings.yaml when that sets it, else the daemon default.
- */
-export function learningValueSource(
-  studioValue: string,
-  inheritedValue: string,
-): LearningValueSource {
-  if (studioValue) return "studio";
-  if (inheritedValue) return "settings.yaml";
-  return "default";
-}
-
-const SOURCE_HINT: Record<LearningValueSource, (key: string) => string> = {
-  studio: () => "Set by Studio.",
-  "settings.yaml": (key) => `From your settings.yaml (${key}).`,
-  default: () => "Daemon default — nothing sets it yet.",
-};
-
-export function learningSourceHint(
-  key: "learning.mode" | "learning.sensitivity",
-  source: LearningValueSource,
-): string {
-  return SOURCE_HINT[source](key);
-}
-
-/** The effective pair the daemon runs with, as the two selects show it. */
+/** The effective pair the agent runs with, as the two choices show it. */
 export function currentLearning(doc: HarnessRuntimeSettingsDoc): LearningDraft {
   return {
     mode: asLearningMode(doc.effective.learning.mode),
@@ -173,10 +144,9 @@ export function currentLearning(doc: HarnessRuntimeSettingsDoc): LearningDraft {
   };
 }
 
-const MODE_DESCRIPTION =
-  "What the daemon does after a completed run. Off: nothing automatic. Review: stages proposals for the queue below. Auto: also promotes eligible, non-conflicting facts.";
+const MODE_DESCRIPTION = "What the agent does with a finished chat.";
 const SENSITIVITY_DESCRIPTION =
-  "How much evidence a run must show before a proposal is staged.";
+  "How sure the agent must be before it suggests something.";
 
 export function LearningModeSection() {
   const { live, manageable, doc, isLoading, busy, error, notice, save } =
@@ -189,22 +159,13 @@ export function LearningModeSection() {
   if (!live) {
     body = <OfflineNote />;
   } else if (!manageable) {
-    body = (
-      <div className="space-y-2">
-        <ExternalManagedNote />
-        <Note>
-          Edit <code>learning.mode</code> / <code>learning.sensitivity</code> in
-          the server host&rsquo;s settings.yaml and restart that server.
-        </Note>
-      </div>
-    );
+    body = <ExternalManagedNote />;
   } else if (!doc) {
     body = (
       <Note>
         {isLoading
-          ? "Reading the daemon's runtime settings…"
-          : (error ??
-            "The daemon's runtime settings could not be read right now.")}
+          ? "Loading…"
+          : (error ?? "Learning settings could not be loaded right now.")}
       </Note>
     );
   } else if (doc.managedBy.learning === "operator-settings") {
@@ -228,8 +189,8 @@ export function LearningModeSection() {
         </div>
         <div className="mt-3">
           <Note>
-            Learning is managed by the imported operator settings file — update
-            its <code>learning:</code> block and restart the daemon.
+            Learning is set where the agent runs and can&rsquo;t be changed
+            here.
           </Note>
         </div>
       </>
@@ -240,20 +201,6 @@ export function LearningModeSection() {
     const dirty =
       shown.mode !== current.mode || shown.sensitivity !== current.sensitivity;
     const report = learningChangeReport(current, shown);
-    const modeHint = learningSourceHint(
-      "learning.mode",
-      learningValueSource(
-        doc.config.learning.mode,
-        doc.inherited.learning.mode,
-      ),
-    );
-    const sensitivityHint = learningSourceHint(
-      "learning.sensitivity",
-      learningValueSource(
-        doc.config.learning.sensitivity,
-        doc.inherited.learning.sensitivity,
-      ),
-    );
     const submit = async () => {
       setConfirming(false);
       const ok = await save({
@@ -265,10 +212,7 @@ export function LearningModeSection() {
     body = (
       <>
         <div className="divide-y divide-border/60">
-          <SettingsRow
-            label="Learning mode"
-            description={`${MODE_DESCRIPTION} ${modeHint}`}
-          >
+          <SettingsRow label="Learning mode" description={MODE_DESCRIPTION}>
             <OptionField
               label="Learning mode"
               value={shown.mode}
@@ -280,7 +224,7 @@ export function LearningModeSection() {
           </SettingsRow>
           <SettingsRow
             label="Sensitivity"
-            description={`${SENSITIVITY_DESCRIPTION} ${sensitivityHint}`}
+            description={SENSITIVITY_DESCRIPTION}
           >
             <OptionField
               label="Sensitivity"
@@ -297,12 +241,8 @@ export function LearningModeSection() {
         </div>
         {dirty ? (
           <div className="mt-3 space-y-1" data-testid="learning-pending">
-            <p className="text-sm">
-              <span className="font-medium">Pending:</span> {report}
-            </p>
-            <p className="text-xs text-muted-foreground">
-              Restart required — saving restarts the daemon. In-flight runs end.
-            </p>
+            <p className="text-sm">{report}</p>
+            <p className="text-xs text-muted-foreground">{RESTART_SENTENCE}</p>
           </div>
         ) : null}
         <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -340,12 +280,9 @@ export function LearningModeSection() {
           {confirming && (
             <AlertDialogContent>
               <AlertDialogHeader>
-                <AlertDialogTitle>
-                  Change learning settings and restart the daemon?
-                </AlertDialogTitle>
+                <AlertDialogTitle>Save and restart the agent?</AlertDialogTitle>
                 <AlertDialogDescription>
-                  {report}. The daemon restarts with the new settings: in-flight
-                  runs end and their session ids die with them.
+                  {report}. {RESTART_SENTENCE}
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
@@ -363,8 +300,8 @@ export function LearningModeSection() {
 
   return (
     <SettingsCard
-      title="Learning mode"
-      description="Whether the managed daemon reflects on completed runs, and how much evidence it needs. Changes restart it."
+      title="Learning"
+      description="Let the agent remember useful things from finished chats."
     >
       {body}
     </SettingsCard>

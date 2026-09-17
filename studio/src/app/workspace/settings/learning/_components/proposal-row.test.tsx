@@ -11,14 +11,14 @@ import {
 import { ProposalRow } from "./proposal-row";
 
 /**
- * One review-queue row (the web form of mecatui's `/reflections` detail):
- * Approve is offered for staged AND deferred proposals but enabled only when
- * every evidence handle still resolves, with the reason otherwise; Reject is
- * staged-only; the Details disclosure shows each evidence handle's
- * provenance (locator:ordinal, seq, call, digest, availability, source
- * chat link, redacted preview), the decisions, the promotion receipt and the
- * learned-skill link, and re-reads the proposal on first open so a version
- * that moved underneath the queue is called out.
+ * One review-list row: Approve is offered for staged AND deferred proposals
+ * but enabled only when every evidence handle still resolves, with the
+ * reason otherwise; Reject is staged-only; the Details disclosure shows
+ * where the suggestion came from (a link to each source chat, whether it is
+ * still available, the redacted excerpt) and the learned-skill link — none
+ * of the technical provenance (sequence numbers, call ids, digests,
+ * versions, receipts) — and re-reads the proposal on first open so a
+ * version that moved underneath the list is called out.
  */
 
 afterEach(async () => {
@@ -104,11 +104,12 @@ describe("ProposalRow actions", () => {
     expect(onApprove).toHaveBeenCalledTimes(1);
   });
 
-  it("offers Approve (not Reject) for a deferred procedure whose evidence resolves", () => {
+  it("offers Approve (not Reject) for a deferred procedure whose evidence resolves, labelled plainly", () => {
     renderRow(proposal({ status: "deferred_unsupported", kind: "procedure" }));
     expect(screen.getByRole("button", { name: "Approve" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: "Reject" })).toBeNull();
-    expect(screen.getByText("deferred unsupported")).toBeInTheDocument();
+    expect(screen.getByText("Deferred")).toBeInTheDocument();
+    expect(screen.queryByText("deferred unsupported")).toBeNull();
   });
 
   it("disables Approve with the reason when any evidence is unavailable", () => {
@@ -146,7 +147,7 @@ describe("ProposalRow actions", () => {
     );
   });
 
-  it("prefers the daemon's promotion reason", () => {
+  it("prefers the agent's promotion reason", () => {
     renderRow(
       proposal({
         promotionAvailable: false,
@@ -159,18 +160,25 @@ describe("ProposalRow actions", () => {
     );
   });
 
-  it("offers Undo promotion for a promoted proposal and neither decision", () => {
+  it("offers Undo approval for a promoted proposal and neither decision", () => {
     renderRow(proposal({ status: "promoted" }));
-    expect(
-      screen.getByRole("button", { name: "Undo promotion" }),
-    ).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Undo approval" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: "Approve" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Reject" })).toBeNull();
+  });
+
+  it("shows the suggestion text without the raw key or trigger tags", () => {
+    renderRow(proposal({ triggers: ["deploy", "release"] }));
+    expect(screen.getByText("Deploy steps")).toBeInTheDocument();
+    expect(screen.getByText("Deploy with task release")).toBeInTheDocument();
+    expect(screen.queryByText("deploy/steps")).toBeNull();
+    expect(screen.queryByText("deploy")).toBeNull();
+    expect(screen.queryByText(/evidence ref/)).toBeNull();
   });
 });
 
 describe("ProposalRow details", () => {
-  it("reveals evidence provenance, decisions, the receipt and the learned-skill link, re-reading the proposal once", async () => {
+  it("reveals the source chats, their availability and the learned-skill link, re-reading the proposal once", async () => {
     const stub = stubHarnessFetch((request) => {
       if (request.path === "/v1/learning/proposals/prop-1") {
         return { proposal: { id: "prop-1", version: "2", status: "promoted" } };
@@ -222,38 +230,35 @@ describe("ProposalRow details", () => {
     const details = screen.getByTestId("proposal-details");
     expect(toggle).toHaveAttribute("aria-controls", details.id);
 
-    // Evidence: locator:ordinal · seq · call · digest (first 10) · state.
-    expect(within(details).getByText("Evidence (2)")).toBeInTheDocument();
-    expect(within(details).getByText("tool:3")).toBeInTheDocument();
-    expect(within(details).getByText("· seq 42")).toBeInTheDocument();
-    expect(within(details).getByText("· call call-9")).toBeInTheDocument();
-    const digest = within(details).getByText("· digest sha256:abc");
-    expect(digest).toHaveAttribute("title", "sha256:abcdef0123456789");
+    // Sources: a link to each chat, availability, and the excerpt.
+    expect(
+      within(details).getByText("Where this came from"),
+    ).toBeInTheDocument();
+    const links = within(details).getAllByRole("link", { name: "View chat" });
+    expect(links.map((link) => link.getAttribute("href"))).toEqual([
+      "/workspace/chat/session-1",
+      "/workspace/chat/session-2",
+    ]);
     expect(within(details).getByText("Available")).toBeInTheDocument();
     expect(
       within(details).getByText("Unavailable (source session deleted)"),
     ).toBeInTheDocument();
-    expect(within(details).getByText("message:7")).toBeInTheDocument();
-    // The zero seq / empty call / empty digest of the second ref are omitted.
-    expect(within(details).queryByText("· seq 0")).toBeNull();
-    expect(
-      within(details).getByRole("link", { name: "session-1" }),
-    ).toHaveAttribute("href", "/workspace/chat/session-1");
-    expect(
-      within(details).getByRole("link", { name: "session-2" }),
-    ).toHaveAttribute("href", "/workspace/chat/session-2");
     expect(within(details).getByText(/\$ task test/)).toBeInTheDocument();
 
-    // Decisions: kind · actor · reason · when.
-    expect(within(details).getByText("approve")).toBeInTheDocument();
-    expect(within(details).getByText("· operator")).toBeInTheDocument();
-    expect(within(details).getByText("· looks right")).toBeInTheDocument();
-    expect(within(details).getByText(/· 2m ago/)).toBeInTheDocument();
+    // The technical provenance stays out of the UI.
+    expect(within(details).queryByText(/seq 42/)).toBeNull();
+    expect(within(details).queryByText(/call-9/)).toBeNull();
+    expect(within(details).queryByText(/sha256/)).toBeNull();
+    expect(within(details).queryByText(/tool:3/)).toBeNull();
+    expect(within(details).queryByText("session-1")).toBeNull();
+    expect(within(details).queryByText("Version")).toBeNull();
+    expect(within(details).queryByText("Promotion receipt")).toBeNull();
+    expect(within(details).queryByText(/replaced version/)).toBeNull();
+    expect(within(details).queryByText("Decisions")).toBeNull();
+    expect(within(details).queryByText("· operator")).toBeNull();
+    expect(within(details).queryByText("learned-42")).toBeNull();
 
-    // The promotion receipt and the learned skill.
-    expect(within(details).getByText("Promotion receipt")).toBeInTheDocument();
-    expect(within(details).getByText(/replaced version 7/)).toBeInTheDocument();
-    expect(within(details).getByText("learned-42")).toBeInTheDocument();
+    // The learned skill it became.
     expect(
       within(details).getByRole("link", { name: "View learned skill" }),
     ).toHaveAttribute("href", "/workspace/skills?view=learned");
@@ -265,7 +270,7 @@ describe("ProposalRow details", () => {
       url: "/api/mecatl/v1/learning/proposals/prop-1",
     });
     // Same version: nothing to say. Closing and re-opening does not re-read.
-    expect(screen.queryByText(/changed since the queue was loaded/)).toBeNull();
+    expect(screen.queryByText(/changed since the list was loaded/)).toBeNull();
     await user.click(toggle);
     await user.click(toggle);
     expect(stub.requests).toHaveLength(1);
@@ -286,7 +291,9 @@ describe("ProposalRow details", () => {
       .setup()
       .click(screen.getByRole("button", { name: "Details" }));
     expect(
-      await screen.findByText(/version 2 → 3.*Review it again before deciding/),
+      await screen.findByText(
+        "This suggestion changed since the list was loaded. Review it again before deciding.",
+      ),
     ).toBeInTheDocument();
     expect(onReplace).toHaveBeenCalledTimes(1);
     expect(onReplace.mock.calls[0]?.[0]).toMatchObject({
@@ -296,7 +303,7 @@ describe("ProposalRow details", () => {
     });
   });
 
-  it("reports a failed re-read and keeps showing the list's evidence", async () => {
+  it("reports a failed re-read and keeps showing the list's sources", async () => {
     stubHarnessFetch(() =>
       problemResponse(404, "not_found", "proposal is gone"),
     );
@@ -306,13 +313,16 @@ describe("ProposalRow details", () => {
       .click(screen.getByRole("button", { name: "Details" }));
     expect(
       await screen.findByText(
-        /Could not refresh this proposal: .*proposal is gone/,
+        /Could not refresh this suggestion: .*proposal is gone/,
       ),
     ).toBeInTheDocument();
-    expect(screen.getByText("tool:3")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "View chat" })).toHaveAttribute(
+      "href",
+      "/workspace/chat/session-1",
+    );
   });
 
-  it("says when there is no evidence at all", async () => {
+  it("says when there is no source at all", async () => {
     stubHarnessFetch(() =>
       jsonResponse(200, { proposal: { id: "prop-1", version: "2" } }),
     );
@@ -322,7 +332,7 @@ describe("ProposalRow details", () => {
       .click(screen.getByRole("button", { name: "Details" }));
     expect(
       screen.getByText(
-        "No evidence recorded — this proposal cannot be approved.",
+        "No source recorded, so this suggestion can’t be approved.",
       ),
     ).toBeInTheDocument();
   });

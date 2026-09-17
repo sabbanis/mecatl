@@ -76,13 +76,13 @@ describe("ClearConversationSheetItem", () => {
     render(
       <ClearConversationSheetItem
         onSelect={() => {}}
-        disabledReason="The daemon did not say whether this chat can be cleared"
+        disabledReason="The agent did not say whether this chat can be cleared"
       />,
     );
     const button = screen.getByRole("button", { name: /Clear conversation/ });
     expect(button).toBeDisabled();
     expect(button).toHaveTextContent(
-      "The daemon did not say whether this chat can be cleared",
+      "The agent did not say whether this chat can be cleared",
     );
   });
 });

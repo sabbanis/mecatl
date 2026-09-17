@@ -1,9 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   decideDreamPlan,
-  describeDreamDecisionPending,
-  describeDreamUnavailable,
-  describeStaleDreamPlan,
   dreamTargetCapability,
   generateDreamPlan,
   isDreamInProgress,
@@ -181,90 +178,6 @@ describe("decision outcome classification", () => {
   it("is never in progress for a non-daemon error", () => {
     expect(isDreamInProgress(new Error("x"))).toBe(false);
     expect(isDreamInProgress(undefined)).toBe(false);
-  });
-});
-
-describe("describeStaleDreamPlan", () => {
-  it("words the notice per cause, defaulting to the vanished-plan copy", () => {
-    expect(
-      describeStaleDreamPlan(new HarnessApiError(412, "dream_conflict", "")),
-    ).toMatch(/different decision on that plan is already active/);
-    expect(
-      describeStaleDreamPlan(
-        new HarnessApiError(410, "dream_terminal_conflict", ""),
-      ),
-    ).toMatch(/already reached a different decision/);
-    expect(
-      describeStaleDreamPlan(new HarnessApiError(404, "dream_not_found", "")),
-    ).toMatch(/no longer valid .* generate a new one/);
-    expect(describeStaleDreamPlan(new HarnessApiError(404, "", ""))).toMatch(
-      /generate a new one/,
-    );
-  });
-});
-
-describe("describeDreamDecisionPending", () => {
-  it("names the decision and distinguishes the daemon's in-progress answer from a dropped connection", () => {
-    expect(
-      describeDreamDecisionPending(
-        new HarnessApiError(409, "dream_in_progress", ""),
-        "apply",
-      ),
-    ).toBe(
-      "The daemon is still applying that plan — retry the same decision to retrieve its receipt.",
-    );
-    expect(
-      describeDreamDecisionPending(
-        new HarnessApiError(409, "dream_in_progress", ""),
-        "dismiss",
-      ),
-    ).toMatch(/still dismissing that plan/);
-    expect(
-      describeDreamDecisionPending(
-        new HarnessApiError(0, "transport", "unreachable"),
-        "apply",
-      ),
-    ).toMatch(
-      /connection dropped .* may already be applying .* opposite decision stays unavailable/,
-    );
-  });
-});
-
-describe("describeDreamUnavailable", () => {
-  it("maps the daemon's bounded operator categories to user copy", () => {
-    expect(describeDreamUnavailable("target store is unavailable")).toBe(
-      "This memory store is not available on this daemon.",
-    );
-    expect(describeDreamUnavailable("dream planner is unavailable")).toMatch(
-      /No consolidation planner is configured/,
-    );
-    expect(
-      describeDreamUnavailable(
-        "target store lacks reviewed atomic consolidation",
-      ),
-    ).toBe("This memory store does not support reviewed consolidation.");
-    expect(
-      describeDreamUnavailable("manual dream coordinator is unavailable"),
-    ).toMatch(/coordinator is not running/);
-    expect(
-      describeDreamUnavailable(
-        "manual dreaming is unavailable while ownership enforcement is enabled",
-      ),
-    ).toMatch(/enforces session ownership/);
-    expect(describeDreamUnavailable("manual dreaming is unavailable")).toBe(
-      "Consolidation is not available on this daemon.",
-    );
-    expect(
-      describeDreamUnavailable("no manual dream target is available"),
-    ).toBe("Consolidation is not available on this daemon.");
-  });
-
-  it("passes an unknown category through verbatim (trimmed) and keeps empty empty", () => {
-    expect(describeDreamUnavailable("  planner quota exhausted ")).toBe(
-      "planner quota exhausted",
-    );
-    expect(describeDreamUnavailable("")).toBe("");
-    expect(describeDreamUnavailable("   ")).toBe("");
   });
 });
 

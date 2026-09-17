@@ -36,7 +36,7 @@ import { getHarnessClient, harness } from "./sdk";
  * is off (mecated's own "0 disables" convention, preserved rather than
  * translated so the form's "0" and the table's "Off" agree).
  */
-export interface StorageRetentionPolicy {
+interface StorageRetentionPolicy {
   mainMaxAgeSeconds: number;
   mainMaxCount: number;
   childMaxAgeSeconds: number;
@@ -244,7 +244,7 @@ export async function fetchStorageHealth(
 
 /** One sanitized per-item failure a job reports (never a path or a raw
  *  backend error — the daemon strips those before they reach the wire). */
-export interface StorageJobItemError {
+interface StorageJobItemError {
   itemHandle: string;
   reasonCode: string;
   message: string;
@@ -256,14 +256,6 @@ const ACTIVE_JOB_STATES = new Set(["planned", "pending", "running"]);
 /** True while a migration or cleanup job is still doing work. */
 export function isStorageJobActive(state: string): boolean {
   return ACTIVE_JOB_STATES.has(state);
-}
-
-/** Migration states a Resume can pick up from (the daemon checkpoints
- *  progress, so a cancelled or failed job continues where it stopped). */
-const RESUMABLE_MIGRATION_STATES = new Set(["cancelled", "failed", "paused"]);
-
-export function isMigrationResumable(state: string): boolean {
-  return RESUMABLE_MIGRATION_STATES.has(state);
 }
 
 /** The read-only estimate `POST /v1/storage/migrations/plan` answers. */
@@ -305,7 +297,7 @@ export interface StorageMigrationJob {
 }
 
 /** A count partition: total plus per-kind / per-state / per-reason maps. */
-export interface CleanupCounts {
+interface CleanupCounts {
   total: number;
   byKind: Record<string, number>;
   byState: Record<string, number>;
@@ -473,7 +465,7 @@ export function decodeCleanupJob(job: CleanupJobWire): SessionCleanupJob {
 }
 
 /** The batch size Studio proposes; the daemon clamps out-of-range values. */
-export const DEFAULT_MIGRATION_BATCH_SIZE = 50;
+const DEFAULT_MIGRATION_BATCH_SIZE = 50;
 
 /** `POST /v1/storage/migrations/plan`: a read-only estimate, safe to repeat. */
 export async function planStorageMigration(

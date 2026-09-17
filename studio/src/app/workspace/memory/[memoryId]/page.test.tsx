@@ -245,7 +245,7 @@ describe("memory detail page", () => {
     expect(screen.getByText("Memory not found")).toBeInTheDocument();
     expect(
       screen.getByText(
-        "Studio can't reach the daemon, so this fact can't be looked up right now.",
+        "Studio can't reach the agent, so this fact can't be looked up right now.",
       ),
     ).toBeInTheDocument();
     expect(stub.requests).toHaveLength(0);
