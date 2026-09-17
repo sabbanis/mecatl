@@ -246533,6 +246533,45 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789643092340,
         "tool": "customSmallerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jakub@stacklok.com",
+            "name": "Jakub Hrozek",
+            "username": "jhrozek"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4a20eb4985857c91a9da865bcb8ad546bc140f28",
+          "message": "fix(engine): record advertised tool schema bytes (#1677)",
+          "timestamp": "2026-09-17T13:23:18+02:00",
+          "tree_id": "ef1c1369ac034b38aeafa2452f5c1b84d323c44a",
+          "url": "https://github.com/stacklok/mecatl/commit/4a20eb4985857c91a9da865bcb8ad546bc140f28"
+        },
+        "date": 1789644857000,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3331,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 123,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1155,
+            "unit": "allocs/op"
+          }
+        ]
       }
     ],
     "mecatl scenarios (smaller-is-better)": [
@@ -323293,6 +323332,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789644854235,
+  "lastUpdate": 1789644857855,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
