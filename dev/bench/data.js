@@ -222042,6 +222042,40 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789638951150,
         "tool": "customBiggerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "328978+blkt@users.noreply.github.com",
+            "name": "Michelangelo Mori",
+            "username": "blkt"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "58c620e4ece251058324102c41d942a5a2c31473",
+          "message": "test(app): resolve env(1) absolutely so the scrub probe survives a pinned PATH (#1633)\n\nCo-authored-by: Claude Opus 5 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T12:42:32+02:00",
+          "tree_id": "2844956de5453e9d0bd0ffa962e4ed3713197956",
+          "url": "https://github.com/stacklok/mecatl/commit/58c620e4ece251058324102c41d942a5a2c31473"
+        },
+        "date": 1789642413125,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
       }
     ],
     "mecatl scenarios (render allocs, advisory)": [
@@ -322297,6 +322331,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789642410448,
+  "lastUpdate": 1789642414364,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
