@@ -343,6 +343,12 @@ type Config struct {
 	// PlacementScope is the trusted deployment scope supplied to every provider
 	// Bind. It must be non-empty when PlacementProvider is configured.
 	PlacementScope PlacementScope
+	// ExecutionAccess is an optional host-only run-ownership seam. Local and no-FS
+	// placements leave it nil and perform no lifecycle RPCs.
+	ExecutionAccess ExecutionAccess
+	// ReferenceIntents enables owner-safe reconciliation of provider-retained
+	// publication/deletion outcomes. Nil is fully inert.
+	ReferenceIntents ReferenceIntentLifecycle
 	// SessionReadLedger optionally selects a durable read-before-write ledger for
 	// each session independently of its placement's content backend. The returned
 	// handle must be non-nil; nil fails the run closed.
@@ -902,6 +908,8 @@ type Service struct {
 	// refresh — background or on-demand — re-projects it). Never nil after
 	// NewService.
 	providerStatus atomic.Pointer[[]*mecatlv1.ProviderStatus]
+	// referenceIntentWarned bounds diagnostics for retained ambiguous intents.
+	referenceIntentWarned atomic.Bool
 
 	// modelsRefresher is the OPTIONAL composition-supplied closure ListModels
 	// calls before returning its snapshot (issue #262, R1.4: a proxy started
@@ -1293,8 +1301,10 @@ type runState struct {
 	admissionCancel context.CancelFunc
 	// runContextStop releases the lease-linked launch context after the promoted
 	// run has settled. It must outlive the run-entry call itself.
-	runContextStop context.CancelFunc
-	awaiting       atomic.Bool
+	runContextStop       context.CancelFunc
+	execution            ExecutionRunHandle
+	executionRenewCancel context.CancelFunc
+	awaiting             atomic.Bool
 	// titleRevision is the last title metadata revision successfully persisted and
 	// published for this run. It starts from the admitted durable snapshot so
 	// prompt-ingress changes publish only after their save succeeds.
@@ -2545,6 +2555,15 @@ func (s *Service) createPerSessionEngine(ctx context.Context, mintID func() sess
 		}
 		return persisted, perr
 	}
+	if placement != nil && placement.Commit != nil {
+		commitCtx, cancelCommit := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		commitErr := placement.Commit(commitCtx)
+		cancelCommit()
+		if commitErr != nil {
+			s.logPlacementProviderError(ctx, "commit reference", commitErr)
+			return sess, fmt.Errorf("%w: session %q persisted but reference publication must be retried", ErrInternal, sess.ID)
+		}
+	}
 	if broker != nil {
 		commitCtx, cancelCommit := context.WithTimeout(context.WithoutCancel(ctx), engineCloseTimeout)
 		commitErr := s.commitBrokerAttachment(commitCtx, id, broker)
@@ -3336,8 +3355,95 @@ func (s *Service) StorageReady(ctx context.Context) bool {
 	return p.Ping(ctx) == nil
 }
 
+// ReconcileReferenceIntents resolves the provider's bounded, client-scoped
+// ambiguous publication and deletion outcomes against exact durable sessions.
+func (s *Service) ReconcileReferenceIntents(ctx context.Context) {
+	lifecycle := s.cfg.ReferenceIntents
+	if lifecycle == nil {
+		return
+	}
+	intents, err := lifecycle.ListReferenceIntents(ctx, 64)
+	if err != nil {
+		s.warnReferenceIntentRetention(ctx)
+		return
+	}
+	retained := false
+	for _, intent := range intents {
+		if intent.BindingID == "" || intent.OperationID == "" || !intent.Ref.Valid() || intent.Principal == nil {
+			retained = true
+			continue
+		}
+		sess, loadErr := s.cfg.Store.Load(ctx, intent.BindingID)
+		if loadErr != nil {
+			if errors.Is(loadErr, port.ErrSessionNotFound) && intent.PendingDelete {
+				if err := lifecycle.ConfirmReferenceIntentDelete(ctx, intent); err != nil {
+					retained = true
+				}
+			} else {
+				// A missing pending create may have been published by another replica
+				// after this read. It is never safe to abort or TTL-collect it here.
+				retained = true
+			}
+			continue
+		}
+		matching := sess != nil && sess.ID == intent.BindingID && sess.EnvironmentRef == intent.Ref && sess.Owner != nil && sess.Owner.SameIdentity(intent.Principal)
+		if !matching {
+			retained = true
+			continue
+		}
+		if intent.PendingDelete {
+			err = lifecycle.CancelReferenceIntentDelete(ctx, intent)
+		} else {
+			err = lifecycle.CommitReferenceIntent(ctx, intent)
+		}
+		if err != nil {
+			retained = true
+		}
+	}
+	if retained {
+		s.warnReferenceIntentRetention(ctx)
+	} else {
+		s.referenceIntentWarned.Store(false)
+	}
+}
+
+func (s *Service) warnReferenceIntentRetention(ctx context.Context) {
+	if s.referenceIntentWarned.CompareAndSwap(false, true) {
+		s.cfg.Diagnostics.Log(ctx, port.LevelWarn, "execution reference reconciliation retained ambiguous intents")
+	}
+}
+
 func (s *Service) saveSession(ctx context.Context, sess *session.Session) error {
 	return s.cfg.MutationCapability.GuardStore(s.cfg.Store).Save(ctx, sess)
+}
+
+func (s *Service) prepareReferenceDelete(ctx context.Context, sess *session.Session) (ReferenceDeleteHandle, error) {
+	if sess == nil || s.cfg.ExecutionAccess == nil || !s.cfg.ExecutionAccess.Applies(sess.EnvironmentRef) {
+		return nil, nil
+	}
+	lifecycle, ok := s.cfg.PlacementProvider.(ReferenceLifecycle)
+	if !ok {
+		return nil, ErrPlacementUnavailable
+	}
+	return lifecycle.PrepareReferenceDelete(ctx, PlacementSuccessorRequest{Ref: sess.EnvironmentRef, Principal: sess.Owner, SourceBindingID: sess.ID})
+}
+func (s *Service) cancelReferenceDelete(ctx context.Context, handle ReferenceDeleteHandle) {
+	if handle == nil {
+		return
+	}
+	cancelCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	if err := handle.Cancel(cancelCtx); err != nil {
+		s.logPlacementProviderError(ctx, "cancel reference delete", err)
+	}
+}
+func (*Service) confirmReferenceDelete(ctx context.Context, handle ReferenceDeleteHandle) error {
+	if handle == nil {
+		return nil
+	}
+	confirmCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	return handle.Confirm(confirmCtx)
 }
 
 func (s *Service) deleteSessionFamily(ctx context.Context, id session.SessionID, store port.PrunableStore) error {
@@ -3562,10 +3668,17 @@ func (s *Service) DeleteSession(ctx context.Context, id session.SessionID) error
 	if err != nil || absent {
 		return err
 	}
+	referenceDelete, err := s.prepareReferenceDelete(ctx, sess)
+	if err != nil {
+		return err
+	}
 	unlockBroker := s.brokerMu.lock(id)
 	defer unlockBroker()
 	if err := s.deleteSessionFamily(ctx, sess.ID, prunable); err != nil {
 		if errors.Is(err, port.ErrSessionNotFound) {
+			if confirmErr := s.confirmReferenceDelete(ctx, referenceDelete); confirmErr != nil {
+				return fmt.Errorf("%w: confirm deleted session reference: %v", ErrInternal, confirmErr)
+			}
 			// The durable record is already gone: still attempt broker cleanup
 			// (best-effort) before reporting success, so a locally-retained
 			// broker handle is never orphaned by an already-completed delete.
@@ -3576,10 +3689,14 @@ func (s *Service) DeleteSession(ctx context.Context, id session.SessionID) error
 			s.closeSessionLocal(id)
 			return nil
 		}
+		s.cancelReferenceDelete(ctx, referenceDelete)
 		if errors.Is(err, port.ErrPruneUnsupported) {
 			return ErrSessionDeleteUnsupported
 		}
 		return fmt.Errorf("%w: delete session: %v", ErrInternal, err)
+	}
+	if err := s.confirmReferenceDelete(ctx, referenceDelete); err != nil {
+		return fmt.Errorf("%w: session deleted but reference confirmation must be retried", ErrInternal)
 	}
 	// The durable record is gone; broker cleanup is now best-effort. Reordered
 	// deliberately (I-8): deleting broker state FIRST left an unrecoverable
@@ -3632,6 +3749,10 @@ func (s *Service) DeleteSessionForRetentionCandidate(ctx context.Context, candid
 	if !retentionCandidateMatches(sess, candidate) {
 		return errRetentionCandidateChanged
 	}
+	referenceDelete, err := s.prepareReferenceDelete(ctx, sess)
+	if err != nil {
+		return err
+	}
 	unlockBroker := s.brokerMu.lock(candidate.ID)
 	defer unlockBroker()
 	if !s.mutationLeaseHeld(candidate.ID) {
@@ -3639,13 +3760,18 @@ func (s *Service) DeleteSessionForRetentionCandidate(ctx context.Context, candid
 	}
 	deleted, err := deleter.DeleteSessionIfUnchanged(ctx, candidate)
 	if err != nil {
+		s.cancelReferenceDelete(ctx, referenceDelete)
 		if errors.Is(err, port.ErrPruneUnsupported) {
 			return ErrSessionDeleteUnsupported
 		}
 		return fmt.Errorf("%w: delete retention candidate: %v", ErrInternal, err)
 	}
 	if !deleted {
+		s.cancelReferenceDelete(ctx, referenceDelete)
 		return errRetentionCandidateChanged
+	}
+	if err := s.confirmReferenceDelete(ctx, referenceDelete); err != nil {
+		return fmt.Errorf("%w: retention deleted session but reference confirmation must be retried", ErrInternal)
 	}
 	// The durable record is gone; broker cleanup is now best-effort (I-8: see
 	// deleteBrokerSessionLocked's doc comment for the ordering rationale).
@@ -3672,6 +3798,8 @@ func retentionCandidateMatches(sess *session.Session, candidate port.SessionDisc
 // chats, but it still serializes against run entry, acquires the cross-process
 // mutation lease, and revalidates durable taxonomy and lifecycle after acquiring
 // that lease. It is an internal composition callback, never a wire operation.
+//
+//nolint:gocyclo // Retention keeps lease, taxonomy, reference intent, and deletion in one transaction.
 func (s *Service) DeleteSessionForRetention(ctx context.Context, id session.SessionID) error {
 	unlock := s.runEntryMu.lock(id)
 	defer unlock()
@@ -3702,10 +3830,17 @@ func (s *Service) DeleteSessionForRetention(ctx context.Context, id session.Sess
 	if sess.State == session.StateRunning || sess.State == session.StateAwaiting || sess.State == session.StateAuthorizing || s.IsLive(id) {
 		return fmt.Errorf("%w: retention candidate is active or awaiting approval", ErrFailedPrecondition)
 	}
+	referenceDelete, err := s.prepareReferenceDelete(ctx, sess)
+	if err != nil {
+		return err
+	}
 	unlockBroker := s.brokerMu.lock(id)
 	defer unlockBroker()
 	if err := s.deleteSessionFamily(ctx, id, prunable); err != nil {
 		if errors.Is(err, port.ErrSessionNotFound) {
+			if confirmErr := s.confirmReferenceDelete(ctx, referenceDelete); confirmErr != nil {
+				return fmt.Errorf("%w: confirm deleted retention reference: %v", ErrInternal, confirmErr)
+			}
 			if brokerErr := s.deleteBrokerSessionLocked(ctx, id); brokerErr != nil {
 				s.cfg.Diagnostics.Log(context.WithoutCancel(ctx), port.LevelWarn, "broker cleanup after already-deleted retention candidate failed",
 					"session", string(id), "err", brokerErr.Error())
@@ -3713,10 +3848,14 @@ func (s *Service) DeleteSessionForRetention(ctx context.Context, id session.Sess
 			s.closeSessionLocal(id)
 			return nil
 		}
+		s.cancelReferenceDelete(ctx, referenceDelete)
 		if errors.Is(err, port.ErrPruneUnsupported) {
 			return ErrSessionDeleteUnsupported
 		}
 		return fmt.Errorf("%w: delete retention candidate: %v", ErrInternal, err)
+	}
+	if err := s.confirmReferenceDelete(ctx, referenceDelete); err != nil {
+		return fmt.Errorf("%w: retention deleted session but reference confirmation must be retried", ErrInternal)
 	}
 	// The durable record is gone; broker cleanup is now best-effort (I-8: see
 	// deleteBrokerSessionLocked's doc comment for the ordering rationale).
@@ -4395,11 +4534,8 @@ func (s *Service) RetryFailedRun(ctx context.Context, id session.SessionID) (*ag
 	if err := admitRunPurpose(sess, runPurposeChat); err != nil {
 		return nil, fmt.Errorf("%w: session %q is not eligible for chat retry", ErrFailedStepRetryIneligible, id)
 	}
-	if registered, ok := s.LookupRun(id); ok {
-		if !sess.State.IsTerminal() {
-			return nil, fmt.Errorf("%w: session %q already has an active run", ErrFailedStepRetryIneligible, id)
-		}
-		s.deregister(id, registered)
+	if _, ok := s.LookupRun(id); ok {
+		return nil, fmt.Errorf("%w: session %q still has an undrained run", ErrFailedStepRetryIneligible, id)
 	}
 	eligibleFailure, err := failedStepRetryEligibility(sess)
 	if err != nil {
@@ -4439,6 +4575,10 @@ func (s *Service) RetryFailedRun(ctx context.Context, id session.SessionID) (*ag
 	if !leaseHeld() {
 		return nil, fmt.Errorf("%w: %q", ErrSessionLeasedElsewhere, id)
 	}
+	env, err = s.acquireExecution(ctx, st, sess, sess.RunID(), env)
+	if err != nil {
+		return nil, err
+	}
 	ctx = memory.WithWorkspace(ctx, env.Workspace().Root())
 	run, err := s.promoteRunAdmission(id, st, stopAdmission, func() *agent.Run {
 		return engine.RetryFailedStep(ctx, sess, env)
@@ -4447,6 +4587,7 @@ func (s *Service) RetryFailedRun(ctx context.Context, id session.SessionID) (*ag
 		return nil, err
 	}
 	promoted = true
+	s.startExecutionRenewal(id, st, run)
 	return run, nil
 }
 
@@ -4560,12 +4701,19 @@ func (s *Service) startRunContent(ctx context.Context, id session.SessionID, tex
 	}
 	// The run registry is the authoritative same-process single-run gate while the
 	// loaded aggregate is non-terminal. A terminal snapshot means the registered
-	// run has finished driving but its relay has not called FinishRun yet. Remove
-	// that exact run before reopening so the finished relay's later FinishRun
-	// cannot deregister the continuation that replaces it.
+	// run has finished driving but its relay has not called FinishRun yet. Local
+	// and no-FS runs retain the historical fast handoff: remove that exact run
+	// before reopening so its later FinishRun cannot deregister the continuation.
+	// Native execution is different: its runState owns the provider claim until
+	// FinishRun after relay drain, so an undrained native run must remain registered
+	// and block a replacement claim.
 	if registered, ok := s.LookupRun(id); ok {
-		if !sess.State.IsTerminal() {
-			return nil, fmt.Errorf("%w: session %q already has an active run", ErrFailedPrecondition, id)
+		s.mu.Lock()
+		st := s.runs[id]
+		nativeUndrained := st != nil && st.run == registered && st.execution != nil
+		s.mu.Unlock()
+		if !sess.State.IsTerminal() || nativeUndrained {
+			return nil, fmt.Errorf("%w: session %q still has an active or undrained run", ErrFailedPrecondition, id)
 		}
 		s.deregister(id, registered)
 	}
@@ -4680,6 +4828,10 @@ func (s *Service) startRunContent(ctx context.Context, id session.SessionID, tex
 	// one mint site for a new run.
 	runID := newRunID()
 	sess.BeginRun(runID)
+	env, err = s.acquireExecution(ctx, st, sess, runID, env)
+	if err != nil {
+		return nil, err
+	}
 	if !leaseHeld() {
 		return nil, fmt.Errorf("%w: %q", ErrSessionLeasedElsewhere, id)
 	}
@@ -4696,6 +4848,7 @@ func (s *Service) startRunContent(ctx context.Context, id session.SessionID, tex
 		*interruptedContinuationOwned = true
 	}
 	promoted = true
+	s.startExecutionRenewal(id, st, run)
 	return run, nil
 }
 
@@ -6245,6 +6398,10 @@ func (s *Service) resumeFromAwaiting(ctx context.Context, id session.SessionID, 
 	if !leaseHeld() {
 		return nil, fmt.Errorf("%w: %q", ErrSessionLeasedElsewhere, id)
 	}
+	env, err = s.acquireExecution(ctx, st, sess, sess.RunID(), env)
+	if err != nil {
+		return nil, err
+	}
 	ctx = memory.WithWorkspace(ctx, env.Workspace().Root())
 	run, err := s.promoteRunAdmission(id, st, stopAdmission, func() *agent.Run {
 		return engine.ResumeApproval(ctx, sess, env, askID, verdict)
@@ -6253,6 +6410,7 @@ func (s *Service) resumeFromAwaiting(ctx context.Context, id session.SessionID, 
 		return nil, err
 	}
 	promoted = true
+	s.startExecutionRenewal(id, st, run)
 	return run, nil
 }
 
@@ -6352,7 +6510,7 @@ func (s *Service) approvePlan(ctx context.Context, id session.SessionID, targetM
 		var resumedStop session.StopReason
 		if resumed != nil {
 			resumedStop = s.forwardRunEvents(ctx, id, resumed, out)
-			s.deregister(id, resumed)
+			s.FinishRun(id, resumed)
 		}
 		// (5) Atomic continuation (allow paths only). A deny leaves the session
 		// in plan mode with no continuation run — the model re-plans on the next
@@ -6388,7 +6546,7 @@ func (s *Service) approvePlan(ctx context.Context, id session.SessionID, targetM
 			return
 		}
 		s.forwardRunEvents(ctx, id, cont, out)
-		s.deregister(id, cont)
+		s.FinishRun(id, cont)
 	}()
 
 	return out, nil
@@ -6709,7 +6867,7 @@ func (s *Service) completeRelay(ctx context.Context, id session.SessionID, run *
 // disconnected client cannot lose the terminal snapshot, then release the run.
 func (s *Service) finishRelayRun(ctx context.Context, id session.SessionID, run *agent.Run) {
 	s.completeRelay(ctx, id, run)
-	s.deregister(id, run)
+	s.FinishRun(id, run)
 }
 
 // appendEvent durably records one projected relay event to the configured
@@ -7002,7 +7160,7 @@ func (s *Service) autoApproveContinuation(ctx context.Context, id session.Sessio
 		recorder.Observe(ev)
 	}
 	recorder.Close()
-	s.deregister(id, cont)
+	s.FinishRun(id, cont)
 }
 
 // autoApproveWaitTimeout bounds how long autoApproveContinuation waits for the
@@ -7823,6 +7981,13 @@ func (s *Service) cleanupRunAdmission(id session.SessionID, st *runState, promot
 		return
 	}
 	s.cancelRegisteredRunState(id, st, nil, true)
+	if st.execution != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := st.execution.Release(ctx); err != nil {
+			s.logDiscoveryError(context.Background(), "execution admission rollback failed", err)
+		}
+		cancel()
+	}
 	s.removeRunState(id, st)
 }
 
@@ -7903,6 +8068,51 @@ func (s *Service) deregister(id session.SessionID, run *agent.Run) {
 	}
 }
 
+func (s *Service) acquireExecution(ctx context.Context, st *runState, sess *session.Session, runID string, fallback tool.Environment) (tool.Environment, error) {
+	access := s.cfg.ExecutionAccess
+	if access == nil || !access.Applies(sess.EnvironmentRef) {
+		return fallback, nil
+	}
+	handle, err := access.AcquireRun(ctx, ExecutionRunRequest{Ref: sess.EnvironmentRef, Principal: sess.Owner, BindingID: sess.ID, RunID: runID})
+	if err != nil {
+		return tool.Environment{}, err
+	}
+	env := handle.Environment()
+	if env.Ref() != sess.EnvironmentRef || env.Workspace() == nil {
+		_ = handle.Release(context.WithoutCancel(ctx))
+		return tool.Environment{}, ErrInvalidPlacementBinding
+	}
+	st.execution = handle
+	return env, nil
+}
+
+func (s *Service) startExecutionRenewal(_ session.SessionID, st *runState, run *agent.Run) {
+	if st.execution == nil {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	st.executionRenewCancel = cancel
+	go func() {
+		ticker := time.NewTicker(20 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				renewCtx, stop := context.WithTimeout(ctx, 10*time.Second)
+				err := st.execution.Renew(renewCtx)
+				stop()
+				if err != nil {
+					s.logDiscoveryError(context.Background(), "execution ownership renewal failed", err)
+					run.Cancel()
+					return
+				}
+			}
+		}
+	}()
+}
+
 // FinishRun removes run from the in-flight registry for id. It is the EXPORTED
 // counterpart of register that every wire adapter must call (typically via
 // `defer`) once it has finished draining run.Events(), so a completed run does
@@ -7921,6 +8131,16 @@ func (s *Service) FinishRun(id session.SessionID, run *agent.Run) {
 	var pendingOK bool
 	if parked && st.sess != nil {
 		pending, pendingOK = st.sess.PendingAuthorization()
+	}
+	if st.executionRenewCancel != nil {
+		st.executionRenewCancel()
+	}
+	if st.execution != nil {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := st.execution.Release(releaseCtx); err != nil {
+			s.logDiscoveryError(context.Background(), "execution ownership release failed", err)
+		}
+		cancel()
 	}
 	s.removeRunState(id, st)
 	if parked {
