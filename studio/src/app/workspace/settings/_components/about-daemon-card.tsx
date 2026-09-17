@@ -85,10 +85,7 @@ export function AboutDaemonCard({
   ].join("\n");
 
   return (
-    <SettingsCard
-      title="About the agent"
-      description="The agent's version, and whether Studio runs it for you."
-    >
+    <SettingsCard title="About the agent">
       <div className="flex flex-col gap-3">
         <div className="divide-y rounded-lg border bg-background">
           <div className="flex items-center justify-between gap-3 px-4 py-3">

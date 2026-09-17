@@ -2086,6 +2086,12 @@ async function startMecatl(kind, { adminRetry = false } = {}) {
     permissionsConfig.trustProject &&
     permissionsConfig.trustAnchor !== liveTrustAnchor;
   args.push(...permissionArgs(permissionsConfig, { trustOnce, trustDrifted }));
+  // The managed daemon is a private loopback spawn for one user, so it gets
+  // the embedded-server storage grant: Settings → Storage reads health and
+  // cleans up old runs through the daemon's own routes (capabilities
+  // storage_health / storage_cleanup). External deployments decide this
+  // themselves (storage_management.principals).
+  args.push("--local-storage-management");
   // Observability flags: log level, the admin/metrics listener, the perf
   // MCP mount, the goroutine alarm, product-metrics opt-out. `quiet` is
   // controller-side (the stderr mirror below) and adds no flag.

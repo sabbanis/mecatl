@@ -237,10 +237,7 @@ function ProposalQueueCard({ connected }: { connected: boolean }) {
   };
 
   return (
-    <SettingsCard
-      title="Suggestions"
-      description="Things the agent would like to remember."
-    >
+    <SettingsCard title="Suggestions">
       <div className="space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="inline-flex items-center gap-0.5 rounded-full bg-muted p-1">
@@ -418,10 +415,7 @@ function ReflectionCard({ connected }: { connected: boolean }) {
   }, [receipt]);
 
   return (
-    <SettingsCard
-      title="Learn from a chat"
-      description="Pick a finished chat and the agent looks for things worth remembering."
-    >
+    <SettingsCard title="Learn from a chat">
       <div className="space-y-3">
         <div className="flex flex-wrap items-center gap-2">
           <Select value={selected} onValueChange={setSelected}>

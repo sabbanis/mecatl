@@ -18,7 +18,7 @@ export default function AgentSettingsPage() {
 
   return (
     <>
-      <SettingsCard title="Agent" description="How the agent appears in chat.">
+      <SettingsCard title="Agent">
         <div className="divide-y divide-border/60">
           <SettingsRow
             label="Agent name"

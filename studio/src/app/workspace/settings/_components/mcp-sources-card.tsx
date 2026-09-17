@@ -9,17 +9,12 @@ import {
 } from "@/features/agent/hooks/use-mcp-inventory";
 import { useRuntimeStatus } from "@/features/agent/runtime-status";
 import type { McpSourceView } from "@/lib/harness/mcp";
-import { Note, OfflineNote, SettingsCard } from "./settings-card";
+import { SettingsCard } from "./settings-card";
 
-export const MCP_NO_INVENTORY_TEXT = "The agent can't show which tools it has.";
-export const MCP_BROKER_ONLY_TEXT =
-  "Tools are listed per chat. Open the MCP tools panel in a chat to see them.";
-export const MCP_EMPTY_TEXT = "No tools are connected yet.";
 export const MCP_SNAPSHOT_TEXT =
   "Tools added since the agent started appear after you refresh.";
 export const MCP_UPDATED_TEXT = "Up to date.";
 const MCP_REFRESHING_TEXT = "Refreshing…";
-const MCP_LOADING_TEXT = "Loading tools…";
 
 /**
  * Settings → MCP tools: the tools the agent can use, as a plain list — each
@@ -29,34 +24,25 @@ const MCP_LOADING_TEXT = "Loading tools…";
  * the technical detail (kinds, transports, addresses, groups) an office
  * user has no use for.
  *
- * Gated on `serverCapabilities.mcp`. An agent granting only
- * `mcp_connector_status` never receives the direct source read and is
- * pointed at the chat panel instead; one with neither says so plainly.
- * Never hides the gateway form below.
+ * The card exists only when there is something to list. Gated on
+ * `serverCapabilities.mcp`: an agent without it (a broker-only agent
+ * granting just `mcp_connector_status` included) never receives the direct
+ * source read and gets no card — no placeholder sentence either — and the
+ * same goes for offline, the first read still in flight, and an empty list.
+ * A FAILED read keeps the card, so the failure is visible and Refresh can
+ * retry it. Never hides the gateway form below.
  */
 export function McpSourcesCard() {
   const { connected, serverCapabilities } = useRuntimeStatus();
   const mcp = serverCapabilities.mcp === true;
-  const brokerOnly = !mcp && serverCapabilities.mcp_connector_status === true;
   const inventory = useMcpInventory({ enabled: connected && mcp });
 
-  let body: React.ReactNode;
-  if (!connected) {
-    body = <OfflineNote />;
-  } else if (mcp) {
-    body = <ToolsList view={inventory} />;
-  } else if (brokerOnly) {
-    body = <Note>{MCP_BROKER_ONLY_TEXT}</Note>;
-  } else {
-    body = <Note>{MCP_NO_INVENTORY_TEXT}</Note>;
-  }
+  if (!connected || !mcp || inventory.isLoading) return null;
+  if (!inventory.error && inventory.sources.length === 0) return null;
 
   return (
-    <SettingsCard
-      title="MCP tools"
-      description="The tools the agent can use right now."
-    >
-      {body}
+    <SettingsCard title="MCP tools">
+      <ToolsList view={inventory} />
     </SettingsCard>
   );
 }
@@ -119,31 +105,6 @@ function SourceRow({ source }: { source: McpSourceView }) {
 }
 
 function ToolsList({ view }: { view: McpInventoryView }) {
-  let content: React.ReactNode;
-  if (view.isLoading) {
-    content = (
-      <p className="text-sm text-muted-foreground" role="status">
-        {MCP_LOADING_TEXT}
-      </p>
-    );
-  } else if (view.error) {
-    content = (
-      <p className="text-sm text-destructive break-words" role="alert">
-        {view.error}
-      </p>
-    );
-  } else if (view.sources.length === 0) {
-    content = <p className="text-sm text-muted-foreground">{MCP_EMPTY_TEXT}</p>;
-  } else {
-    content = (
-      <ul className="divide-y divide-border/60">
-        {view.sources.map((source) => (
-          <SourceRow key={source.name} source={source} />
-        ))}
-      </ul>
-    );
-  }
-
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center justify-between gap-2">
@@ -166,7 +127,17 @@ function ToolsList({ view }: { view: McpInventoryView }) {
           <span className="text-xs">Refresh</span>
         </Button>
       </div>
-      {content}
+      {view.error ? (
+        <p className="text-sm text-destructive break-words" role="alert">
+          {view.error}
+        </p>
+      ) : (
+        <ul className="divide-y divide-border/60">
+          {view.sources.map((source) => (
+            <SourceRow key={source.name} source={source} />
+          ))}
+        </ul>
+      )}
     </div>
   );
 }

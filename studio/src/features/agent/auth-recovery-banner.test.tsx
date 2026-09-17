@@ -146,7 +146,9 @@ describe("AuthRecoveryBanner", () => {
       <AuthRecoveryBanner cause={credentialRejected} onRetry={vi.fn()} />,
     );
     expect(screen.getByRole("alert")).toHaveTextContent("Credential rejected");
-    expect(screen.getByRole("alert")).toHaveTextContent(/check its token or sign-in settings/);
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      /check its token or sign-in settings/,
+    );
     await screen.findByText("https://idp.example.com/realms/mecatl");
     expect(
       screen.queryByRole("button", { name: /Sign in/ }),
@@ -223,7 +225,9 @@ describe("AuthRecoveryBanner", () => {
         mode="external"
       />,
     );
-    expect(screen.getByRole("alert")).toHaveTextContent(/check its token or sign-in settings/);
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      /check its token or sign-in settings/,
+    );
     expect(
       screen.getByRole("link", { name: "Open sign-in settings" }),
     ).toHaveAttribute("href", SIGN_IN_SETTINGS_HREF);

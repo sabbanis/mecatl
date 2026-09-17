@@ -23,7 +23,6 @@ export {
   useAgentMemory,
   useMemoryEntryDetail,
 } from "./hooks/use-agent-memory";
-export { type RosterAgent, useAgentRoster } from "./hooks/use-agent-roster";
 export { useAgentSessions } from "./hooks/use-agent-sessions";
 
 // Types

@@ -320,7 +320,7 @@ const mobileViewport = () =>
 const AUTO_MODEL_ID = "";
 const autoModel = (label?: string): ComposerModelOption => ({
   id: AUTO_MODEL_ID,
-  label: label ?? "Default model",
+  label: label ?? "Default",
 });
 
 export interface ComposerModelOption {
@@ -513,14 +513,10 @@ export function ModelEffortSelector({
               : selectedModel.label
           }
         >
-          <span className="max-w-40 truncate @max-md:hidden">
-            {selectedModel.label}
+          <span className="max-w-48 truncate @max-md:hidden">
+            Model{" "}
+            <span className="text-muted-foreground">{selectedModel.label}</span>
           </span>
-          {showEffort && (
-            <span className="max-w-24 truncate text-muted-foreground @max-md:hidden">
-              {effortLabel(selectedEffort)}
-            </span>
-          )}
           <span className="hidden @max-md:inline">Model</span>
           <ChevronDown className="size-3.5 text-muted-foreground" />
         </Button>
@@ -683,55 +679,80 @@ function usePostureControl() {
   return { available, current, busy, error, pick, ConfirmDialog };
 }
 
-/** The "Safety level" rows inside the Mode menu (see usePostureControl). */
-function PostureMenuSection({
-  current,
-  busy,
-  error,
-  onPick,
+/**
+ * The composer's Safety pill: the daemon-wide operator posture as its own
+ * control next to Mode and Tools (see usePostureControl). Renders nothing
+ * where the posture cannot be changed from here (external mode, no
+ * runtime provider). The confirm dialog for Auto/Yolo renders as a sibling
+ * of the menu so it survives the menu closing.
+ */
+function SafetyLevelSelector({
+  className,
+  disabled,
 }: {
-  current: string;
-  busy: boolean;
-  error: string | null;
-  onPick: (tier: string) => void;
+  className?: string;
+  disabled?: boolean;
 }) {
+  const posture = usePostureControl();
+  if (!posture.available) return null;
+  const current =
+    POSTURE_MENU_OPTIONS.find((option) => option.value === posture.current)
+      ?.label ?? posture.current;
   return (
     <>
-      <DropdownMenuSeparator />
-      <DropdownMenuGroup>
-        <DropdownMenuLabel className="text-xs text-muted-foreground">
-          Safety level
-        </DropdownMenuLabel>
-        {POSTURE_MENU_OPTIONS.map((option) => (
-          <DropdownMenuItem
-            key={option.value}
-            className="items-start gap-2"
-            disabled={busy}
-            data-testid={`posture-option-${option.value}`}
-            onClick={() => onPick(option.value)}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            size="sm"
+            className={className}
+            disabled={disabled || posture.busy}
+            title={`Safety level: ${current}`}
+            data-testid="safety-level-pill"
           >
-            <Check
-              className={cn(
-                "mt-0.5 size-4 shrink-0",
-                current === option.value
-                  ? "text-foreground"
-                  : "text-transparent",
-              )}
-            />
-            <span className="flex min-w-0 flex-col">
-              <span>{option.label}</span>
-              <span className="text-xs text-muted-foreground">
-                {option.description}
-              </span>
+            <span className="max-w-40 truncate @max-md:hidden">
+              Safety <span className="text-muted-foreground">{current}</span>
             </span>
-          </DropdownMenuItem>
-        ))}
-        {error ? (
-          <p role="alert" className="px-2 py-1 text-xs text-destructive">
-            {error}
-          </p>
-        ) : null}
-      </DropdownMenuGroup>
+            <span className="hidden @max-md:inline">Safety</span>
+            <ChevronDown className="size-3.5 text-muted-foreground" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          onCloseAutoFocus={(e) => e.preventDefault()}
+          align="start"
+          className="w-96"
+        >
+          {POSTURE_MENU_OPTIONS.map((option) => (
+            <DropdownMenuItem
+              key={option.value}
+              className="items-start gap-2"
+              disabled={posture.busy}
+              data-testid={`posture-option-${option.value}`}
+              onClick={() => void posture.pick(option.value)}
+            >
+              <Check
+                className={cn(
+                  "mt-0.5 size-4 shrink-0",
+                  posture.current === option.value
+                    ? "text-foreground"
+                    : "text-transparent",
+                )}
+              />
+              <span className="flex min-w-0 flex-col">
+                <span>{option.label}</span>
+                <span className="text-xs text-muted-foreground">
+                  {option.description}
+                </span>
+              </span>
+            </DropdownMenuItem>
+          ))}
+          {posture.error ? (
+            <p role="alert" className="px-2 py-1 text-xs text-destructive">
+              {posture.error}
+            </p>
+          ) : null}
+        </DropdownMenuContent>
+      </DropdownMenu>
+      {posture.ConfirmDialog}
     </>
   );
 }
@@ -759,71 +780,59 @@ export function ModeSelector({
   /** The shown `mode` is a held switch, not yet confirmed by the daemon. */
   pending?: boolean;
 }) {
-  const posture = usePostureControl();
   const label = permissionModeLabel(mode);
   const shown = pending ? `${label} · pending` : label;
   // Plan / Accept edits carry a filled dot in the box tint's hue (the TUI's
   // mode-coloured rail), kept visible where the label collapses to "Mode".
   const dot = modeDotClass(mode);
   return (
-    <>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button
-            size="sm"
-            className={cn(GHOST_TRIGGER_CLASS, modeAccentClass(mode))}
-            disabled={disabled}
-            title={`Permission mode: ${label}${pending ? " (pending — applies when the run ends)" : ""} — ⇧Tab cycles`}
-          >
-            {dot && (
-              <span
-                aria-hidden
-                data-testid="mode-dot"
-                className={cn("size-2 shrink-0 rounded-full", dot)}
-              />
-            )}
-            <span className="max-w-40 truncate @max-md:hidden">{shown}</span>
-            <span className="hidden @max-md:inline">Mode</span>
-            <ChevronDown className="size-3.5 text-muted-foreground" />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent
-          onCloseAutoFocus={(e) => e.preventDefault()}
-          align="start"
-          className="w-72"
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          size="sm"
+          className={cn(GHOST_TRIGGER_CLASS, modeAccentClass(mode))}
+          disabled={disabled}
+          title={`Permission mode: ${label}${pending ? " (pending — applies when the run ends)" : ""} — ⇧Tab cycles`}
         >
-          {PERMISSION_MODE_OPTIONS.map((option) => (
-            <DropdownMenuItem
-              key={option.id}
-              className="items-start gap-2"
-              onClick={() => onModeChange(option.id)}
-            >
-              <Check
-                className={cn(
-                  "mt-0.5 size-4 shrink-0",
-                  mode === option.id ? "text-foreground" : "text-transparent",
-                )}
-              />
-              <span className="flex min-w-0 flex-col">
-                <span>{option.label}</span>
-                <span className="text-xs text-muted-foreground">
-                  {option.description}
-                </span>
-              </span>
-            </DropdownMenuItem>
-          ))}
-          {posture.available && (
-            <PostureMenuSection
-              current={posture.current}
-              busy={posture.busy}
-              error={posture.error}
-              onPick={(tier) => void posture.pick(tier)}
+          {dot && (
+            <span
+              aria-hidden
+              data-testid="mode-dot"
+              className={cn("size-2 shrink-0 rounded-full", dot)}
             />
           )}
-        </DropdownMenuContent>
-      </DropdownMenu>
-      {posture.ConfirmDialog}
-    </>
+          <span className="max-w-40 truncate @max-md:hidden">{shown}</span>
+          <span className="hidden @max-md:inline">Mode</span>
+          <ChevronDown className="size-3.5 text-muted-foreground" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        onCloseAutoFocus={(e) => e.preventDefault()}
+        align="start"
+        className="w-72"
+      >
+        {PERMISSION_MODE_OPTIONS.map((option) => (
+          <DropdownMenuItem
+            key={option.id}
+            className="items-start gap-2"
+            onClick={() => onModeChange(option.id)}
+          >
+            <Check
+              className={cn(
+                "mt-0.5 size-4 shrink-0",
+                mode === option.id ? "text-foreground" : "text-transparent",
+              )}
+            />
+            <span className="flex min-w-0 flex-col">
+              <span>{option.label}</span>
+              <span className="text-xs text-muted-foreground">
+                {option.description}
+              </span>
+            </span>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -2605,6 +2614,12 @@ export function ChatInput({
               <ToolProfileSelector
                 profile={profile}
                 onProfileChange={onProfileChange}
+                disabled={disabled}
+                className={GHOST_TRIGGER_CLASS}
+              />
+            )}
+            {onModeChange && (
+              <SafetyLevelSelector
                 disabled={disabled}
                 className={GHOST_TRIGGER_CLASS}
               />

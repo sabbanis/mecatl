@@ -158,7 +158,7 @@ describe("AddProviderDialog", () => {
     ] as never);
     await user.click(screen.getByRole("button", { name: "Re-check" }));
     expect(await screen.findByText(/found\./)).toHaveTextContent(
-      "Anthropic found. Changes restart the agent. Anything running will stop.",
+      "Anthropic found.",
     );
     expect(
       screen.queryByRole("button", { name: "Re-check" }),

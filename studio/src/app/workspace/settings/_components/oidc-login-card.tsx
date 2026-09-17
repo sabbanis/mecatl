@@ -154,10 +154,7 @@ export function OidcLoginCard() {
   };
 
   return (
-    <SettingsCard
-      title="Sign in"
-      description="Sign in with your organisation's account to use the agent."
-    >
+    <SettingsCard title="Sign in">
       {failed ? (
         <Note>The sign-in status could not be read right now.</Note>
       ) : !status ? (

@@ -111,10 +111,7 @@ function AppearanceCard() {
   useEffect(() => setMounted(true), []);
 
   return (
-    <SettingsCard
-      title="Appearance"
-      description="How Studio looks in this browser."
-    >
+    <SettingsCard title="Appearance">
       <div className="divide-y divide-border/60">
         <SettingsRow
           label="Theme"
@@ -199,10 +196,7 @@ function ChatCard() {
     useShowStarterPrompts();
 
   return (
-    <SettingsCard
-      title="Chat"
-      description="How chats open and how your messages are sent."
-    >
+    <SettingsCard title="Chat">
       <div className="divide-y divide-border/60">
         <SettingsRow
           label="Start on"
@@ -290,10 +284,7 @@ function NotificationsCard() {
   if (notifyPermission === "unsupported") return null;
 
   return (
-    <SettingsCard
-      title="Notifications"
-      description="Alerts from this browser when the agent finishes."
-    >
+    <SettingsCard title="Notifications">
       <SettingsRow
         label="Browser notifications"
         description={

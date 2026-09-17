@@ -23,7 +23,6 @@ import {
   ExternalManagedNote,
   Note,
   OfflineNote,
-  RESTART_SENTENCE,
   SettingsCard,
   SettingsRow,
 } from "./settings-card";
@@ -242,7 +241,6 @@ export function LearningModeSection() {
         {dirty ? (
           <div className="mt-3 space-y-1" data-testid="learning-pending">
             <p className="text-sm">{report}</p>
-            <p className="text-xs text-muted-foreground">{RESTART_SENTENCE}</p>
           </div>
         ) : null}
         <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -281,9 +279,7 @@ export function LearningModeSection() {
             <AlertDialogContent>
               <AlertDialogHeader>
                 <AlertDialogTitle>Save and restart the agent?</AlertDialogTitle>
-                <AlertDialogDescription>
-                  {report}. {RESTART_SENTENCE}
-                </AlertDialogDescription>
+                <AlertDialogDescription>{report}.</AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
                 <AlertDialogCancel>Cancel</AlertDialogCancel>
@@ -298,12 +294,5 @@ export function LearningModeSection() {
     );
   }
 
-  return (
-    <SettingsCard
-      title="Learning"
-      description="Let the agent remember useful things from finished chats."
-    >
-      {body}
-    </SettingsCard>
-  );
+  return <SettingsCard title="Learning">{body}</SettingsCard>;
 }

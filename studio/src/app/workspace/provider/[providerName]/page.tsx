@@ -36,10 +36,7 @@ import { formatContextWindow } from "@/lib/formatters";
 import { useDefaultModel, useDisabledModels } from "@/lib/model-preferences";
 import { pageTitleClass } from "@/lib/typography";
 import { cn } from "@/lib/utils";
-import {
-  modelDefaultsKind,
-  RESTART_WARNING,
-} from "../../settings/_components/daemon-defaults-card";
+import { modelDefaultsKind } from "../../settings/_components/daemon-defaults-card";
 import {
   Note,
   OfflineNote,
@@ -87,7 +84,7 @@ export default function ProviderModelsPage() {
     if (!current) return;
     const confirmed = await confirm({
       title: `Make ${model.displayName} the default model?`,
-      description: `Chats on ${providerName} that do not pick a model will use ${model.id}. ${RESTART_WARNING}`,
+      description: `Chats on ${providerName} that do not pick a model will use ${model.id}.`,
       confirmText: "Set default and restart",
     });
     if (!confirmed) return;
@@ -147,10 +144,7 @@ export default function ProviderModelsPage() {
         <h1 className={pageTitleClass("truncate pb-0 text-3xl leading-tight")}>
           {providerName} models
         </h1>
-        <SettingsCard
-          title="Models"
-          description="The daemon's live inventory for this provider. Switching a model off hides it from Studio's pickers only — the daemon can still be asked for it by other clients."
-        >
+        <SettingsCard title="Models">
           {!runtime.live ? (
             <OfflineNote />
           ) : models.length === 0 ? (

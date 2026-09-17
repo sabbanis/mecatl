@@ -7,25 +7,18 @@ import { cn } from "@/lib/utils";
  * eyebrow title. */
 export function SettingsCard({
   title,
-  description,
   children,
 }: {
   title: string;
-  description?: string;
   children: React.ReactNode;
 }) {
   return (
     // On mobile the card chrome is redundant — the back bar already names
     // the section — so the box and header dissolve into the page.
     <section className="rounded-xl border bg-card p-5 max-[499px]:rounded-none max-[499px]:border-0 max-[499px]:bg-transparent max-[499px]:p-0">
-      <div className="mb-4 space-y-1 max-[499px]:hidden">
-        <h2 className="text-sm font-semibold tracking-wide text-muted-foreground uppercase">
-          {title}
-        </h2>
-        {description ? (
-          <p className="text-xs text-muted-foreground">{description}</p>
-        ) : null}
-      </div>
+      <h2 className="mb-4 text-sm font-semibold tracking-wide text-muted-foreground uppercase max-[499px]:hidden">
+        {title}
+      </h2>
       {children}
     </section>
   );
@@ -81,11 +74,16 @@ export function Note({ children }: { children: React.ReactNode }) {
   return <p className="text-sm text-muted-foreground">{children}</p>;
 }
 
-/** The ONE restart sentence every settings surface uses — pending lines,
- * confirm dialogs and card notes alike — so the warning reads the same
- * wherever a save restarts the agent. */
-export const RESTART_SENTENCE =
-  "Changes restart the agent. Anything running will stop.";
+/** The one line a card shows while a change it applied at once is still
+ * landing: the agent restarts in the background and the control stays
+ * disabled until the re-read shows the new state. */
+export function ApplyingNote({ className }: { className?: string }) {
+  return (
+    <p role="status" className={cn("text-xs text-muted-foreground", className)}>
+      Applying…
+    </p>
+  );
+}
 
 /** Shown in place of a form when the configuration is owned elsewhere: the
  * controller answers 409 for every write in external mode, so offering the

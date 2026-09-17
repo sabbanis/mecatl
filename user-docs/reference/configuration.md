@@ -239,6 +239,12 @@ Exact verified OIDC issuer/subject pairs authorized for process-wide storage hea
 | `storage_management.principals[].issuer` | `string` | `(empty)` | Issuer must equal the verified token issuer byte-for-byte. |
 | `storage_management.principals[].subject` | `string` | `(empty)` | Subject must equal the verified token subject byte-for-byte. |
 
+A private single-user daemon can grant the same surface without OIDC: start
+`mecated serve` with `--local-storage-management`, which authorizes callers
+that carry no OIDC principal (the embedded `mecatui` server's grant; Mecatl
+Studio's managed daemon passes it). The flag is refused together with OIDC
+ownership enforcement — multi-tenant deployments list principals here instead.
+
 ## `steer`
 
 Tier: **operator**

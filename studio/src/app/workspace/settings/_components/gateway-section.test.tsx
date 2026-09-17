@@ -42,9 +42,6 @@ describe("GatewaySection", () => {
     expect(
       screen.getByRole("heading", { name: "MCP gateway" }),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText("Sign in to a gateway to give the agent its tools."),
-    ).toBeInTheDocument();
 
     const name = screen.getByLabelText("Gateway name");
     expect(name).toHaveValue("");

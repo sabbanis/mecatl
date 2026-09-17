@@ -166,9 +166,6 @@ describe("LearningModeSection", () => {
     const pending = screen.getByTestId("learning-pending");
     expect(pending).toHaveTextContent("Learning mode: Off → Review");
     expect(pending).not.toHaveTextContent(/Sensitivity/);
-    expect(pending).toHaveTextContent(
-      "Changes restart the agent. Anything running will stop.",
-    );
     expect(saveButton()).toBeEnabled();
     expect(runtimeSettings.save).not.toHaveBeenCalled();
 
@@ -176,9 +173,6 @@ describe("LearningModeSection", () => {
     const dialog = await screen.findByRole("alertdialog");
     expect(dialog).toHaveTextContent("Save and restart the agent?");
     expect(dialog).toHaveTextContent("Learning mode: Off → Review");
-    expect(dialog).toHaveTextContent(
-      "Changes restart the agent. Anything running will stop.",
-    );
     expect(runtimeSettings.save).not.toHaveBeenCalled();
 
     await user.click(

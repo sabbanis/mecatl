@@ -290,7 +290,7 @@ describe("row actions", () => {
     const dialog = await screen.findByRole("alertdialog");
     expect(dialog).toHaveTextContent("Remove OpenRouter?");
     expect(dialog).toHaveTextContent(
-      "The agent forgets this provider and its key. Changes restart the agent. Anything running will stop.",
+      "The agent forgets this provider and its key.",
     );
     // The active provider gets the extra sentence, in plain words.
     expect(dialog).toHaveTextContent(/It is the active provider/);

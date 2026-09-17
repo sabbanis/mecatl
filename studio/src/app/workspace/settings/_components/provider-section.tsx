@@ -39,7 +39,6 @@ import {
   ExternalManagedNote,
   Note,
   OfflineNote,
-  RESTART_SENTENCE,
   SettingsCard,
 } from "./settings-card";
 
@@ -152,10 +151,7 @@ export function ProviderSection({
   const statusFor = (name: string) => providerStatus?.forProvider(name) ?? null;
 
   return (
-    <SettingsCard
-      title="Providers"
-      description="The services the agent uses to answer."
-    >
+    <SettingsCard title="Providers">
       {!runtime.live ? (
         <OfflineNote />
       ) : status === null ? (
@@ -233,8 +229,7 @@ export function ProviderSection({
               <AlertDialogDescription>
                 {removing.keyPresent && removing.authMethod !== "none"
                   ? "The agent forgets this provider and its key."
-                  : "The agent forgets this provider."}{" "}
-                {RESTART_SENTENCE}
+                  : "The agent forgets this provider."}
                 {removing.name === status?.selectedProvider &&
                   " It is the active provider, so choose another one afterwards."}
                 {groups.configured.length === 1 &&

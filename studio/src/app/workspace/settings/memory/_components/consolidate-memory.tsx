@@ -179,10 +179,7 @@ export function ConsolidateMemoryCard() {
       : "";
 
   return (
-    <SettingsCard
-      title="Consolidate memory"
-      description="Merge duplicate or overlapping memories. Nothing changes until you approve."
-    >
+    <SettingsCard title="Consolidate memory">
       <div className="space-y-3">
         {!plan && (
           <div className="flex flex-wrap items-center gap-2">
@@ -192,7 +189,7 @@ export function ConsolidateMemoryCard() {
                 onValueChange={(value) => setChosenTarget(value as DreamTarget)}
               >
                 <SelectTrigger
-                  className="w-56"
+                  className="w-full min-w-56 flex-1"
                   aria-label="Memory to consolidate"
                 >
                   <SelectValue />

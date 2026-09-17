@@ -195,7 +195,6 @@ describe("PermissionsSection", () => {
     const dialog = await screen.findByRole("alertdialog");
     expect(dialog).toHaveTextContent(/Switch to Yolo\?/);
     expect(dialog).toHaveTextContent(/removes every safeguard/);
-    expect(dialog).toHaveTextContent(/Anything running will stop/);
     expect(savePermissions).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: "Cancel" }));

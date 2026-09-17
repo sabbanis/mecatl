@@ -96,14 +96,7 @@ function FactsAboutYouCard() {
     );
   }
 
-  return (
-    <SettingsCard
-      title="Facts about you"
-      description="What the agent has remembered about you. Select a fact to see more."
-    >
-      {body}
-    </SettingsCard>
-  );
+  return <SettingsCard title="Facts about you">{body}</SettingsCard>;
 }
 
 /** One fact per row; the whole row opens the dedicated detail page. */

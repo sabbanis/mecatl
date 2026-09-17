@@ -23,7 +23,6 @@ import {
   ExternalManagedNote,
   Note,
   OfflineNote,
-  RESTART_SENTENCE,
   SettingsCard,
   SettingsRow,
 } from "./settings-card";
@@ -271,8 +270,8 @@ export function PermissionsSection({ runtime }: { runtime: Runtime }) {
         title: `Switch to ${selected.label}?`,
         description:
           view.posture === "yolo"
-            ? `Yolo removes every safeguard: the agent runs everything without asking, for everyone using it. Only use this on a throwaway machine. ${RESTART_SENTENCE}`
-            : `Auto lets the agent make changes and run commands without asking, for everyone using it. ${RESTART_SENTENCE}`,
+            ? `Yolo removes every safeguard: the agent runs everything without asking, for everyone using it. Only use this on a throwaway machine.`
+            : `Auto lets the agent make changes and run commands without asking, for everyone using it.`,
         confirmText: `Switch to ${selected.label}`,
         destructive: true,
       });
@@ -312,10 +311,7 @@ export function PermissionsSection({ runtime }: { runtime: Runtime }) {
         : "outline";
 
   return (
-    <SettingsCard
-      title="Permissions"
-      description="How much the agent may do on its own."
-    >
+    <SettingsCard title="Permissions">
       <div className="flex flex-col gap-4">
         <div className="divide-y divide-border/60">
           <SettingsRow label="Safety level" description={selected.description}>
@@ -415,8 +411,6 @@ export function PermissionsSection({ runtime }: { runtime: Runtime }) {
             here takes priority over it.
           </Note>
         )}
-
-        <Note>{RESTART_SENTENCE}</Note>
 
         <div className="flex flex-wrap items-center justify-end gap-2">
           {dirty && (

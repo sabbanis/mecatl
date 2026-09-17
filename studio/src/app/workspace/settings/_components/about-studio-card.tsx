@@ -22,10 +22,7 @@ const SUPPORT_URL = "https://github.com/stacklok/mecatl/issues";
  */
 export function AboutStudioCard() {
   return (
-    <SettingsCard
-      title="About Studio"
-      description="Which version of Studio you are using, and where to find help."
-    >
+    <SettingsCard title="About Studio">
       <div className="flex flex-col gap-3">
         <div className="divide-y rounded-lg border bg-background">
           <div className="flex items-center justify-between gap-3 px-4 py-3">

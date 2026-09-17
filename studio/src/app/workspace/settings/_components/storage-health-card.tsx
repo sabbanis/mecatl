@@ -196,10 +196,7 @@ export function StorageHealthCard({
   }
 
   return (
-    <SettingsCard
-      title={title}
-      description="What the agent has saved, and a way to clear out old runs."
-    >
+    <SettingsCard title={title}>
       <div className="flex flex-col gap-4">
         {summary}
         {children}

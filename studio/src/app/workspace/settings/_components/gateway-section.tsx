@@ -7,9 +7,7 @@ import { Label } from "@/components/ui/label";
 import type { useHarnessRuntime } from "@/features/agent/hooks/use-harness-runtime";
 import {
   ExternalManagedNote,
-  Note,
   OfflineNote,
-  RESTART_SENTENCE,
   SettingsCard,
   SettingsRow,
 } from "./settings-card";
@@ -63,10 +61,7 @@ export function GatewaySection({ runtime }: { runtime: Runtime }) {
   ) : null;
 
   return (
-    <SettingsCard
-      title="MCP gateway"
-      description="Sign in to a gateway to give the agent its tools."
-    >
+    <SettingsCard title="MCP gateway">
       {!runtime.live ? (
         <OfflineNote />
       ) : runtime.mode === "external" ? (
@@ -99,7 +94,6 @@ export function GatewaySection({ runtime }: { runtime: Runtime }) {
               placeholder={SUGGESTED_GATEWAY_URL}
             />
           </div>
-          <Note>{RESTART_SENTENCE}</Note>
           <Button
             type="button"
             variant="action"

@@ -557,7 +557,7 @@ describe("ModelEffortSelector", () => {
         onModelChange={onModelChange}
       />,
     );
-    expect(trigger()).toHaveAttribute("title", "Default model · Auto");
+    expect(trigger()).toHaveAttribute("title", "Default · Auto");
     expect(screen.queryByText(EFFORT_SWITCH_NOTE)).toBeNull();
     await openEffort(user);
     expect(screen.queryByText(EFFORT_SWITCH_NOTE)).toBeNull();
@@ -565,7 +565,7 @@ describe("ModelEffortSelector", () => {
     expect(onEffortChange).toHaveBeenCalledWith("xhigh");
     // Radix closes the menu on select; the trigger reflects the pick.
     await waitFor(() =>
-      expect(trigger()).toHaveAttribute("title", "Default model · Extra high"),
+      expect(trigger()).toHaveAttribute("title", "Default · Extra high"),
     );
     await user.click(trigger());
     fireEvent.click(
@@ -575,7 +575,7 @@ describe("ModelEffortSelector", () => {
     // Tri-state draft pick: Reset reports null (untouched), not "" (explicit auto).
     expect(onModelChange).toHaveBeenCalledWith(null);
     await waitFor(() =>
-      expect(trigger()).toHaveAttribute("title", "Default model · Auto"),
+      expect(trigger()).toHaveAttribute("title", "Default · Auto"),
     );
   });
 
@@ -589,7 +589,7 @@ describe("ModelEffortSelector", () => {
         onModelChange={() => {}}
       />,
     );
-    expect(trigger()).toHaveAttribute("title", "Default model · Max");
+    expect(trigger()).toHaveAttribute("title", "Default · Max");
     await openEffort(user);
     expect(screen.getByRole("menuitemradio", { name: "Max" })).toHaveAttribute(
       "aria-checked",

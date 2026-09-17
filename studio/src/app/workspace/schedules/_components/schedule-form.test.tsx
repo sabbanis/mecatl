@@ -174,9 +174,9 @@ describe("draftFromForm / formFromDraft tool profile", () => {
   });
 
   it("names the consequence of each profile", () => {
-    expect(toolProfileDescription("")).toMatch(/Shell and the file tools/);
-    expect(toolProfileDescription("no-fs")).toMatch(/Shell, Read, Edit, Write/);
-    expect(toolProfileDescription("no-fs")).toMatch(/web tools remain/);
+    expect(toolProfileDescription("")).toMatch(/every tool/);
+    expect(toolProfileDescription("no-fs")).toMatch(/No file or shell tools/);
+    expect(toolProfileDescription("no-fs")).toMatch(/web tools only/);
   });
 });
 
@@ -527,37 +527,37 @@ describe("ScheduleFormFields tool profile control", () => {
   const profileBox = () =>
     screen.getByRole("combobox", { name: "Tool profile" });
 
-  it("renders All tools by default with its consequence line", () => {
+  it("renders All by default with its consequence line", () => {
     render(<Harness />);
-    expect(profileBox()).toHaveTextContent("All tools");
+    expect(profileBox()).toHaveTextContent("All");
     expect(screen.getByText(toolProfileDescription(""))).toBeInTheDocument();
     expect(screen.queryByText(toolProfileDescription("no-fs"))).toBeNull();
   });
 
-  it("picking No filesystem patches the profile and swaps the line", async () => {
+  it("picking None patches the profile and swaps the line", async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();
     render(<Harness onChange={onChange} />);
 
-    await pickOption(user, profileBox(), "No filesystem");
+    await pickOption(user, profileBox(), "None");
 
     expect(onChange).toHaveBeenCalledWith({ profile: "no-fs" });
-    expect(profileBox()).toHaveTextContent("No filesystem");
+    expect(profileBox()).toHaveTextContent("None");
     expect(
       screen.getByText(toolProfileDescription("no-fs")),
     ).toBeInTheDocument();
   });
 
-  it("seeds from a no-fs value and can be picked back to All tools", async () => {
+  it("seeds from a no-fs value and can be picked back to All", async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();
     render(<Harness initial={{ profile: "no-fs" }} onChange={onChange} />);
-    expect(profileBox()).toHaveTextContent("No filesystem");
+    expect(profileBox()).toHaveTextContent("None");
 
-    await pickOption(user, profileBox(), "All tools");
+    await pickOption(user, profileBox(), "All");
 
     expect(onChange).toHaveBeenCalledWith({ profile: "" });
-    expect(profileBox()).toHaveTextContent("All tools");
+    expect(profileBox()).toHaveTextContent("All");
   });
 
   it("is independent of the write-access switch", async () => {
@@ -566,6 +566,6 @@ describe("ScheduleFormFields tool profile control", () => {
     render(<Harness initial={{ profile: "no-fs" }} onChange={onChange} />);
     await user.click(screen.getByRole("switch", { name: SWITCH_NAME }));
     expect(onChange).toHaveBeenCalledWith({ allowWrites: true });
-    expect(profileBox()).toHaveTextContent("No filesystem");
+    expect(profileBox()).toHaveTextContent("None");
   });
 });

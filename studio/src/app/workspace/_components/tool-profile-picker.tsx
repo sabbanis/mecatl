@@ -130,7 +130,9 @@ export function ToolProfileSelector({
         title={toolProfileReadOnlyLine(profile ?? "")}
         data-testid="tool-profile-pill"
       >
-        <span className="max-w-40 truncate">Tools: {label}</span>
+        <span className="max-w-40 truncate">
+          Tools <span className="text-muted-foreground">{label}</span>
+        </span>
       </span>
     );
   }
@@ -145,7 +147,7 @@ export function ToolProfileSelector({
           data-testid="tool-profile-pill"
         >
           <span className="max-w-40 truncate @max-md:hidden">
-            Tools: {label}
+            Tools <span className="text-muted-foreground">{label}</span>
           </span>
           <span className="hidden @max-md:inline">Tools</span>
           <ChevronDown className="size-3.5 text-muted-foreground" />

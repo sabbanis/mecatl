@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -11,12 +11,15 @@ import { MemoryStoresCard } from "./memory-stores-card";
  * Settings → Memory → Memory: the two stores as two on/off switches over the
  * shared options document. Pins that (1) the switches show the saved
  * document and nothing else is offered — no directory, no interval, no
- * link; (2) toggling shows the restart line and the confirmed save sends the
- * WHOLE merged document, other saved values intact; (3) Discard drops the
- * draft; (4) when the agent is run elsewhere the card is read-only — a plain
- * note plus On / Off / Unknown per store from what the running agent
- * reports; (5) offline and loading render a plain note; (6) nothing on the
- * card names the daemon or a flag.
+ * link, no Save button; (2) flipping a switch saves AT ONCE, with no
+ * confirm, as the one changed value (the hook merges it over the saved
+ * document and sends the whole thing — pinned in the hook's own test);
+ * (3) while the save is in flight both switches are disabled behind one
+ * "Applying…" line, and a refusal shows inline; (4) when the agent is run
+ * elsewhere the card is read-only — a plain note plus On / Off / Not
+ * available per store from what the running agent reports; (5) offline and
+ * loading render a plain note; (6) nothing on the card names the daemon or
+ * a flag.
  */
 
 const hook = vi.hoisted(() => ({
@@ -67,15 +70,6 @@ const doc = (options = EMPTY_DAEMON_OPTIONS): HarnessDaemonOptionsDoc => ({
   allowedRoots: ["/repo", "/home/me/.config/mecatl"],
 });
 
-const confirmSave = async (user: ReturnType<typeof userEvent.setup>) => {
-  await user.click(screen.getByRole("button", { name: "Save and restart" }));
-  const dialog = await screen.findByRole("alertdialog");
-  await user.click(
-    within(dialog).getByRole("button", { name: "Save and restart" }),
-  );
-  return dialog;
-};
-
 beforeEach(() => {
   hook.live = true;
   hook.manageable = true;
@@ -108,31 +102,23 @@ describe("MemoryStoresCard", () => {
     expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
     expect(screen.queryByText("/somewhere")).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Save and restart" }),
-    ).toBeDisabled();
-    expect(screen.queryByTestId("memory-stores-pending")).toBeNull();
+    // A flip applies on its own: no Save, Discard or confirm anywhere.
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
-  it("turning project memory off shows the restart line and saves the whole merged document", async () => {
+  it("turning project memory off saves at once, with no confirm", async () => {
     const user = userEvent.setup();
     render(<MemoryStoresCard />);
     await user.click(screen.getByRole("switch", { name: "Project memory" }));
-    expect(screen.getByTestId("memory-stores-pending")).toHaveTextContent(
-      "Changes restart the agent.",
-    );
-    const dialog = await confirmSave(user);
-    expect(dialog).toHaveTextContent("Save memory settings?");
-    expect(dialog).toHaveTextContent(
-      "Changes restart the agent. Anything running will stop.",
-    );
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    expect(hook.save).toHaveBeenCalledTimes(1);
     expect(hook.save).toHaveBeenCalledWith({
-      ...EMPTY_DAEMON_OPTIONS,
-      projectMemory: { ...EMPTY_DAEMON_OPTIONS.projectMemory, enabled: false },
+      projectMemory: { enabled: false },
     });
   });
 
-  it("turning facts about you off keeps its other saved values untouched", async () => {
+  it("turning facts about you off sends only that value, leaving the rest to the saved document", async () => {
     const user = userEvent.setup();
     hook.doc = doc({
       ...EMPTY_DAEMON_OPTIONS,
@@ -140,27 +126,32 @@ describe("MemoryStoresCard", () => {
     });
     render(<MemoryStoresCard />);
     await user.click(screen.getByRole("switch", { name: "Facts about you" }));
-    await confirmSave(user);
-    expect(hook.save).toHaveBeenCalledWith({
-      ...EMPTY_DAEMON_OPTIONS,
-      userModel: { enabled: false, dir: "/kept", reviewInterval: 7 },
-    });
+    expect(hook.save).toHaveBeenCalledTimes(1);
+    expect(hook.save).toHaveBeenCalledWith({ userModel: { enabled: false } });
   });
 
-  it("Discard drops the unsaved change without saving", async () => {
-    const user = userEvent.setup();
+  it("disables both switches behind one Applying line while the save is in flight", () => {
+    hook.busy = true;
     render(<MemoryStoresCard />);
-    const projectMemory = screen.getByRole("switch", {
-      name: "Project memory",
-    });
-    await user.click(projectMemory);
-    expect(projectMemory).toHaveAttribute("aria-checked", "false");
-    await user.click(screen.getByRole("button", { name: "Discard" }));
     expect(
       screen.getByRole("switch", { name: "Project memory" }),
-    ).toHaveAttribute("aria-checked", "true");
-    expect(screen.queryByTestId("memory-stores-pending")).toBeNull();
-    expect(hook.save).not.toHaveBeenCalled();
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("switch", { name: "Facts about you" }),
+    ).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent("Applying…");
+  });
+
+  it("shows a refused save inline and leaves the switches usable", () => {
+    hook.error = "The agent refused that setting.";
+    render(<MemoryStoresCard />);
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "The agent refused that setting.",
+    );
+    expect(
+      screen.getByRole("switch", { name: "Project memory" }),
+    ).toBeEnabled();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
   it("is read-only with On / Off per store when the agent is run elsewhere", () => {
@@ -179,9 +170,7 @@ describe("MemoryStoresCard", () => {
     expect(screen.getByText("Project memory")).toBeInTheDocument();
     expect(screen.getByText("Facts about you")).toBeInTheDocument();
     expect(screen.queryByRole("switch")).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "Save and restart" }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 
   it("says Not available when the running agent reported neither store", () => {

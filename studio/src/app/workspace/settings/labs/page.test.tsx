@@ -95,9 +95,6 @@ describe("LabsSettingsPage", () => {
   it("describes each switch in one plain sentence and keeps them independent", async () => {
     render(<LabsSettingsPage />);
     expect(
-      screen.getByText("Optional features that are still being tested."),
-    ).toBeInTheDocument();
-    expect(
       screen.getByText(
         "Adds a sample chat you can explore without sending anything.",
       ),

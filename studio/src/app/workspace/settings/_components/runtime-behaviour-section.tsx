@@ -1,24 +1,13 @@
 "use client";
 
-import { useState } from "react";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { Switch } from "@/components/ui/switch";
 import { useRuntimeSettings } from "@/features/agent/hooks/use-runtime-settings";
 import { useRuntimeStatus } from "@/features/agent/runtime-status";
 import {
+  ApplyingNote,
   ExternalManagedNote,
   Note,
   OfflineNote,
-  RESTART_SENTENCE,
   SettingsCard,
   SettingsRow,
 } from "./settings-card";
@@ -54,20 +43,20 @@ export function steerRowDescription(
  * owns its flags — the controller answers 409); offline renders the offline
  * note. A `steer: false` in the operator's own settings.yaml already keeps
  * steering off whatever Studio passes (`--no-steer` can only tighten), so
- * the row then reads Off with no switch and says why. Every flip RESTARTS
- * the daemon — in-flight runs end — so the switch confirms first. The copy
- * is written for people who are not developers: "the agent", never the
- * daemon or its flags.
+ * the row then reads Off with no switch and says why. A flip saves AT ONCE
+ * and restarts the daemon in the background — in-flight runs end — with the
+ * switch disabled behind an "Applying…" line until the re-read lands and a
+ * refusal shown inline. The copy is written for people who are not
+ * developers: "the agent", never the daemon or its flags.
  */
 export function RuntimeBehaviourSection() {
-  const { live, manageable, doc, isLoading, busy, error, notice, save } =
+  const { live, manageable, doc, isLoading, busy, error, save } =
     useRuntimeSettings();
   const { serverCapabilities } = useRuntimeStatus();
-  // The flip awaiting confirmation (the value the switch would take).
-  const [pending, setPending] = useState<boolean | null>(null);
 
   const inheritedOff = doc?.inherited.steer === false;
   const enabled = doc?.config.steer.enabled ?? true;
+  const saving = busy !== "";
 
   let body: React.ReactNode;
   if (!live) {
@@ -97,8 +86,10 @@ export function RuntimeBehaviourSection() {
               <Switch
                 id="daemon-steer"
                 checked={enabled}
-                disabled={busy !== ""}
-                onCheckedChange={(next) => setPending(next)}
+                disabled={saving}
+                onCheckedChange={(next) =>
+                  void save({ steer: { enabled: next } })
+                }
                 aria-label={STEER_LABEL}
               />
             )}
@@ -112,54 +103,15 @@ export function RuntimeBehaviourSection() {
             </Note>
           </div>
         ) : null}
+        {saving ? <ApplyingNote className="mt-3" /> : null}
         {error ? (
           <p role="alert" className="mt-3 text-sm text-destructive">
             {error}
           </p>
         ) : null}
-        {notice ? (
-          <p role="status" className="mt-3 text-sm text-muted-foreground">
-            {notice}
-          </p>
-        ) : null}
-        <AlertDialog
-          open={pending !== null}
-          onOpenChange={(open) => !open && setPending(null)}
-        >
-          {pending !== null && (
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>
-                  {pending ? "Turn this on?" : "Turn this off?"}
-                </AlertDialogTitle>
-                <AlertDialogDescription>
-                  {RESTART_SENTENCE}
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction
-                  onClick={() => {
-                    void save({ steer: { enabled: pending } });
-                    setPending(null);
-                  }}
-                >
-                  Save and restart
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          )}
-        </AlertDialog>
       </>
     );
   }
 
-  return (
-    <SettingsCard
-      title="Agent behaviour"
-      description="Applies to everyone who uses this agent."
-    >
-      {body}
-    </SettingsCard>
-  );
+  return <SettingsCard title="Agent behaviour">{body}</SettingsCard>;
 }

@@ -23,7 +23,6 @@ import type {
   HarnessProviderInfo,
   KnownHarnessProvider,
 } from "@/lib/harness/client";
-import { RESTART_SENTENCE } from "./settings-card";
 
 /**
  * Guided provider add, with deliberately NO key input anywhere (Studio rule
@@ -174,8 +173,7 @@ export function AddProviderDialog({
             {selected &&
               (checked === "appeared" ? (
                 <p className="text-sm">
-                  <span className="font-medium">{selected.label}</span> found.{" "}
-                  {RESTART_SENTENCE}
+                  <span className="font-medium">{selected.label}</span> found.
                 </p>
               ) : (
                 <p className="text-sm font-medium">

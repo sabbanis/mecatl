@@ -22,14 +22,13 @@ export type SessionToolProfile = ScheduleSpecDraft["profile"];
 export const TOOL_PROFILE_OPTIONS = [
   {
     id: "",
-    label: "All tools",
-    description: "Shell and the file tools as this daemon configures them",
+    label: "All",
+    description: "The agent can use every tool.",
   },
   {
     id: "no-fs",
-    label: "No filesystem",
-    description:
-      "Shell, Read, Edit, Write and the other file tools are left out; web tools remain",
+    label: "None",
+    description: "No file or shell tools; web tools only.",
   },
 ] as const satisfies readonly {
   id: SessionToolProfile;
@@ -37,11 +36,10 @@ export const TOOL_PROFILE_OPTIONS = [
   description: string;
 }[];
 
-/** Display label for a tool profile ("All tools" for the default). */
+/** Display label for a tool profile ("All" for the default). */
 export function toolProfileLabel(profile: SessionToolProfile): string {
   return (
-    TOOL_PROFILE_OPTIONS.find((option) => option.id === profile)?.label ??
-    "All tools"
+    TOOL_PROFILE_OPTIONS.find((option) => option.id === profile)?.label ?? "All"
   );
 }
 
@@ -52,7 +50,7 @@ export function normalizeToolProfile(value: unknown): SessionToolProfile {
 
 /** The short pill suffix for a non-default profile ("" for the default). */
 export function toolProfilePillSuffix(profile: SessionToolProfile): string {
-  return profile === "no-fs" ? " · No FS" : "";
+  return profile === "no-fs" ? " · None" : "";
 }
 
 /** The muted note when the daemon itself runs without a Shell tool. */

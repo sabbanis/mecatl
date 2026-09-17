@@ -122,10 +122,7 @@ export function DaemonLogCard() {
       }`;
 
   return (
-    <SettingsCard
-      title={TITLE}
-      description="Recent messages from the agent, useful when reporting a problem."
-    >
+    <SettingsCard title={TITLE}>
       <div className="flex flex-col gap-3">
         {log.startupError !== "" && (
           <div

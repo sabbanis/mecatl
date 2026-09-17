@@ -201,6 +201,7 @@ var flagMetaByFlag = map[string]flagMeta{
 
 	// ── Storage (both) ───────────────────────────────────────────────────
 	"store-dir":                      {group: groupStorage, common: true, acp: acpInclude},
+	"local-storage-management":       {group: groupStorage, common: false, acp: acpExclude},
 	"memory-dir":                     {group: groupStorage, common: true, acp: acpInclude},
 	"memory-consolidate-interval":    {group: groupStorage, common: false, acp: acpInclude},
 	"child-retention":                {group: groupStorage, common: false, acp: acpInclude},

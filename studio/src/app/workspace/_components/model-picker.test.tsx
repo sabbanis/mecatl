@@ -299,7 +299,7 @@ describe("Model picker", () => {
         onEffortChange={() => {}}
       />,
     );
-    expect(trigger()).toHaveAttribute("title", "Default model · Auto");
+    expect(trigger()).toHaveAttribute("title", "Default · Auto");
     await openModels(user);
     // No row wears the star, but the stale default can still be cleared.
     expect(

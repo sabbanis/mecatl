@@ -16,16 +16,18 @@ import {
 describe("tool profile vocabulary", () => {
   it("offers exactly the daemon's two profiles, default first", () => {
     expect(TOOL_PROFILE_OPTIONS.map((o) => o.id)).toEqual(["", "no-fs"]);
-    expect(TOOL_PROFILE_OPTIONS[0].label).toBe("All tools");
-    expect(TOOL_PROFILE_OPTIONS[1].label).toBe("No filesystem");
+    expect(TOOL_PROFILE_OPTIONS[0].label).toBe("All");
+    expect(TOOL_PROFILE_OPTIONS[1].label).toBe("None");
     // The description names the tools that leave AND what stays.
-    expect(TOOL_PROFILE_OPTIONS[1].description).toMatch(/Shell, Read, Edit/);
-    expect(TOOL_PROFILE_OPTIONS[1].description).toMatch(/web tools remain/);
+    expect(TOOL_PROFILE_OPTIONS[1].description).toMatch(
+      /No file or shell tools/,
+    );
+    expect(TOOL_PROFILE_OPTIONS[1].description).toMatch(/web tools only/);
   });
 
-  it("labels each profile and falls back to All tools", () => {
-    expect(toolProfileLabel("")).toBe("All tools");
-    expect(toolProfileLabel("no-fs")).toBe("No filesystem");
+  it("labels each profile and falls back to All", () => {
+    expect(toolProfileLabel("")).toBe("All");
+    expect(toolProfileLabel("no-fs")).toBe("None");
   });
 
   it("narrows an untrusted value to the closed set", () => {
@@ -38,7 +40,7 @@ describe("tool profile vocabulary", () => {
 
   it("suffixes the pill only for the attenuated profile", () => {
     expect(toolProfilePillSuffix("")).toBe("");
-    expect(toolProfilePillSuffix("no-fs")).toBe(" · No FS");
+    expect(toolProfilePillSuffix("no-fs")).toBe(" · None");
   });
 
   it("reports shell-off only on an explicit bash:false (absent = unknown)", () => {

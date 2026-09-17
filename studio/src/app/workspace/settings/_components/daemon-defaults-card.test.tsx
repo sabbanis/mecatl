@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { useDaemonDefaults } from "@/features/agent/hooks/use-daemon-defaults";
@@ -13,7 +13,6 @@ import {
   defaultsFromDraft,
   draftFromDefaults,
   modelDefaultsKind,
-  RESTART_WARNING,
 } from "./daemon-defaults-card";
 
 type Runtime = ReturnType<typeof useHarnessRuntime>;
@@ -23,12 +22,13 @@ type DefaultsHook = ReturnType<typeof useDaemonDefaults>;
  * Settings → Provider → "Default model": the one control an office user
  * needs from the saved defaults document — the default model for the
  * ACTIVE provider. Pins that (1) only that picker renders (no effort,
- * window, timeout, caching or advanced rows), (2) Save stays disabled until
- * the draft differs and always confirms with the restart sentence, (3) the
- * body sent is the whole saved document with the active provider's pair
- * folded into `models` — every other field rides along unchanged, and
- * (4) offline, missing and offline-mode states render notes, not a form,
- * while external mode renders nothing at all.
+ * window, timeout, caching or advanced rows, and no Save button), (2) a
+ * choice applies AT ONCE — no confirm — and the body sent is the whole
+ * saved document with the active provider's pair folded into `models`,
+ * every other field riding along unchanged, (3) while the save is in
+ * flight the picker is disabled behind an "Applying…" line and the hook's
+ * error shows inline, and (4) offline, missing and offline-mode states
+ * render notes, not a form, while external mode renders nothing at all.
  */
 
 const saved: HarnessDaemonDefaults = {
@@ -153,18 +153,13 @@ beforeEach(() => {
 });
 
 describe("DaemonDefaultsCard", () => {
-  it("renders only the active provider's default model picker, in plain words", () => {
+  it("renders only the active provider's default model picker, in plain words, with no Save button", () => {
     render(
       <DaemonDefaultsCard runtime={fakeRuntime()} defaults={fakeDefaults()} />,
     );
     expect(
       screen.getByRole("heading", { name: "Default model" }),
     ).toBeVisible();
-    expect(
-      screen.getByText(
-        "The model the agent uses when a chat does not pick one.",
-      ),
-    ).toBeInTheDocument();
     expect(
       screen.getByRole("combobox", { name: "Default model" }),
     ).toHaveTextContent("Claude");
@@ -178,39 +173,21 @@ describe("DaemonDefaultsCard", () => {
     expect(screen.queryByText(/Context window/)).not.toBeInTheDocument();
     expect(screen.queryByText(/timeout/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/caching/i)).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Advanced" })).toBeNull();
-    expect(screen.queryByText(/--|daemon|mecated|spawn|flag/)).toBeNull();
     expect(
-      screen.getByText(
-        "Changes restart the agent. Anything running will stop.",
-      ),
-    ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+      screen.queryByText(/--|daemon|mecated|spawn|flag|restart/i),
+    ).toBeNull();
+    // The choice applies on change: no Save, Discard or confirm anywhere.
+    expect(screen.queryByRole("button")).toBeNull();
   });
 
-  it("picks a default model, confirms the restart, and PUTs the pair folded into models with the rest of the document unchanged", async () => {
+  it("picks a default model and PUTs at once, the pair folded into models with the rest of the document unchanged", async () => {
     const user = userEvent.setup();
     render(
       <DaemonDefaultsCard runtime={fakeRuntime()} defaults={fakeDefaults()} />,
     );
     await user.click(screen.getByRole("combobox", { name: "Default model" }));
     await user.click(await screen.findByRole("option", { name: "GPT-5" }));
-    const saveButton = screen.getByRole("button", { name: "Save" });
-    expect(saveButton).toBeEnabled();
-
-    await user.click(saveButton);
-    const dialog = await screen.findByRole("alertdialog");
-    expect(dialog).toHaveTextContent("Save and restart the agent?");
-    expect(dialog).toHaveTextContent(RESTART_WARNING);
-    expect(dialog).not.toHaveTextContent(/daemon|mecated|refused/);
-    expect(save).not.toHaveBeenCalled();
-    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
-    expect(save).not.toHaveBeenCalled();
-
-    await user.click(saveButton);
-    await user.click(
-      await screen.findByRole("button", { name: "Save and restart" }),
-    );
+    expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(save).toHaveBeenCalledTimes(1);
     // Everything an operator configured elsewhere — the helper model, the
     // effort tier, the window, caching, base URLs, aliases, slots, the key
@@ -224,7 +201,7 @@ describe("DaemonDefaultsCard", () => {
       activeProvider: null,
     });
     // The status poll is refreshed so the provider list reads the new state.
-    expect(refresh).toHaveBeenCalled();
+    await waitFor(() => expect(refresh).toHaveBeenCalled());
   });
 
   it("offers the provider's own default and keeps a saved model the inventory no longer lists", async () => {
@@ -251,21 +228,6 @@ describe("DaemonDefaultsCard", () => {
     ).toBeInTheDocument();
   });
 
-  it("Discard returns to the saved value and disables Save again", async () => {
-    const user = userEvent.setup();
-    render(
-      <DaemonDefaultsCard runtime={fakeRuntime()} defaults={fakeDefaults()} />,
-    );
-    await user.click(screen.getByRole("combobox", { name: "Default model" }));
-    await user.click(await screen.findByRole("option", { name: "GPT-5" }));
-    expect(screen.getByRole("button", { name: "Save" })).toBeEnabled();
-    await user.click(screen.getByRole("button", { name: "Discard" }));
-    expect(
-      screen.getByRole("combobox", { name: "Default model" }),
-    ).toHaveTextContent("Claude");
-    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
-  });
-
   it("shows a note instead of the picker while the agent is in offline mode", () => {
     render(
       <DaemonDefaultsCard
@@ -285,10 +247,9 @@ describe("DaemonDefaultsCard", () => {
         "Set a provider as active above to choose its default model.",
       ),
     ).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
   });
 
-  it("surfaces the hook's error and shows Saving… while busy", () => {
+  it("disables the picker behind an Applying line while a save is in flight, and shows the hook's error inline", () => {
     render(
       <DaemonDefaultsCard
         runtime={fakeRuntime()}
@@ -299,8 +260,11 @@ describe("DaemonDefaultsCard", () => {
         })}
       />,
     );
-    expect(screen.getByText(/not catalogued/)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Saving…" })).toBeDisabled();
+    expect(
+      screen.getByRole("combobox", { name: "Default model" }),
+    ).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent("Applying…");
+    expect(screen.getByRole("alert")).toHaveTextContent(/not catalogued/);
   });
 
   it("renders nothing in external mode", () => {
@@ -326,7 +290,7 @@ describe("DaemonDefaultsCard", () => {
     expect(
       screen.getByText(/The agent is offline, so these settings/),
     ).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    expect(screen.queryByRole("combobox")).toBeNull();
   });
 
   it("says the default model could not be read instead of inventing one", () => {
@@ -339,7 +303,7 @@ describe("DaemonDefaultsCard", () => {
     expect(
       screen.getByText("The default model could not be read right now."),
     ).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    expect(screen.queryByRole("combobox")).toBeNull();
   });
 });
 

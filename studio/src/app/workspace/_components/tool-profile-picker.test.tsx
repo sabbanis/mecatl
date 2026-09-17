@@ -13,7 +13,7 @@ import {
  * 0291) as its own pill next to Mode:
  *
  * - a DRAFT (`onProfileChange` wired) gets a dropdown with the two rows —
- *   All tools / No filesystem — and the pill names the pick;
+ *   All / None — and the pill names the pick;
  * - a LIVE chat gets no dropdown: a KNOWN profile renders a read-only pill,
  *   an unknown one (a chat Studio did not mint) renders nothing;
  * - a daemon whose Shell tool is off (`capabilities.bash === false`) gets
@@ -32,7 +32,7 @@ const pill = () => screen.getByTestId("tool-profile-pill");
 
 async function openMenu(user: ReturnType<typeof userEvent.setup>) {
   await user.click(pill());
-  await screen.findByRole("menuitem", { name: /^All tools/ });
+  await screen.findByRole("menuitem", { name: /^All/ });
 }
 
 beforeEach(() => {
@@ -44,15 +44,15 @@ afterEach(() => {
 });
 
 describe("ToolProfileSelector (draft)", () => {
-  it("lists All tools and No filesystem, checks the current pick, and reports a change", async () => {
+  it("lists All and None, checks the current pick, and reports a change", async () => {
     const user = userEvent.setup();
     const onProfileChange = vi.fn();
     render(
       <ToolProfileSelector profile="" onProfileChange={onProfileChange} />,
     );
-    expect(pill()).toHaveTextContent("Tools: All tools");
+    expect(pill()).toHaveTextContent("Tools All");
     await openMenu(user);
-    const noFs = screen.getByRole("menuitem", { name: /^No filesystem/ });
+    const noFs = screen.getByRole("menuitem", { name: /^None/ });
     expect(noFs).toBeInTheDocument();
     fireEvent.click(noFs);
     expect(onProfileChange).toHaveBeenCalledWith("no-fs");
@@ -60,8 +60,8 @@ describe("ToolProfileSelector (draft)", () => {
 
   it("names the attenuated profile on the pill once picked", () => {
     render(<ToolProfileSelector profile="no-fs" onProfileChange={vi.fn()} />);
-    expect(pill()).toHaveTextContent("Tools: No filesystem");
-    expect(pill()).toHaveAttribute("title", "Tools: No filesystem");
+    expect(pill()).toHaveTextContent("Tools None");
+    expect(pill()).toHaveAttribute("title", "Tools: None");
   });
 
   it("says when the daemon's Shell tool is off, and stays quiet when it is not reported", async () => {
@@ -84,7 +84,7 @@ describe("ToolProfileSelector (draft)", () => {
 describe("ToolProfileSelector (live chat)", () => {
   it("renders a known profile as a read-only pill", () => {
     render(<ToolProfileSelector profile="no-fs" />);
-    expect(pill()).toHaveTextContent("Tools: No filesystem");
+    expect(pill()).toHaveTextContent("Tools None");
     expect(pill()).toHaveAttribute("title", toolProfileReadOnlyLine("no-fs"));
     expect(screen.queryByRole("button")).toBeNull();
   });
@@ -103,9 +103,9 @@ describe("ToolProfileSheetRows (mobile)", () => {
       <ToolProfileSheetRows profile="" onProfileChange={onProfileChange} />,
     );
     expect(screen.getByText("Tools")).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /^No filesystem/ }));
+    await user.click(screen.getByRole("button", { name: /^None/ }));
     expect(onProfileChange).toHaveBeenCalledWith("no-fs");
-    await user.click(screen.getByRole("button", { name: /^All tools/ }));
+    await user.click(screen.getByRole("button", { name: /^All/ }));
     expect(onProfileChange).toHaveBeenCalledWith("");
   });
 

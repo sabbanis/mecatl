@@ -10,13 +10,14 @@ import {
 /**
  * Settings → Agent → Agent behaviour: the operator half of the TUI's steer
  * opt-out, in plain words. Pins that (1) the switch mirrors the saved
- * `steer.enabled`, a flip opens the restart confirm and only the confirm
- * calls `save({ steer: { enabled } })` — Cancel saves nothing; (2) an
- * operator `steer: false` in settings.yaml (inherited) replaces the switch
- * with Off and says why without naming the file's key; (3) external mode
- * renders the managed note and offline the offline note, neither with a
- * switch; (4) the row adds ONE "Right now" line only when the daemon's live
- * `capabilities.steer` differs from the saved switch; (5) the card never
+ * `steer.enabled` and a flip calls `save({ steer: { enabled } })` AT ONCE —
+ * no confirm dialog; (2) while the save is in flight the switch is disabled
+ * behind an "Applying…" line, and a refusal shows inline; (3) an operator
+ * `steer: false` in settings.yaml (inherited) replaces the switch with Off
+ * and says why without naming the file's key; (4) external mode renders the
+ * managed note and offline the offline note, neither with a switch; (5) the
+ * row adds ONE "Right now" line only when the daemon's live
+ * `capabilities.steer` differs from the saved switch; (6) the card never
  * shows a developer word.
  */
 
@@ -90,50 +91,28 @@ beforeEach(() => {
 });
 
 describe("RuntimeBehaviourSection", () => {
-  it("mirrors the saved value and saves steer off only after the restart confirm", async () => {
+  it("mirrors the saved value and saves steer off at once, with no confirm", async () => {
     const user = userEvent.setup();
     render(<RuntimeBehaviourSection />);
     const toggle = screen.getByRole("switch", { name: SWITCH });
     expect(toggle).toBeChecked();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
 
     await user.click(toggle);
-    const dialog = await screen.findByRole("alertdialog");
-    expect(dialog).toHaveTextContent("Turn this off?");
-    expect(dialog).toHaveTextContent(
-      "Changes restart the agent. Anything running will stop.",
-    );
-    // Nothing is saved (and the switch does not move) until the confirm.
-    expect(runtimeSettings.save).not.toHaveBeenCalled();
-    expect(toggle).toBeChecked();
-
-    await user.click(screen.getByRole("button", { name: "Save and restart" }));
+    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
     expect(runtimeSettings.save).toHaveBeenCalledTimes(1);
     expect(runtimeSettings.save).toHaveBeenCalledWith({
       steer: { enabled: false },
     });
   });
 
-  it("saves nothing when the confirm is cancelled", async () => {
-    const user = userEvent.setup();
-    render(<RuntimeBehaviourSection />);
-    await user.click(screen.getByRole("switch", { name: SWITCH }));
-    await screen.findByRole("alertdialog");
-    await user.click(screen.getByRole("button", { name: "Cancel" }));
-    expect(runtimeSettings.save).not.toHaveBeenCalled();
-    expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
-  });
-
-  it("offers to turn it back on when it is saved off", async () => {
+  it("saves steer back on at once when it is saved off", async () => {
     const user = userEvent.setup();
     runtimeSettings.doc = doc({ enabled: false });
     render(<RuntimeBehaviourSection />);
     const toggle = screen.getByRole("switch", { name: SWITCH });
     expect(toggle).not.toBeChecked();
     await user.click(toggle);
-    expect(await screen.findByRole("alertdialog")).toHaveTextContent(
-      "Turn this on?",
-    );
-    await user.click(screen.getByRole("button", { name: "Save and restart" }));
     expect(runtimeSettings.save).toHaveBeenCalledWith({
       steer: { enabled: true },
     });
@@ -150,32 +129,28 @@ describe("RuntimeBehaviourSection", () => {
     expect(screen.queryByText(/steer: false/)).toBeNull();
   });
 
-  it("adds the Right-now line only when the live capability differs, and surfaces error and notice", () => {
+  it("adds the Right-now line only when the live capability differs, and shows a refusal inline", () => {
     runtimeStatus.serverCapabilities = { steer: false };
     runtimeSettings.error = "mecated refused to start";
-    runtimeSettings.notice = "Saved.";
     render(<RuntimeBehaviourSection />);
     expect(screen.getByText(/Right now this is off\./)).toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent(
       "mecated refused to start",
     );
-    expect(screen.getByRole("status")).toHaveTextContent("Saved.");
+    expect(screen.getByRole("switch", { name: SWITCH })).toBeEnabled();
   });
 
-  it("uses no developer vocabulary on the card or in the confirm", async () => {
-    const user = userEvent.setup();
+  it("uses no developer vocabulary on the card", () => {
     runtimeStatus.serverCapabilities = { steer: false };
     const { container } = render(<RuntimeBehaviourSection />);
     expect(container.textContent).not.toMatch(JARGON);
-    await user.click(screen.getByRole("switch", { name: SWITCH }));
-    const dialog = await screen.findByRole("alertdialog");
-    expect(dialog.textContent).not.toMatch(JARGON);
   });
 
-  it("disables the switch while a save is in flight", () => {
+  it("disables the switch behind an Applying line while a save is in flight", () => {
     runtimeSettings.busy = "save";
     render(<RuntimeBehaviourSection />);
     expect(screen.getByRole("switch", { name: SWITCH })).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent("Applying…");
   });
 
   it("renders the managed note, not a switch, in external mode", () => {

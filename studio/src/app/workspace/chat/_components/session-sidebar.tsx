@@ -30,7 +30,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
-import type { AgentSession, RosterAgent } from "@/features/agent";
+import type { AgentSession } from "@/features/agent";
 import {
   MOCK_PROJECTS,
   MOCK_PROJECTS_DEFAULT_OPEN_ID,
@@ -784,55 +784,6 @@ export function SessionList({
           {showAll ? "Show less" : "Show more"}
         </button>
       )}
-    </div>
-  );
-}
-
-/** Title-attribute tooltip: description, then the def's scope details. */
-function agentRowTooltip(agent: RosterAgent): string | undefined {
-  const lines: string[] = [];
-  if (agent.description) lines.push(agent.description);
-  const details: string[] = [];
-  details.push(`permissions: ${agent.permissionMode || "default"}`);
-  if (agent.tools.length > 0) details.push(`tools: ${agent.tools.join(", ")}`);
-  lines.push(details.join(" · "));
-  return lines.join("\n");
-}
-
-/**
- * The daemon's real agent roster, listed below the chat groups. Agents are
- * not chat containers — selecting one simply starts a new chat draft. Each
- * row carries the def's tools + permission mode in the tooltip (D2.2); the
- * avatar is deliberately untinted and the model is not shown.
- */
-export function AgentList({
-  agents,
-  onStartChat,
-}: {
-  agents: RosterAgent[];
-  onStartChat: () => void;
-}) {
-  return (
-    <div className="flex flex-col">
-      {agents.map((agent) => {
-        return (
-          <button
-            key={agent.name}
-            type="button"
-            onClick={onStartChat}
-            title={agentRowTooltip(agent)}
-            aria-label={`New chat with ${agent.name}`}
-            className="group flex items-center gap-2.5 border-l-[3px] border-transparent py-2 pr-3 pl-3 text-left transition-colors hover:bg-accent"
-          >
-            <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
-              <Bot className="size-3.5" />
-            </span>
-            <span className="min-w-0 flex-1 truncate text-[0.85rem] font-medium text-muted-foreground group-hover:text-foreground select-none">
-              {agent.name}
-            </span>
-          </button>
-        );
-      })}
     </div>
   );
 }

@@ -2,9 +2,6 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { McpInventoryView } from "@/features/agent/hooks/use-mcp-inventory";
 import {
-  MCP_BROKER_ONLY_TEXT,
-  MCP_EMPTY_TEXT,
-  MCP_NO_INVENTORY_TEXT,
   MCP_SNAPSHOT_TEXT,
   MCP_UPDATED_TEXT,
   McpSourcesCard,
@@ -12,14 +9,16 @@ import {
 
 /**
  * Settings → MCP tools: the agent's tools as a plain list. Pins that (1) the
- * card is gated on `capabilities.mcp` — a broker-only agent gets the pointer
- * note and NEVER the direct source read, one with neither says so, offline
- * reads nothing; (2) each source renders under a readable name with an
- * On/Off badge and its tool names, and the technical detail (kind,
- * transport, address, groups, verbatim skip reasons) stays out; (3) skipped
- * tools surface as a plain count; (4) the status line reads the refresh
- * hint until a refresh lands, and Refresh drives `refresh()`; (5) empty and
- * error states.
+ * card exists ONLY when there are tools to list — an agent without the tool
+ * inventory (`capabilities.mcp`; a broker-only agent included) renders
+ * nothing and NEVER triggers the direct source read, and so do offline, the
+ * first read still in flight, and an empty list; (2) each source renders
+ * under a readable name with an On/Off badge and its tool names, and the
+ * technical detail (kind, transport, address, groups, verbatim skip
+ * reasons) stays out; (3) skipped tools surface as a plain count; (4) the
+ * status line reads the refresh hint until a refresh lands, and Refresh
+ * drives `refresh()`; (5) a failed read keeps the card so the failure is
+ * visible and can be retried.
  */
 
 const { runtime, inventory } = vi.hoisted(() => ({
@@ -103,9 +102,6 @@ describe("McpSourcesCard", () => {
     expect(
       screen.getByRole("heading", { name: "MCP tools" }),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText("The tools the agent can use right now."),
-    ).toBeInTheDocument();
 
     const sources = screen.getAllByTestId("mcp-source");
     expect(sources).toHaveLength(2);
@@ -167,47 +163,48 @@ describe("McpSourcesCard", () => {
     );
   });
 
-  it("renders the loading, empty and error states", () => {
+  it("renders nothing while the first read is in flight or the list is empty, and keeps a failed read visible", () => {
     inventory.view = view({ sources: [], isLoading: true });
-    const { rerender } = render(<McpSourcesCard />);
-    expect(screen.getByRole("status")).toHaveTextContent("Loading tools…");
+    const { container, rerender } = render(<McpSourcesCard />);
+    expect(container).toBeEmptyDOMElement();
 
     inventory.view = view({ sources: [] });
     rerender(<McpSourcesCard />);
-    expect(screen.getByText(MCP_EMPTY_TEXT)).toBeInTheDocument();
+    expect(container).toBeEmptyDOMElement();
 
     inventory.view = view({ sources: [], error: "Could not read the tools." });
     rerender(<McpSourcesCard />);
+    expect(
+      screen.getByRole("heading", { name: "MCP tools" }),
+    ).toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent(
       "Could not read the tools.",
     );
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeEnabled();
   });
 
-  it("never reads sources on a broker-only agent, and points at the chat panel", () => {
+  it("renders nothing and never reads sources on a broker-only agent", () => {
     runtime.serverCapabilities = { mcp_connector_status: true };
-    render(<McpSourcesCard />);
-    expect(screen.getByText(MCP_BROKER_ONLY_TEXT)).toBeInTheDocument();
-    expect(screen.queryByTestId("mcp-source")).toBeNull();
+    const { container } = render(<McpSourcesCard />);
+    expect(container).toBeEmptyDOMElement();
     expect(inventory.enabledCalls.every((enabled) => enabled === false)).toBe(
       true,
     );
   });
 
-  it("says so plainly when the agent cannot list its tools at all", () => {
+  it("renders nothing when the agent cannot list its tools at all", () => {
     runtime.serverCapabilities = {};
-    render(<McpSourcesCard />);
-    expect(screen.getByText(MCP_NO_INVENTORY_TEXT)).toBeInTheDocument();
+    const { container } = render(<McpSourcesCard />);
+    expect(container).toBeEmptyDOMElement();
     expect(inventory.enabledCalls.every((enabled) => enabled === false)).toBe(
       true,
     );
   });
 
-  it("reads nothing and lists nothing while the agent is offline", () => {
+  it("renders nothing and reads nothing while the agent is offline", () => {
     runtime.connected = false;
-    render(<McpSourcesCard />);
-    expect(screen.getByText(/offline/i)).toBeInTheDocument();
-    expect(screen.queryByTestId("mcp-source")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull();
+    const { container } = render(<McpSourcesCard />);
+    expect(container).toBeEmptyDOMElement();
     expect(inventory.enabledCalls.every((enabled) => enabled === false)).toBe(
       true,
     );

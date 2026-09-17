@@ -1,29 +1,15 @@
 "use client";
 
-import { useState } from "react";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
-import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import {
   type DaemonOptionsPatch,
-  mergeDaemonOptions,
   useDaemonOptions,
 } from "@/features/agent/hooks/use-daemon-options";
 import { useRuntimeStatus } from "@/features/agent/runtime-status";
-import type { HarnessDaemonOptions } from "@/lib/harness/daemon-options";
 import { readMemoryStores } from "../../../_components/memory-indicator";
 import {
+  ApplyingNote,
   Note,
-  RESTART_SENTENCE,
   SettingsCard,
   SettingsRow,
 } from "../../_components/settings-card";
@@ -31,8 +17,11 @@ import {
 /**
  * Settings → Memory → Memory: the two things the agent can remember, as two
  * switches. The saved values come from the same options document every other
- * agent-options card edits, and a save sends the WHOLE merged document and
- * restarts the agent; only the on/off switches are offered here. When the
+ * agent-options card edits. Flipping a switch saves AT ONCE — the hook merges
+ * the one changed value over the saved document and sends the WHOLE thing —
+ * and the agent restarts in the background: both switches are disabled
+ * behind one "Applying…" line until the re-read shows the new state, and a
+ * refusal shows inline. Only the on/off switches are offered here. When the
  * agent is run elsewhere the switches give way to a read-only On/Off line
  * per store, read from what the running agent reports.
  */
@@ -66,15 +55,10 @@ const STORES = [
 const statusWord = (value: boolean | null) =>
   value === null ? "Not available" : value ? "On" : "Off";
 
-const sameOptions = (a: HarnessDaemonOptions, b: HarnessDaemonOptions) =>
-  JSON.stringify(a) === JSON.stringify(b);
-
 export function MemoryStoresCard() {
   const { serverCapabilities } = useRuntimeStatus();
-  const { live, manageable, doc, isLoading, busy, error, notice, save } =
+  const { live, manageable, doc, isLoading, busy, error, save } =
     useDaemonOptions();
-  const [draft, setDraft] = useState<HarnessDaemonOptions | null>(null);
-  const [confirming, setConfirming] = useState(false);
 
   let body: React.ReactNode;
   if (!live) {
@@ -113,15 +97,6 @@ export function MemoryStoresCard() {
       </Note>
     );
   } else {
-    const shown = draft ?? doc.options;
-    const dirty = !sameOptions(shown, doc.options);
-    const update = (patch: DaemonOptionsPatch) =>
-      setDraft(mergeDaemonOptions(shown, patch));
-    const submit = async () => {
-      setConfirming(false);
-      const ok = await save(shown);
-      if (ok) setDraft(null);
-    };
     body = (
       <>
         <div className="divide-y divide-border/60">
@@ -134,76 +109,25 @@ export function MemoryStoresCard() {
             >
               <Switch
                 id={store.id}
-                checked={shown[store.section].enabled}
+                checked={doc.options[store.section].enabled}
                 disabled={busy}
-                onCheckedChange={(enabled) => update(store.patch(enabled))}
+                onCheckedChange={(enabled) => void save(store.patch(enabled))}
               />
             </SettingsRow>
           ))}
         </div>
-        {dirty ? (
-          <p
-            className="mt-3 text-xs text-muted-foreground"
-            data-testid="memory-stores-pending"
-          >
-            {RESTART_SENTENCE}
-          </p>
-        ) : null}
-        <div className="mt-4 flex flex-wrap items-center gap-2">
-          <Button
-            type="button"
-            size="sm"
-            disabled={!dirty || busy}
-            onClick={() => setConfirming(true)}
-          >
-            Save and restart
-          </Button>
-          {dirty ? (
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              disabled={busy}
-              onClick={() => setDraft(null)}
-            >
-              Discard
-            </Button>
-          ) : null}
-        </div>
+        {busy ? <ApplyingNote className="mt-3" /> : null}
         {error ? (
           <p role="alert" className="mt-3 text-sm text-destructive">
             {error}
           </p>
         ) : null}
-        {notice ? (
-          <p role="status" className="mt-3 text-sm text-muted-foreground">
-            {notice}
-          </p>
-        ) : null}
-        <AlertDialog open={confirming} onOpenChange={setConfirming}>
-          {confirming && (
-            <AlertDialogContent>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Save memory settings?</AlertDialogTitle>
-                <AlertDialogDescription>
-                  {RESTART_SENTENCE}
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction onClick={() => void submit()}>
-                  Save and restart
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </AlertDialogContent>
-          )}
-        </AlertDialog>
       </>
     );
   }
 
   return (
-    <SettingsCard title="Memory" description="Choose what the agent remembers.">
+    <SettingsCard title="Memory">
       <div data-testid="memory-stores">{body}</div>
     </SettingsCard>
   );

@@ -18,9 +18,7 @@ import {
 } from "@/components/ui/tooltip";
 import {
   type AgentSession,
-  type RosterAgent,
   useAgentChat,
-  useAgentRoster,
   useAgentSessions,
 } from "@/features/agent";
 import { deriveChatPhase } from "@/features/agent/chat-phase";
@@ -118,7 +116,6 @@ import { InspectSessionGroups, inspectRowDomId } from "./inspect-session-list";
 import { SessionInventoryStatus } from "./session-inventory-status";
 import { StorageMaintenanceLink } from "./session-kind-tabs";
 import {
-  AgentList,
   type ChatFolderActions,
   FolderGroupMenu,
   MockProjectList,
@@ -191,7 +188,6 @@ function SidebarContent({
   onCancelLoad,
   onRetryLoad,
   groups,
-  agents,
   selectedId,
   onSelect,
   actions,
@@ -209,7 +205,6 @@ function SidebarContent({
   onCancelLoad: () => void;
   onRetryLoad: () => void;
   groups: SidebarSessionGroup[];
-  agents: RosterAgent[];
   selectedId: string;
   onSelect: (id: string) => void;
   actions: SessionActions;
@@ -349,19 +344,6 @@ function SidebarContent({
               {emptyLabel}
             </p>
           )
-        )}
-        {!isLoading && agents.length > 0 && (
-          <div
-            className={
-              groups.length > 0 || inspectGroups.length > 0 || showMockProjects
-                ? "pt-3"
-                : undefined
-            }
-          >
-            <SidebarGroup label="Agents">
-              <AgentList agents={agents} onStartChat={onNewChat} />
-            </SidebarGroup>
-          </div>
         )}
         {!isLoading && footer}
       </div>
@@ -561,7 +543,6 @@ export function ChatWorkspace({
     applyTitle,
     refreshSessions,
   } = useAgentSessions();
-  const { agents } = useAgentRoster();
   const router = useRouter();
   const { name: agentName } = useAgentDisplayName();
   const { side: sidebarSide } = useSessionListSide();
@@ -742,6 +723,18 @@ export function ChatWorkspace({
   // "Auto-routed" is only an honest name for the empty pick while the model
   // router is actually on; otherwise the daemon just uses its default model.
   const routingEnabled = Boolean(runtimeStatus?.modelRouter?.enabled);
+  // The label for "no explicit pick": the model the agent actually uses by
+  // default — the saved default for the active provider (display name when
+  // the inventory lists it, else its id) — or "Auto-routed" while the model
+  // router decides, or a plain "Default" when nothing is known.
+  const autoModelLabel = useMemo(() => {
+    if (routingEnabled) return "Auto-routed";
+    const defaults = runtimeStatus?.daemonDefaults;
+    const kind = defaults?.activeProvider ?? "";
+    const id = kind ? (defaults?.models?.[kind]?.defaultModel ?? "") : "";
+    if (!id) return "Default";
+    return liveModels.find((m) => m.id === id)?.displayName || id;
+  }, [routingEnabled, runtimeStatus, liveModels]);
   // Draft pick: null = untouched (the browser-local Studio default for new
   // chats applies when the daemon lists it), "" = the auto row on purpose.
   const draftModelRef = useRef<string | null>(null);
@@ -1553,7 +1546,6 @@ export function ChatWorkspace({
     onCancelLoad: cancelSessionsLoad,
     onRetryLoad: retrySessionsLoad,
     groups: visibleGroups,
-    agents,
     selectedId,
     onSelect: handleSelectSession,
     actions: rowActions,
@@ -1943,7 +1935,7 @@ export function ChatWorkspace({
           debugMcpServers={sessionDetail?.debugMcpServers}
           debugMcpTools={sessionDetail?.debugMcpTools}
           models={modelOptions}
-          autoModelLabel={routingEnabled ? "Auto-routed" : "Default model"}
+          autoModelLabel={autoModelLabel}
           onSwitchModel={debugChat ? undefined : handleSwitchModel}
           onSwitchEffort={debugChat ? undefined : handleSwitchEffort}
           currentEffort={resolvedModel?.reasoningEffort ?? ""}
@@ -1966,7 +1958,7 @@ export function ChatWorkspace({
         ) : (
           <DraftView
             models={modelOptions}
-            autoModelLabel={routingEnabled ? "Auto-routed" : "Default model"}
+            autoModelLabel={autoModelLabel}
             onModelChange={handleDraftModelChange}
             onEffortChange={handleDraftEffortChange}
             effortSupported={effortSupported}
@@ -2006,7 +1998,7 @@ export function ChatWorkspace({
         ) : (
           <DraftView
             models={modelOptions}
-            autoModelLabel={routingEnabled ? "Auto-routed" : "Default model"}
+            autoModelLabel={autoModelLabel}
             onModelChange={handleDraftModelChange}
             onEffortChange={handleDraftEffortChange}
             effortSupported={effortSupported}

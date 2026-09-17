@@ -1,13 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   ENVIRONMENT_OPT_OUT_NOTE,
   EXTERNAL_PRODUCT_METRICS_NOTE,
   OPTIONS_UNAVAILABLE_NOTE,
   ProductMetricsCard,
-  RESTART_NOTE,
-  SAVED_NOTICE,
   SHARED_NOTE,
 } from "./product-metrics-card";
 
@@ -16,9 +13,10 @@ import {
  * opt-out switch. Pins that (1) the switch mirrors the saved setting and
  * the row says in plain words what is shared, (2) an environment opt-out
  * disables the switch and explains why rather than offering a switch the
- * controller would never honour, (3) the switch saves ONLY after the
- * restart confirm and never on cancel, as a partial `productMetrics` patch
- * that keeps the other field, and (4) external, offline and loading states
+ * controller would never honour, (3) a flip saves AT ONCE — no confirm —
+ * as a partial `productMetrics` patch that keeps the other field, (4) while
+ * the save is in flight the switch is disabled behind an "Applying…" line
+ * and a refusal shows inline, and (5) external, offline and loading states
  * render notes, not a form.
  */
 
@@ -101,39 +99,21 @@ describe("ProductMetricsCard", () => {
     expect(screen.getAllByRole("switch")).toHaveLength(1);
     expect(screen.queryByText(/Dry run/)).toBeNull();
     expect(screen.queryByText(/daemon|mecated|--product-metrics/i)).toBeNull();
+    // A flip applies on its own: no Save or confirm anywhere.
+    expect(screen.queryByRole("button")).toBeNull();
   });
 
-  it("turns the statistics off only after the restart confirm, as a partial patch that keeps the other field", async () => {
-    const user = userEvent.setup();
+  it("turns the statistics off at once, as a partial patch that keeps the other field", () => {
     render(<ProductMetricsCard />);
-
     fireEvent.click(metricsSwitch());
-    const dialog = await screen.findByRole("alertdialog");
-    expect(dialog).toHaveTextContent("Turn usage statistics off?");
-    expect(dialog).toHaveTextContent(RESTART_NOTE);
-    expect(diagnostics.save).not.toHaveBeenCalled();
-
-    await user.click(screen.getByRole("button", { name: "Save and restart" }));
-    await waitFor(() =>
-      expect(diagnostics.save).toHaveBeenCalledWith({
-        productMetrics: { enabled: false, dryRun: false },
-      }),
-    );
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(diagnostics.save).toHaveBeenCalledTimes(1);
+    expect(diagnostics.save).toHaveBeenCalledWith({
+      productMetrics: { enabled: false, dryRun: false },
+    });
   });
 
-  it("saves nothing when the restart confirm is cancelled", async () => {
-    const user = userEvent.setup();
-    render(<ProductMetricsCard />);
-
-    fireEvent.click(metricsSwitch());
-    await screen.findByRole("alertdialog");
-    await user.click(screen.getByRole("button", { name: "Cancel" }));
-    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
-    expect(diagnostics.save).not.toHaveBeenCalled();
-  });
-
-  it("shows the switch off when Studio saved the opt-out, still usable to turn it back on", async () => {
-    const user = userEvent.setup();
+  it("shows the switch off when Studio saved the opt-out, and turns it back on at once", () => {
     setProductMetrics(
       { enabled: false, dryRun: true },
       { effective: false, source: "studio" },
@@ -144,14 +124,9 @@ describe("ProductMetricsCard", () => {
     expect(metricsSwitch()).toBeEnabled();
 
     fireEvent.click(metricsSwitch());
-    const dialog = await screen.findByRole("alertdialog");
-    expect(dialog).toHaveTextContent("Turn usage statistics on?");
-    await user.click(screen.getByRole("button", { name: "Save and restart" }));
-    await waitFor(() =>
-      expect(diagnostics.save).toHaveBeenCalledWith({
-        productMetrics: { enabled: true, dryRun: true },
-      }),
-    );
+    expect(diagnostics.save).toHaveBeenCalledWith({
+      productMetrics: { enabled: true, dryRun: true },
+    });
   });
 
   it("explains an environment opt-out and disables the switch, whatever Studio saved", () => {
@@ -167,20 +142,18 @@ describe("ProductMetricsCard", () => {
     expect(metricsSwitch()).not.toBeChecked();
     expect(metricsSwitch()).toBeDisabled();
     fireEvent.click(metricsSwitch());
-    expect(screen.queryByRole("alertdialog")).toBeNull();
     expect(diagnostics.save).not.toHaveBeenCalled();
   });
 
-  it("disables the switch while a save is in flight and shows the error and a plain saved notice", () => {
+  it("disables the switch behind an Applying line while a save is in flight, and shows a refusal inline", () => {
     diagnostics.busy = true;
     diagnostics.error = "mecated refused to start: bad flag";
-    diagnostics.notice = "Saved. The agent restarted.";
     render(<ProductMetricsCard />);
     expect(metricsSwitch()).toBeDisabled();
-    expect(
-      screen.getByText("mecated refused to start: bad flag"),
-    ).toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent(SAVED_NOTICE);
+    expect(screen.getByRole("status")).toHaveTextContent("Applying…");
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "mecated refused to start: bad flag",
+    );
   });
 
   it("renders the external note with no switch when the agent runs elsewhere", () => {

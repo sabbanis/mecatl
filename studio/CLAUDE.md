@@ -36,9 +36,15 @@ pill; and the Settings pages Status line, Tools, Persona, Keyboard
 Custom-palettes card, the performance/pprof card, the posture card, the
 store-location and retention cards and the configuration reference. The
 status-line templates still render their DEFAULTS (`src/lib/statusline`).
-Every settings card uses plain language ("the agent", one restart sentence:
-"Changes restart the agent. Anything running will stop."); the Mode menu
-carries the "Safety level" (operator posture) and Tools is its own pill.
+Every settings card uses plain language ("the agent"), has no subtitle under
+its title, and shows no restart sentence: single-switch cards (memory
+stores, agent behaviour, usage statistics, the default model) apply on the
+flip and the agent restarts in the background ("Applying…" while busy);
+forms with several fields keep Save. The composer carries three pills — Mode,
+Tools (All / None) and Safety (the operator posture, Strict/Trusted/Auto/Yolo,
+same permissions document as Settings → Permissions) — plus Model, which
+names the model the agent actually uses by default. The sidebar lists chats
+only (no agent roster; @-mentions still work in the composer).
 
 Studio's own build stamp (Settings → Provider → About's `Studio` row, the
 `/diagnostics` report's `client build:` line; `src/lib/studio-build.ts`) is

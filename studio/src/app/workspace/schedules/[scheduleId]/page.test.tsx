@@ -147,15 +147,15 @@ describe("schedule detail Runs fact", () => {
  * file-less.
  */
 describe("schedule detail Tools fact", () => {
-  it("reads All tools with no badge for the default profile", async () => {
+  it("reads All with no badge for the default profile", async () => {
     await renderDetail("nightly-digest");
-    expect(factValue("Tools")).toHaveTextContent("All tools");
+    expect(factValue("Tools")).toHaveTextContent("All");
     expect(screen.queryByText("no filesystem")).toBeNull();
   });
 
-  it("reads No filesystem and shows the badge for a no-fs schedule", async () => {
+  it("reads None and shows the badge for a no-fs schedule", async () => {
     await renderDetail("nofs-digest");
-    expect(factValue("Tools")).toHaveTextContent("No filesystem");
+    expect(factValue("Tools")).toHaveTextContent("None");
     expect(screen.getByText("no filesystem")).toBeInTheDocument();
   });
 });

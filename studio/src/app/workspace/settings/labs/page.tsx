@@ -38,10 +38,7 @@ export default function LabsSettingsPage() {
   };
 
   return (
-    <SettingsCard
-      title="Labs"
-      description="Optional features that are still being tested."
-    >
+    <SettingsCard title="Labs">
       <div className="divide-y divide-border/60">
         <SettingsRow
           label="Show demo chat"

@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { Button } from "@/components/ui/button";
 import {
   Select,
   SelectContent,
@@ -14,19 +13,12 @@ import type {
   HarnessModel,
   useHarnessRuntime,
 } from "@/features/agent/hooks/use-harness-runtime";
-import { useConfirm } from "@/hooks/use-confirm";
 import { BASE_URL_KINDS } from "@/lib/daemon-defaults.mjs";
 import {
   type HarnessDaemonDefaults,
   validateDaemonDefaults,
 } from "@/lib/harness/client";
-import {
-  Note,
-  OfflineNote,
-  RESTART_SENTENCE,
-  SettingsCard,
-  SettingsRow,
-} from "./settings-card";
+import { ApplyingNote, Note, OfflineNote, SettingsCard } from "./settings-card";
 
 type Runtime = ReturnType<typeof useHarnessRuntime>;
 type DefaultsHook = ReturnType<typeof useDaemonDefaults>;
@@ -113,7 +105,7 @@ export function draftFromDefaults(
 }
 
 /**
- * The exact document Save sends: the draft folded back over the saved
+ * The exact document a change sends: the draft folded back over the saved
  * document — the active provider's model pair replaces ITS entry in
  * `models` (other providers' pairs are kept untouched), everything else is
  * taken from the draft. Validated by the server's own grammar; throws its
@@ -166,13 +158,15 @@ export function modelDefaultsKind(status: Runtime["status"]): string | null {
   return kind && kind !== "mock" ? kind : null;
 }
 
-export const RESTART_WARNING = RESTART_SENTENCE;
-
 /**
  * The default model for the active provider — what the agent uses when a
- * chat does not pick one. The saved document carries more than this one
- * field; the rest rides along unchanged on every save. Managed mode only:
- * an external deployment chose its own, so the card renders nothing there.
+ * chat does not pick one. The picker alone fills the card (the card title is
+ * its label) and a choice applies AT ONCE: the saved document carries more
+ * than this one field and the rest rides along unchanged, the agent
+ * restarts in the background, and the picker is disabled behind an
+ * "Applying…" line until the re-read shows the new state; a refusal shows
+ * inline. Managed mode only: an external deployment chose its own, so the
+ * card renders nothing there.
  */
 export function DaemonDefaultsCard({
   runtime,
@@ -181,15 +175,12 @@ export function DaemonDefaultsCard({
   runtime: Runtime;
   defaults: DefaultsHook;
 }) {
-  const { confirm, ConfirmDialog } = useConfirm();
-  const [draft, setDraft] = useState<DaemonDefaultsFormDraft | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const title = "Default model";
-  const description = "The model the agent uses when a chat does not pick one.";
 
   if (!runtime.live) {
     return (
-      <SettingsCard title={title} description={description}>
+      <SettingsCard title={title}>
         <OfflineNote />
       </SettingsCard>
     );
@@ -201,7 +192,7 @@ export function DaemonDefaultsCard({
   const saved = defaults.defaults;
   if (!saved || !status) {
     return (
-      <SettingsCard title={title} description={description}>
+      <SettingsCard title={title}>
         {defaults.error ? (
           <p className="whitespace-pre-wrap text-sm text-destructive">
             {defaults.error}
@@ -218,105 +209,55 @@ export function DaemonDefaultsCard({
   const kind = modelDefaultsKind(status);
   if (!kind) {
     return (
-      <SettingsCard title={title} description={description}>
+      <SettingsCard title={title}>
         <Note>Set a provider as active above to choose its default model.</Note>
       </SettingsCard>
     );
   }
 
-  const savedDraft = draftFromDefaults(saved, kind);
-  const view = draft ?? savedDraft;
-  const dirty = JSON.stringify(view) !== JSON.stringify(savedDraft);
+  const draft = draftFromDefaults(saved, kind);
   const busy = defaults.busy;
-  const patch = (next: Partial<DaemonDefaultsFormDraft>) => {
-    setFormError(null);
-    setDraft({ ...view, ...next });
-  };
+  const error = formError ?? defaults.error;
   const providerModels = runtime.models.filter(
     (model) => model.providerId === kind && model.id,
   );
 
-  const save = async () => {
+  const apply = async (defaultModel: string) => {
+    if (defaultModel === draft.defaultModel) return;
     let document: HarnessDaemonDefaults;
     try {
-      document = defaultsFromDraft(view, saved, kind);
+      document = defaultsFromDraft({ ...draft, defaultModel }, saved, kind);
     } catch (caught) {
       setFormError(caught instanceof Error ? caught.message : String(caught));
       return;
     }
-    const confirmed = await confirm({
-      title: "Save and restart the agent?",
-      description: RESTART_WARNING,
-      confirmText: "Save and restart",
-    });
-    if (!confirmed) return;
+    setFormError(null);
     const ok = await defaults.save(document);
-    if (ok) {
-      setDraft(null);
-      await runtime.refresh();
-    }
+    if (ok) await runtime.refresh();
   };
 
   return (
-    <SettingsCard title={title} description={description}>
-      <div className="flex flex-col gap-4">
-        {defaults.error && (
-          <p className="whitespace-pre-wrap text-sm text-destructive">
-            {defaults.error}
-          </p>
-        )}
-        {defaults.notice && (
-          <p className="text-sm text-muted-foreground">{defaults.notice}</p>
-        )}
-
-        <div className="divide-y divide-border/60">
-          <SettingsRow label="Default model" htmlFor="daemon-default-model">
-            <ModelSelect
-              id="daemon-default-model"
-              value={view.defaultModel}
-              noneLabel="Provider's default"
-              models={providerModels}
-              onChange={(next) => patch({ defaultModel: next })}
-            />
-          </SettingsRow>
-        </div>
-
-        {formError && (
+    <SettingsCard title={title}>
+      <div className="flex flex-col gap-3">
+        <ModelSelect
+          id="daemon-default-model"
+          label={title}
+          value={draft.defaultModel}
+          noneLabel="Provider's default"
+          models={providerModels}
+          disabled={busy}
+          onChange={(next) => void apply(next)}
+        />
+        {busy && <ApplyingNote />}
+        {error && (
           <p
             role="alert"
             className="whitespace-pre-wrap text-sm text-destructive"
           >
-            {formError}
+            {error}
           </p>
         )}
-
-        <Note>{RESTART_WARNING}</Note>
-
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          {dirty && (
-            <Button
-              variant="outline"
-              className="rounded-full"
-              onClick={() => {
-                setDraft(null);
-                setFormError(null);
-              }}
-              disabled={busy}
-            >
-              Discard
-            </Button>
-          )}
-          <Button
-            variant="action"
-            className="rounded-full"
-            disabled={!dirty || busy}
-            onClick={() => void save()}
-          >
-            {busy ? "Saving…" : "Save"}
-          </Button>
-        </div>
       </div>
-      {ConfirmDialog}
     </SettingsCard>
   );
 }
@@ -325,28 +266,33 @@ export function DaemonDefaultsCard({
  * A model picker over the agent's live inventory for one provider, with a
  * "not set" first choice. A saved id the inventory no longer lists stays
  * selectable (labelled as saved) so an older choice is visible, not
- * silently replaced.
+ * silently replaced. Spans its card; the card title names it.
  */
 function ModelSelect({
   id,
+  label,
   value,
   noneLabel,
   models,
+  disabled,
   onChange,
 }: {
   id: string;
+  label: string;
   value: string;
   noneLabel: string;
   models: HarnessModel[];
+  disabled: boolean;
   onChange: (next: string) => void;
 }) {
   const listed = models.some((model) => model.id === value);
   return (
     <Select
       value={value || NONE}
+      disabled={disabled}
       onValueChange={(next) => onChange(next === NONE ? "" : next)}
     >
-      <SelectTrigger id={id} className="w-full sm:w-72">
+      <SelectTrigger id={id} className="w-full" aria-label={label}>
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
