@@ -246900,6 +246900,45 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789644857000,
         "tool": "customSmallerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jakub@stacklok.com",
+            "name": "Jakub Hrozek",
+            "username": "jhrozek"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a60ad34b8199ef37c4b705735d844a44167577c0",
+          "message": "fix(providers): honor live custom model input modalities (#1659)\n\nCo-authored-by: mecatl <noreply@mecatl.dev>",
+          "timestamp": "2026-09-17T13:23:48+02:00",
+          "tree_id": "73376014d90e14ea89eb865fda223c3c36a4fb9a",
+          "url": "https://github.com/stacklok/mecatl/commit/a60ad34b8199ef37c4b705735d844a44167577c0"
+        },
+        "date": 1789645555977,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3320.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 114,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1155,
+            "unit": "allocs/op"
+          }
+        ]
       }
     ],
     "mecatl scenarios (smaller-is-better)": [
@@ -323774,6 +323813,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789645551871,
+  "lastUpdate": 1789645556766,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
