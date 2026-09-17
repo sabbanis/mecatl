@@ -23,6 +23,7 @@ import {
 } from "@/features/agent/turn-stats";
 import { formatTokens } from "@/lib/formatters";
 import { effortLabel } from "@/lib/reasoning-effort";
+import { contextMeterLabel } from "@/lib/statusline/facts";
 import { cn } from "@/lib/utils";
 
 /** The session-cumulative token figures the facets render. */
@@ -98,12 +99,72 @@ const OCCUPANCY_TITLE =
 const FALLBACK_TITLE =
   "Approximate: the session's cumulative input and output tokens, until a turn reports how much context it used.";
 
+/**
+ * The bar + "used / window · N%" pair on its own (the `{{context_bar}}`
+ * placeholder of a custom status line), or the bare `ctx 42.1k` when the
+ * window is unknown. Hides itself when nothing is counted, like the strip.
+ */
+export function ContextMeterBar({
+  used,
+  contextWindow,
+  className,
+}: {
+  /** The context occupancy (see `meterOccupancy`). */
+  used: number;
+  /** The resolved model's context window; <= 0 when unknown. */
+  contextWindow: number;
+  className?: string;
+}) {
+  if (!Number.isFinite(used) || used <= 0) return null;
+  const fraction = contextUtilisation(used, contextWindow);
+  if (fraction === null) {
+    return (
+      <span className={cn("whitespace-nowrap tabular-nums", className)}>
+        {contextFallbackLabel(used)}
+      </span>
+    );
+  }
+  const band = contextBand(fraction);
+  const percent = Math.round(fraction * 100);
+  return (
+    <span className={cn("inline-flex items-center gap-2", className)}>
+      <span
+        className="h-1 w-16 shrink-0 overflow-hidden rounded-full bg-border"
+        aria-hidden="true"
+      >
+        <span
+          className={cn("block h-full rounded-full", BAND_FILL[band])}
+          style={{ width: `${Math.max(2, percent)}%` }}
+        />
+      </span>
+      <span
+        className={cn(
+          "whitespace-nowrap tabular-nums",
+          band === "warn" && "text-warning",
+          band === "danger" && "font-medium text-destructive",
+        )}
+      >
+        {contextMeterLabel(used, contextWindow)}
+        {band === "danger" && (
+          <>
+            {" "}
+            <span role="img" aria-label="context nearly full">
+              ⚠
+            </span>
+          </>
+        )}
+      </span>
+    </span>
+  );
+}
+
 export function ContextMeter({
   modelLabel,
   effort,
   contextWindow,
   occupancyTokens,
   usage,
+  className,
 }: {
   /** The effective model (resolved_model.model_id); "" when unknown. */
   modelLabel: string;
@@ -116,18 +177,20 @@ export function ContextMeter({
   occupancyTokens: number;
   /** The session's cumulative usage (daemon figure, or this visit's sum). */
   usage?: ContextMeterUsage | null;
+  /** Extra root classes (the status-line lane supplies its own padding). */
+  className?: string;
 }) {
   const used = meterOccupancy(occupancyTokens, usage);
   // Nothing counted yet: "0%" on a chat whose history the daemon still
   // carries would be a lie, so stay quiet.
   if (used <= 0) return null;
-  const fraction = contextUtilisation(used, contextWindow);
-  const band = fraction === null ? "ok" : contextBand(fraction);
-  const percent = fraction === null ? 0 : Math.round(fraction * 100);
   const facets = usageFacets(usage);
   return (
     <div
-      className="flex items-center gap-2 px-2 text-[11px] text-muted-foreground/80"
+      className={cn(
+        "flex items-center gap-2 px-2 text-[11px] text-muted-foreground/80",
+        className,
+      )}
       title={occupancyTokens > 0 ? OCCUPANCY_TITLE : FALLBACK_TITLE}
     >
       {modelLabel && (
@@ -135,40 +198,7 @@ export function ContextMeter({
           {effort ? `${modelLabel} · ${effortLabel(effort)}` : modelLabel}
         </span>
       )}
-      {fraction === null ? (
-        <span className="whitespace-nowrap tabular-nums">
-          {contextFallbackLabel(used)}
-        </span>
-      ) : (
-        <>
-          <span
-            className="h-1 w-16 shrink-0 overflow-hidden rounded-full bg-border"
-            aria-hidden="true"
-          >
-            <span
-              className={cn("block h-full rounded-full", BAND_FILL[band])}
-              style={{ width: `${Math.max(2, percent)}%` }}
-            />
-          </span>
-          <span
-            className={cn(
-              "whitespace-nowrap tabular-nums",
-              band === "warn" && "text-warning",
-              band === "danger" && "font-medium text-destructive",
-            )}
-          >
-            {formatTokens(used)} / {formatTokens(contextWindow)} · {percent}%
-            {band === "danger" && (
-              <>
-                {" "}
-                <span role="img" aria-label="context nearly full">
-                  ⚠
-                </span>
-              </>
-            )}
-          </span>
-        </>
-      )}
+      <ContextMeterBar used={used} contextWindow={contextWindow} />
       {facets.length > 0 && (
         <span className="hidden whitespace-nowrap tabular-nums text-muted-foreground/60 sm:inline">
           {facets.join(" · ")}

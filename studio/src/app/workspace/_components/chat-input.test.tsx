@@ -249,6 +249,31 @@ describe("resolveComposerAction", () => {
     expect(resolve(true, true, "steer")).toBe("queue");
   });
 
+  // ⌘Enter / Ctrl+Enter (the TUI's ctrl+j): the unconditional newline. It
+  // wins over every other rule — idle or streaming, either preference, shift
+  // held or not — so a multi-line message can be composed mid-run, where
+  // Shift+Enter is repurposed. The keydown handler leaves the chord to the
+  // editor's Mod-Enter hardBreak, so "newline" here means never intercepted.
+  it("keeps mod+Enter a newline in every cell of the matrix", () => {
+    for (const isStreaming of [false, true]) {
+      for (const behavior of ["queue", "steer"] as const) {
+        for (const shift of [false, true]) {
+          expect(
+            resolveComposerAction({ shift, mod: true, isStreaming, behavior }),
+          ).toBe("newline");
+        }
+      }
+    }
+    // An absent `mod` is the legacy call: the rest of the table is untouched.
+    expect(
+      resolveComposerAction({
+        shift: false,
+        isStreaming: true,
+        behavior: "queue",
+      }),
+    ).toBe("queue");
+  });
+
   // Attachments no longer force the queue path: a steer carries staged image
   // parts (ADR 0251). Availability is the handler's business — performAction
   // degrades steer→queue when onSteer is absent, keeping the files attached.

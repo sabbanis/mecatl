@@ -17,17 +17,25 @@ export type StudioBuiltinCommand =
   | "session"
   | "retry"
   | "diagnostics"
-  | "compact";
+  | "compact"
+  /** Developer tools only: inject a FAKE permission ask (debug-ask.ts). */
+  | "debug-ask";
 
 /** What the daemon enables; a hidden built-in typed anyway is refused with
  *  a local warning rather than sent to the model. */
 export interface BuiltinGates {
   /** `serverCapabilities.manual_compaction === true` (ADR 0244). */
   readonly manualCompaction: boolean;
+  /** Settings → Labs "Developer tools" is on: offers `/debug-ask`. A
+   *  browser preference, not a daemon capability — absent reads as off. */
+  readonly developerTools?: boolean;
 }
 
 /** Fail-closed default: every gated built-in hidden. */
-export const CLOSED_BUILTIN_GATES: BuiltinGates = { manualCompaction: false };
+export const CLOSED_BUILTIN_GATES: BuiltinGates = {
+  manualCompaction: false,
+  developerTools: false,
+};
 
 export interface BuiltinSlashCommand {
   readonly name: StudioBuiltinCommand;
@@ -46,6 +54,14 @@ const BUILTIN_ORDER: readonly StudioBuiltinCommand[] = [
   "compact",
 ];
 
+/**
+ * The developer-tools built-ins: offered only while Settings → Labs
+ * "Developer tools" is on (the TUI registers `/debug-ask` only in client
+ * debug mode), after the regular palette, and NOT part of the documented
+ * reference (`STUDIO_BUILTIN_COMMANDS`).
+ */
+const DEVELOPER_ORDER: readonly StudioBuiltinCommand[] = ["debug-ask"];
+
 /** Descriptions mirror builtins.go so the two clients read alike. */
 const BUILTIN_DESCRIPTIONS: Readonly<Record<StudioBuiltinCommand, string>> = {
   clear: "clear the conversation",
@@ -55,6 +71,8 @@ const BUILTIN_DESCRIPTIONS: Readonly<Record<StudioBuiltinCommand, string>> = {
     "retry the last eligible failed model step without resending its prompt",
   diagnostics: "send a concise client and server diagnostics report",
   compact: "compact this session's model history",
+  "debug-ask":
+    "inject a fake permission ask to exercise the approval panel (developer tools; never sent to the daemon)",
 };
 
 /**
@@ -69,23 +87,38 @@ export const STUDIO_BUILTIN_COMMANDS: readonly BuiltinSlashCommand[] =
     builtin: true,
   }));
 
+/** The developer-tools rows, offered after the regular palette when on. */
+export const DEVELOPER_BUILTIN_COMMANDS: readonly BuiltinSlashCommand[] =
+  DEVELOPER_ORDER.map((name) => ({
+    name,
+    description: BUILTIN_DESCRIPTIONS[name],
+    builtin: true,
+  }));
+
 /** True when `name` is one of Studio's own slash commands. */
 export function isStudioBuiltinCommand(
   name: string,
 ): name is StudioBuiltinCommand {
-  return (BUILTIN_ORDER as readonly string[]).includes(name);
+  return (
+    (BUILTIN_ORDER as readonly string[]).includes(name) ||
+    (DEVELOPER_ORDER as readonly string[]).includes(name)
+  );
 }
 
-/** A built-in the daemon's capabilities hide from the palette. */
+/** A built-in the daemon's capabilities — or, for the developer tools,
+ *  the Labs preference — hide from the palette. */
 function isGatedOff(name: StudioBuiltinCommand, gates: BuiltinGates): boolean {
-  return name === "compact" && !gates.manualCompaction;
+  if (name === "compact") return !gates.manualCompaction;
+  if (name === "debug-ask") return gates.developerTools !== true;
+  return false;
 }
 
-/** The palette rows: built-ins in fixed order, gated ones hidden. */
+/** The palette rows: built-ins in fixed order, gated ones hidden, the
+ *  developer-tools rows last. */
 export function builtinSlashCommands(
   gates: BuiltinGates,
 ): readonly BuiltinSlashCommand[] {
-  return STUDIO_BUILTIN_COMMANDS.filter(
+  return [...STUDIO_BUILTIN_COMMANDS, ...DEVELOPER_BUILTIN_COMMANDS].filter(
     (command) => !isGatedOff(command.name, gates),
   );
 }
@@ -116,6 +149,9 @@ export function heldReason(name: StudioBuiltinCommand): string {
 
 /** The warning shown when a capability-hidden built-in is typed anyway. */
 export function gatedReason(name: StudioBuiltinCommand): string {
+  if (name === "debug-ask") {
+    return "/debug-ask needs Developer tools — turn it on in Settings → Labs";
+  }
   return `/${name} is not available on this daemon`;
 }
 

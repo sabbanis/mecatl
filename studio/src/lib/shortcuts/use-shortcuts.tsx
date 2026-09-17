@@ -71,16 +71,24 @@ export function ShortcutsProvider({ children }: { children: React.ReactNode }) {
 
 /**
  * Register a handler for a shortcut id. The latest handler is always used (no
- * re-registration churn), and it's removed on unmount.
+ * re-registration churn), and it's removed on unmount. `enabled: false`
+ * withdraws the registration entirely — the dispatcher then neither claims
+ * the key nor prevents its default — for a shortcut that only means
+ * something in a state (the approval verdicts while an ask is waiting).
  */
-export function useShortcut(id: string, handler: () => void) {
+export function useShortcut(
+  id: string,
+  handler: () => void,
+  options?: { enabled?: boolean },
+) {
   const ctx = useContext(ShortcutContext);
+  const enabled = options?.enabled ?? true;
   const ref = useRef(handler);
   ref.current = handler;
   useEffect(() => {
-    if (!ctx) return;
+    if (!ctx || !enabled) return;
     const stable = () => ref.current();
     ctx.register(id, stable);
     return () => ctx.unregister(id);
-  }, [id, ctx]);
+  }, [id, ctx, enabled]);
 }

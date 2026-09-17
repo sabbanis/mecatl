@@ -3,11 +3,13 @@
 import { useState } from "react";
 import { Switch } from "@/components/ui/switch";
 import { useRuntimeStatus } from "@/features/agent/runtime-status";
-import { useMockFeatures } from "@/lib/profile-preferences";
+import { useDeveloperTools, useMockFeatures } from "@/lib/profile-preferences";
 import { SettingsCard, SettingsRow } from "../_components/settings-card";
 
 export default function LabsSettingsPage() {
   const { enabled, setEnabled } = useMockFeatures();
+  const { enabled: developerTools, setEnabled: setDeveloperTools } =
+    useDeveloperTools();
   const runtime = useRuntimeStatus();
   const [switchingTo, setSwitchingTo] = useState<string | null>(null);
   const [switchError, setSwitchError] = useState<string | null>(null);
@@ -46,6 +48,18 @@ export default function LabsSettingsPage() {
           checked={enabled}
           onCheckedChange={onToggle}
           aria-label="Show mock features"
+        />
+      </SettingsRow>
+      <SettingsRow
+        label="Developer tools"
+        htmlFor="developer-tools"
+        description="Adds a /debug-ask command that injects a fake permission ask (never sent to the daemon) and shows steer ids and drain decisions under the queue strip."
+      >
+        <Switch
+          id="developer-tools"
+          checked={developerTools}
+          onCheckedChange={setDeveloperTools}
+          aria-label="Developer tools"
         />
       </SettingsRow>
       {switchingTo && (

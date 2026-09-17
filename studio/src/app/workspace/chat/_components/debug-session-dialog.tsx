@@ -39,7 +39,7 @@ export const DEBUG_MCP_APPROVAL_HINT =
 
 /** Shown when the daemon lists no configured MCP server. */
 export const NO_MCP_SERVER_NOTE =
-  "No MCP server is configured on this daemon — connect one in Settings → MCP gateway.";
+  "No MCP server is configured on this daemon — connect one in Settings → MCP tools.";
 
 /** Shown when the daemon could not list its servers (an older daemon). */
 export const MCP_LIST_UNAVAILABLE_NOTE =

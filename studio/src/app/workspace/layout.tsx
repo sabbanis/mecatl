@@ -1,4 +1,5 @@
 import { TopNav } from "@/components/shell/top-nav";
+import { ConnectionStatusBanner } from "@/features/agent/connection-status-banner";
 import { RuntimeStatusProvider } from "@/features/agent/runtime-status";
 import { StorageHealthBanner } from "@/features/agent/storage-health-banner";
 import { WorkspaceTrustBanner } from "@/features/agent/workspace-trust-banner";
@@ -36,6 +37,11 @@ export default function WorkspaceLayout({
               runtime status banners: visible from every surface, because a
               degraded store shows up as chats missing from the sidebar. */}
           <StorageHealthBanner />
+          {/* The SDK's own view of the session feed: a durable watch
+              reconnecting from its last cursor, or a credential the feed was
+              refused with while the 5 s daemon probe still passes. Quiet
+              whenever the runtime banners above already own the band. */}
+          <ConnectionStatusBanner />
           {/* The first-encounter / drift trust prompt (mecatui's pre-TUI
               "trust / trust once / no", as a banner): the same band, so a
               withheld project soul/agents/allow rules are never silent. */}

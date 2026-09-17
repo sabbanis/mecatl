@@ -10,6 +10,7 @@ import {
 } from "@/features/agent/approval-queue";
 import { isPlanAsk } from "@/features/agent/plan-ask";
 import { cn } from "@/lib/utils";
+import { ApprovalVerdictBar } from "./approval-verdict-bar";
 import { AskArgsView } from "./ask-args-view";
 import { PlanReviewCard } from "./plan-review-panel";
 
@@ -165,42 +166,12 @@ export function ApprovalPanel({
         destructive={destructive}
         className="mb-4"
       />
-      <div className="flex flex-wrap gap-2">
-        <Button
-          size="sm"
-          onClick={() => onRespond("once")}
-          className={cn(
-            "text-white",
-            destructive
-              ? "bg-destructive hover:bg-destructive-strong"
-              : "bg-warning hover:bg-warning/90",
-          )}
-        >
-          Allow once
-        </Button>
-        {offerAlways && (
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() => onRespond("always")}
-            className={cn(
-              destructive
-                ? "border-destructive/30 hover:bg-destructive/5"
-                : "border-warning/30 hover:bg-warning/5",
-            )}
-          >
-            Always allow
-          </Button>
-        )}
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={() => onRespond("deny")}
-          className="text-muted-foreground hover:text-foreground"
-        >
-          Deny
-        </Button>
-      </div>
+      <ApprovalVerdictBar
+        approval={approval}
+        onRespond={onRespond}
+        offerAlways={offerAlways}
+        destructive={destructive}
+      />
     </div>
   );
 }

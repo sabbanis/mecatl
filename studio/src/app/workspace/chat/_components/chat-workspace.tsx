@@ -30,6 +30,7 @@ import type {
   BuiltinOutcome,
   StudioBuiltinCommand,
 } from "@/features/agent/composer-builtins";
+import { DEBUG_ASK_ALREADY_PENDING } from "@/features/agent/debug-ask";
 import type { SessionInventoryWalk } from "@/features/agent/hooks/use-agent-sessions";
 import { useAwayNotice } from "@/features/agent/hooks/use-away-notice";
 import { useDeliveryFollow } from "@/features/agent/hooks/use-delivery-follow";
@@ -68,6 +69,7 @@ import { takePendingDraft } from "@/lib/pending-draft";
 import {
   type SessionListSide,
   useAgentDisplayName,
+  useDeveloperTools,
   useMockFeatures,
   useSessionListSide,
   useShowStarterPrompts,
@@ -115,6 +117,7 @@ import {
   SessionList,
   SidebarGroup,
 } from "./session-sidebar";
+import { TurnErrorStrip } from "./turn-error-strip";
 import { useBuiltinSlashCommands } from "./use-builtin-slash-commands";
 import { useClearConversation } from "./use-clear-conversation";
 import { useComposerEscape } from "./use-composer-escape";
@@ -332,6 +335,8 @@ function DraftView({
   onDismissWelcome,
   showStarterPrompts,
   error,
+  onRetry,
+  onEdit,
   showSidebarButton,
   sidebarSide,
   onShowSidebar,
@@ -357,6 +362,11 @@ function DraftView({
   /** Starter-prompt chips — hideable in Settings (the --no-banner analogue). */
   showStarterPrompts: boolean;
   error: string | null;
+  /** Re-sends the refused first prompt verbatim (files included); offered
+      only while the hook still holds it. */
+  onRetry?: () => void;
+  /** Puts the refused first prompt back in the composer for editing. */
+  onEdit?: () => void;
   showSidebarButton: boolean;
   sidebarSide: SessionListSide;
   onShowSidebar: () => void;
@@ -440,7 +450,9 @@ function DraftView({
         </div>
         <div className="absolute bottom-0 left-0 right-0 px-3 lg:px-4 pb-4 max-[499px]:px-0 max-[499px]:pb-0">
           <div className="max-w-[768px] space-y-1.5 max-[499px]:max-w-none">
-            {error && <p className="px-1 text-sm text-destructive">{error}</p>}
+            {error && (
+              <TurnErrorStrip error={error} onRetry={onRetry} onEdit={onEdit} />
+            )}
             <ChatInput
               rows={1}
               onSend={onSend}
@@ -487,6 +499,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     retry: retrySessionsLoad,
     deleteSession,
     renameSession,
+    applyTitle,
     refreshSessions,
   } = useAgentSessions();
   const { agents } = useAgentRoster();
@@ -497,6 +510,10 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   // mock UNCONDITIONALLY below (never handed to the daemon) — the toggle
   // only controls whether the row is offered.
   const { enabled: mockFeatures } = useMockFeatures();
+  // Labs preference: the developer tools (mecatui's client debug mode) —
+  // the `/debug-ask` built-in + menu item that park a FAKE permission ask
+  // (never sent to the daemon) and the steer trace under the queue strip.
+  const { enabled: developerTools } = useDeveloperTools();
   // First-run welcome card + hideable starter prompts (Settings → Personalize).
   // Both browser-local; the card is additionally gated below on the daemon
   // being connected (offline/connecting belongs to the OfflineBanner).
@@ -727,6 +744,13 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     void refreshSessions();
   }, [refreshMode, refreshSessions]);
 
+  // The idle chat's metadata watch heard a run start elsewhere (a schedule,
+  // another tab): re-walk the inventory now so the row flips to running and
+  // the full watch renders the run live, instead of up to 20 s later.
+  const handleExternalRunDetected = useCallback(() => {
+    void refreshSessions();
+  }, [refreshSessions]);
+
   const {
     messages,
     isStreaming,
@@ -739,6 +763,8 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     lastFailurePermanent,
     recoverDraft,
     consumeRecoverDraft,
+    failedPrompt,
+    takeFailedPrompt,
     refreshTranscript,
     pendingApproval,
     approvalQueueLength,
@@ -763,7 +789,9 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     steerMessage,
     steerSupported,
     pendingSteers,
+    steerTrace,
     cancelPendingSteers,
+    injectDebugApproval,
     cancelChat,
     drivingRun,
     cancelChild,
@@ -784,6 +812,10 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
       : undefined,
     // Mode re-adopt + inventory re-walk on the run terminal (handleRunEnded).
     onRunEnded: handleRunEnded,
+    // Live `session.title` events land on the inventory row at once (header,
+    // sidebar, tab title), revision-guarded against replayed older titles.
+    onTitle: applyTitle,
+    onExternalRunDetected: handleExternalRunDetected,
   });
 
   // Bridges the chat hook's isStreaming (declared above) into the mode hook
@@ -878,6 +910,26 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   // Seed for the draft composer, set when a starter prompt is picked.
   const [draftSeed, setDraftSeed] = useState<string | null>(null);
   const clearDraftSeed = useCallback(() => setDraftSeed(null), []);
+  // A draft's first send the daemon refused (the session mint or the run
+  // entry itself) hands its text back to the draft composer, exactly as the
+  // live chat's composer takes a recovered prompt — a failed first send must
+  // never lose the text. Once the composer owns it the hook no longer holds
+  // it to re-send, so the draft strip withholds Retry and keeps Edit.
+  const [draftRecovered, setDraftRecovered] = useState(false);
+  useEffect(() => {
+    if (!recoverDraft || selectedId) return;
+    setDraftSeed(recoverDraft.text);
+    consumeRecoverDraft();
+    setDraftRecovered(true);
+  }, [recoverDraft, selectedId, consumeRecoverDraft]);
+  useEffect(() => {
+    if (failedPrompt === null) setDraftRecovered(false);
+  }, [failedPrompt]);
+  const draftCanRetry = failedPrompt !== null && !draftRecovered;
+  const handleDraftEditFailed = useCallback(() => {
+    const text = takeFailedPrompt();
+    if (text) setDraftSeed(text);
+  }, [takeFailedPrompt]);
   // Text handed over from another route (Settings → About → "Send to a new
   // chat" stashes the diagnostics report) lands in the draft composer once,
   // on mount; the user reviews it and presses Enter — nothing is sent on
@@ -1334,6 +1386,8 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     // failed step for the daemon to re-drive.
     hasFailedStep: status === "error",
     compactSupported,
+    developerTools,
+    onInjectDebugAsk: injectDebugApproval,
     onCompact: () => void handleCompact(),
     onRetry: () => void retryLast(),
     onSend: (content) => void sendMessage(content),
@@ -1350,6 +1404,11 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     },
   });
   useShortcut("chat.details", openSessionDetails);
+  // Developer tools: the ··· menu's "Inject fake approval" (the `/debug-ask`
+  // built-in's twin). A refusal has no composer to warn in, so it toasts.
+  const handleInjectDebugAsk = useCallback(() => {
+    if (!injectDebugApproval()) toast.info(DEBUG_ASK_ALREADY_PENDING);
+  }, [injectDebugApproval]);
   // ⌘⇧X clears from anywhere in the chat; on a draft the hook says there is
   // nothing to clear, and a row the daemon marks unclearable is refused
   // the same way the menu item is disabled.
@@ -1533,6 +1592,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
           onNewChat={handleNewChat}
           recoverDraft={recoverDraft}
           onRecoverDraftConsumed={consumeRecoverDraft}
+          onEditFailed={failedPrompt !== null ? takeFailedPrompt : undefined}
           onSend={sendMessage}
           queuedMessages={queuedMessages}
           onQueueMessage={queueMessage}
@@ -1549,6 +1609,10 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
           onSteerMessage={steerSupported ? steerMessage : undefined}
           pendingSteers={steerSupported ? pendingSteers : undefined}
           onRetractSteers={steerSupported ? cancelPendingSteers : undefined}
+          // Developer tools (Settings → Labs): the steer trace and the fake
+          // ask are offered only while the preference is on.
+          steerTrace={developerTools ? steerTrace : undefined}
+          onInjectDebugAsk={developerTools ? handleInjectDebugAsk : undefined}
           onCancelRun={handleCancelRun}
           onDraftChange={setHasDraft}
           onCompact={compactSupported && !debugChat ? handleCompact : undefined}
@@ -1665,6 +1729,8 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
             onDismissWelcome={dismissWelcome}
             showStarterPrompts={showStarterPrompts}
             error={turnError}
+            onRetry={draftCanRetry ? retryLast : undefined}
+            onEdit={failedPrompt !== null ? handleDraftEditFailed : undefined}
             showSidebarButton
             sidebarSide={sidebarSide}
             onShowSidebar={() => setSidebarOpen(true)}
@@ -1701,6 +1767,8 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
             onDismissWelcome={dismissWelcome}
             showStarterPrompts={showStarterPrompts}
             error={turnError}
+            onRetry={draftCanRetry ? retryLast : undefined}
+            onEdit={failedPrompt !== null ? handleDraftEditFailed : undefined}
             showSidebarButton={!sidebarOpen}
             sidebarSide={sidebarSide}
             onShowSidebar={() => setSidebarOpen(true)}

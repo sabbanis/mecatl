@@ -71,6 +71,38 @@ describe("resolveEscapeAction", () => {
       resolveEscapeAction({ ...none, hasSelection: true, isStreaming: true }),
     ).toBe("clear-selection");
   });
+
+  // The TUI's Esc in the approval modal: a run parked on an ask is denied,
+  // never cancelled — even with a side panel open (the expanded ask view is
+  // one) and the run counted as streaming (`waiting_approval` folds into
+  // isStreaming). The gap this closes: Esc used to stop the whole run.
+  it("denies a pending ask ahead of the panel, the run and the draft", () => {
+    expect(
+      resolveEscapeAction({
+        ...none,
+        pendingAsk: true,
+        panelOpen: true,
+        isStreaming: true,
+        hasDraft: true,
+      }),
+    ).toBe("deny-ask");
+    expect(resolveEscapeAction({ ...none, pendingAsk: true })).toBe("deny-ask");
+  });
+
+  it("still drops a selection before denying — a verdict is never given by accident", () => {
+    expect(
+      resolveEscapeAction({ ...none, hasSelection: true, pendingAsk: true }),
+    ).toBe("clear-selection");
+  });
+
+  it("treats an absent pendingAsk as no ask", () => {
+    expect(resolveEscapeAction({ ...none, isStreaming: true })).toBe(
+      "cancel-run",
+    );
+    expect(
+      resolveEscapeAction({ ...none, pendingAsk: false, panelOpen: true }),
+    ).toBe("close-panel");
+  });
 });
 
 /**

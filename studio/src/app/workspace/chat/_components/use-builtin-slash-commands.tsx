@@ -15,6 +15,10 @@ import {
   gatedReason,
   type StudioBuiltinCommand,
 } from "@/features/agent/composer-builtins";
+import {
+  DEBUG_ASK_ALREADY_PENDING,
+  DEBUG_ASK_NONE_YET,
+} from "@/features/agent/debug-ask";
 import { useDiagnosticsReport } from "@/features/agent/hooks/use-diagnostics-report";
 import { HELP_ROUTE } from "./help-menu-item";
 import {
@@ -34,6 +38,11 @@ export interface BuiltinSlashDeps {
   hasFailedStep: boolean;
   /** `serverCapabilities.manual_compaction === true` (ADR 0244). */
   compactSupported: boolean;
+  /** Settings → Labs "Developer tools": offers `/debug-ask`. */
+  developerTools?: boolean;
+  /** Parks the FAKE permission ask (use-agent-chat's injectDebugApproval);
+   *  false when an ask is already pending (the TUI's dedupe). */
+  onInjectDebugAsk?: () => boolean;
   onCompact: () => void;
   onRetry: () => void;
   onSend: (content: string) => void;
@@ -103,9 +112,14 @@ export function useBuiltinSlashCommands(deps: BuiltinSlashDeps): {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [detailsSessionId, setDetailsSessionId] = useState<string | null>(null);
 
+  // The developer-tools gate is carried only while ON (absent reads as off),
+  // so a daemon-only gates object stays exactly `{ manualCompaction }`.
   const builtinGates = useMemo<BuiltinGates>(
-    () => ({ manualCompaction: deps.compactSupported }),
-    [deps.compactSupported],
+    () => ({
+      manualCompaction: deps.compactSupported,
+      ...(deps.developerTools === true ? { developerTools: true } : {}),
+    }),
+    [deps.compactSupported, deps.developerTools],
   );
 
   const handleSlashBuiltin = useCallback(
@@ -152,6 +166,16 @@ export function useBuiltinSlashCommands(deps: BuiltinSlashDeps): {
           // "unavailable" rows — it never blocks the report.
           void compose({ resolvedModel, permissionMode }).then(send);
           return ok;
+        }
+        case "debug-ask": {
+          // Developer tools: a FAKE ask, parked locally (never sent). The
+          // panel it shows in belongs to a chat, so a draft is refused, and
+          // one fake ask never queues behind another ask (the TUI's dedupe).
+          if (!d.developerTools || !d.onInjectDebugAsk) {
+            return refuse(gatedReason("debug-ask"));
+          }
+          if (!d.sessionId) return refuse(DEBUG_ASK_NONE_YET);
+          return d.onInjectDebugAsk() ? ok : refuse(DEBUG_ASK_ALREADY_PENDING);
         }
         default:
           return ok;

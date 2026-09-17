@@ -92,8 +92,14 @@ deployment environment; `studio/.env.example` documents each.
   Read-only by design — the agent curates memory through injection-scanned
   tool calls, so Studio never offers an editor.
 - **Settings** — appearance and notifications, plus (managed mode) the
-  provider status, the semantic model router, and the MCP gateway connection
-  (bearer token or OAuth). Credentials are never typed into Studio: `mecated`
+  provider status, the semantic model router, and **MCP tools**: the MCP
+  servers the daemon resolved at startup by source (static endpoints and
+  ToolHive discovery, with each source's skip reasons and the ToolHive
+  groups; Refresh re-reads the inventory) above the MCP gateway connection
+  (bearer token or OAuth). The same inventory opens from a chat's header as
+  the **MCP tools** panel, which on a broker deployment also lists that
+  chat's connectors with their catalogue state and offers the whole-bundle
+  Connect tools / Cancel setup actions. Credentials are never typed into Studio: `mecated`
   reads them from `~/.config/mecatl/auth.yaml`. The **Daemon defaults** card
   on the Model provider page sets what `mecated` starts with — the active
   provider's default and subagent model, the reasoning-effort tier, a

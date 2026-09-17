@@ -3,6 +3,7 @@
 import {
   AlertCircle,
   ArrowLeft,
+  Bug,
   CirclePlus,
   Ellipsis,
   FileText,
@@ -17,6 +18,7 @@ import {
   PanelRightClose,
   PanelRightOpen,
   Pencil,
+  Plug,
   Trash2,
   Wrench,
 } from "lucide-react";
@@ -62,6 +64,8 @@ import {
 } from "@/features/agent/hooks/use-agent-chat";
 import type { WorkspaceEnrollmentView } from "@/features/agent/hooks/use-workspace-enrollment";
 import { isMockTourSession } from "@/features/agent/mock-tour";
+import { useRuntimeStatus } from "@/features/agent/runtime-status";
+import type { SteerTraceEntry } from "@/features/agent/steer-trace";
 import type { StatusMessage } from "@/features/agent/stop-reason";
 import { cacheHitRate, formatPercent } from "@/features/agent/turn-stats";
 import { useIsMobile } from "@/hooks/use-mobile";
@@ -79,6 +83,7 @@ import {
 } from "@/lib/profile-preferences";
 import type { SessionPermissionMode } from "@/lib/protocol";
 import { useShortcut } from "@/lib/shortcuts/use-shortcuts";
+import { buildStatusFacts } from "@/lib/statusline/facts";
 import {
   composeThreadPrompt,
   getThreadSession,
@@ -113,7 +118,6 @@ import {
   ClearConversationMenuItem,
   ClearConversationSheetItem,
 } from "./clear-conversation-menu-item";
-import { ContextMeter } from "./context-meter";
 import {
   type DelegationFocus,
   DelegationPanel,
@@ -125,6 +129,12 @@ import { FilePreview } from "./file-preview";
 import { FleetStatusChip } from "./fleet-status-chip";
 import { HelpMenuItem, HelpSheetItem } from "./help-menu-item";
 import { MarkdownCanvasPanel } from "./markdown-canvas-panel";
+import {
+  MCP_PANEL_TITLE,
+  McpPanel,
+  mcpPanelAvailable,
+  useOpenMcpPanelRequests,
+} from "./mcp-panel";
 import { MessageBubble } from "./message-bubble";
 import { MockProviderNotice } from "./mock-provider-notice";
 import { PermissionModeBadge } from "./permission-mode-badge";
@@ -137,11 +147,13 @@ import {
 } from "./session-details-menu-item";
 import { SidePanel } from "./side-panel";
 import { StatusLine } from "./status-line";
+import { SteerTraceLine } from "./steer-trace-line";
 import { streamingPhaseLabel } from "./streaming-phase";
 import {
   SwitchWorktreeMenuItem,
   SwitchWorktreeSheetItem,
 } from "./switch-worktree-menu-item";
+import { TemplatedStatusLine } from "./templated-status-line";
 import { ToolCallPanel } from "./tool-call-panel";
 import {
   CopyTranscriptMenuItem,
@@ -151,6 +163,7 @@ import {
 } from "./transcript-actions";
 import { isSelectAllChord, selectElementContents } from "./transcript-text";
 import { TurnErrorStrip } from "./turn-error-strip";
+import { useApprovalShortcuts } from "./use-approval-shortcuts";
 import { useComposerEscape } from "./use-composer-escape";
 import { WorkspaceEnrollmentNotice } from "./workspace-enrollment-notice";
 
@@ -170,7 +183,10 @@ type ActivePanel =
   | { kind: "changed-files" }
   // The Agents panel reads the live `fleet` prop; it keeps only its tab and
   // the child/group/view it is drilled into (Esc steps a focus back first).
-  | { kind: "delegation"; tab: DelegationTab; focus: DelegationFocus | null };
+  | { kind: "delegation"; tab: DelegationTab; focus: DelegationFocus | null }
+  // The MCP tools inventory (the TUI's /mcp panel): this chat's broker
+  // connectors and the daemon's resolved sources; it keeps no state of its own.
+  | { kind: "mcp" };
 
 /**
  * Bottom-of-transcript activity line while a turn is running: three
@@ -287,6 +303,7 @@ function MobileChatMenu({
   onOpenDetails,
   onCompact,
   compactDisabled,
+  onInjectDebugAsk,
   onClear,
   clearDisabledReason,
   onSwitchWorktree,
@@ -295,6 +312,8 @@ function MobileChatMenu({
 }: {
   showActivity: boolean;
   onToggleActivity: () => void;
+  /** Developer tools (Settings → Labs): parks a FAKE permission ask. */
+  onInjectDebugAsk?: () => void;
   /** The global Expand details preference and its flip (the TUI's ctrl+t). */
   expandDetails?: boolean;
   onToggleExpandDetails?: () => void;
@@ -370,6 +389,19 @@ function MobileChatMenu({
               >
                 <FoldVertical className="size-4 text-muted-foreground" />
                 Compact conversation
+              </button>
+            )}
+            {onInjectDebugAsk && (
+              <button
+                type="button"
+                onClick={() => {
+                  onInjectDebugAsk();
+                  setOpen(false);
+                }}
+                className="flex w-full items-center gap-3 px-4 py-3 text-sm hover:bg-muted/50 transition-colors"
+              >
+                <Bug className="size-4 text-muted-foreground" />
+                Inject fake approval
               </button>
             )}
             {onClear && (
@@ -971,6 +1003,7 @@ export function ChatView({
   onRetry,
   lastFailurePermanent = false,
   onNewChat,
+  onEditFailed,
   recoverDraft = null,
   onRecoverDraftConsumed,
   sidebarOpen,
@@ -1003,8 +1036,10 @@ export function ChatView({
   queuePaused,
   onResumeQueue,
   pendingSteers,
+  steerTrace,
   onSteerMessage,
   onRetractSteers,
+  onInjectDebugAsk,
   onCancelRun,
   onDraftChange,
   onCompact,
@@ -1052,6 +1087,11 @@ export function ChatView({
       identical request is rejected) and offers New chat instead. */
   lastFailurePermanent?: boolean;
   onNewChat?: () => void;
+  /** The strip's Edit: takes back the prompt a run-entry failure refused
+      (the hook drops the failed exchange and clears the failure) and returns
+      its text for the composer; null when nothing is held. Absent = no Edit
+      button. */
+  onEditFailed?: () => string | null;
   /** A text-only prompt a transport fault dropped: seeded into the composer
       for edit-before-resend, then reported consumed. */
   recoverDraft?: ComposerSeed | null;
@@ -1116,6 +1156,14 @@ export function ChatView({
   /** Retracts the whole pending steer bundle; resolves to the steers that
       never reached the run, so their text can be recomposed. */
   onRetractSteers?: () => Promise<PendingSteer[]>;
+  /** Developer tools (Settings → Labs): the steer correlation trace rendered
+      under the queue strip — steer ids, drain watermarks, decisions (the
+      TUI's DebugSteer). Absent while the tools are off. */
+  steerTrace?: readonly SteerTraceEntry[];
+  /** Developer tools: the ··· menu's "Inject fake approval" — parks a FAKE
+      permission ask that never reaches the daemon (the `/debug-ask`
+      built-in's twin). Absent while the tools are off. */
+  onInjectDebugAsk?: () => void;
   /** Cancels the in-flight run (Esc with no panel open). */
   onCancelRun?: () => void;
   /** Fires when the composer's "holds unsent text" state flips (and `false`
@@ -1231,6 +1279,37 @@ export function ChatView({
   // The global Expand details preference (the TUI's ctrl+t): whether tool
   // rows, reasoning summaries and raw error payloads start expanded.
   const { expandDetails, setExpandDetails } = useExpandDetails();
+  // The status-line facts (Settings → Status line): every session, model,
+  // context, usage and runtime fact the header and footer templates may
+  // render, built from this view's props + the runtime status.
+  const runtime = useRuntimeStatus();
+  const statusFacts = useMemo(
+    () =>
+      buildStatusFacts({
+        session,
+        mode,
+        isStreaming,
+        awaitingApproval: !!pendingApproval,
+        contextInfo,
+        contextOccupancy,
+        usage,
+        queued: queuedMessages.length,
+        providerRoute,
+        runtime,
+      }),
+    [
+      session,
+      mode,
+      isStreaming,
+      pendingApproval,
+      contextInfo,
+      contextOccupancy,
+      usage,
+      queuedMessages.length,
+      providerRoute,
+      runtime,
+    ],
+  );
   // Every path this conversation's Edit/Write calls touched, first-seen
   // order — the header's "N files" indicator and the changed-files panel.
   const changedFiles = useMemo(
@@ -1265,6 +1344,12 @@ export function ChatView({
     setEditSeed(recoverDraft);
     onRecoverDraftConsumed?.();
   }, [recoverDraft, onRecoverDraftConsumed]);
+  // The strip's Edit pulls a refused prompt back into the composer the same
+  // way (the hook drops the failed exchange and clears the failure first).
+  const handleEditFailed = () => {
+    const text = onEditFailed?.();
+    if (text) setEditSeed({ text });
+  };
   const handleEditQueued = (id: string) => {
     const hit = onTakeQueued?.(id);
     if (hit) setEditSeed(hit);
@@ -1292,6 +1377,10 @@ export function ChatView({
     setPanelMaximized(false);
   }, []);
   const toggleMaximize = useCallback(() => setPanelMaximized((v) => !v), []);
+  // The TUI's ctrl+o / `/mcp`: a shortcut or built-in outside this view asks
+  // for the MCP tools panel through a window event (see mcp-panel.tsx).
+  const openMcpPanel = useCallback(() => setPanel({ kind: "mcp" }), []);
+  useOpenMcpPanelRequests(openMcpPanel);
   // Previewing a composer attachment opens the canvas on an object URL; the
   // previous URL is revoked when replaced or on unmount so attach/preview
   // cycles never leak blobs.
@@ -1472,6 +1561,10 @@ export function ChatView({
   // selection, cancel and clear arms fire there.
   const { escapePress } = useComposerEscape({
     hasDraft,
+    // A parked ask is DENIED before the panel or the run (the TUI's Esc in
+    // the approval modal): Esc must never cancel a run waiting on a verdict.
+    pendingAsk: pendingApproval !== null,
+    onDenyAsk: () => onRespondApproval("deny"),
     panelOpen: panel !== null,
     isStreaming,
     hasSelectionIn: messagesContainerRef,
@@ -1489,6 +1582,15 @@ export function ChatView({
       closeSidePanel();
     },
     onCancelRun,
+  });
+
+  // The keyboard verdicts (the TUI's a/y allow, w always, d/n deny) for the
+  // main chat's head ask — registered only while one is waiting. The thread
+  // panel's card answers its own ask through the verdict bar's local keys.
+  useApprovalShortcuts({
+    approval: pendingApproval,
+    onRespond: onRespondApproval,
+    debugSession: Boolean(session.debugTargetSessionId),
   });
 
   // Keyboard paging of the transcript (the TUI's PgUp/PgDn/Home/End). These
@@ -1612,6 +1714,13 @@ export function ChatView({
           >
             {session.title || "Untitled"}
           </h2>
+          {/* The user's header status line (Settings → Status line): a
+              reserved lane over the session facts, empty until customised. */}
+          <TemplatedStatusLine
+            surface="header"
+            facts={statusFacts}
+            className="hidden max-w-[45%] shrink truncate text-xs text-muted-foreground min-[500px]:block"
+          />
           {/* mecatui's header `mode <x>`: silent on Manual, coloured for
               Plan / Accept edits, "· pending" while a mid-run switch is held. */}
           <PermissionModeBadge
@@ -1654,6 +1763,31 @@ export function ChatView({
               </TooltipTrigger>
               <TooltipContent side="bottom">
                 Agents — subagents, parallel runs, teams
+              </TooltipContent>
+            </Tooltip>
+          )}
+          {mcpPanelAvailable(runtime.serverCapabilities) && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-8 shrink-0 text-muted-foreground"
+                  aria-label={MCP_PANEL_TITLE}
+                  aria-pressed={panel?.kind === "mcp"}
+                  onClick={() => {
+                    if (panel?.kind === "mcp") {
+                      closeSidePanel();
+                      return;
+                    }
+                    openMcpPanel();
+                  }}
+                >
+                  <Plug className="size-4" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                MCP tools — connectors, sources and ToolHive groups
               </TooltipContent>
             </Tooltip>
           )}
@@ -1720,6 +1854,12 @@ export function ChatView({
                     Compact conversation
                   </DropdownMenuItem>
                 )}
+                {onInjectDebugAsk && (
+                  <DropdownMenuItem onClick={onInjectDebugAsk}>
+                    <Bug className="size-4 mr-2 text-muted-foreground" />
+                    Inject fake approval
+                  </DropdownMenuItem>
+                )}
                 {onClear && (
                   <ClearConversationMenuItem
                     onSelect={onClear}
@@ -1764,6 +1904,7 @@ export function ChatView({
               onOpenDetails={onOpenDetails}
               onCompact={onCompact}
               compactDisabled={isStreaming}
+              onInjectDebugAsk={onInjectDebugAsk}
               onClear={onClear}
               clearDisabledReason={clearDisabledReason}
               onSwitchWorktree={onSwitchWorktree}
@@ -1913,15 +2054,14 @@ export function ChatView({
                 fleet={fleet}
                 onOpen={(tab) => openDelegationPanel(tab)}
               />
-              {/* Effective model + three-band context meter + usage facets.
-                  Renders once anything is counted; with an unknown window it
-                  shows the bare current size instead of hiding. */}
-              <ContextMeter
-                modelLabel={contextInfo?.modelLabel ?? ""}
-                effort={contextInfo?.effort}
-                contextWindow={contextInfo?.contextWindow ?? 0}
-                occupancyTokens={contextOccupancy}
-                usage={usage}
+              {/* The footer status line (Settings → Status line). Its default
+                  template is `{{context_meter}}` — the shipped effective-model
+                  + three-band context meter + usage facets — so the visible
+                  default is unchanged until someone customises it. */}
+              <TemplatedStatusLine
+                surface="footer"
+                facts={statusFacts}
+                className="px-2 text-[11px] text-muted-foreground/80"
               />
               <QueuedMessageStrip
                 queued={queuedMessages}
@@ -1938,12 +2078,14 @@ export function ChatView({
                   onRetractSteers ? () => void handleRetractSteers() : undefined
                 }
               />
+              <SteerTraceLine entries={steerTrace} />
               {error && (
                 <TurnErrorStrip
                   error={error}
                   permanent={lastFailurePermanent}
                   onRetry={onRetry}
                   onNewChat={onNewChat}
+                  onEdit={onEditFailed ? handleEditFailed : undefined}
                 />
               )}
               {enrollment && (
@@ -2047,6 +2189,7 @@ export function ChatView({
           debugSession={Boolean(session.debugTargetSessionId)}
           changedFiles={changedFiles}
           onOpenChangedFile={handleOpenChangedFile}
+          enrollment={enrollment}
         />
       )}
       {/* On mobile the same panels render as a full-height bottom sheet: the
@@ -2073,7 +2216,9 @@ export function ChatView({
                         ? "Agents"
                         : activePanel.kind === "changed-files"
                           ? "Changed files"
-                          : activePanel.artifact.name}
+                          : activePanel.kind === "mcp"
+                            ? MCP_PANEL_TITLE
+                            : activePanel.artifact.name}
             </SheetTitle>
             <div className="flex min-h-0 flex-1 flex-col">
               <SidePanelForKind
@@ -2094,6 +2239,7 @@ export function ChatView({
                 debugSession={Boolean(session.debugTargetSessionId)}
                 changedFiles={changedFiles}
                 onOpenChangedFile={handleOpenChangedFile}
+                enrollment={enrollment}
               />
             </div>
           </SheetContent>
@@ -2122,6 +2268,7 @@ function SidePanelForKind({
   debugSession = false,
   changedFiles = [],
   onOpenChangedFile,
+  enrollment = null,
 }: {
   panel: ActivePanel;
   parentSessionId: string;
@@ -2144,9 +2291,21 @@ function SidePanelForKind({
   changedFiles?: ChangedFile[];
   /** Opens a Write's content from the changed-files list in the preview. */
   onOpenChangedFile?: (file: { name: string; content?: string }) => void;
+  /** The chat's enrollment controller for the MCP panel's connect/cancel. */
+  enrollment?: WorkspaceEnrollmentView | null;
 }) {
   const shared = { onClose, maximized, onToggleMaximize, windowControls };
   switch (panel.kind) {
+    case "mcp":
+      return (
+        <McpPanel
+          sessionId={
+            isMockTourSession(parentSessionId) ? null : parentSessionId
+          }
+          enrollment={enrollment}
+          {...shared}
+        />
+      );
     case "changed-files":
       return (
         <ChangedFilesPanel

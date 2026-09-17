@@ -40,7 +40,7 @@ describe("KeyboardSettingsPage", () => {
     // Locked: Esc is dispatched but not rebindable.
     const escRow = screen
       .getByText(
-        "Clear the selection, close the side panel — or stop the running turn",
+        "Clear the selection, deny the pending permission ask, close the side panel — or stop the running turn",
       )
       .closest("div");
     if (!escRow) throw new Error("no Esc row");
@@ -119,9 +119,11 @@ describe("KeyboardSettingsPage", () => {
   it("accepts a bare letter but says it won't fire while typing — on the toast and beneath the row", async () => {
     render(<KeyboardSettingsPage />);
     await userEvent.click(newChatButton());
-    fireEvent.keyDown(window, { key: "n" });
+    // `x`: a letter no live shortcut uses (`n` is Deny's since the approval
+    // verdicts joined the registry, and would be refused as a collision).
+    fireEvent.keyDown(window, { key: "x" });
 
-    expect(stored()).toEqual({ "chat.new": "n" });
+    expect(stored()).toEqual({ "chat.new": "x" });
     expect(toast.success).toHaveBeenLastCalledWith("Shortcut updated", {
       description: expect.stringMatching(/Won't fire while typing/),
     });

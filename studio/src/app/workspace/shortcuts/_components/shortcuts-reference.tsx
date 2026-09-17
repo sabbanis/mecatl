@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
+import { Kbd } from "@/components/ui/kbd";
 import { STUDIO_BUILTIN_COMMANDS } from "@/features/agent/composer-capabilities";
 import { deriveHelpFeatures } from "@/features/agent/help-features";
 import { useRuntimeStatus } from "@/features/agent/runtime-status";
@@ -13,15 +14,6 @@ import {
   SHORTCUT_GROUPS,
 } from "@/lib/shortcuts/registry";
 import { cn } from "@/lib/utils";
-
-/** A single keycap. */
-function Key({ children }: { children: React.ReactNode }) {
-  return (
-    <kbd className="inline-flex min-w-[1.75rem] items-center justify-center rounded-md border border-border bg-muted px-2 py-1 font-mono text-xs font-medium text-foreground shadow-sm">
-      {children}
-    </kbd>
-  );
-}
 
 const CARD_CLASS = "rounded-xl border bg-card p-5";
 const CARD_HEADING_CLASS =
@@ -96,7 +88,7 @@ export function ShortcutsReference() {
                       ) : null}
                       {keycaps(s.effectiveCombo).map((k, i) => (
                         // biome-ignore lint/suspicious/noArrayIndexKey: positional keycaps
-                        <Key key={i}>{k}</Key>
+                        <Kbd key={i}>{k}</Kbd>
                       ))}
                     </span>
                   </li>
@@ -121,7 +113,7 @@ export function ShortcutsReference() {
                     : command.description}
                 </span>
                 <span className="flex shrink-0 items-center gap-1">
-                  <Key>/{command.name}</Key>
+                  <Kbd>/{command.name}</Kbd>
                 </span>
               </li>
             ))}

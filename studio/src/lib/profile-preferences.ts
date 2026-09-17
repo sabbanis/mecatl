@@ -174,6 +174,33 @@ export function useMockFeatures() {
   return { enabled, setEnabled };
 }
 
+const DEVELOPER_TOOLS_KEY = "mecatl-studio.developer-tools";
+
+/**
+ * Labs preference: Studio's developer tools — the web analogue of mecatui's
+ * client debug mode. On, the composer offers `/debug-ask` (a FAKE permission
+ * ask that exercises the approval panel and is never sent to the daemon;
+ * `features/agent/debug-ask.ts`), the chat menu gets "Inject fake approval",
+ * and the queue strip shows the steer correlation trace (steer ids, drain
+ * watermarks, decisions; `features/agent/steer-trace.ts`). Browser-local,
+ * default OFF; the key stores "1" only while enabled.
+ */
+export function useDeveloperTools() {
+  const [enabled, setEnabledState] = useState(false);
+  useEffect(() => {
+    if (readLocalStorage(DEVELOPER_TOOLS_KEY) === "1") {
+      setEnabledState(true);
+    }
+  }, []);
+
+  const setEnabled = useCallback((next: boolean) => {
+    setEnabledState(next);
+    writeLocalStorage(DEVELOPER_TOOLS_KEY, next ? "1" : null);
+  }, []);
+
+  return { enabled, setEnabled };
+}
+
 const WELCOME_DISMISSED_KEY = "mecatl-studio.welcome-dismissed";
 
 /**

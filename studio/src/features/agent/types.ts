@@ -50,6 +50,12 @@ export interface AgentSession {
    */
   titleProvenance?: string;
   /**
+   * The title lifecycle revision off the inventory row (`title_metadata`);
+   * null/absent on a legacy row or an older daemon. A live `session.title`
+   * event is adopted only when its revision is newer (`session-title.ts`).
+   */
+  titleRevision?: number | null;
+  /**
    * Non-empty on an AI-debug session (ADR 0254): the stored session this chat
    * diagnoses. Drives the sidebar's "debug" badge.
    */
@@ -159,6 +165,15 @@ export interface AgentMessage {
   /** A user message that reached the run as a mid-run steer (the daemon's
    *  drain echo landed): renders a small "steered" marker. */
   steered?: boolean;
+  /**
+   * The downstream provider the model gateway reported for THIS turn
+   * (`provider.route`, ADR 0210) — the bubble's muted `via <route>` marker.
+   * Display-only metadata: absent on a prompt-cache hit (never fabricated),
+   * and the daemon never records it to the durable log, so it is set only
+   * by a live stream/watch and is gone after a reload — a replay never
+   * carries it.
+   */
+  route?: string;
   /**
    * Per-turn cost, accumulated from the daemon's `turn.end` frames (tokens,
    * cache reads, model-call time) — the muted stat line under a finished
@@ -440,7 +455,18 @@ type StreamEventBody =
       cacheWriteTokens: number;
       reasoningTokens: number;
     }
-  | { type: "title"; title: string }
+  /**
+   * A `session.title` event: the daemon's durable title lifecycle changed
+   * (first-prompt seed, auto-title, a rename from any client). Session
+   * metadata for the inventory row — never a bubble. `revision` orders
+   * replay against the row's `titleRevision`; null when the event had none.
+   */
+  | {
+      type: "title";
+      title: string;
+      provenance: string;
+      revision: number | null;
+    }
   | {
       type: "done";
       session: AgentSession;
@@ -752,6 +778,13 @@ export interface ApprovalRequest {
    * persistent grant learned from a throwaway child would outlive it.
    */
   child?: boolean;
+  /**
+   * True on a developer-tools FAKE ask (`debug-ask.ts`, the TUI's
+   * `/debug-ask`): minted locally to exercise the panel, never sent by the
+   * daemon. Its verdict is short-circuited (no request), and a genuine ask
+   * arriving meanwhile displaces it.
+   */
+  synthetic?: boolean;
 }
 
 // ── Clarifications ──────────────────────────────────────────────────────────

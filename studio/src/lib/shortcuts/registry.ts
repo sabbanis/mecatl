@@ -69,12 +69,14 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
   },
   // Esc is layered: an open dialog/menu handles its own Escape first (Radix
   // and the composer's autocomplete both consume the event, so the dispatcher
-  // never sees it); this binding is the fallback beneath them.
+  // never sees it); this binding is the fallback beneath them. A pending
+  // permission ask is DENIED before anything closes or stops (the TUI's Esc
+  // in the approval modal) — Esc never cancels a run parked on an ask.
   {
     id: "close.esc",
     combo: "esc",
     description:
-      "Clear the selection, close the side panel — or stop the running turn",
+      "Clear the selection, deny the pending permission ask, close the side panel — or stop the running turn",
     group: "General",
     locked: true,
   },
@@ -241,6 +243,19 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     group: "Composer",
     fixed: true,
   },
+  // The unconditional newline (the TUI's ctrl+j): ⌘Enter / Ctrl+Enter always
+  // inserts a line break — idle or streaming, empty field or not — where
+  // Shift+Enter is repurposed mid-run. The composer's keydown leaves the
+  // chord to the editor's own Mod-Enter hardBreak binding, so this row is
+  // documentation-only; outside the composer ⌘Enter keeps its native meaning.
+  {
+    id: "composer.newline.mod",
+    combo: "mod+enter",
+    description:
+      "Insert a new line — always, even while the agent is replying (the unconditional form of Shift+Enter)",
+    group: "Composer",
+    fixed: true,
+  },
   // Cycle the permission mode (the TUI's shift+tab / `ModeSwitch`): Manual →
   // Plan → Accept edits → Manual. Owned by the composer's own editor keydown
   // (`resolveModeCycleKey`), so it fires ONLY while the caret is in the
@@ -295,6 +310,22 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     group: "Composer",
     fixed: true,
   },
+  // The one-shot draft clear (the TUI's ctrl+u ClearPrompt): ⌘⇧U / Ctrl+
+  // Shift+U empties the whole draft — text, [Pasted text #N] chips and staged
+  // files — idle or streaming, from the composer only (its own keydown; the ×
+  // button beside Send is the same action, so the chord is a convenience).
+  // NOT ⌘⇧⌫: on macOS the delete key reports as Backspace, so that chord is
+  // Chrome's and Firefox's "Clear browsing data" (⌘⇧Delete, which the keymap
+  // reserves). ⌘⇧U is unbound in Chrome, Firefox and Safari, and Edge's Read
+  // aloud yields to a page handler that prevents it. Documentation-only.
+  {
+    id: "composer.clearDraft.key",
+    combo: "mod+shift+u",
+    description:
+      "Clear the unsent draft — text, staged pastes and attachments (also the × beside Send)",
+    group: "Composer",
+    fixed: true,
+  },
   {
     id: "composer.slash",
     combo: "/",
@@ -322,6 +353,55 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     fixed: true,
   },
 
+  // Approvals (the TUI's permission-modal verdicts, cmd/mecatui/ui/keys.go:
+  // allow = a/y/enter, always allow = w, deny = d/n/esc). Bare letters never
+  // fire while the caret is in a text field (`comboFiresWhileTyping`), the
+  // composer is disabled while an ask waits anyway, and the handlers are
+  // registered ONLY while an ask is pending (`useApprovalShortcuts`), so the
+  // letters keep their native meaning the rest of the time. Enter activates
+  // the focused verdict button natively; Esc denies through `close.esc`.
+  {
+    id: "approval.allow",
+    combo: "y",
+    description: "Allow once — while a permission ask is waiting",
+    group: "Approvals",
+  },
+  {
+    id: "approval.allow.alt",
+    combo: "a",
+    description: "Allow once (alternate key)",
+    group: "Approvals",
+  },
+  {
+    id: "approval.always",
+    combo: "w",
+    description: "Always allow — main-agent asks only, never a subagent's",
+    group: "Approvals",
+  },
+  {
+    id: "approval.deny",
+    combo: "n",
+    description: "Deny the pending permission ask",
+    group: "Approvals",
+  },
+  {
+    id: "approval.deny.alt",
+    combo: "d",
+    description: "Deny (alternate key)",
+    group: "Approvals",
+  },
+  // The verdict bar's own traversal (`ApprovalVerdictBar`): ← / → step
+  // between the visible buttons with wrap, Home / End jump to the ends.
+  // Component-owned — it fires only with a verdict button focused — so the
+  // row is documentation-only and the arrows keep their meaning elsewhere.
+  {
+    id: "approval.focus",
+    combo: "right",
+    description: "Move between the verdict buttons (← steps back)",
+    group: "Approvals",
+    fixed: true,
+  },
+
   // Scheduled (the /workspace/schedules list). Bare `/` never fires while the
   // caret is in a text field (`comboFiresWhileTyping` is false for it), so
   // typing a slash in the composer or the filter itself stays plain text.
@@ -339,6 +419,7 @@ export const SHORTCUT_GROUPS = [
   "Chats",
   "Conversation",
   "Composer",
+  "Approvals",
   "Scheduled",
 ] as const;
 

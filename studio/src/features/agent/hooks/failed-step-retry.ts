@@ -221,3 +221,29 @@ export function recoverableDraft(prompt: {
   if (prompt.files && prompt.files.length > 0) return null;
   return { text: prompt.text };
 }
+
+/**
+ * Drops the failed exchange from the tail of the transcript: every trailing
+ * failed or still-empty assistant bubble, then the user bubble that carried
+ * `prompt` — so a resend, or an edit-and-resend from the composer, replaces
+ * the exchange instead of stacking a duplicate above it. An unrelated tail
+ * (a clean answer, a different prompt) is left exactly as it was.
+ */
+export function trimFailedExchange(
+  messages: AgentMessage[],
+  prompt: string,
+): AgentMessage[] {
+  const trimmed = [...messages];
+  while (trimmed.length) {
+    const last = trimmed[trimmed.length - 1];
+    if (last.role === "assistant" && (last.failed || !last.content)) {
+      trimmed.pop();
+      continue;
+    }
+    if (last.role === "user" && last.content === prompt) {
+      trimmed.pop();
+    }
+    break;
+  }
+  return trimmed;
+}

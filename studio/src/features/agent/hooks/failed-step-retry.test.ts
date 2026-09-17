@@ -11,6 +11,7 @@ import {
   retryRoute,
   retryStartFailure,
   shouldAutoRetry,
+  trimFailedExchange,
   unmarkFailedRehydrate,
 } from "./failed-step-retry";
 import { reduceWatchEvent } from "./use-agent-chat";
@@ -279,6 +280,59 @@ describe("recoverableDraft", () => {
     const png = new File(["x"], "x.png", { type: "image/png" });
     expect(recoverableDraft({ text: "go", files: [png] })).toBeNull();
     expect(recoverableDraft({ text: "   " })).toBeNull();
+  });
+});
+
+describe("trimFailedExchange", () => {
+  const user = (id: string, content: string): AgentMessage => ({
+    id,
+    role: "user",
+    content,
+    timestamp: 0,
+  });
+  const assistant = (
+    id: string,
+    over: Partial<AgentMessage> = {},
+  ): AgentMessage => ({
+    id,
+    role: "assistant",
+    content: "",
+    timestamp: 0,
+    ...over,
+  });
+
+  it("removes a trailing failed assistant bubble and the user bubble that carried the prompt", () => {
+    const earlier = [user("u1", "first"), assistant("a1", { content: "ok" })];
+    const messages = [
+      ...earlier,
+      user("u2", "hello"),
+      assistant("a2", { failed: true, failureDetail: "409" }),
+    ];
+    expect(trimFailedExchange(messages, "hello")).toEqual(earlier);
+    // The input is never mutated.
+    expect(messages).toHaveLength(4);
+  });
+
+  it("drops every trailing empty assistant bubble before the user bubble", () => {
+    const messages = [
+      user("u1", "hello"),
+      assistant("a1"),
+      assistant("a2", { failed: true }),
+    ];
+    expect(trimFailedExchange(messages, "hello")).toEqual([]);
+  });
+
+  it("leaves an unrelated tail alone", () => {
+    const answered = [user("u1", "hello"), assistant("a1", { content: "ok" })];
+    expect(trimFailedExchange(answered, "hello")).toEqual(answered);
+    // A failed bubble under a DIFFERENT prompt: the bubble goes, the prompt
+    // it belongs to stays.
+    const other = [user("u1", "other"), assistant("a1", { failed: true })];
+    expect(trimFailedExchange(other, "hello")).toEqual([user("u1", "other")]);
+  });
+
+  it("handles an empty transcript", () => {
+    expect(trimFailedExchange([], "hello")).toEqual([]);
   });
 });
 

@@ -87,8 +87,14 @@ Each rule is backed by a test; break the rule and its test names you.
    exception is the explicit, default-off, clearly-labeled Labs mock content
    (Settings → Labs → "Show mock features", `src/features/agent/mock-tour.ts`)
    — an opt-in demo the user turns on, never a fallback for an unreachable
-   daemon.
-   (`tests/rendered-html.test.mjs`: unreachable daemon → friendly 503.)
+   daemon. Its sibling is Labs → "Developer tools" (mecatui's client debug
+   mode): the `/debug-ask` built-in / "Inject fake approval" menu item park
+   a clearly-labeled SYNTHETIC permission ask (`src/features/agent/debug-ask.ts`,
+   `ApprovalRequest.synthetic`) that never reaches the daemon — its verdict
+   is short-circuited, and a genuine ask displaces it — and the queue strip
+   shows the steer correlation trace (`src/features/agent/steer-trace.ts`).
+   (`tests/rendered-html.test.mjs`: unreachable daemon → friendly 503;
+   `use-agent-chat.debug-ask.test.ts`: no request on a synthetic verdict.)
 2. **Session placement is server-owned; Studio never sends a workspace.**
    The daemon binds every session to its deployment's environment (ADR 0291)
    and decodes `POST /v1/sessions` with unknown fields disallowed, so the
@@ -442,6 +448,25 @@ Each rule is backed by a test; break the rule and its test names you.
   Residual: `POST /prompt` still cancels its run on client disconnect, so a
   reload of the DRIVING tab still ends the run — the watch covers runs
   driven elsewhere (schedules, other tabs/clients) and parked approvals.
+  An OPEN chat with no run to render ALSO holds a METADATA watch (mecatui's
+  `armLiveFeed`): the daemon has no "from now" for a session with no run,
+  so it replays from the beginning (or the last cursor this tab saw) and
+  SKIMS — nothing rendered, `session.title` forwarded in either phase, a
+  LIVE run-bearing frame this tab is not driving re-walks the inventory
+  once per run id so the row flips to running and the full watch takes
+  over. `session.title` translates to the `title` StreamEvent (never a
+  bubble, never "not rendered yet") and `useAgentSessions().applyTitle`
+  adopts it onto the row behind the title lifecycle REVISION (strictly
+  newer wins; unknown on either side adopts) — header, sidebar and tab
+  title update live. The SDK's `client.status` store is mirrored by
+  `use-connection-status.ts` into `connection-status-banner.tsx` (layout
+  band): `reconnecting` = amber "Live feed reconnecting…" (no attempt
+  count — `AttachOptions` has no reconnect callback), `unauthorized` =
+  destructive strip that re-probes the runtime ONCE so the auth-recovery
+  banner takes over, quiet whenever the runtime banner already owns the
+  band. (`events.test.ts` session.title, `session-title.test.ts`,
+  `use-agent-sessions.title.test.ts`, `use-agent-chat.title.test.ts`,
+  `use-connection-status.test.ts`, `connection-status-banner.test.tsx`.)
 - A tool call parked on an MCP browser sign-in (`authorization.required`)
   ENDS the prompt stream without a result; only the authorization controls
   move the run again (`GET …/mcp-authorizations/{id}/presentation`, and the

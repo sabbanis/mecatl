@@ -195,7 +195,11 @@ const routes = {
     server_implementation: "fixture-daemon",
   },
   // The resolved MCP source inventory the "Debug with AI" dialog lists its
-  // attachable debugger servers from (proto ListMcpSourcesResponse).
+  // attachable debugger servers from (proto ListMcpSourcesResponse), and
+  // Settings → MCP tools / the chat's MCP tools panel render by source. The
+  // ToolHive source is DISABLED (its server never reaches the debug dialog's
+  // enabled-only list) and carries one skip reason, so the panel's
+  // disabled badge and diagnostics line both have something to show.
   "GET /v1/mcp/sources": {
     sources: [
       {
@@ -210,8 +214,19 @@ const routes = {
           },
         ],
       },
+      {
+        name: "toolhive(default)",
+        kind: "toolhive",
+        enabled: false,
+        group: "default",
+        servers: [],
+        diagnostics: ["fixture-stdio: skipped, unsupported transport stdio"],
+      },
     ],
   },
+  // The distinct ToolHive groups (proto ListToolHiveGroupsResponse), listed
+  // under the sources as the TUI's "ToolHive groups:" line.
+  "GET /v1/mcp/toolhive/groups": { groups: ["default", "research"] },
   // Proto-JSON GetStorageHealthResponse: a healthy store (no banner) whose
   // effective retention policy, sweep timestamps and family counts the
   // Storage page's Retention card renders. int64s ride as JSON numbers.
@@ -568,12 +583,15 @@ const routes = {
   [`POST /v1/sessions/${sessionID}/mode`]: snapshot,
   // The owner-scoped connector inventory (proto ListSessionMcpConnectorsResponse;
   // vocabulary in internal/mcpbroker/connector.go): enrollment required but
-  // not begun, so the notice shows on open.
+  // not begun, so the notice shows on open. The one connector's catalogue is
+  // still hidden (the chat's MCP tools panel reads "Awaiting discovery").
   [`GET /v1/sessions/${sessionID}/mcp/connectors`]: {
     availability: "available",
     enrollment_state: "not_started",
-    connectors: [],
-    total_connectors: 0,
+    connectors: [
+      { name: "fixture-connector", catalogue_state: "hidden", tool_count: 0 },
+    ],
+    total_connectors: 1,
     truncated: false,
   },
   // Workspace-services enrollment controls (bodyless POSTs; proto

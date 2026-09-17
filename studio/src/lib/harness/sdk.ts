@@ -50,7 +50,23 @@ export function getHarnessClient(): Client {
 export async function resetHarnessClient(): Promise<void> {
   const current = client;
   client = undefined;
+  for (const listener of [...resetListeners]) listener();
   await current?.close().catch(() => undefined);
+}
+
+const resetListeners = new Set<() => void>();
+
+/**
+ * Registers a listener for `resetHarnessClient()`, so a subscription that
+ * outlives one call — the connection-status store a banner mirrors — can
+ * re-attach to the replacement client instead of staying bound to the
+ * forgotten one. Returns the unsubscribe.
+ */
+export function onHarnessClientReset(listener: () => void): () => void {
+  resetListeners.add(listener);
+  return () => {
+    resetListeners.delete(listener);
+  };
 }
 
 /**

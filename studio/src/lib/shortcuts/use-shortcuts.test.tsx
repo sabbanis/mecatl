@@ -146,6 +146,44 @@ describe("ShortcutsProvider dispatch while typing", () => {
     expect(notPrevented).toBe(true);
   });
 
+  it("withdraws a handler registered with enabled: false — the key keeps its default", () => {
+    function Gated({
+      enabled,
+      onFire,
+    }: {
+      enabled: boolean;
+      onFire: () => void;
+    }) {
+      useShortcut("approval.allow", onFire, { enabled });
+      return null;
+    }
+    const allow = vi.fn();
+    const { rerender } = render(
+      <ShortcutsProvider>
+        <Gated enabled={false} onFire={allow} />
+      </ShortcutsProvider>,
+    );
+    // Not registered: nothing fires and the press is not prevented.
+    expect(fireEvent.keyDown(document.body, { key: "y" })).toBe(true);
+    expect(allow).not.toHaveBeenCalled();
+
+    rerender(
+      <ShortcutsProvider>
+        <Gated enabled={true} onFire={allow} />
+      </ShortcutsProvider>,
+    );
+    expect(fireEvent.keyDown(document.body, { key: "y" })).toBe(false);
+    expect(allow).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <ShortcutsProvider>
+        <Gated enabled={false} onFire={allow} />
+      </ShortcutsProvider>,
+    );
+    expect(fireEvent.keyDown(document.body, { key: "y" })).toBe(true);
+    expect(allow).toHaveBeenCalledTimes(1);
+  });
+
   it("never claims ⌘A / Ctrl+A globally — the transcript select-all is component-owned", () => {
     // `transcript.selectAll` is a FIXED registry row: no handler is ever
     // registered for it, so a select-all in the composer (or anywhere else)
@@ -193,9 +231,12 @@ describe("ShortcutsProvider with a user keymap (Settings → Keyboard)", () => {
 
   it("keeps the while-typing suppression for a plain-letter override", () => {
     vi.stubGlobal("localStorage", memoryStorage());
+    // `x`: a letter no live shortcut uses (`n` became Deny's when the
+    // approval verdicts joined the registry — an override on it would be
+    // dropped as a collision).
     window.localStorage.setItem(
       KEYMAP_STORAGE_KEY,
-      JSON.stringify({ "chat.new": "n" }),
+      JSON.stringify({ "chat.new": "x" }),
     );
     const newChat = vi.fn();
     mount({ "chat.new": newChat });
@@ -203,12 +244,12 @@ describe("ShortcutsProvider with a user keymap (Settings → Keyboard)", () => {
     // In the composer the letter stays text — the remapped shortcut is
     // suppressed exactly as a plain-letter default would be.
     const composer = focusComposer();
-    fireEvent.keyDown(composer, { key: "n" });
+    fireEvent.keyDown(composer, { key: "x" });
     expect(newChat).not.toHaveBeenCalled();
 
     // Outside a text field the letter fires, and the default no longer does.
     composer.blur();
-    fireEvent.keyDown(document.body, { key: "n" });
+    fireEvent.keyDown(document.body, { key: "x" });
     expect(newChat).toHaveBeenCalledTimes(1);
     fireEvent.keyDown(document.body, {
       key: "O",

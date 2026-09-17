@@ -159,4 +159,29 @@ describe("ShortcutsReference", () => {
       [...search.querySelectorAll("kbd")].map((k) => k.textContent),
     ).toEqual(["⌘", "K"]);
   });
+
+  it("documents the approval verdict keys under an Approvals heading", () => {
+    render(<ShortcutsReference />);
+    expect(
+      screen.getByRole("heading", { name: "Approvals" }),
+    ).toBeInTheDocument();
+    const rows: Array<[string, string]> = [
+      ["Allow once — while a permission ask is waiting", "Y"],
+      ["Always allow — main-agent asks only, never a subagent's", "W"],
+      ["Deny the pending permission ask", "N"],
+    ];
+    for (const [description, cap] of rows) {
+      const row = screen.getByText(description).closest("li");
+      if (!row) throw new Error(`no row for ${description}`);
+      expect(
+        [...row.querySelectorAll("kbd")].map((k) => k.textContent),
+      ).toEqual([cap]);
+    }
+    // Esc's row says it denies a pending ask before it closes or stops.
+    expect(
+      screen.getByText(
+        "Clear the selection, deny the pending permission ask, close the side panel — or stop the running turn",
+      ),
+    ).toBeInTheDocument();
+  });
 });

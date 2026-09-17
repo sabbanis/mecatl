@@ -306,6 +306,33 @@ describe("reduceWatchEvent", () => {
       ),
     ).toBe(before);
   });
+
+  it("stamps the downstream provider route on the trailing assistant and a later token keeps it", () => {
+    // A LIVE watch of a run driven elsewhere: the route marks THIS turn's
+    // bubble; the next user record opens a fresh bubble with no route (the
+    // daemon never logs provider.route, so replay never carries it).
+    const messages = run([
+      { type: "token", text: "Hel" },
+      { type: "provider_route", label: "Google" },
+      { type: "token", text: "lo" },
+      { type: "user_prompt", text: "and now?" },
+      { type: "token", text: "Next" },
+    ]);
+    expect(messages).toHaveLength(3);
+    expect(messages[0]).toMatchObject({
+      role: "assistant",
+      content: "Hello",
+      route: "Google",
+    });
+    expect(messages[2]).toMatchObject({ role: "assistant", content: "Next" });
+    expect(messages[2].route).toBeUndefined();
+  });
+
+  it("opens an assistant bubble for a route that arrives before any token", () => {
+    const messages = run([{ type: "provider_route", label: "azure" }]);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({ role: "assistant", route: "azure" });
+  });
 });
 
 // ── delegation cards (D1) ────────────────────────────────────────────────────

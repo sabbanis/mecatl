@@ -48,6 +48,11 @@ import {
 } from "../approval-queue";
 import { refreshSlashCommands } from "../composer-capabilities";
 import {
+  debugAskRequest,
+  debugAskResolvedNotice,
+  withoutSyntheticAsks,
+} from "../debug-ask";
+import {
   applyDelegationEvent,
   type DelegationFleet,
   emptyFleet,
@@ -77,6 +82,13 @@ import {
 } from "../plan-ask";
 import { buildPromptPayload } from "../prompt-payload";
 import { useRuntimeStatus } from "../runtime-status";
+import type { SessionTitleUpdate } from "../session-title";
+import {
+  appendSteerTrace,
+  type SteerTraceDecision,
+  type SteerTraceEntry,
+  traceDrainedSteers,
+} from "../steer-trace";
 import {
   type StatusMessage,
   statusFromStopReason,
@@ -110,6 +122,7 @@ import {
   retryStartFailure,
   type ScopedPrompt,
   shouldAutoRetry,
+  trimFailedExchange,
   unmarkFailedRehydrate,
 } from "./failed-step-retry";
 import { stampTrailingAssistantStop } from "./stop-stamp";
@@ -531,6 +544,11 @@ export function reduceWatchEvent(
         ...message,
         notices: [...(message.notices ?? []), event.text],
       }));
+    case "provider_route":
+      // The turn's downstream provider stamps the trailing assistant bubble
+      // (a LIVE watch of a run driven elsewhere); the daemon never logs it,
+      // so a replay never carries this frame.
+      return onAssistant((message) => ({ ...message, route: event.label }));
     case "authorization":
       // The parked-on-sign-in phase leaves its trace on the turn; the phase
       // itself is hook state (the takeover card), like an approval ask.
@@ -667,6 +685,19 @@ export function useAgentChat(
      * permission mode, which a plan-run terminal flips on its own.
      */
     onRunEnded?: (stop: string) => void;
+    /**
+     * A `session.title` event (the daemon's first-prompt seed, an auto-title,
+     * a rename from another client) heard on the prompt stream or a watch.
+     * Session metadata for the host's inventory row — never a bubble.
+     */
+    onTitle?: (sessionId: string, title: SessionTitleUpdate) => void;
+    /**
+     * The always-armed metadata watch heard a LIVE run-bearing frame on an
+     * idle chat this tab is not driving: a run started elsewhere. The host
+     * re-walks the inventory so the row flips to running and the full watch
+     * attaches. Fired once per run id.
+     */
+    onExternalRunDetected?: (sessionId: string) => void;
   },
 ) {
   const {
@@ -729,6 +760,16 @@ export function useAgentChat(
    *  order. The stream's `steer` echo splits this list on its watermark id. */
   const [pendingSteers, setPendingSteers] = useState<PendingSteer[]>([]);
   const steerSerialRef = useRef(0);
+  /** The steer correlation trace (steer-trace.ts): every steer id with the
+   *  daemon's decision and the drain watermark, bounded. Always recorded;
+   *  the strip renders it only while Settings → Labs "Developer tools" is on
+   *  (the TUI's DebugSteer). */
+  const [steerTrace, setSteerTrace] = useState<SteerTraceEntry[]>([]);
+  /** Developer tools: the status a FAKE ask (debug-ask.ts) displaced, put
+   *  back when it resolves; null while none is parked. */
+  const debugAskStatusRef = useRef<ChatStatus | null>(null);
+  /** Rotates the fake ask's canned payload and salts its id. */
+  const debugAskCycleRef = useRef(0);
   /** Set by every non-clean stop (cancel, failed turn, lost connection): the
    *  queue then waits visibly until the user resumes, edits, or clears it —
    *  or sends a fresh prompt. Cleared automatically once nothing is held. */
@@ -816,6 +857,13 @@ export function useAgentChat(
   const [recoverDraft, setRecoverDraft] = useState<{ text: string } | null>(
     null,
   );
+  // The prompt a run-entry failure refused before any frame arrived (the
+  // session mint or POST /prompt itself — a 409 lease, a 503 drain, a 401):
+  // the strip's Edit hands it back to the composer and drops the failed
+  // exchange. Text only; attachments are never re-staged implicitly (the
+  // Retry resend still carries them). Cleared by the next send and on chat
+  // open, so it never names a prompt from another chat or run.
+  const [failedPrompt, setFailedPrompt] = useState<string | null>(null);
   // The automatic retry armed by a retryable + precommit failure; fired by
   // an effect once the error state has committed (retryLast reads status).
   const [autoRetryPending, setAutoRetryPending] = useState(false);
@@ -872,6 +920,10 @@ export function useAgentChat(
   createEffortRef.current = options?.createEffort;
   const onRunEndedRef = useRef(options?.onRunEnded);
   onRunEndedRef.current = options?.onRunEnded;
+  const onTitleRef = useRef(options?.onTitle);
+  onTitleRef.current = options?.onTitle;
+  const onExternalRunDetectedRef = useRef(options?.onExternalRunDetected);
+  onExternalRunDetectedRef.current = options?.onExternalRunDetected;
 
   /**
    * Rebuilds the message list from the daemon's authoritative transcript,
@@ -1007,6 +1059,7 @@ export function useAgentChat(
     failedMarkRef.current = null;
     setLastFailurePermanent(false);
     setRecoverDraft(null);
+    setFailedPrompt(null);
     setAutoRetryPending(false);
     planProceedArmRef.current = null;
     setPlanProceedPending(false);
@@ -1308,8 +1361,13 @@ export function useAgentChat(
             }
             break;
           case "provider_route":
-            // The replay spans earlier runs too: only the LIVE route counts.
-            if (live) setProviderRoute(event.label);
+            // The replay spans earlier runs too: only the LIVE route counts
+            // for the strip; the bubble marker is per-turn either way.
+            rebuilt = reduceWatchEvent(rebuilt, event, nextId);
+            if (live) {
+              setProviderRoute(event.label);
+              flush();
+            }
             break;
           case "status":
             // Transient: the status line only, never the transcript.
@@ -1320,6 +1378,17 @@ export function useAgentChat(
                 kind: event.kind,
               });
             }
+            break;
+          case "title":
+            // Session metadata, not transcript: the host adopts it onto the
+            // inventory row (header, sidebar, tab title) in BOTH phases —
+            // its revision guard keeps a replayed older title from
+            // regressing the row, so replay is safe to forward.
+            onTitleRef.current?.(sessionId, {
+              title: event.title,
+              provenance: event.provenance,
+              revision: event.revision,
+            });
             break;
           case "run_result":
             rebuilt = reduceWatchEvent(rebuilt, event, nextId);
@@ -1399,6 +1468,75 @@ export function useAgentChat(
     replaceApprovalQueue,
     settlePlanTerminal,
   ]);
+
+  // The always-armed METADATA watch (mecatui's armLiveFeed): an open chat
+  // with no run to render still hears `session.title` (the first-prompt
+  // seed, an auto-title, a rename from another client) and notices a run
+  // started elsewhere. It attaches exactly when the full watch above does
+  // NOT (the row reads idle/completed/… per inventory) and hands over the
+  // moment the row flips to running/awaiting. The daemon has no "from now"
+  // for a session with no run, so it replays from the beginning (or from the
+  // last cursor this tab saw for the session) and SKIMS: nothing is
+  // rendered, titles are forwarded in either phase behind the host's
+  // revision guard, run detection fires on LIVE frames only — a replayed
+  // history must never storm the inventory — and once per run id. Metadata
+  // only: a fault ends it quietly until the next open / flip / reconnect,
+  // except a refused resume cursor, which restarts once from the beginning.
+  const metadataWatchRef = useRef<{ sessionId: string; cursor: string }>({
+    sessionId: "",
+    cursor: "",
+  });
+  useEffect(() => {
+    if (!sessionId || !connected || !watchSupported || watchable) return;
+    if (drivingRef.current === sessionId) return;
+    const controller = new AbortController();
+    const seenRuns = new Set<string>();
+    // The full watch's last cursor is the newer position when it ran after
+    // this watch (idle → running → idle); both are scoped to this session.
+    const resume =
+      watchCursorRef.current ||
+      (metadataWatchRef.current.sessionId === sessionId
+        ? metadataWatchRef.current.cursor
+        : "");
+    const attach = (cursor: string) =>
+      watchSessionEvents(
+        sessionId,
+        (delivery) => {
+          if (delivery.cursor) {
+            metadataWatchRef.current = { sessionId, cursor: delivery.cursor };
+          }
+          const event = delivery.event;
+          if (!event) return;
+          if (event.type === "title") {
+            onTitleRef.current?.(sessionId, {
+              title: event.title,
+              provenance: event.provenance,
+              revision: event.revision,
+            });
+            return;
+          }
+          if (delivery.phase !== "live" || !event.runId) return;
+          // This tab's own run fans out on the durable feed too.
+          if (drivingRef.current === sessionId) return;
+          if (seenRuns.has(event.runId)) return;
+          seenRuns.add(event.runId);
+          onExternalRunDetectedRef.current?.(sessionId);
+        },
+        { cursor, signal: controller.signal },
+      );
+    void Promise.resolve()
+      .then(() => attach(resume))
+      .catch(() => {
+        if (controller.signal.aborted) return;
+        metadataWatchRef.current = { sessionId: "", cursor: "" };
+        if (resume) {
+          void Promise.resolve()
+            .then(() => attach(""))
+            .catch(() => undefined);
+        }
+      });
+    return () => controller.abort();
+  }, [sessionId, connected, watchSupported, watchable]);
 
   const queueMessage = useCallback((text: string, files?: File[]) => {
     const trimmed = text.trim();
@@ -1490,8 +1628,11 @@ export function useAgentChat(
             // FIFO: a second ask (a surfaced child's, a parallel read
             // batch's) queues behind the one on screen instead of replacing
             // it; a known askId is a re-surface, not a new ask.
+            // A GENUINE ask displaces a parked developer-tools fake one
+            // first (debug-ask.ts): a fake ask must never hide the
+            // daemon's real ask behind it.
             replaceApprovalQueue(
-              enqueueAsk(approvalQueueRef.current, {
+              enqueueAsk(withoutSyntheticAsks(approvalQueueRef.current), {
                 approvalId: event.approvalId,
                 sessionId: daemonId,
                 toolName: event.toolName,
@@ -1549,6 +1690,11 @@ export function useAgentChat(
               );
               const remainingIds = new Set(remaining.map((p) => p.id));
               const drained = prev.filter((p) => !remainingIds.has(p.id));
+              // Developer-tools trace: the echo's watermark and what it
+              // split off (steer-trace.ts).
+              setSteerTrace((trace) =>
+                traceDrainedSteers(trace, drained, event.messageId, Date.now()),
+              );
               const drainedBubbleIds = new Set(
                 drained.map((p) => `steer-user-${p.id}`),
               );
@@ -1599,8 +1745,10 @@ export function useAgentChat(
             }));
             break;
           case "provider_route":
-            // Metadata for the status strip's model segment, not transcript.
+            // Metadata for the status strip's model segment and this turn's
+            // bubble marker, not transcript text.
             setProviderRoute(event.label);
+            patch((message) => ({ ...message, route: event.label }));
             break;
           case "status":
             // Transient (no-progress nudge, recover notice): the status line
@@ -1781,6 +1929,16 @@ export function useAgentChat(
             );
             break;
           }
+          case "title":
+            // The daemon's title lifecycle rides this tab's own stream too
+            // (the first-prompt seed lands with the run): session metadata
+            // for the host's inventory row, never this turn's bubble.
+            onTitleRef.current?.(daemonId, {
+              title: event.title,
+              provenance: event.provenance,
+              revision: event.revision,
+            });
+            break;
           default:
             break;
         }
@@ -1877,6 +2035,7 @@ export function useAgentChat(
       localRunsRef.current += 1;
       setLastFailurePermanent(false);
       setRecoverDraft(null);
+      setFailedPrompt(null);
 
       const ids = { assistant: `assistant-${Date.now()}` };
       setMessages((prev) => [
@@ -2007,6 +2166,9 @@ export function useAgentChat(
         // implicitly — the Retry button's resend still carries it).
         const draft = recoverableDraft({ text: content, files });
         if (draft) setRecoverDraft(draft);
+        // The strip's Edit can take the text back whether or not files rode
+        // along (the composer recovery above is text-only by design).
+        if (content.trim()) setFailedPrompt(content);
         patch((current) => ({
           ...current,
           failed: true,
@@ -2068,22 +2230,9 @@ export function useAgentChat(
     const prompt = lastPromptRef.current;
     if (!promptBelongsTo(prompt, daemonIdRef.current)) return false;
     lastPromptRef.current = null;
+    setFailedPrompt(null);
     // Drop the failed exchange so the retry replaces it instead of stacking.
-    setMessages((prev) => {
-      const trimmed = [...prev];
-      while (trimmed.length) {
-        const last = trimmed[trimmed.length - 1];
-        if (last.role === "assistant" && (last.failed || !last.content)) {
-          trimmed.pop();
-          continue;
-        }
-        if (last.role === "user" && last.content === prompt.text) {
-          trimmed.pop();
-        }
-        break;
-      }
-      return trimmed;
-    });
+    setMessages((prev) => trimFailedExchange(prev, prompt.text));
     setError(null);
     setStatus("idle");
     // startRun, not sendMessage: a retry re-drives the failed turn and
@@ -2286,6 +2435,24 @@ export function useAgentChat(
     setRecoverDraft(null);
     lastPromptRef.current = null;
   }, []);
+
+  /** The strip's Edit (the TUI's esc after a run-entry failure): hands the
+   *  refused prompt's text back for edit-before-resend, drops the failed
+   *  exchange it left in the transcript, and clears the failure. Null when
+   *  no refused prompt is held for THIS chat. The held prompt is consumed —
+   *  the composer owns the text now, so Retry can never replay it behind
+   *  the user's edit. */
+  const takeFailedPrompt = useCallback((): string | null => {
+    const text = failedPrompt;
+    if (text === null) return null;
+    setFailedPrompt(null);
+    setRecoverDraft(null);
+    lastPromptRef.current = null;
+    setMessages((prev) => trimFailedExchange(prev, text));
+    setError(null);
+    setStatus((current) => (current === "error" ? "idle" : current));
+    return text;
+  }, [failedPrompt]);
 
   /** A message typed while a run was active, held client-side: the daemon is
    *  strictly one-run-at-a-time (a mid-run prompt answers 412), so the queue
@@ -2749,12 +2916,23 @@ export function useAgentChat(
       const { parts, attachments } = payload;
       steerSerialRef.current += 1;
       const id = `steer-${Date.now()}-${steerSerialRef.current}`;
+      // Developer-tools trace (steer-trace.ts): what became of this steer.
+      const trace = (decision: SteerTraceDecision) =>
+        setSteerTrace((prev) =>
+          appendSteerTrace(prev, {
+            id,
+            text: trimmed,
+            decision,
+            at: Date.now(),
+          }),
+        );
       try {
         const { outcome } = await steerHarnessRun(daemonId, payload.text, id, {
           expectedRunId: runId,
           parts,
         });
         if (outcome === "accepted" || outcome === "appended") {
+          trace("accepted");
           // The injected text IS a chat message — show it in the transcript
           // right away, attachments included. pendingSteers stays internal
           // bookkeeping (watermark reconciliation at the drain echo).
@@ -2774,6 +2952,7 @@ export function useAgentChat(
           ]);
           return;
         }
+        trace("held");
         queueMessage(trimmed, files);
       } catch (caught) {
         if (
@@ -2782,10 +2961,12 @@ export function useAgentChat(
         ) {
           // The named run already ended — exactly the too_late outcome:
           // requeue quietly, never an error toast (A2.3/C1.3).
+          trace("too_late");
           runIdRef.current = "";
           queueMessage(trimmed, files);
           return;
         }
+        trace("held");
         queueMessage(trimmed, files);
         setError(
           mapPromptValidationError(caught) ??
@@ -2837,6 +3018,20 @@ export function useAgentChat(
       const outcome = await cancelHarnessSteer(daemonId, runIdRef.current);
       setPendingSteers([]);
       if (outcome === "retracted") {
+        // Developer-tools trace: every steer of the bundle came back.
+        const at = Date.now();
+        setSteerTrace((trace) =>
+          bundle.reduce(
+            (acc, steer) =>
+              appendSteerTrace(acc, {
+                id: steer.id,
+                text: steer.text,
+                decision: "retracted",
+                at,
+              }),
+            trace,
+          ),
+        );
         dropBubbles();
         return bundle;
       }
@@ -2953,6 +3148,23 @@ export function useAgentChat(
       const approvalId = answered?.approvalId;
       const remaining = approvalId ? resolveAsk(queue, approvalId) : queue;
       replaceApprovalQueue(remaining);
+      if (answered?.synthetic) {
+        // A developer-tools FAKE ask (debug-ask.ts): no verdict goes to the
+        // daemon — nothing asked. Put back EXACTLY the status the injection
+        // displaced (idle stays idle, a live run stays streaming — the
+        // composer's Enter behaviour depends on it) unless a genuine ask is
+        // still queued, and leave a visible record of the choice on the
+        // turn, the way a real verdict is recorded.
+        if (!remaining.length) {
+          const previous = debugAskStatusRef.current ?? "idle";
+          setStatus((current) =>
+            current === "waiting_approval" ? previous : current,
+          );
+        }
+        debugAskStatusRef.current = null;
+        appendApprovalNotice(debugAskResolvedNotice(choice));
+        return;
+      }
       // The verdict resumes the SAME run — the prompt stream stays open and
       // keeps delivering (the daemon acks the approve; only the run's end
       // closes the stream). Mirror the retract handler: back to streaming,
@@ -3026,6 +3238,27 @@ export function useAgentChat(
     setStatus("idle");
   }, []);
 
+  /**
+   * Developer tools (Settings → Labs): parks a FAKE Shell ask on the panel so
+   * its layout, focus and verdict flow can be exercised without a model — the
+   * TUI's `/debug-ask`. Marked `synthetic`, it never reaches the daemon:
+   * `respondToApproval` short-circuits on it, and a genuine ask arriving
+   * meanwhile displaces it. Refused (false) while any ask is already pending,
+   * mirroring the TUI's dedupe. The status it displaces is remembered so the
+   * resolve can restore it exactly.
+   */
+  const injectDebugApproval = useCallback((): boolean => {
+    if (approvalQueueRef.current.length > 0) return false;
+    const cycle = debugAskCycleRef.current;
+    debugAskCycleRef.current += 1;
+    replaceApprovalQueue([debugAskRequest(daemonIdRef.current ?? "", cycle)]);
+    setStatus((current) => {
+      debugAskStatusRef.current = current;
+      return "waiting_approval";
+    });
+    return true;
+  }, [replaceApprovalQueue]);
+
   /** Re-fetches the authoritative transcript (e.g. after a manual compaction
    *  rewrote the model history, B1.3). No-op on a draft with no session. */
   const refreshTranscript = useCallback(async () => {
@@ -3054,6 +3287,8 @@ export function useAgentChat(
     resumeQueue,
     steerQueued,
     pendingSteers,
+    /** The steer correlation trace (developer tools; steer-trace.ts). */
+    steerTrace,
     steerMessage,
     /** Mid-run steering is available (capability/feature gate, C1.2). */
     steerSupported,
@@ -3075,6 +3310,11 @@ export function useAgentChat(
      *  take back (edit-before-resend); null when nothing is recoverable. */
     recoverDraft,
     consumeRecoverDraft,
+    /** The text of a prompt a run-entry failure refused (the mint or the
+     *  prompt POST itself); null when none is held for this chat. The strip
+     *  offers Edit while it is set. */
+    failedPrompt,
+    takeFailedPrompt,
     refreshTranscript,
     cancelChat,
     /** THIS tab's prompt / retry / authorization stream is driving a run
@@ -3096,6 +3336,9 @@ export function useAgentChat(
     approvalQueueLength: approvalQueue.length,
     pendingClarification,
     respondToApproval,
+    /** Developer tools: parks a FAKE ask (never sent); false when an ask is
+     *  already pending. */
+    injectDebugApproval,
     respondToClarification,
     usage,
     /** Every child this session's runs delegated, aggregated across turns

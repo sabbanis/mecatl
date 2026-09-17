@@ -391,12 +391,30 @@ describe("translateEvent", () => {
         text: "Mecatl sent an event this Studio version does not render yet: something.new",
       },
     ]);
-    // A kind the SDK types but Studio has no surface for reads the same way.
-    expect(translate(sdkEvent("session.title", {}))).toEqual([
+  });
+
+  it("maps session.title to a title metadata event (never a transcript notice)", () => {
+    expect(
+      translate(
+        sdkEvent("session.title", {
+          title: "Fix flake",
+          provenance: "first-prompt",
+          revision: BigInt(2),
+          generationState: "completed",
+        }),
+      ),
+    ).toEqual([
       {
-        type: "notice",
-        text: "Mecatl sent an event this Studio version does not render yet: session.title",
+        type: "title",
+        title: "Fix flake",
+        provenance: "first-prompt",
+        revision: 2,
       },
+    ]);
+    // A pending-generation event carries no title yet and may carry no
+    // revision on an older daemon: both cross as their honest empties.
+    expect(translate(sdkEvent("session.title", {}))).toEqual([
+      { type: "title", title: "", provenance: "", revision: null },
     ]);
   });
 

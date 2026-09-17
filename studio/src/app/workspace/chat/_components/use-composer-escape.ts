@@ -13,6 +13,11 @@ export interface ComposerEscapeInput {
   panelOpen: boolean;
   /** A run is streaming and Esc should interrupt it. */
   isStreaming: boolean;
+  /** A permission ask is waiting: Esc denies it instead of stopping the run
+      (the TUI's Esc in the approval modal). Absent — no ask arm. */
+  pendingAsk?: boolean;
+  /** Denies the pending ask. */
+  onDenyAsk?: () => void;
   /** The transcript container: a text selection inside it is dropped first.
       Absent (the draft view) — no selection arm. */
   hasSelectionIn?: RefObject<HTMLElement | null>;
@@ -28,9 +33,9 @@ export interface ComposerEscapeInput {
 /**
  * Owns the `close.esc` registration for whichever chat surface is mounted
  * (ChatView or the DraftView — never both) and dispatches ONE arm per press
- * via `resolveEscapeAction`: selection, panel, run — and, with nothing else
- * claiming Esc, the composer's double-Esc clear. The composer cannot see the
- * global dispatcher, so the fourth arm is handed to it as a counter: every
+ * via `resolveEscapeAction`: selection, pending ask (deny), panel, run — and,
+ * with nothing else claiming Esc, the composer's double-Esc clear. The
+ * composer cannot see the global dispatcher, so the last arm is handed to it as a counter: every
  * forwarded press increments `escapePress`, and the composer runs the arm
  * machine (`pressEscapeToClear`) on each change. A press that another arm
  * claims never reaches the composer — an Esc meant to close a panel can
@@ -47,6 +52,7 @@ export function useComposerEscape(input: ComposerEscapeInput): {
         hasSelection: input.hasSelectionIn
           ? selectionInside(input.hasSelectionIn.current)
           : false,
+        pendingAsk: input.pendingAsk === true,
         panelOpen: input.panelOpen,
         isStreaming: input.isStreaming,
         hasDraft: input.hasDraft,
@@ -55,6 +61,9 @@ export function useComposerEscape(input: ComposerEscapeInput): {
       case "clear-selection":
         if (input.onClearSelection) input.onClearSelection();
         else window.getSelection()?.removeAllRanges();
+        return;
+      case "deny-ask":
+        input.onDenyAsk?.();
         return;
       case "close-panel":
         input.onClosePanel?.();

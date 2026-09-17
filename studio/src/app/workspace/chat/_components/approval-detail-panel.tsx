@@ -1,14 +1,13 @@
 "use client";
 
 import { ShieldAlert } from "lucide-react";
-import { Button } from "@/components/ui/button";
 import type { ApprovalChoice, ApprovalRequest } from "@/features/agent";
 import {
   DEBUG_MCP_ASK_NOTE,
   isDebugMcpMutationAsk,
 } from "@/features/agent/approval-queue";
 import { isPlanAsk } from "@/features/agent/plan-ask";
-import { cn } from "@/lib/utils";
+import { ApprovalVerdictBar } from "./approval-verdict-bar";
 import { askToolName } from "./ask-args";
 import { AskArgsView } from "./ask-args-view";
 import { PlanReviewDetailPanel } from "./plan-review-panel";
@@ -98,42 +97,13 @@ export function ApprovalDetailPanel({
             className="min-h-0 flex-1"
           />
         </div>
-        <div className="flex flex-wrap gap-2 border-t border-border px-4 py-3">
-          <Button
-            size="sm"
-            onClick={() => respond("once")}
-            className={cn(
-              "text-white",
-              destructive
-                ? "bg-destructive hover:bg-destructive-strong"
-                : "bg-warning hover:bg-warning/90",
-            )}
-          >
-            Allow once
-          </Button>
-          {offerAlways && (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => respond("always")}
-              className={cn(
-                destructive
-                  ? "border-destructive/30 hover:bg-destructive/5"
-                  : "border-warning/30 hover:bg-warning/5",
-              )}
-            >
-              Always allow
-            </Button>
-          )}
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => respond("deny")}
-            className="text-muted-foreground hover:text-foreground"
-          >
-            Deny
-          </Button>
-        </div>
+        <ApprovalVerdictBar
+          approval={approval}
+          onRespond={respond}
+          offerAlways={offerAlways}
+          destructive={destructive}
+          className="border-t border-border px-4 py-3"
+        />
       </div>
     </SidePanel>
   );

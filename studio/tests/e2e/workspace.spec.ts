@@ -713,3 +713,69 @@ test("Settings → Help & about shows Studio's version, the docs link and the co
   ).toHaveText("Set");
   await expect(page.getByText("127.0.0.1:8099")).toHaveCount(0);
 });
+
+test("Settings → MCP tools renders the resolved sources, their diagnostics and the ToolHive groups", async ({
+  page,
+}) => {
+  await page.goto("/workspace/settings/gateway");
+  // The fixture advertises `mcp`: the card lists both sources by name with
+  // their servers and skip reasons (GET /v1/mcp/sources) and the groups
+  // line (GET /v1/mcp/toolhive/groups) under them.
+  const card = page.getByRole("heading", { name: "MCP tools" }).locator("..");
+  await expect(page.getByText("toolhive(default)")).toBeVisible();
+  await expect(page.getByText("http://127.0.0.1:1/mcp")).toBeVisible();
+  await expect(
+    page.getByText("fixture-stdio: skipped, unsupported transport stdio"),
+  ).toBeVisible();
+  await expect(page.getByTestId("mcp-groups")).toHaveText(
+    "ToolHive groups: default, research",
+  );
+  // The footer carries the startup-snapshot caveat until a manual refresh
+  // lands, then reads "updated" (the TUI's r-refresh indicator).
+  await expect(page.getByTestId("mcp-footer")).toContainText(
+    "Snapshot from daemon startup",
+  );
+  await page.getByRole("button", { name: "Refresh MCP sources" }).click();
+  await expect(page.getByTestId("mcp-footer")).toHaveText(
+    "Updated — live MCP source status.",
+  );
+  // The gateway connect form still shares the page below the inventory.
+  await expect(card).toBeVisible();
+  await expect(page.getByText("MCP gateway", { exact: true })).toBeVisible();
+});
+
+test("the chat's MCP tools panel lists the broker connectors with their catalogue state", async ({
+  page,
+}) => {
+  await page.goto("/workspace/chat");
+  await page.getByText("Fix the flaky scheduler test").first().click();
+  // The header's MCP tools button is gated on the fixture's `mcp` /
+  // `mcp_connector_status`; the panel reads the chat's connector inventory
+  // (GET /v1/sessions/{id}/mcp/connectors) in the TUI's words, never as a
+  // live connection claim, and the sources below it.
+  await page.getByRole("button", { name: "MCP tools", exact: true }).click();
+  const panel = page.getByTestId("mcp-panel");
+  await expect(panel).toBeVisible();
+  await expect(panel.getByTestId("mcp-enrollment")).toHaveText(
+    "Enrollment: No active setup",
+  );
+  const connector = panel.getByTestId("mcp-connector");
+  await expect(connector).toContainText("fixture-connector");
+  await expect(connector).toContainText("Awaiting discovery");
+  await expect(connector).toContainText("— tools");
+  await expect(
+    panel.getByText("Catalogue status · not a live connection check"),
+  ).toBeVisible();
+  // The whole-bundle setup actions ride `workspace_enrollment`: connect is
+  // offered on the idle chat, cancel waits for a pending setup.
+  await expect(
+    panel.getByRole("button", { name: "Connect tools" }),
+  ).toBeEnabled();
+  await expect(
+    panel.getByRole("button", { name: "Cancel setup" }),
+  ).toBeDisabled();
+  await expect(panel.getByText("fixture-mcp")).toBeVisible();
+  await expect(
+    panel.getByRole("link", { name: "Configure in Settings → MCP tools" }),
+  ).toHaveAttribute("href", "/workspace/settings/gateway");
+});

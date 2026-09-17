@@ -517,6 +517,14 @@ export function MessageBubble({
               steered
             </span>
           )}
+          {!isUser && message.route && (
+            <span
+              className="text-[11px] text-muted-foreground"
+              title="Downstream provider reported by the model gateway for this turn"
+            >
+              via {message.route}
+            </span>
+          )}
         </div>
         {reasoningText !== "" && (
           <ReasoningDisclosure reasoning={reasoningText} live={reasoningLive} />

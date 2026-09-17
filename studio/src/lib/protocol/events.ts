@@ -703,6 +703,22 @@ function translateEventBody(event: SdkEvent, sessionId: string): StreamEvent[] {
       // status strip's model segment, not a transcript line; absent on a
       // cache hit, so an empty text is nothing to show — never fabricated.
       return event.text ? [{ type: "provider_route", label: event.text }] : [];
+    case "session.title": {
+      // The daemon's durable title lifecycle changed (first-prompt seed,
+      // auto-title, a rename from any client). Session metadata the host
+      // adopts onto the inventory row — never a transcript line.
+      const title = event.payload;
+      return [
+        {
+          type: "title",
+          title: title.title || "",
+          provenance: title.provenance || "",
+          // uint64 crosses the SDK as bigint; the UI keeps a plain number.
+          revision:
+            typeof title.revision === "bigint" ? Number(title.revision) : null,
+        },
+      ];
+    }
     case "unknown":
       return [unrenderedNotice(event.wireKind)];
     default:

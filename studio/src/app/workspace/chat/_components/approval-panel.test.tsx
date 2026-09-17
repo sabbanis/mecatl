@@ -17,6 +17,71 @@ const childAsk: ApprovalRequest = {
   child: true,
 };
 
+describe("ApprovalPanel keyboard verdicts", () => {
+  // The TUI's approval modal keys, on the inline card: focus lands on Allow
+  // once when the ask arrives, ←/→ cycle the buttons, y/w/n answer, and the
+  // buttons show their keys.
+  const keyDown = (key: string) =>
+    fireEvent.keyDown(document.activeElement ?? document.body, { key });
+
+  it("focuses Allow once when a new ask lands", () => {
+    render(<ApprovalPanel approval={mainAsk} onRespond={() => {}} />);
+    expect(screen.getByRole("button", { name: "Allow once" })).toHaveFocus();
+  });
+
+  it("cycles → over Allow once, Always allow, Deny and wraps", () => {
+    render(<ApprovalPanel approval={mainAsk} onRespond={() => {}} />);
+    keyDown("ArrowRight");
+    expect(screen.getByRole("button", { name: "Always allow" })).toHaveFocus();
+    keyDown("ArrowRight");
+    expect(screen.getByRole("button", { name: "Deny" })).toHaveFocus();
+    keyDown("ArrowRight");
+    expect(screen.getByRole("button", { name: "Allow once" })).toHaveFocus();
+    keyDown("ArrowLeft");
+    expect(screen.getByRole("button", { name: "Deny" })).toHaveFocus();
+  });
+
+  it("answers y → once, w → always, n → deny from the focused card", () => {
+    const onRespond = vi.fn();
+    render(<ApprovalPanel approval={mainAsk} onRespond={onRespond} />);
+    keyDown("y");
+    keyDown("w");
+    keyDown("n");
+    expect(onRespond.mock.calls.map(([choice]) => choice)).toEqual([
+      "once",
+      "always",
+      "deny",
+    ]);
+  });
+
+  it("ignores w on a child ask and renders no W hint", () => {
+    const onRespond = vi.fn();
+    render(<ApprovalPanel approval={childAsk} onRespond={onRespond} />);
+    keyDown("w");
+    expect(onRespond).not.toHaveBeenCalled();
+    expect(
+      screen.getAllByTestId("verdict-key").map((k) => k.textContent),
+    ).toEqual(["Y", "N"]);
+    keyDown("ArrowRight");
+    expect(screen.getByRole("button", { name: "Deny" })).toHaveFocus();
+  });
+
+  it("shows the Y / W / N keycaps without changing the buttons' names", () => {
+    render(<ApprovalPanel approval={mainAsk} onRespond={() => {}} />);
+    expect(
+      screen.getAllByTestId("verdict-key").map((k) => k.textContent),
+    ).toEqual(["Y", "W", "N"]);
+    expect(screen.getByRole("button", { name: "Allow once" })).toHaveAttribute(
+      "aria-keyshortcuts",
+      "y a",
+    );
+    expect(screen.getByRole("button", { name: "Deny" })).toHaveAttribute(
+      "aria-keyshortcuts",
+      "n d",
+    );
+  });
+});
+
 describe("ApprovalPanel", () => {
   it("shows the head's place in the queue when more than one ask is waiting", () => {
     render(

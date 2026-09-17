@@ -254,10 +254,109 @@ describe("shortcut registry", () => {
     expect(def?.locked).toBeUndefined();
   });
 
-  it("phrases Esc's layering: selection, then the side panel, then the run", () => {
-    expect(SHORTCUTS.find((s) => s.id === "close.esc")?.description).toBe(
-      "Clear the selection, close the side panel — or stop the running turn",
+  it("documents the one-shot draft clear (the TUI's ctrl+u) as a fixed ⌘⇧U composer row", () => {
+    const def = SHORTCUTS.find((s) => s.id === "composer.clearDraft.key");
+    // NOT ⌘⇧⌫: on macOS the delete key reports as Backspace, so that chord is
+    // Chrome's/Firefox's Clear browsing data (⌘⇧Delete, keymap-reserved).
+    expect(def?.combo).toBe("mod+shift+u");
+    expect(def?.group).toBe("Composer");
+    expect(def?.description).toBe(
+      "Clear the unsent draft — text, staged pastes and attachments (also the × beside Send)",
     );
+    // Fixed: the composer's own editor keydown owns the chord (it fires only
+    // with the caret in the field); the dispatcher never claims it.
+    expect(def?.fixed).toBe(true);
+    expect(def?.locked).toBeUndefined();
+    expect(keycaps("mod+shift+u")).toEqual(["⌘", "⇧", "U"]);
+    expect(
+      matchCombo("mod+shift+u", ev("U", { meta: true, shift: true })),
+    ).toBe(true);
+    expect(
+      matchCombo("mod+shift+u", ev("U", { ctrl: true, shift: true })),
+    ).toBe(true);
+    expect(matchCombo("mod+shift+u", ev("Backspace", { meta: true }))).toBe(
+      false,
+    );
+    expect(matchCombo("mod+shift+u", ev("u", { meta: true }))).toBe(false);
+  });
+
+  it("documents the unconditional newline (the TUI's ctrl+j) as a fixed ⌘Enter composer row", () => {
+    const def = SHORTCUTS.find((s) => s.id === "composer.newline.mod");
+    expect(def?.combo).toBe("mod+enter");
+    expect(def?.group).toBe("Composer");
+    expect(def?.description).toBe(
+      "Insert a new line — always, even while the agent is replying (the unconditional form of Shift+Enter)",
+    );
+    // Fixed: the composer leaves ⌘Enter to the editor's own Mod-Enter
+    // hardBreak; nothing registers a handler, so outside the composer the
+    // chord keeps its native meaning.
+    expect(def?.fixed).toBe(true);
+    expect(keycaps("mod+enter")).toEqual(["⌘", "Enter"]);
+    expect(matchCombo("mod+enter", ev("Enter", { meta: true }))).toBe(true);
+    expect(matchCombo("mod+enter", ev("Enter", { ctrl: true }))).toBe(true);
+    expect(matchCombo("mod+enter", ev("Enter"))).toBe(false);
+    // The live description stays the registry's — only the two Enter rows
+    // are phrased from the preference.
+    expect(def && describeShortcut(def, "queue")).toBe(def?.description);
+  });
+
+  it("phrases Esc's layering: selection, then the pending ask, then the side panel, then the run", () => {
+    expect(SHORTCUTS.find((s) => s.id === "close.esc")?.description).toBe(
+      "Clear the selection, deny the pending permission ask, close the side panel — or stop the running turn",
+    );
+  });
+
+  it("lists exactly one live Esc binding — the layered close.esc", () => {
+    // The composer's Esc rows are fixed (documentation-only); the dispatcher
+    // resolves Esc to `close.esc` alone, which is what lets one press deny
+    // an ask, close a panel or stop a run without ever doing two.
+    const live = SHORTCUTS.filter((s) => s.combo === "esc" && !s.fixed);
+    expect(live.map((s) => s.id)).toEqual(["close.esc"]);
+  });
+
+  it("binds the TUI's approval verdict keys in their own Approvals group", () => {
+    const byId = new Map(SHORTCUTS.map((s) => [s.id, s]));
+    // cmd/mecatui/ui/keys.go: Allow = a/y (+ enter), AllowAlways = w,
+    // Deny = d/n (+ esc). Enter is native on the focused button; Esc rides
+    // close.esc.
+    expect(byId.get("approval.allow")?.combo).toBe("y");
+    expect(byId.get("approval.allow.alt")?.combo).toBe("a");
+    expect(byId.get("approval.always")?.combo).toBe("w");
+    expect(byId.get("approval.deny")?.combo).toBe("n");
+    expect(byId.get("approval.deny.alt")?.combo).toBe("d");
+    for (const id of [
+      "approval.allow",
+      "approval.allow.alt",
+      "approval.always",
+      "approval.deny",
+      "approval.deny.alt",
+    ]) {
+      const def = byId.get(id);
+      expect(def?.group).toBe("Approvals");
+      // Dispatched (ChatView registers handlers while an ask waits), so NOT
+      // documentation-only — and rebindable like the other letter keys.
+      expect(def?.fixed).toBeUndefined();
+      expect(def?.locked).toBeUndefined();
+      // A bare letter: never fires while typing in a text field.
+      expect(comboFiresWhileTyping(def?.combo ?? "")).toBe(false);
+    }
+    expect(SHORTCUT_GROUPS).toContain("Approvals");
+    // The verdict-bar traversal row is component-owned documentation.
+    expect(byId.get("approval.focus")?.combo).toBe("right");
+    expect(byId.get("approval.focus")?.fixed).toBe(true);
+    expect(byId.get("approval.focus")?.group).toBe("Approvals");
+  });
+
+  it("matches the verdict letters without modifiers only", () => {
+    expect(matchCombo("y", ev("y"))).toBe(true);
+    expect(matchCombo("y", ev("Y"))).toBe(true); // Caps Lock capital
+    expect(matchCombo("y", ev("y", { meta: true }))).toBe(false);
+    expect(matchCombo("y", ev("y", { ctrl: true }))).toBe(false);
+    expect(matchCombo("y", ev("Y", { shift: true }))).toBe(false);
+    expect(matchCombo("w", ev("w"))).toBe(true);
+    expect(matchCombo("n", ev("n"))).toBe(true);
+    expect(matchCombo("n", ev("n", { alt: true }))).toBe(false);
+    expect(keycaps("y")).toEqual(["Y"]);
   });
 
   it("locks Esc: dispatched (a handler is registered) but never user-rebindable", () => {

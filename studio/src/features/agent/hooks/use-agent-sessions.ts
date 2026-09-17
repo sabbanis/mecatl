@@ -9,6 +9,7 @@ import {
 } from "@/lib/harness/client";
 import type { SessionSummary } from "@/lib/protocol";
 import { useRuntimeStatus } from "../runtime-status";
+import { applySessionTitle, type SessionTitleUpdate } from "../session-title";
 import { onSessionsChanged } from "../sessions-changed";
 import type { AgentSession, CreateSessionOpts } from "../types";
 
@@ -45,6 +46,7 @@ function toAgentSession(summary: SessionSummary): AgentSession {
     copyIdReason: summary.copyIdReason,
     forkReason: summary.forkReason,
     titleProvenance: summary.titleProvenance,
+    titleRevision: summary.titleRevision,
     debugTargetSessionId: summary.debugTargetSessionId,
     kind: summary.kind,
     activityState: summary.activityState,
@@ -380,6 +382,17 @@ export function useAgentSessions() {
     }
   }, []);
 
+  // A live `session.title` event (the daemon's first-prompt seed, an
+  // auto-title, a rename from another client — heard on a watch or the
+  // prompt stream). The daemon is authoritative, so the row adopts its word
+  // at once instead of waiting for the next poll; the title lifecycle
+  // revision keeps a replayed older title from regressing the row. This is
+  // NOT the auto-rename path the F4 note above guards against: nothing here
+  // originates a title, it mirrors one the daemon already applied.
+  const applyTitle = useCallback((id: string, update: SessionTitleUpdate) => {
+    setSessions((previous) => applySessionTitle(previous, id, update));
+  }, []);
+
   // The daemon has no pin/archive concept; these are client-side niceties
   // that live only for the current page.
   const pinSession = useCallback(async (id: string, pinned: boolean) => {
@@ -412,6 +425,8 @@ export function useAgentSessions() {
     createSession,
     deleteSession,
     renameSession,
+    /** Adopts a live `session.title` event onto its row (revision-guarded). */
+    applyTitle,
     pinSession,
     archiveSession,
     refreshSessions,

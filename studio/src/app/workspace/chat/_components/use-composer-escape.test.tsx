@@ -57,6 +57,55 @@ describe("useComposerEscape", () => {
     window.getSelection()?.removeAllRanges();
   });
 
+  it("denies a pending ask instead of closing the panel or cancelling the run", () => {
+    const onDenyAsk = vi.fn();
+    const onClosePanel = vi.fn();
+    const onCancelRun = vi.fn();
+    mount({
+      ...idle,
+      hasDraft: true,
+      pendingAsk: true,
+      panelOpen: true,
+      isStreaming: true,
+      onDenyAsk,
+      onClosePanel,
+      onCancelRun,
+    });
+    pressEsc();
+    expect(onDenyAsk).toHaveBeenCalledTimes(1);
+    expect(onClosePanel).not.toHaveBeenCalled();
+    expect(onCancelRun).not.toHaveBeenCalled();
+    expect(presses()).toBe(0);
+  });
+
+  it("falls back to the run arm once the ask is answered", () => {
+    const onDenyAsk = vi.fn();
+    const onCancelRun = vi.fn();
+    const { rerender } = mount({
+      ...idle,
+      pendingAsk: true,
+      isStreaming: true,
+      onDenyAsk,
+      onCancelRun,
+    });
+    pressEsc();
+    expect(onDenyAsk).toHaveBeenCalledTimes(1);
+    rerender(
+      <ShortcutsProvider>
+        <Surface
+          {...idle}
+          pendingAsk={false}
+          isStreaming
+          onDenyAsk={onDenyAsk}
+          onCancelRun={onCancelRun}
+        />
+      </ShortcutsProvider>,
+    );
+    pressEsc();
+    expect(onCancelRun).toHaveBeenCalledTimes(1);
+    expect(onDenyAsk).toHaveBeenCalledTimes(1);
+  });
+
   it("closes an open panel and never forwards the press to the composer", () => {
     const onClosePanel = vi.fn();
     const onCancelRun = vi.fn();

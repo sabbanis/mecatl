@@ -71,6 +71,7 @@ import {
 import type { SessionPermissionMode } from "@/lib/protocol";
 import { effortLabel } from "@/lib/reasoning-effort";
 import { cn } from "@/lib/utils";
+import { ClearDraftButton } from "./clear-draft-button";
 import {
   ESCAPE_ARMED_HINT,
   useComposerDraftGuards,
@@ -81,6 +82,7 @@ import {
   isFileMenuItem,
   pathMentionText,
 } from "./composer-file-mention";
+import { isAlwaysNewlineChord, isClearDraftChord } from "./composer-keys";
 import {
   type ComposerMenuItem,
   composerText,
@@ -1325,12 +1327,18 @@ export type ComposerEnterAction = "send" | "queue" | "steer" | "newline";
  *   steers carry image parts (ADR 0251), so a mid-run send with files steers
  *   when steering is available (and degrades to queue when it is not, via
  *   performAction's missing-handler fallback, keeping the files attached).
+ * - ⌘Enter / Ctrl+Enter (`mod`): ALWAYS a newline — idle or streaming, with
+ *   or without text, whatever the preference — the unconditional form the
+ *   TUI binds to ctrl+j (the editor's own Mod-Enter hardBreak inserts it).
  */
 export function resolveComposerAction(input: {
   shift: boolean;
+  /** ⌘ or Ctrl held with Enter. Absent = not held. */
+  mod?: boolean;
   isStreaming: boolean;
   behavior: EnterSendBehavior;
 }): ComposerEnterAction {
+  if (input.mod) return "newline";
   if (!input.isStreaming) return input.shift ? "newline" : "send";
   if (!input.shift) return input.behavior;
   return input.behavior === "queue" ? "steer" : "queue";
@@ -1650,6 +1658,22 @@ export function ChatInput({
     },
   });
 
+  // The one-shot draft clear (the TUI's ctrl+u ClearPrompt): editor content
+  // — `[Pasted text #N]` chips included — the text mirror, the staged files
+  // and a built-in's warning, all at once. Shared by the ⌘⇧U chord, the ×
+  // button beside Send and the double-Esc guard below; the emptied text
+  // mirror also drops the persisted draft (the guards' text effect).
+  const clearDraft = useCallback(() => {
+    editor?.commands.clearContent();
+    setText("");
+    setAttachedFiles([]);
+    setNotice(null);
+  }, [editor]);
+  const clearDraftFromButton = useCallback(() => {
+    clearDraft();
+    editor?.commands.focus();
+  }, [clearDraft, editor]);
+
   // The draft guards (the TUI's esc-esc clear and two-step quit, as their
   // web analogues): a double Esc empties an idle draft, the unsent text is
   // persisted under `draftKey`, and `onDraftChange` feeds the leave guard.
@@ -1661,11 +1685,7 @@ export function ChatInput({
     draftKey,
     initialTextPending: Boolean(initialText),
     onDraftChange,
-    clearComposer: () => {
-      editor?.commands.clearContent();
-      setText("");
-      setAttachedFiles([]);
-    },
+    clearComposer: clearDraft,
   });
 
   // Entering a chat or thread puts the caret in the field; autofocus only
@@ -1876,6 +1896,17 @@ export function ChatInput({
         onModeChange?.(nextPermissionMode(shownMode));
         return;
       }
+      // ⌘⇧U empties the whole draft (the TUI's ctrl+u ClearPrompt) — text,
+      // paste chips, staged files — from the editor only; the × button and
+      // the double-Esc guard are the same clear. Idle or streaming: it never
+      // touches the run. Ahead of the menu: clearing a `/foo` draft closes
+      // its menu with it.
+      if (isClearDraftChord(event)) {
+        event.preventDefault();
+        event.stopPropagation();
+        clearDraft();
+        return;
+      }
       if (menu) {
         if (handleMenuNavKey(event, menu, setMenu)) {
           event.preventDefault();
@@ -1911,6 +1942,11 @@ export function ChatInput({
         }
       }
       if (event.key !== "Enter") return;
+      // ⌘Enter / Ctrl+Enter is ALWAYS a new line (the TUI's ctrl+j) — idle or
+      // streaming, with or without text: fall through to the editor's own
+      // Mod-Enter hardBreak without preventDefault, never into send/queue/
+      // steer (`resolveComposerAction` says the same for `mod`).
+      if (isAlwaysNewlineChord(event)) return;
       if (event.shiftKey) {
         // Shift+Enter acts (as the opposite of the Enter preference) only
         // while a reply is streaming AND there is text to act on; otherwise
@@ -1934,6 +1970,7 @@ export function ChatInput({
     menu,
     isStreaming,
     actOnEnter,
+    clearDraft,
     queuedCount,
     onResumeQueue,
     onEditAllQueued,
@@ -2190,6 +2227,15 @@ export function ChatInput({
           >
             <EditorContent editor={editor} className="composer-editor" />
           </div>
+          {/* Mobile: × clears the whole draft (text + staged files) beside
+              the mic/send slot; hidden while there is nothing to clear. */}
+          <div className="hidden max-[499px]:block">
+            <ClearDraftButton
+              hasDraft={hasText || attachedFiles.length > 0}
+              disabled={disabled}
+              onClear={clearDraftFromButton}
+            />
+          </div>
           <div className="hidden max-[499px]:block">
             {!hasText && voice.isSupported ? (
               <Button
@@ -2243,15 +2289,24 @@ export function ChatInput({
               <Mic className="size-4" />
             </Button>
           )}
-          <Button
-            size="icon"
-            className="ml-auto size-8 rounded-full bg-brand text-brand-foreground hover:bg-brand/90 disabled:opacity-50"
-            onClick={handleSend}
-            disabled={disabled || !hasText}
-            aria-label="Send message"
-          >
-            <ArrowUp className="size-4" />
-          </Button>
+          {/* Right: × clears the whole draft (the TUI's ctrl+u; also ⌘⇧U
+              and Esc Esc), then Send. The × shows only with something staged. */}
+          <div className="ml-auto flex items-center gap-1">
+            <ClearDraftButton
+              hasDraft={hasText || attachedFiles.length > 0}
+              disabled={disabled}
+              onClear={clearDraftFromButton}
+            />
+            <Button
+              size="icon"
+              className="size-8 rounded-full bg-brand text-brand-foreground hover:bg-brand/90 disabled:opacity-50"
+              onClick={handleSend}
+              disabled={disabled || !hasText}
+              aria-label="Send message"
+            >
+              <ArrowUp className="size-4" />
+            </Button>
+          </div>
         </div>
       </div>
       {/* Toolbar sits BEHIND the input box: negative top margin pulls it up
