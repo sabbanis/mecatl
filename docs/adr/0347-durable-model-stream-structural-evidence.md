@@ -1,4 +1,4 @@
-# ADR 0346 — Durable model-stream structural evidence
+# ADR 0347 — Durable model-stream structural evidence
 
 - Status: Accepted
 - Date: 2026-09-17
