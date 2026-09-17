@@ -222698,6 +222698,40 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789643089127,
         "tool": "customBiggerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jakub@stacklok.com",
+            "name": "Jakub Hrozek",
+            "username": "jhrozek"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4a20eb4985857c91a9da865bcb8ad546bc140f28",
+          "message": "fix(engine): record advertised tool schema bytes (#1677)",
+          "timestamp": "2026-09-17T13:23:18+02:00",
+          "tree_id": "ef1c1369ac034b38aeafa2452f5c1b84d323c44a",
+          "url": "https://github.com/stacklok/mecatl/commit/4a20eb4985857c91a9da865bcb8ad546bc140f28"
+        },
+        "date": 1789644853419,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
       }
     ],
     "mecatl scenarios (render allocs, advisory)": [
@@ -323259,6 +323293,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789644850569,
+  "lastUpdate": 1789644854235,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
