@@ -281,13 +281,12 @@ func TestTracingLLMCallSpan_FullTurn(t *testing.T) {
 	if llm.SpanKind != trace.SpanKindClient {
 		t.Errorf("llm_call SpanKind = %v, want Client", llm.SpanKind)
 	}
-	if llm.Status.Code != codes.Ok {
-		t.Errorf("llm_call status = %v, want Ok", llm.Status.Code)
+	if llm.Status.Code != codes.Unset {
+		t.Errorf("llm_call status = %v, want Unset (EvTurnEnd carries no failure signal, so success must not be asserted as Ok)", llm.Status.Code)
 	}
 	wantString := map[string]string{
 		"gen_ai.operation.name":  "chat",
 		"gen_ai.request.model":   "claude-sonnet-5",
-		"gen_ai.response.model":  "claude-sonnet-5",
 		"gen_ai.provider.name":   "anthropic",
 		"gen_ai.conversation.id": "sess-123",
 	}
@@ -295,6 +294,9 @@ func TestTracingLLMCallSpan_FullTurn(t *testing.T) {
 		if got, ok := attrString(llm, key); !ok || got != want {
 			t.Errorf("%s = %q (ok=%v), want %q", key, got, ok, want)
 		}
+	}
+	if _, ok := attrString(llm, "gen_ai.response.model"); ok {
+		t.Errorf("llm_call carries gen_ai.response.model — no per-turn model-fallback signal exists yet, it must not be fabricated")
 	}
 	wantInt := map[string]int64{
 		"gen_ai.usage.input_tokens":            100,
@@ -355,18 +357,125 @@ func TestTracingRunSpan_ConversationID(t *testing.T) {
 // TestTracingRunSpan_ErrorType pins that error.type mirrors mecatl.run.stop on
 // a failing run outcome — the semconv-standard attribute alongside the
 // project's own mecatl.run.stop classification, same pairing ai-gateway's
-// stacklok.failure_class/error.type already establishes.
+// stacklok.failure_class/error.type already establishes. Covers BOTH
+// error-classified stop reasons (StopError, StopMaxConsecutiveFailures — the
+// latter previously untested), and pins the negative case: a clean stop
+// (StopEndTurn) must carry NO error.type at all, not an empty string.
 func TestTracingRunSpan_ErrorType(t *testing.T) {
-	tr, exp := newTestTracing(t)
+	tests := []struct {
+		stop      session.StopReason
+		wantError string
+	}{
+		{session.StopError, "error"},
+		{session.StopMaxConsecutiveFailures, "max_consecutive_failures"},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.stop), func(t *testing.T) {
+			tr, exp := newTestTracing(t)
+			tr.Emit(context.Background(), session.Event{Type: session.EvSessionInit})
+			tr.Emit(context.Background(), session.Event{Type: session.EvResult, Result: &session.ResultPayload{Stop: tt.stop}})
 
+			run, ok := spanByName(exp.GetSpans(), "mecatl.run")
+			if !ok {
+				t.Fatal("no mecatl.run span")
+			}
+			if got, ok := attrString(run, "error.type"); !ok || got != tt.wantError {
+				t.Errorf("error.type = %q (ok=%v), want %q", got, ok, tt.wantError)
+			}
+		})
+	}
+}
+
+// TestTracingRunSpan_ErrorTypeAbsentOnCleanStop pins the negative case
+// TestTracingRunSpan_ErrorType's table doesn't cover directly: a clean stop
+// (StopEndTurn) must carry no error.type attribute at all.
+func TestTracingRunSpan_ErrorTypeAbsentOnCleanStop(t *testing.T) {
+	tr, exp := newTestTracing(t)
 	tr.Emit(context.Background(), session.Event{Type: session.EvSessionInit})
-	tr.Emit(context.Background(), session.Event{Type: session.EvResult, Result: &session.ResultPayload{Stop: session.StopError}})
+	tr.Emit(context.Background(), session.Event{Type: session.EvResult, Result: &session.ResultPayload{Stop: session.StopEndTurn}})
 
 	run, ok := spanByName(exp.GetSpans(), "mecatl.run")
 	if !ok {
 		t.Fatal("no mecatl.run span")
 	}
-	if got, ok := attrString(run, "error.type"); !ok || got != "error" {
-		t.Errorf("error.type = %q (ok=%v), want %q", got, ok, "error")
+	if got, ok := attrString(run, "error.type"); ok {
+		t.Errorf("error.type = %q present on a clean stop, want absent", got)
+	}
+}
+
+// TestTracingLLMCallSpan_ClosesAtTurnEndNotRunEnd mechanically pins the
+// EvTurnStart→EvTurnEnd interval contract: mecatl.llm_call must already be
+// EXPORTED (ended) immediately after EvTurnEnd, before the trailing EvResult
+// ever fires — proving the span closes at the event its own doc comment
+// claims, not merely whenever the run happens to end later.
+func TestTracingLLMCallSpan_ClosesAtTurnEndNotRunEnd(t *testing.T) {
+	tr, exp := newTestTracing(t)
+
+	tr.Emit(context.Background(), session.Event{Type: session.EvSessionInit})
+	tr.Emit(context.Background(), session.Event{Type: session.EvTurnStart, Turn: 0})
+	if _, ok := spanByName(exp.GetSpans(), "mecatl.llm_call"); ok {
+		t.Fatal("mecatl.llm_call already exported at EvTurnStart — it must not close before EvTurnEnd")
+	}
+
+	tr.Emit(context.Background(), session.Event{Type: session.EvTurnEnd, Turn: 0, TurnEnd: &session.TurnEndPayload{
+		Model: "claude-sonnet-5", Provider: "anthropic",
+	}})
+	if _, ok := spanByName(exp.GetSpans(), "mecatl.llm_call"); !ok {
+		t.Fatal("mecatl.llm_call not yet exported right after EvTurnEnd — endLLMCall must close it synchronously at that event")
+	}
+
+	// The trailing EvResult must not change anything about the already-closed span.
+	tr.Emit(context.Background(), session.Event{Type: session.EvResult, Result: &session.ResultPayload{Stop: session.StopEndTurn}})
+	if got := len(exp.GetSpans()); got != 3 { // run, turn, llm_call — no duplicate/second llm_call export
+		t.Errorf("span count after EvResult = %d, want 3 (run, turn, llm_call)", got)
+	}
+}
+
+// TestTracingLLMCallSpan_TwoTurns_FirstClosesBeforeSecondOpens drives two
+// turns in one run and proves the first turn's mecatl.llm_call span is fully
+// closed before the second turn's opens — i.e. they are two genuinely
+// distinct, sequential spans, not one span silently reused or left open
+// across a turn boundary.
+func TestTracingLLMCallSpan_TwoTurns_FirstClosesBeforeSecondOpens(t *testing.T) {
+	tr, exp := newTestTracing(t)
+
+	tr.Emit(context.Background(), session.Event{Type: session.EvSessionInit})
+
+	tr.Emit(context.Background(), session.Event{Type: session.EvTurnStart, Turn: 0})
+	tr.Emit(context.Background(), session.Event{Type: session.EvTurnEnd, Turn: 0, TurnEnd: &session.TurnEndPayload{
+		Model: "model-a", Provider: "anthropic",
+	}})
+	afterFirst := exp.GetSpans()
+	firstLLMCalls := 0
+	for _, s := range afterFirst {
+		if s.Name == "mecatl.llm_call" {
+			firstLLMCalls++
+		}
+	}
+	if firstLLMCalls != 1 {
+		t.Fatalf("mecatl.llm_call spans after turn 1 = %d, want 1", firstLLMCalls)
+	}
+	firstSpanID := afterFirst[len(afterFirst)-1].SpanContext.SpanID()
+
+	tr.Emit(context.Background(), session.Event{Type: session.EvTurnStart, Turn: 1})
+	tr.Emit(context.Background(), session.Event{Type: session.EvTurnEnd, Turn: 1, TurnEnd: &session.TurnEndPayload{
+		Model: "model-b", Provider: "anthropic",
+	}})
+	tr.Emit(context.Background(), session.Event{Type: session.EvResult, Result: &session.ResultPayload{Stop: session.StopEndTurn}})
+
+	var llmCallSpanIDs []trace.SpanID
+	for _, s := range exp.GetSpans() {
+		if s.Name == "mecatl.llm_call" {
+			llmCallSpanIDs = append(llmCallSpanIDs, s.SpanContext.SpanID())
+		}
+	}
+	if len(llmCallSpanIDs) != 2 {
+		t.Fatalf("total mecatl.llm_call spans = %d, want 2 (one per turn)", len(llmCallSpanIDs))
+	}
+	if llmCallSpanIDs[0] != firstSpanID {
+		t.Errorf("first exported llm_call span id changed after turn 2 — turn 1's span must already be closed and immutable")
+	}
+	if llmCallSpanIDs[0] == llmCallSpanIDs[1] {
+		t.Errorf("both turns produced the SAME span id — expected two distinct spans, one per turn")
 	}
 }
