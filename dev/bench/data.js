@@ -248368,6 +248368,45 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789652001104,
         "tool": "customSmallerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "dd6f5bc9bd96db3375be0cd0a2c63816ad81959f",
+          "message": "perf(osfs): reduce stateless Grep scanning allocations (#1625)\n\nCo-authored-by: Mecatl <mecatl@users.noreply.github.com>",
+          "timestamp": "2026-09-17T15:32:06+02:00",
+          "tree_id": "5b1a29f2eb20a7b86c4e0580b8de0fbe91e0da73",
+          "url": "https://github.com/stacklok/mecatl/commit/dd6f5bc9bd96db3375be0cd0a2c63816ad81959f"
+        },
+        "date": 1789652701243,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3316,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 110,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1155,
+            "unit": "allocs/op"
+          }
+        ]
       }
     ],
     "mecatl scenarios (smaller-is-better)": [
@@ -325698,6 +325737,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789652697803,
+  "lastUpdate": 1789652702256,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
