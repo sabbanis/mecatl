@@ -1,13 +1,25 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentSession } from "@/features/agent";
+import { MOCK_TOUR_SESSION } from "@/features/agent/mock-tour";
 import { COPY_SESSION_ID_LABEL } from "./session-copy-menu-items";
 import {
   FORK_CHAT_LABEL,
   VIEW_TRANSCRIPT_LABEL,
 } from "./session-row-action-items";
-import { type SessionActions, SessionList } from "./session-sidebar";
+import {
+  type ChatFolderActions,
+  DELETE_FOLDER_LABEL,
+  FolderGroupMenu,
+  MOVE_TO_FOLDER_LABEL,
+  NEW_FOLDER_LABEL,
+  NO_FOLDER_LABEL,
+  RENAME_FOLDER_LABEL,
+  type SessionActions,
+  SessionList,
+  SidebarGroup,
+} from "./session-sidebar";
 
 /**
  * The sidebar row's context menu (the TUI's per-row `y` / `v` / `f` / `r` /
@@ -212,5 +224,199 @@ describe("SessionList row menu", () => {
     expect(
       within(menu).getByRole("menuitem", { name: "Copy debug target ID" }),
     ).toBeVisible();
+  });
+});
+
+/**
+ * Chat folders (Studio-owned, browser-local): the row menu gains a "Move to
+ * folder" submenu — every folder with the chat's current one checked, "No
+ * folder", then "New folder…" — and a folder's group header carries a "…"
+ * menu with Rename folder / Delete folder. Both hand back ids only; the
+ * store and the dialogs live in the workspace.
+ */
+
+function folderActions(
+  overrides: Partial<ChatFolderActions> = {},
+): ChatFolderActions {
+  return {
+    folders: [
+      { id: "f-work", name: "Work" },
+      { id: "f-home", name: "Home" },
+    ],
+    assignments: { "session-abc": "f-home" },
+    onMove: vi.fn(),
+    onMoveToNew: vi.fn(),
+    onRename: vi.fn(),
+    onDelete: vi.fn(),
+    ...overrides,
+  };
+}
+
+async function openMoveToFolder(user: ReturnType<typeof userEvent.setup>) {
+  const menu = await openRowMenu(user);
+  await user.click(
+    within(menu).getByRole("menuitem", { name: MOVE_TO_FOLDER_LABEL }),
+  );
+  return screen.findByRole("menu", { name: MOVE_TO_FOLDER_LABEL });
+}
+
+describe("SessionList Move to folder", () => {
+  it("lists the folders with the chat's current one checked, then No folder and New folder…", async () => {
+    const user = userEvent.setup();
+    render(
+      <SessionList
+        sessions={[session()]}
+        selectedId=""
+        onSelect={() => {}}
+        actions={actions({ folders: folderActions() })}
+      />,
+    );
+    const sub = await openMoveToFolder(user);
+    const choices = within(sub).getAllByRole("menuitemcheckbox");
+    expect(
+      choices.map((c) => [c.textContent, c.getAttribute("aria-checked")]),
+    ).toEqual([
+      ["Work", "false"],
+      ["Home", "true"],
+      [NO_FOLDER_LABEL, "false"],
+    ]);
+    expect(
+      within(sub).getByRole("menuitem", { name: NEW_FOLDER_LABEL }),
+    ).toBeVisible();
+  });
+
+  it("checks No folder for an unfiled chat", async () => {
+    const user = userEvent.setup();
+    render(
+      <SessionList
+        sessions={[session()]}
+        selectedId=""
+        onSelect={() => {}}
+        actions={actions({ folders: folderActions({ assignments: {} }) })}
+      />,
+    );
+    const sub = await openMoveToFolder(user);
+    expect(
+      within(sub).getByRole("menuitemcheckbox", { name: NO_FOLDER_LABEL }),
+    ).toHaveAttribute("aria-checked", "true");
+    expect(
+      within(sub).getByRole("menuitemcheckbox", { name: "Home" }),
+    ).toHaveAttribute("aria-checked", "false");
+  });
+
+  it("moves the chat to the picked folder, to no folder, or to a new one", async () => {
+    const user = userEvent.setup();
+    const folders = folderActions();
+    const onSelect = vi.fn();
+    render(
+      <SessionList
+        sessions={[session()]}
+        selectedId=""
+        onSelect={onSelect}
+        actions={actions({ folders })}
+      />,
+    );
+    // A plain click, not a pointer move: Radix keeps a submenu open across
+    // the move from its trigger only inside a layout-derived "grace area",
+    // and jsdom has no layout, so userEvent's pointer path would close it.
+    let sub = await openMoveToFolder(user);
+    fireEvent.click(
+      within(sub).getByRole("menuitemcheckbox", { name: "Work" }),
+    );
+    expect(folders.onMove).toHaveBeenCalledWith("session-abc", "f-work");
+
+    sub = await openMoveToFolder(user);
+    fireEvent.click(
+      within(sub).getByRole("menuitemcheckbox", { name: NO_FOLDER_LABEL }),
+    );
+    expect(folders.onMove).toHaveBeenCalledWith("session-abc", null);
+
+    sub = await openMoveToFolder(user);
+    fireEvent.click(
+      within(sub).getByRole("menuitem", { name: NEW_FOLDER_LABEL }),
+    );
+    expect(folders.onMoveToNew).toHaveBeenCalledWith("session-abc");
+    // Filing a chat never opens it.
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("offers no folder submenu when the workspace passes none, nor on the mock tour row", async () => {
+    const user = userEvent.setup();
+    const { unmount } = render(
+      <SessionList
+        sessions={[session()]}
+        selectedId=""
+        onSelect={() => {}}
+        actions={actions()}
+      />,
+    );
+    let menu = await openRowMenu(user);
+    expect(
+      within(menu).queryByRole("menuitem", { name: MOVE_TO_FOLDER_LABEL }),
+    ).toBeNull();
+    await user.keyboard("{Escape}");
+    unmount();
+
+    render(
+      <SessionList
+        sessions={[session({ id: MOCK_TOUR_SESSION.id })]}
+        selectedId=""
+        onSelect={() => {}}
+        actions={actions({ folders: folderActions() })}
+      />,
+    );
+    menu = await openRowMenu(user);
+    expect(
+      within(menu).queryByRole("menuitem", { name: MOVE_TO_FOLDER_LABEL }),
+    ).toBeNull();
+    expect(
+      within(menu).getByRole("menuitem", { name: "Rename" }),
+    ).toBeVisible();
+  });
+});
+
+describe("FolderGroupMenu", () => {
+  it("renames or deletes the folder by id from the group header", async () => {
+    const user = userEvent.setup();
+    const folders = folderActions();
+    render(
+      <SidebarGroup
+        label="Work"
+        menu={
+          <FolderGroupMenu folderId="f-work" name="Work" actions={folders} />
+        }
+      >
+        <div />
+      </SidebarGroup>,
+    );
+    expect(screen.getByText("Work")).toBeVisible();
+    const trigger = () =>
+      screen.getByRole("button", { name: "Options for folder: Work" });
+
+    await user.click(trigger());
+    const labels = screen
+      .getAllByRole("menuitem")
+      .map((item) => item.textContent);
+    expect(labels).toEqual([RENAME_FOLDER_LABEL, DELETE_FOLDER_LABEL]);
+    await user.click(
+      screen.getByRole("menuitem", { name: RENAME_FOLDER_LABEL }),
+    );
+    expect(folders.onRename).toHaveBeenCalledWith("f-work");
+
+    await user.click(trigger());
+    await user.click(
+      screen.getByRole("menuitem", { name: DELETE_FOLDER_LABEL }),
+    );
+    expect(folders.onDelete).toHaveBeenCalledWith("f-work");
+  });
+
+  it("renders a plain heading when a group has no menu", () => {
+    render(
+      <SidebarGroup label="Today">
+        <div />
+      </SidebarGroup>,
+    );
+    expect(screen.getByText("Today")).toBeVisible();
+    expect(screen.queryByRole("button")).toBeNull();
   });
 });

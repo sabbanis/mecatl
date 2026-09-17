@@ -344,6 +344,9 @@ export const EXCLUDED_STORAGE_KEYS: readonly string[] = [
   // Which tool profile each Studio-minted chat was created with — keyed by
   // daemon session id, so it means nothing on another daemon.
   "mecatl-studio.session-tool-profiles",
+  // Chat folders: the folder list AND which chat sits in which folder,
+  // keyed by daemon session id — the same reason as the tool profiles.
+  "mecatl-studio.chat-folders",
 ];
 
 const ENTRIES_BY_KEY: ReadonlyMap<string, PreferenceEntry> = new Map(

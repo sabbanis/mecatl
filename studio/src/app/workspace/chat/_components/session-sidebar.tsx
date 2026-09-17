@@ -7,7 +7,9 @@ import {
   ChevronUp,
   Ellipsis,
   FolderClosed,
+  FolderInput,
   FolderOpen,
+  FolderPlus,
   Pencil,
   Trash2,
 } from "lucide-react";
@@ -15,8 +17,13 @@ import { useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
@@ -28,6 +35,7 @@ import {
   type MockProjectChat,
 } from "@/features/agent/mock-projects";
 import { isMockTourSession } from "@/features/agent/mock-tour";
+import { type ChatFolder, chatFolderOf } from "@/lib/chat-folders";
 import { formatRelativeTime } from "@/lib/formatters";
 import { capabilityReasonLabel } from "@/lib/session-kinds";
 import { cn } from "@/lib/utils";
@@ -66,22 +74,147 @@ export interface SessionActions {
    * the daemon's `fork` capability; never offered on an AI-debug row.
    */
   onFork?: (id: string) => void;
+  /**
+   * Chat folders (`lib/chat-folders`, Studio-owned and browser-local): the
+   * row menu's "Move to folder" submenu and the folder headers' "…" menu.
+   * Absent, no folder affordance renders. The mock tour row never gets one
+   * — its group is pinned, not filed.
+   */
+  folders?: ChatFolderActions;
 }
+
+export interface ChatFolderActions {
+  /** The user's folders, in creation order. */
+  folders: readonly ChatFolder[];
+  /** Folder id per chat id; a chat absent here is in no folder. */
+  assignments: Readonly<Record<string, string>>;
+  onMove: (sessionId: string, folderId: string | null) => void;
+  /** "New folder…": asks for a name, then files the chat there. */
+  onMoveToNew: (sessionId: string) => void;
+  onRename: (folderId: string) => void;
+  /** Removes the folder only — its chats stay, unfiled. */
+  onDelete: (folderId: string) => void;
+}
+
+export const MOVE_TO_FOLDER_LABEL = "Move to folder";
+export const NO_FOLDER_LABEL = "No folder";
+export const NEW_FOLDER_LABEL = "New folder…";
+export const RENAME_FOLDER_LABEL = "Rename folder";
+export const DELETE_FOLDER_LABEL = "Delete folder";
+
+const GROUP_HEADING_CLASS =
+  "truncate text-xs font-medium uppercase tracking-wide text-muted-foreground";
 
 export function SidebarGroup({
   label,
+  menu,
   children,
 }: {
   label: string;
+  /** An optional "…" menu beside the heading (the folder headers). */
+  menu?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
     <div className="flex flex-col pb-3">
-      <span className="mb-1 truncate px-4 py-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-        {label}
-      </span>
+      {menu ? (
+        <div className="mb-1 flex items-center gap-1 py-1 pr-3 pl-4">
+          <span className={cn("min-w-0 flex-1", GROUP_HEADING_CLASS)}>
+            {label}
+          </span>
+          {menu}
+        </div>
+      ) : (
+        <span className={cn("mb-1 px-4 py-1", GROUP_HEADING_CLASS)}>
+          {label}
+        </span>
+      )}
       {children}
     </div>
+  );
+}
+
+/** The "…" menu on a folder's group header: rename or delete the folder. */
+export function FolderGroupMenu({
+  folderId,
+  name,
+  actions,
+}: {
+  folderId: string;
+  name: string;
+  actions: ChatFolderActions;
+}) {
+  return (
+    <DropdownMenu modal={false}>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label={`Options for folder: ${name}`}
+          className="flex h-5 w-6 shrink-0 items-center justify-center rounded text-muted-foreground/60 hover:text-foreground"
+        >
+          <Ellipsis className="size-3.5" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        align="end"
+        side="bottom"
+        sideOffset={4}
+        className="w-48"
+      >
+        <DropdownMenuItem onClick={() => actions.onRename(folderId)}>
+          <Pencil className="size-4 mr-2 shrink-0 text-muted-foreground" />
+          <span className="min-w-0">{RENAME_FOLDER_LABEL}</span>
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={() => actions.onDelete(folderId)}>
+          <Trash2 className="size-4 mr-2 shrink-0" />
+          <span className="min-w-0">{DELETE_FOLDER_LABEL}</span>
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/**
+ * The row menu's "Move to folder" submenu: every folder with a check on the
+ * chat's current one, "No folder", then "New folder…".
+ */
+function MoveToFolderSubmenu({
+  session,
+  folders,
+}: {
+  session: AgentSession;
+  folders: ChatFolderActions;
+}) {
+  const current = chatFolderOf(folders.assignments, session.id);
+  return (
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger>
+        <FolderInput className="size-4 mr-2 shrink-0 text-muted-foreground" />
+        <span className="min-w-0">{MOVE_TO_FOLDER_LABEL}</span>
+      </DropdownMenuSubTrigger>
+      <DropdownMenuSubContent className="w-52">
+        {folders.folders.map((folder) => (
+          <DropdownMenuCheckboxItem
+            key={folder.id}
+            checked={current === folder.id}
+            onClick={() => folders.onMove(session.id, folder.id)}
+          >
+            <span className="min-w-0 truncate">{folder.name}</span>
+          </DropdownMenuCheckboxItem>
+        ))}
+        <DropdownMenuCheckboxItem
+          checked={current === null}
+          onClick={() => folders.onMove(session.id, null)}
+        >
+          <span className="min-w-0">{NO_FOLDER_LABEL}</span>
+        </DropdownMenuCheckboxItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onClick={() => folders.onMoveToNew(session.id)}>
+          <FolderPlus className="size-4 mr-2 shrink-0 text-muted-foreground" />
+          <span className="min-w-0">{NEW_FOLDER_LABEL}</span>
+        </DropdownMenuItem>
+      </DropdownMenuSubContent>
+    </DropdownMenuSub>
   );
 }
 
@@ -105,6 +238,8 @@ function SessionContextMenu({
     actions.onDebug !== undefined &&
     !session.debugTargetSessionId &&
     !isMockTourSession(session.id);
+  // Folders file real daemon rows only; the mock tour's group is pinned.
+  const folders = isMockTourSession(session.id) ? undefined : actions.folders;
 
   return (
     <DropdownMenu modal={false} onOpenChange={onOpenChange}>
@@ -135,6 +270,7 @@ function SessionContextMenu({
             onSelect={() => actions.onFork?.(session.id)}
           />
         )}
+        {folders && <MoveToFolderSubmenu session={session} folders={folders} />}
         <DropdownMenuItem
           disabled={!canRename}
           onClick={() => actions.onRename(session.id)}

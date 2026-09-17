@@ -55,6 +55,11 @@ import {
   type MediaCapabilities,
   resolveMediaCapabilities,
 } from "@/lib/attachment-inline";
+import {
+  MAX_FOLDERS,
+  partitionByFolder,
+  useChatFolders,
+} from "@/lib/chat-folders";
 import type { ChatSeed } from "@/lib/chat-seed";
 import { composeDocumentTitle, useDocumentTitle } from "@/lib/document-title";
 import {
@@ -114,6 +119,8 @@ import { SessionInventoryStatus } from "./session-inventory-status";
 import { StorageMaintenanceLink } from "./session-kind-tabs";
 import {
   AgentList,
+  type ChatFolderActions,
+  FolderGroupMenu,
   MockProjectList,
   type SessionActions,
   SessionList,
@@ -139,12 +146,23 @@ const chatHref = (id?: string) =>
 const DAY_MS = 86_400_000;
 
 /**
+ * One sidebar section: a recency bucket, or — with `folderId` — one of the
+ * user's chat folders (`lib/chat-folders`), whose header carries the folder
+ * menu and which is listed even when empty.
+ */
+interface SidebarSessionGroup {
+  label: string;
+  sessions: AgentSession[];
+  folderId?: string;
+}
+
+/**
  * Bucket recency-sorted sessions into Today / This week / Earlier for the
  * flat sidebar list. Empty buckets are dropped.
  */
 function groupSessionsByRecency(
   sessions: AgentSession[],
-): { label: string; sessions: AgentSession[] }[] {
+): SidebarSessionGroup[] {
   const startOfToday = new Date();
   startOfToday.setHours(0, 0, 0, 0);
   const t0 = startOfToday.getTime();
@@ -190,7 +208,7 @@ function SidebarContent({
   walk: SessionInventoryWalk;
   onCancelLoad: () => void;
   onRetryLoad: () => void;
-  groups: { label: string; sessions: AgentSession[] }[];
+  groups: SidebarSessionGroup[];
   agents: RosterAgent[];
   selectedId: string;
   onSelect: (id: string) => void;
@@ -199,7 +217,7 @@ function SidebarContent({
   showMockProjects: boolean;
   /** The kind tabs under the header (Chats / Runs / Scheduled / Drafts / Other). */
   /** Recency groups of the active READ-ONLY tab's rows; empty on a chat tab. */
-  inspectGroups: { label: string; sessions: AgentSession[] }[];
+  inspectGroups: SidebarSessionGroup[];
   /** Opens a run's read-only transcript (never rebinds the live chat). */
   onInspect: (id: string) => void;
   /** The active tab's empty-state line. */
@@ -288,13 +306,34 @@ function SidebarContent({
           ) : (
             <div className="flex flex-col gap-3">
               {groups.map((group) => (
-                <SidebarGroup key={group.label} label={group.label}>
-                  <SessionList
-                    sessions={group.sessions}
-                    selectedId={selectedId}
-                    onSelect={onSelect}
-                    actions={actions}
-                  />
+                <SidebarGroup
+                  // A folder may share a recency label ("Today"); key by id.
+                  key={
+                    group.folderId ? `folder:${group.folderId}` : group.label
+                  }
+                  label={group.label}
+                  menu={
+                    group.folderId && actions.folders ? (
+                      <FolderGroupMenu
+                        folderId={group.folderId}
+                        name={group.label}
+                        actions={actions.folders}
+                      />
+                    ) : undefined
+                  }
+                >
+                  {group.folderId && group.sessions.length === 0 ? (
+                    <p className="px-4 py-1 text-xs text-muted-foreground/60">
+                      No chats in this folder yet.
+                    </p>
+                  ) : (
+                    <SessionList
+                      sessions={group.sessions}
+                      selectedId={selectedId}
+                      onSelect={onSelect}
+                      actions={actions}
+                    />
+                  )}
                 </SidebarGroup>
               ))}
             </div>
@@ -530,6 +569,16 @@ export function ChatWorkspace({
   // mock UNCONDITIONALLY below (never handed to the daemon) — the toggle
   // only controls whether the row is offered.
   const { enabled: mockFeatures } = useMockFeatures();
+  // Chat folders: Studio-owned, browser-local grouping of the sidebar rows
+  // (`lib/chat-folders`); the daemon never hears of them.
+  const {
+    folders,
+    assignments: folderAssignments,
+    createFolder,
+    renameFolder,
+    deleteFolder,
+    moveChat,
+  } = useChatFolders();
   // Labs preference: the developer tools (mecatui's client debug mode) —
   // the `/debug-ask` built-in + menu item that park a FAKE permission ask
   // (never sent to the daemon) and the steer trace under the queue strip.
@@ -1014,15 +1063,35 @@ export function ChatWorkspace({
   // Every chat lists under Chats, drafts included (the sidebar has no kind
   // tabs); non-chat rows never reach the list.
   const groups = useMemo(() => {
-    const recency = groupSessionsByRecency(
-      orderedSessions.filter((s) => sessionTabFor(s, false) === "chats"),
+    const chats = orderedSessions.filter(
+      (s) => sessionTabFor(s, false) === "chats",
     );
+    // The user's folders lead, in creation order — an empty folder keeps
+    // its header so it can be renamed or deleted; every other chat keeps
+    // today's recency buckets.
+    const { filed, unfiled } = partitionByFolder(
+      chats,
+      folders,
+      folderAssignments,
+    );
+    const folderGroups: SidebarSessionGroup[] = filed.map(
+      ({ folder, sessions }) => ({
+        label: folder.name,
+        folderId: folder.id,
+        sessions,
+      }),
+    );
+    const recency = groupSessionsByRecency(unfiled);
     // The Labs mock tour pins atop the list under its own clearly-labeled
     // group — local demo content, never a daemon row.
     return mockFeatures
-      ? [{ label: "Mock", sessions: [MOCK_TOUR_SESSION] }, ...recency]
-      : recency;
-  }, [orderedSessions, mockFeatures]);
+      ? [
+          { label: "Mock", sessions: [MOCK_TOUR_SESSION] },
+          ...folderGroups,
+          ...recency,
+        ]
+      : [...folderGroups, ...recency];
+  }, [orderedSessions, mockFeatures, folders, folderAssignments]);
 
   const selectedSession = useMemo<AgentSession | undefined>(() => {
     if (!selectedId) return undefined;
@@ -1343,13 +1412,75 @@ export function ChatWorkspace({
     },
     [sessions, forkSessionCopy],
   );
+  // Chat folders (browser-local, `lib/chat-folders`): the row menu's "Move
+  // to folder" and the folder headers' rename/delete. Deleting a folder only
+  // unfiles its chats — no chat is ever deleted or changed from here.
+  const folderActions: ChatFolderActions = useMemo(
+    () => ({
+      folders,
+      assignments: folderAssignments,
+      onMove: moveChat,
+      onMoveToNew: async (sessionId: string) => {
+        const name = await prompt({
+          title: "New folder",
+          description:
+            "Folders only group your chats in the list — nothing about a chat changes.",
+          placeholder: "Folder name",
+          confirmText: "Create",
+        });
+        if (!name) return;
+        const folderId = createFolder(name);
+        if (!folderId) {
+          toast.error(`You can have up to ${MAX_FOLDERS} folders.`);
+          return;
+        }
+        moveChat(sessionId, folderId);
+      },
+      onRename: async (folderId: string) => {
+        const folder = folders.find((f) => f.id === folderId);
+        if (!folder) return;
+        const name = await prompt({
+          title: "Rename folder",
+          placeholder: "Folder name",
+          defaultValue: folder.name,
+          confirmText: "Rename",
+        });
+        if (!name) return;
+        if (!renameFolder(folderId, name)) {
+          toast.error("There is already a folder with that name.");
+        }
+      },
+      onDelete: async (folderId: string) => {
+        const folder = folders.find((f) => f.id === folderId);
+        if (!folder) return;
+        const ok = await confirm({
+          title: "Delete folder",
+          description: `"${folder.name}" will be removed. The chats in it stay in your chat history.`,
+          confirmText: "Delete folder",
+          destructive: true,
+        });
+        if (ok) deleteFolder(folderId);
+      },
+    }),
+    [
+      folders,
+      folderAssignments,
+      prompt,
+      confirm,
+      createFolder,
+      renameFolder,
+      deleteFolder,
+      moveChat,
+    ],
+  );
   const rowActions: SessionActions = useMemo(
     () => ({
       ...sessionActions,
       onViewTranscript: handleViewTranscript,
       onFork: handleForkSession,
+      folders: folderActions,
     }),
-    [sessionActions, handleViewTranscript, handleForkSession],
+    [sessionActions, handleViewTranscript, handleForkSession, folderActions],
   );
 
   // Flattened, in-display-order chat ids for keyboard navigation (the
