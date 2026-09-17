@@ -222370,6 +222370,40 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789642413125,
         "tool": "customBiggerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "danbarr@users.noreply.github.com",
+            "name": "Dan Barr",
+            "username": "danbarr"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5daad133d2759d68b562f5c2aed6a2432a870d45",
+          "message": "fix(mecatui): simplify in-TUI help (#1664)\n\nCo-authored-by: Dan Barr <6922515+danbarr@users.noreply.github.com>",
+          "timestamp": "2026-09-17T12:52:03+02:00",
+          "tree_id": "5905f0c8edeab61e24b3dd69195f5e24edd537f7",
+          "url": "https://github.com/stacklok/mecatl/commit/5daad133d2759d68b562f5c2aed6a2432a870d45"
+        },
+        "date": 1789643089127,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
       }
     ],
     "mecatl scenarios (render allocs, advisory)": [
@@ -322778,6 +322812,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789643086559,
+  "lastUpdate": 1789643089784,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
