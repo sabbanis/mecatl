@@ -322180,9 +322180,123 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789638947933,
         "tool": "customSmallerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "328978+blkt@users.noreply.github.com",
+            "name": "Michelangelo Mori",
+            "username": "blkt"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "58c620e4ece251058324102c41d942a5a2c31473",
+          "message": "test(app): resolve env(1) absolutely so the scrub probe survives a pinned PATH (#1633)\n\nCo-authored-by: Claude Opus 5 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T12:42:32+02:00",
+          "tree_id": "2844956de5453e9d0bd0ffa962e4ed3713197956",
+          "url": "https://github.com/stacklok/mecatl/commit/58c620e4ece251058324102c41d942a5a2c31473"
+        },
+        "date": 1789642409726,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 803,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 3060,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 31679.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2175,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
       }
     ]
   },
-  "lastUpdate": 1789642406851,
+  "lastUpdate": 1789642410448,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
