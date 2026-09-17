@@ -1,9 +1,8 @@
 "use client";
 
-import { GraduationCap } from "lucide-react";
+import { GraduationCap, RotateCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -13,13 +12,16 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { useRuntimeStatus } from "@/features/agent/runtime-status";
-import { formatRelativeTime } from "@/lib/formatters";
 import { fetchAllSessions } from "@/lib/harness/client";
 import {
   decideLearningProposal,
   isProposalConflict,
   type LearningProposal,
   listLearningProposals,
+  PROPOSAL_STATUS_DEFERRED,
+  PROPOSAL_STATUS_PROMOTED,
+  PROPOSAL_STATUS_REJECTED,
+  PROPOSAL_STATUS_STAGED,
   type ReflectionReceipt,
   reflectHarnessSession,
   undoLearningPromotion,
@@ -27,6 +29,7 @@ import {
 import { cn } from "@/lib/utils";
 import { LearningModeSection } from "../_components/learning-mode-section";
 import { Note, SettingsCard } from "../_components/settings-card";
+import { ProposalRow } from "./_components/proposal-row";
 
 /**
  * Settings → Learning: the human half of the daemon's reflection loop
@@ -36,13 +39,26 @@ import { Note, SettingsCard } from "../_components/settings-card";
  * the daemon staged (the same posture as the read-only Memory panel).
  */
 
-/** Status pills over the daemon's proposal vocabulary ("staged" = pending). */
+/**
+ * Status pills over the daemon's proposal vocabulary ("staged" = pending;
+ * "deferred_unsupported" = a procedure the daemon could not promote when it
+ * was staged, approvable now as a learned-skill draft). The value is the
+ * exact token the list filter sends.
+ */
 const PROPOSAL_FILTERS = [
-  { value: "staged", label: "Pending" },
-  { value: "promoted", label: "Promoted" },
-  { value: "rejected", label: "Rejected" },
+  {
+    value: PROPOSAL_STATUS_STAGED,
+    label: "Pending",
+    empty: "waiting for review",
+  },
+  { value: PROPOSAL_STATUS_DEFERRED, label: "Deferred", empty: "deferred" },
+  { value: PROPOSAL_STATUS_PROMOTED, label: "Promoted", empty: "promoted" },
+  { value: PROPOSAL_STATUS_REJECTED, label: "Rejected", empty: "rejected" },
 ] as const;
 type ProposalFilterValue = (typeof PROPOSAL_FILTERS)[number]["value"];
+
+/** One page of the queue per request; Load more appends the next. */
+const PROPOSAL_PAGE_SIZE = 50;
 
 export default function LearningSettingsPage() {
   const runtime = useRuntimeStatus();
@@ -95,33 +111,36 @@ export default function LearningSettingsPage() {
   );
 }
 
-/** Approve/undo eligibility is the daemon's call, threaded per proposal. */
-function proposalActionTitle(proposal: LearningProposal): string | undefined {
-  if (proposal.promotionAvailable) return undefined;
-  return (
-    proposal.promotionUnavailableReason ||
-    "This partition has no trusted memory target."
-  );
-}
-
 function ProposalQueueCard({ connected }: { connected: boolean }) {
-  const [filter, setFilter] = useState<ProposalFilterValue>("staged");
+  const [filter, setFilter] = useState<ProposalFilterValue>(
+    PROPOSAL_STATUS_STAGED,
+  );
   const [proposals, setProposals] = useState<LearningProposal[]>([]);
+  /** The daemon's cursor for the page after the last one shown; "" = end. */
+  const [nextCursor, setNextCursor] = useState("");
   const [isLoading, setIsLoading] = useState(true);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
 
+  /** (Re)loads the FIRST page of the current filter, dropping any pages
+   *  appended after it — a refresh restarts the walk from the daemon's head. */
   const load = useCallback(
     async (signal?: AbortSignal) => {
       try {
-        const page = await listLearningProposals({ status: filter }, signal);
+        const page = await listLearningProposals(
+          { status: filter, limit: PROPOSAL_PAGE_SIZE },
+          signal,
+        );
         if (signal?.aborted) return;
         setProposals(page.proposals);
+        setNextCursor(page.nextCursor);
         setError(null);
       } catch (caught) {
         if (signal?.aborted) return;
         setProposals([]);
+        setNextCursor("");
         setError(caught instanceof Error ? caught.message : String(caught));
       } finally {
         if (!signal?.aborted) setIsLoading(false);
@@ -136,6 +155,48 @@ function ProposalQueueCard({ connected }: { connected: boolean }) {
     void load(controller.signal);
     return () => controller.abort();
   }, [connected, load]);
+
+  const refresh = () => {
+    setNotice(null);
+    setIsLoading(true);
+    void load();
+  };
+
+  /** Appends the next page (the daemon's cursor); ids already shown are
+   *  skipped so a queue that moved between pages never lists one twice. */
+  const loadMore = async () => {
+    if (!nextCursor || isLoadingMore) return;
+    setIsLoadingMore(true);
+    try {
+      const page = await listLearningProposals({
+        status: filter,
+        cursor: nextCursor,
+        limit: PROPOSAL_PAGE_SIZE,
+      });
+      setProposals((current) => {
+        const seen = new Set(current.map((proposal) => proposal.id));
+        return [
+          ...current,
+          ...page.proposals.filter((proposal) => !seen.has(proposal.id)),
+        ];
+      });
+      setNextCursor(page.nextCursor);
+      setError(null);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setIsLoadingMore(false);
+    }
+  };
+
+  /** Details re-read a proposal; the list shows that current version. */
+  const replaceProposal = (updated: LearningProposal) => {
+    setProposals((current) =>
+      current.map((proposal) =>
+        proposal.id === updated.id ? updated : proposal,
+      ),
+    );
+  };
 
   /**
    * Runs one decision/undo. A 409 proposal_conflict means the proposal
@@ -173,25 +234,39 @@ function ProposalQueueCard({ connected }: { connected: boolean }) {
       description="What the agent wants to remember. Approving promotes the daemon-curated digest into memory; nothing here is free-text."
     >
       <div className="space-y-4">
-        <div className="inline-flex items-center gap-0.5 rounded-full bg-muted p-1">
-          {PROPOSAL_FILTERS.map((f) => (
-            <button
-              key={f.value}
-              type="button"
-              onClick={() => {
-                setFilter(f.value);
-                setNotice(null);
-              }}
-              className={cn(
-                "h-7 rounded-full px-3.5 text-sm transition-colors",
-                filter === f.value
-                  ? "bg-background font-medium text-foreground shadow-sm"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {f.label}
-            </button>
-          ))}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="inline-flex items-center gap-0.5 rounded-full bg-muted p-1">
+            {PROPOSAL_FILTERS.map((f) => (
+              <button
+                key={f.value}
+                type="button"
+                aria-pressed={filter === f.value}
+                onClick={() => {
+                  setFilter(f.value);
+                  setNotice(null);
+                }}
+                className={cn(
+                  "h-7 rounded-full px-3.5 text-sm transition-colors",
+                  filter === f.value
+                    ? "bg-background font-medium text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            aria-label="Refresh proposals"
+            title="Refresh proposals"
+            disabled={!connected || isLoading}
+            onClick={refresh}
+          >
+            <RotateCw className={cn(isLoading && "animate-spin")} />
+          </Button>
         </div>
 
         {notice && (
@@ -207,9 +282,9 @@ function ProposalQueueCard({ connected }: { connected: boolean }) {
           </p>
         ) : proposals.length === 0 ? (
           <p className="rounded-lg border border-dashed py-8 text-center text-sm text-muted-foreground">
-            {filter === "staged"
+            {filter === PROPOSAL_STATUS_STAGED
               ? "Nothing waiting for review."
-              : `No ${filter} proposals.`}
+              : `No ${PROPOSAL_FILTERS.find((f) => f.value === filter)?.empty ?? filter} proposals.`}
           </p>
         ) : (
           <ul className="space-y-3">
@@ -218,6 +293,7 @@ function ProposalQueueCard({ connected }: { connected: boolean }) {
                 key={proposal.id}
                 proposal={proposal}
                 busy={busyId === proposal.id}
+                onReplace={replaceProposal}
                 onApprove={() =>
                   act(
                     proposal,
@@ -253,104 +329,21 @@ function ProposalQueueCard({ connected }: { connected: boolean }) {
             ))}
           </ul>
         )}
+        {!isLoading && nextCursor !== "" && (
+          <div className="flex justify-center">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={isLoadingMore || !connected}
+              onClick={() => void loadMore()}
+            >
+              {isLoadingMore ? "Loading more…" : "Load more"}
+            </Button>
+          </div>
+        )}
       </div>
     </SettingsCard>
-  );
-}
-
-/** One proposal: the bounded digest detail plus the status-appropriate actions. */
-function ProposalRow({
-  proposal,
-  busy,
-  onApprove,
-  onReject,
-  onUndo,
-}: {
-  proposal: LearningProposal;
-  busy: boolean;
-  onApprove: () => void;
-  onReject: () => void;
-  onUndo: () => void;
-}) {
-  const updated = formatRelativeTime(proposal.updatedAtUnix * 1000);
-  const digest = proposal.value || proposal.body;
-  const title = proposal.title || proposal.key || proposal.id;
-
-  return (
-    <li className="space-y-2 rounded-lg border p-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="min-w-0 flex-1 truncate text-sm font-medium">
-          {title}
-        </span>
-        {proposal.kind && <Badge variant="muted">{proposal.kind}</Badge>}
-        {proposal.projectScoped && <Badge variant="outline">project</Badge>}
-        {updated && (
-          <span className="text-xs text-muted-foreground">{updated} ago</span>
-        )}
-      </div>
-      {proposal.key && proposal.key !== title && (
-        <p className="truncate font-mono text-xs text-muted-foreground">
-          {proposal.key}
-        </p>
-      )}
-      {proposal.description && (
-        <p className="text-xs text-muted-foreground">{proposal.description}</p>
-      )}
-      {digest && (
-        <pre className="max-h-48 overflow-y-auto rounded-md bg-muted px-3 py-2 font-mono text-xs whitespace-pre-wrap text-muted-foreground">
-          {digest}
-        </pre>
-      )}
-      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        {proposal.evidenceCount > 0 && (
-          <span>
-            {proposal.evidenceCount} evidence ref
-            {proposal.evidenceCount === 1 ? "" : "s"}
-          </span>
-        )}
-        {proposal.triggers.slice(0, 4).map((trigger) => (
-          <Badge key={trigger} variant="outline">
-            {trigger}
-          </Badge>
-        ))}
-      </div>
-      <div className="flex items-center gap-2 pt-1">
-        {proposal.status === "staged" && (
-          <>
-            <Button
-              size="sm"
-              disabled={busy || !proposal.promotionAvailable}
-              title={proposalActionTitle(proposal)}
-              onClick={onApprove}
-            >
-              Approve
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={busy}
-              onClick={onReject}
-            >
-              Reject
-            </Button>
-          </>
-        )}
-        {proposal.status === "promoted" && (
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={busy || !proposal.promotionAvailable}
-            title={proposalActionTitle(proposal)}
-            onClick={onUndo}
-          >
-            Undo promotion
-          </Button>
-        )}
-        {proposal.status !== "staged" && proposal.status !== "promoted" && (
-          <Badge variant="muted">{proposal.status.replaceAll("_", " ")}</Badge>
-        )}
-      </div>
-    </li>
   );
 }
 

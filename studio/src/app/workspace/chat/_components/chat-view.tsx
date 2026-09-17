@@ -75,6 +75,7 @@ import {
   createThreadHarnessSession,
   ThreadSourceBusyError,
 } from "@/lib/harness/client";
+import type { HarnessPlacement } from "@/lib/harness/sessions";
 import {
   type SessionListSide,
   useEnterSendBehavior,
@@ -96,6 +97,7 @@ import {
   unregisterThreadSession,
   useThreadMap,
 } from "@/lib/thread-map";
+import type { SessionToolProfile } from "@/lib/tool-profile";
 import { type ChangedFile, changedFilesFromMessages } from "@/lib/tool-summary";
 import { cn } from "@/lib/utils";
 import {
@@ -138,6 +140,7 @@ import {
 import { MessageBubble } from "./message-bubble";
 import { MockProviderNotice } from "./mock-provider-notice";
 import { PermissionModeBadge } from "./permission-mode-badge";
+import { PlacementBadge } from "./placement-badge";
 import { QueuedMessageStrip } from "./queued-message-strip";
 import { PAGE_FRACTION, scrollPositionPercent } from "./scroll-position";
 import { ScrollToBottomPill } from "./scroll-to-bottom-pill";
@@ -834,7 +837,6 @@ function ThreadPanel({
             )}
             <MockProviderNotice />
             <ChatInput
-              rows={1}
               onSend={handleSend}
               onQueue={queueMessage}
               isStreaming={isStreaming}
@@ -1083,9 +1085,11 @@ export function ChatView({
   modeSwitchDeferred = false,
   debugMcpServers,
   debugMcpTools,
+  placement = null,
   readOnlyPlaceholder,
   mode,
   onModeChange,
+  profile,
   models,
   autoModelLabel,
   onSwitchModel,
@@ -1238,6 +1242,9 @@ export function ChatView({
   debugMcpServers?: string[];
   /** The debugger MCP tools those servers mounted (the strip's notice). */
   debugMcpTools?: string[];
+  /** The session's server-owned placement DISPLAY metadata (ADR 0291) off
+      the snapshot — the header's worktree/branch badge; null hides it. */
+  placement?: HarnessPlacement | null;
   /** The latest turn's input tokens (turn.end): the meter's occupancy. */
   contextOccupancy?: number;
   /** The transient status line under the transcript (a no-progress nudge,
@@ -1251,6 +1258,10 @@ export function ChatView({
   /** Renders the composer's Mode selector when provided (the mock tour chat
       omits it — a read-only demo has no permission posture to set). */
   onModeChange?: (mode: SessionPermissionMode) => void;
+  /** The tool profile this chat was created with ("" | "no-fs"), shown
+      read-only inside the composer's Mode menu; undefined = unknown (a chat
+      Studio did not mint — the daemon never reports it back). */
+  profile?: SessionToolProfile;
   /** Live daemon models for the mid-chat switch picker. */
   models?: ComposerModelOption[];
   autoModelLabel?: string;
@@ -1766,6 +1777,9 @@ export function ChatView({
           >
             {session.title || "Untitled"}
           </h2>
+          {/* mecatui's startup placement line, kept in the header: the
+              worktree and branch this chat's session is bound to. */}
+          <PlacementBadge placement={placement} />
           {/* The user's header status line (Settings → Status line): a
               reserved lane over the session facts, empty until customised. */}
           <TemplatedStatusLine
@@ -2199,6 +2213,7 @@ export function ChatView({
                   effortSupported={effortSupported}
                   mode={mode}
                   onModeChange={onModeChange}
+                  profile={profile}
                   isStreaming={isStreaming}
                   modeSwitchDeferred={modeSwitchDeferred}
                   pendingMode={pendingMode}

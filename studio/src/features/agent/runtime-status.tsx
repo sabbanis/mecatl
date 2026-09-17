@@ -209,7 +209,11 @@ export function RuntimeStatusProvider({ children }: { children: ReactNode }) {
     >
       {state === "offline" &&
         (offlineCause && offlineCause.kind !== "connectivity" ? (
-          <AuthRecoveryBanner cause={offlineCause} onRetry={refresh} />
+          <AuthRecoveryBanner
+            cause={offlineCause}
+            onRetry={refresh}
+            mode={mode}
+          />
         ) : (
           <OfflineBanner detail={detail} onRetry={refresh} />
         ))}

@@ -163,3 +163,56 @@ describe("renameAndUpdateFromDraft", () => {
     expect(result.current.error).toContain("store is read-only");
   });
 });
+
+/**
+ * The fire session's TOOL PROFILE (the spec's `profile`, ADR 0291) reaches
+ * the create body from both authoring paths: the quick-create takes it as an
+ * input (default "" = all tools), and the full form's draft carries whatever
+ * the form picked, untouched.
+ */
+describe("tool profile on create", () => {
+  beforeEach(() => {
+    calls.length = 0;
+  });
+
+  it("quick-create carries the picked no-fs profile", async () => {
+    const { result } = await settledHook();
+    await act(async () => {
+      await result.current.createJob({
+        name: "nofs-digest",
+        schedule: "0 9 * * *",
+        instruction: "summarise",
+        profile: "no-fs",
+      });
+    });
+    expect(saveHarnessSchedule).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "nofs-digest", profile: "no-fs" }),
+      { update: false },
+    );
+  });
+
+  it("quick-create without a pick sends the all-tools default", async () => {
+    const { result } = await settledHook();
+    await act(async () => {
+      await result.current.createJob({
+        name: "plain-digest",
+        schedule: "0 9 * * *",
+        instruction: "summarise",
+      });
+    });
+    expect(saveHarnessSchedule).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "plain-digest", profile: "" }),
+      { update: false },
+    );
+  });
+
+  it("the full form's draft carries its profile through createFromDraft verbatim", async () => {
+    const { result } = await settledHook();
+    const noFs: ScheduleSpecDraft = { ...draft, profile: "no-fs" };
+    await act(async () => {
+      await result.current.createFromDraft(noFs);
+    });
+    expect(saveHarnessSchedule).toHaveBeenCalledWith(noFs, { update: false });
+    expect(calls).toEqual(["create:new-name"]);
+  });
+});

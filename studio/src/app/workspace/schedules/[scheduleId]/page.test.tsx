@@ -80,6 +80,7 @@ vi.mock("@/features/agent", () => ({
         maxFires: 10,
         enabled: true,
       }),
+      makeRow({ name: "nofs-digest", profile: "no-fs" }),
     ],
     isLoading: false,
     isSupported: true,
@@ -136,6 +137,26 @@ describe("schedule detail Runs fact", () => {
   it("says the limit is reached once the cap is used up", async () => {
     await renderDetail("spent-digest");
     expect(factValue("Runs")).toHaveTextContent("10 of 10 — limit reached");
+  });
+});
+
+/**
+ * The fire session's TOOL PROFILE (the spec's `profile`): the Details group
+ * names it, and an attenuated schedule also gets a badge in the header's
+ * pill row — the list otherwise gives no hint that a schedule runs
+ * file-less.
+ */
+describe("schedule detail Tools fact", () => {
+  it("reads All tools with no badge for the default profile", async () => {
+    await renderDetail("nightly-digest");
+    expect(factValue("Tools")).toHaveTextContent("All tools");
+    expect(screen.queryByText("no filesystem")).toBeNull();
+  });
+
+  it("reads No filesystem and shows the badge for a no-fs schedule", async () => {
+    await renderDetail("nofs-digest");
+    expect(factValue("Tools")).toHaveTextContent("No filesystem");
+    expect(screen.getByText("no filesystem")).toBeInTheDocument();
   });
 });
 

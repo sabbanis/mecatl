@@ -59,7 +59,7 @@ import { fileKindMeta } from "@/lib/file-meta";
 import { useDefaultModel } from "@/lib/model-preferences";
 import {
   modeAccentClass,
-  modeComposerRingClass,
+  modeDotClass,
   nextPermissionMode,
   PERMISSION_MODE_OPTIONS,
   permissionModeLabel,
@@ -71,6 +71,10 @@ import {
 } from "@/lib/profile-preferences";
 import type { SessionPermissionMode } from "@/lib/protocol";
 import { effortLabel } from "@/lib/reasoning-effort";
+import {
+  type SessionToolProfile,
+  toolProfilePillSuffix,
+} from "@/lib/tool-profile";
 import { cn } from "@/lib/utils";
 import { ClearDraftButton } from "./clear-draft-button";
 import {
@@ -83,6 +87,7 @@ import {
   isFileMenuItem,
   pathMentionText,
 } from "./composer-file-mention";
+import { composerEditorStyle, composerFrameClass } from "./composer-frame";
 import { isAlwaysNewlineChord, isClearDraftChord } from "./composer-keys";
 import {
   type ComposerMenuItem,
@@ -109,6 +114,10 @@ import {
 } from "./mcp-composer-insert";
 import { ModelSheetSection, ModelSubmenuContent } from "./model-picker";
 import { ModelPickerOpener } from "./model-picker-opener";
+import {
+  ToolProfileMenuSection,
+  ToolProfileSheetRows,
+} from "./tool-profile-picker";
 
 interface ProjectItem {
   id: string;
@@ -204,6 +213,15 @@ interface ChatInputProps {
       Surfaces without a mode concept (the thread panel, the mock tour chat)
       simply omit it. */
   onModeChange?: (mode: SessionPermissionMode) => void;
+  /** The chat's TOOL PROFILE (the daemon's per-session `profile`, ADR 0291):
+      "" = all tools, "no-fs" = the file-less catalog. Shown inside the Mode
+      menu as a "Tools" section. Undefined = unknown (a live chat Studio did
+      not mint), which renders no line at all. */
+  profile?: SessionToolProfile;
+  /** Draft only: picks the profile the first send mints with. Absent on a
+      live chat — the profile is fixed at create — where a known `profile`
+      renders read-only. */
+  onProfileChange?: (profile: SessionToolProfile) => void;
   /** Answers a Studio built-in slash command (`/clear /help /session /retry
       /diagnostics /compact`) instead of sending it: picked from the `/` menu
       or typed as the whole message, this fires; `{ ok: true }` (or no
@@ -586,15 +604,25 @@ export function ModeSelector({
   onModeChange,
   disabled,
   pending = false,
+  profile,
+  onProfileChange,
 }: {
   mode: SessionPermissionMode;
   onModeChange: (mode: SessionPermissionMode) => void;
   disabled?: boolean;
   /** The shown `mode` is a held switch, not yet confirmed by the daemon. */
   pending?: boolean;
+  /** The chat's tool profile for the menu's Tools section (see ChatInput);
+      "no-fs" also suffixes the pill "· No FS". */
+  profile?: SessionToolProfile;
+  onProfileChange?: (profile: SessionToolProfile) => void;
 }) {
   const label = permissionModeLabel(mode);
-  const shown = pending ? `${label} · pending` : label;
+  const profileSuffix = toolProfilePillSuffix(profile ?? "");
+  const shown = `${pending ? `${label} · pending` : label}${profileSuffix}`;
+  // Plan / Accept edits carry a filled dot in the box tint's hue (the TUI's
+  // mode-coloured rail), kept visible where the label collapses to "Mode".
+  const dot = modeDotClass(mode);
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -602,8 +630,15 @@ export function ModeSelector({
           size="sm"
           className={cn(GHOST_TRIGGER_CLASS, modeAccentClass(mode))}
           disabled={disabled}
-          title={`Permission mode: ${label}${pending ? " (pending — applies when the run ends)" : ""} — ⇧Tab cycles`}
+          title={`Permission mode: ${label}${pending ? " (pending — applies when the run ends)" : ""} — ⇧Tab cycles${profileSuffix ? " · Tools: No filesystem" : ""}`}
         >
+          {dot && (
+            <span
+              aria-hidden
+              data-testid="mode-dot"
+              className={cn("size-2 shrink-0 rounded-full", dot)}
+            />
+          )}
           <span className="max-w-40 truncate @max-md:hidden">{shown}</span>
           <span className="hidden @max-md:inline">Mode</span>
           <ChevronDown className="size-3.5 text-muted-foreground" />
@@ -634,6 +669,10 @@ export function ModeSelector({
             </span>
           </DropdownMenuItem>
         ))}
+        <ToolProfileMenuSection
+          profile={profile}
+          onProfileChange={onProfileChange}
+        />
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -702,6 +741,8 @@ function MobileComposerMenu({
   onModeChange,
   modeDisabled,
   modePending = false,
+  profile,
+  onProfileChange,
   models,
   autoModelLabel,
   effort,
@@ -729,6 +770,10 @@ function MobileComposerMenu({
   modeDisabled?: boolean;
   /** The shown `mode` is a held switch awaiting the run's end ("· pending"). */
   modePending?: boolean;
+  /** The chat's tool profile (see ChatInput): rows in the Mode sheet on a
+   *  draft, a read-only line on a live chat, "· No FS" on the Mode row. */
+  profile?: SessionToolProfile;
+  onProfileChange?: (profile: SessionToolProfile) => void;
   models?: ComposerModelOption[];
   autoModelLabel?: string;
   /** Draft: the pending reasoning-effort WIRE value ("" = auto). */
@@ -868,12 +913,23 @@ function MobileComposerMenu({
                 <span className="flex-1 text-left">Mode</span>
                 <span
                   className={cn(
-                    "text-muted-foreground",
+                    "inline-flex items-center gap-1.5 text-muted-foreground",
                     modeAccentClass(mode ?? "default"),
                   )}
                 >
+                  {modeDotClass(mode ?? "default") && (
+                    <span
+                      aria-hidden
+                      data-testid="mode-dot"
+                      className={cn(
+                        "size-2 shrink-0 rounded-full",
+                        modeDotClass(mode ?? "default"),
+                      )}
+                    />
+                  )}
                   {permissionModeLabel(mode ?? "default")}
                   {modePending ? " · pending" : ""}
+                  {toolProfilePillSuffix(profile ?? "")}
                 </span>
                 {!modeDisabled && (
                   <ChevronRight className="size-4 text-muted-foreground/60" />
@@ -940,6 +996,17 @@ function MobileComposerMenu({
                 }}
               />
             ))}
+            <ToolProfileSheetRows
+              profile={profile}
+              onProfileChange={
+                onProfileChange
+                  ? (next) => {
+                      onProfileChange(next);
+                      setSub(null);
+                    }
+                  : undefined
+              }
+            />
           </div>
         </SheetContent>
       </Sheet>
@@ -1510,6 +1577,7 @@ export function ChatInput({
   selectedProjectId,
   onSelectProject,
   onCreateProject,
+  rows,
   compact = false,
   mobileDocked = false,
   focusKey,
@@ -1544,6 +1612,8 @@ export function ChatInput({
   onPreviewAttachment,
   mode,
   onModeChange,
+  profile,
+  onProfileChange,
   onLocalCommand,
   builtinGates,
   mediaCapabilities,
@@ -1960,7 +2030,6 @@ export function ChatInput({
     pendingMode != null && pendingMode !== (mode ?? "default");
   const canChangeMode =
     !!onModeChange && !disabled && (!isStreaming || modeSwitchDeferred);
-  const modeRing = onModeChange ? modeComposerRingClass(shownMode) : "";
 
   // Menu nav + Enter-to-send are wired with a native capture-phase keydown
   // listener on the editor DOM, re-subscribed each render with fresh closures
@@ -2264,15 +2333,17 @@ export function ChatInput({
           // steady across focus — the docked bar is chrome, not a field.
           mobileDocked &&
             "max-[499px]:rounded-none max-[499px]:border-x-0 max-[499px]:border-b-0 max-[499px]:border-border max-[499px]:focus-within:border-border max-[499px]:pb-[env(safe-area-inset-bottom)]",
-          isDragOver
-            ? "border-brand bg-brand/5 dark:bg-brand/10 ring-2 ring-brand/20"
-            : isWindowDrag
-              ? "border-brand/50 ring-1 ring-brand/10"
-              : isStreaming && hasText
-                ? "border-warning shadow-warning/10"
-                : // Plan / Accept edits tint the box (the TUI recolours its
-                  // input by mode); Manual keeps the plain border.
-                  modeRing || "border-zinc-300 dark:border-zinc-700",
+          // One state at a time — drag-over > window drag > streaming with a
+          // draft > mode tint (Plan / Accept edits: the TUI recolours its
+          // input by mode; Manual keeps the plain border). The table is
+          // composerFrameClass; a surface with no Mode selector never tints.
+          composerFrameClass({
+            mode: onModeChange ? shownMode : undefined,
+            isDragOver,
+            isWindowDrag,
+            isStreaming,
+            hasText,
+          }),
         )}
       >
         {voice.isListening && (
@@ -2334,6 +2405,8 @@ export function ChatInput({
               onModeChange={onModeChange}
               modeDisabled={disabled || (isStreaming && !modeSwitchDeferred)}
               modePending={modePending}
+              profile={profile}
+              onProfileChange={onProfileChange}
               onInsertFromMcp={
                 mcpInsert.available && !disabled ? mcpInsert.open : undefined
               }
@@ -2348,7 +2421,14 @@ export function ChatInput({
               disabled && "opacity-50",
             )}
           >
-            <EditorContent editor={editor} className="composer-editor" />
+            <EditorContent
+              editor={editor}
+              className="composer-editor"
+              // Resting rows: the stylesheet's three unless `rows`/`compact`
+              // ask otherwise (--composer-min-rows; the eight-row scroll cap
+              // and the mobile one-row pin live in globals.css).
+              style={composerEditorStyle({ rows, compact })}
+            />
           </div>
           {/* Mobile: × clears the whole draft (text + staged files) beside
               the mic/send slot; hidden while there is nothing to clear. */}
@@ -2457,6 +2537,8 @@ export function ChatInput({
                 onModeChange={onModeChange}
                 disabled={disabled || (isStreaming && !modeSwitchDeferred)}
                 pending={modePending}
+                profile={profile}
+                onProfileChange={onProfileChange}
               />
             )}
             <ModelEffortSelector

@@ -6,6 +6,8 @@ import WorkspaceSkillsPage from "./page";
 // Rows navigate on click via useRouter; jsdom has no app-router context.
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn() }),
+  // The `?view=` deep-link watcher reads the query; no view is named here.
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 /**

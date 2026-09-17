@@ -1,8 +1,9 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AuthRecoveryBanner,
   fetchOidcSignInStatus,
+  MANAGED_CREDENTIAL_REMEDY,
   OIDC_POPUP_FEATURES,
   OIDC_POPUP_NAME,
   OIDC_START_URL,
@@ -14,10 +15,21 @@ import { classifyOffline } from "./offline-cause";
 /**
  * The auth-recovery banner: names the cause class, offers Sign in only when
  * the server-tier OIDC status says the deployment is configured for it,
- * opens the popup on the click, always links to the sign-in settings and
- * keeps Retry, and reconnects at once on the callback page's `mecatl-oidc`
- * message and on window focus.
+ * opens the popup on the click, links to the sign-in settings and keeps
+ * Retry, and reconnects at once on the callback page's `mecatl-oidc`
+ * message and on window focus. In managed mode a rejected credential is the
+ * controller-spawned daemon refusing the controller's token: the banner
+ * offers Restart daemon instead of a sign-in link to a page with no sign-in
+ * card, and never reads the OIDC status.
  */
+
+const harness = vi.hoisted(() => ({
+  restartHarnessDaemon: vi.fn(async () => undefined),
+}));
+
+vi.mock("@/lib/harness/client", () => ({
+  restartHarnessDaemon: harness.restartHarnessDaemon,
+}));
 
 const statusBody = (over: Record<string, unknown> = {}) =>
   new Response(
@@ -54,6 +66,7 @@ const idpUnavailable = classifyOffline({
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  harness.restartHarnessDaemon.mockClear();
 });
 
 describe("AuthRecoveryBanner", () => {
@@ -194,5 +207,115 @@ describe("AuthRecoveryBanner", () => {
       screen.queryByRole("button", { name: /Sign in/ }),
     ).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+  });
+
+  it("keeps the sign-in settings link for a rejected credential in external mode", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        statusBody({ configured: false, state: "not-configured" }),
+      ),
+    );
+    render(
+      <AuthRecoveryBanner
+        cause={credentialRejected}
+        onRetry={vi.fn()}
+        mode="external"
+      />,
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent(/MECATL_AUTH_TOKEN/);
+    expect(
+      screen.getByRole("link", { name: "Open sign-in settings" }),
+    ).toHaveAttribute("href", SIGN_IN_SETTINGS_HREF);
+    expect(
+      screen.queryByRole("button", { name: "Restart daemon" }),
+    ).not.toBeInTheDocument();
+    // Let the status read settle: still no Sign in for a rejected credential.
+    await screen.findByRole("alert");
+    expect(
+      screen.queryByRole("button", { name: /Sign in/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("in managed mode offers Restart daemon for a rejected credential — no sign-in link, no OIDC status read", async () => {
+    const fetchMock = vi.fn(async () => statusBody());
+    vi.stubGlobal("fetch", fetchMock);
+    const onRetry = vi.fn(async () => undefined);
+    render(
+      <AuthRecoveryBanner
+        cause={credentialRejected}
+        onRetry={onRetry}
+        mode="managed"
+      />,
+    );
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("Credential rejected");
+    expect(alert).toHaveTextContent(MANAGED_CREDENTIAL_REMEDY);
+    // The external-mode env remediation would mislead here.
+    expect(alert).not.toHaveTextContent(/MECATL_AUTH_TOKEN/);
+    // The provider page mounts no sign-in card in managed mode: no link to it.
+    expect(
+      screen.queryByRole("link", { name: "Open sign-in settings" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Sign in/ }),
+    ).not.toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Restart daemon" }));
+    await waitFor(() =>
+      expect(harness.restartHarnessDaemon).toHaveBeenCalledTimes(1),
+    );
+    // The restart is followed by the provider's own re-probe.
+    await waitFor(() => expect(onRetry).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+  });
+
+  it("in managed mode surfaces a failed restart in the banner", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => statusBody()),
+    );
+    harness.restartHarnessDaemon.mockRejectedValueOnce(
+      new Error("controller refused the restart"),
+    );
+    const onRetry = vi.fn(async () => undefined);
+    render(
+      <AuthRecoveryBanner
+        cause={credentialRejected}
+        onRetry={onRetry}
+        mode="managed"
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Restart daemon" }));
+    expect(
+      await screen.findByText("controller refused the restart"),
+    ).toBeInTheDocument();
+    expect(onRetry).not.toHaveBeenCalled();
+    expect(
+      screen.getByRole("button", { name: "Restart daemon" }),
+    ).not.toBeDisabled();
+  });
+
+  it("in managed mode an oidc_* cause keeps the sign-in actions — the code proves the proxy is external", async () => {
+    const fetchMock = vi.fn(async () => statusBody({ state: "expired" }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(
+      <AuthRecoveryBanner
+        cause={sessionExpired}
+        onRetry={vi.fn()}
+        mode="managed"
+      />,
+    );
+    expect(
+      await screen.findByRole("button", { name: "Sign in again" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Open sign-in settings" }),
+    ).toHaveAttribute("href", SIGN_IN_SETTINGS_HREF);
+    expect(
+      screen.queryByRole("button", { name: "Restart daemon" }),
+    ).not.toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

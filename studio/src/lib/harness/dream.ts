@@ -26,7 +26,10 @@ import { timestampUnix } from "./time";
 export type DreamTarget = "project_memory" | "user_model";
 export type DreamDecision = "apply" | "dismiss";
 
-interface DreamParticipant {
+/** The two Build-owned targets, in the order the UI lists them. */
+const DREAM_TARGETS: readonly DreamTarget[] = ["user_model", "project_memory"];
+
+export interface DreamParticipant {
   key: string;
   value: string;
   description: string;
@@ -137,15 +140,112 @@ export async function decideDreamPlan(
 }
 
 /**
- * True when the plan id no longer resolves — unknown, expired, or minted by a
- * daemon process that has since restarted. The fix is regenerate, not retry.
+ * True when the plan is no longer actionable for THIS decision — the id no
+ * longer resolves (unknown, expired, or minted by a daemon process that has
+ * since restarted), the plan already reached a different terminal decision
+ * (`dream_terminal_conflict`), or a conflicting decision is active on it
+ * (`dream_conflict`, the daemon's FailedPrecondition). The fix is regenerate,
+ * not retry.
  */
 export function isStaleDreamPlan(error: unknown): boolean {
   return (
     error instanceof HarnessApiError &&
     (error.code === "dream_not_found" ||
+      error.code === "dream_conflict" ||
       error.code === "dream_terminal_conflict" ||
       (error.code === "" && (error.status === 404 || error.status === 410)))
+  );
+}
+
+/**
+ * True when the decision's outcome is still open: the daemon reports the
+ * SAME decision is running (`dream_in_progress`, its Aborted), or the answer
+ * never arrived (an SDK transport/protocol failure, status 0) so the first
+ * request may already have applied. The only safe next step is to retry the
+ * IDENTICAL decision — the daemon's decide is idempotent and answers the
+ * authoritative receipt (mecatui's `t`). Never the opposite decision, never
+ * a fresh plan over a store that may still be changing, never automatically.
+ */
+export function isDreamInProgress(error: unknown): boolean {
+  if (!(error instanceof HarnessApiError)) return false;
+  if (error.code === "dream_in_progress") return true;
+  return (
+    error.status === 0 &&
+    (error.code === "transport" || error.code === "protocol")
+  );
+}
+
+/** The notice for a plan `isStaleDreamPlan` classified, worded per cause. */
+export function describeStaleDreamPlan(error: unknown): string {
+  const code = error instanceof HarnessApiError ? error.code : "";
+  switch (code) {
+    case "dream_conflict":
+      return "A different decision on that plan is already active — it is no longer actionable for this one. Generate a new plan once that decision settles.";
+    case "dream_terminal_conflict":
+      return "That plan already reached a different decision — nothing changed here. Generate a new plan to review again.";
+    default:
+      return "That plan is no longer valid (the daemon restarted or the plan expired) — generate a new one.";
+  }
+}
+
+/**
+ * The notice for a decision `isDreamInProgress` classified: the daemon's own
+ * in-progress answer versus a dropped connection whose outcome is unknown.
+ */
+export function describeDreamDecisionPending(
+  error: unknown,
+  decision: DreamDecision,
+): string {
+  const verb = decision === "apply" ? "applying" : "dismissing";
+  if (error instanceof HarnessApiError && error.code === "dream_in_progress") {
+    return `The daemon is still ${verb} that plan — retry the same decision to retrieve its receipt.`;
+  }
+  return `The connection dropped before the daemon answered — it may already be ${verb} that plan. Retry the same decision to retrieve its receipt; the opposite decision stays unavailable until then.`;
+}
+
+/**
+ * User-facing copy for the daemon's bounded operator-facing
+ * `unavailable_reason` categories (internal/app/dream_review.go and
+ * internal/adapter/server/dreamreview.go). A category this table does not
+ * know crosses verbatim — the daemon bounds it to 256 runes and it never
+ * carries memory or provider content. "" stays "".
+ */
+const UNAVAILABLE_REASON_COPY: Record<string, string> = {
+  "target store is unavailable":
+    "This memory store is not available on this daemon.",
+  "dream planner is unavailable":
+    "No consolidation planner is configured on this daemon — it needs a model to review memories.",
+  "target store lacks reviewed atomic consolidation":
+    "This memory store does not support reviewed consolidation.",
+  "manual dream coordinator is unavailable":
+    "The daemon's consolidation coordinator is not running.",
+  "manual dreaming is unavailable while ownership enforcement is enabled":
+    "Consolidation is off while the daemon enforces session ownership.",
+  "manual dreaming is unavailable":
+    "Consolidation is not available on this daemon.",
+  "no manual dream target is available":
+    "Consolidation is not available on this daemon.",
+};
+
+export function describeDreamUnavailable(reason: string): string {
+  const trimmed = reason.trim();
+  if (!trimmed) return "";
+  return UNAVAILABLE_REASON_COPY[trimmed] ?? trimmed;
+}
+
+/**
+ * The targets the daemon reports at all — every known key present on the
+ * wire-keyed `manual_dream` object, whether or not it can generate — so a
+ * target that exists but is unavailable is shown with its reason rather than
+ * silently hidden. Empty against an older daemon without the capability.
+ */
+export function listDreamTargets(manualDream: unknown): DreamTarget[] {
+  const record = asRecord(manualDream);
+  return DREAM_TARGETS.filter(
+    (target) =>
+      typeof record[target] === "object" &&
+      record[target] !== null &&
+      !Array.isArray(record[target]),
   );
 }
 

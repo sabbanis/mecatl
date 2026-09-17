@@ -46,6 +46,22 @@ test("the live chat's model pill shows the daemon's effective reasoning-effort t
   ).toBeVisible();
 });
 
+test("the chat header badges the session's placement label and branch", async ({
+  page,
+}) => {
+  await page.goto("/workspace/chat");
+  await page.getByText("Fix the flaky scheduler test").first().click();
+  await expect(
+    page.getByText("the test races the claim sentinel", { exact: false }),
+  ).toBeVisible();
+  // The TUI's startup placement line: the snapshot's server-owned display
+  // metadata (fixture placement `local` / `fixture` / `main`), never a path.
+  const badge = page.getByTestId("placement-badge");
+  await expect(badge).toBeVisible();
+  await expect(badge).toHaveText(/fixture · main$/);
+  await expect(badge).toHaveAttribute("title", "Placement: local @ fixture");
+});
+
 test("a tool call parked on a browser sign-in shows the authorization card and re-check resumes the run", async ({
   page,
 }) => {
@@ -202,6 +218,38 @@ test("memory detail shows the fact value and history", async ({ page }) => {
     page.getByText("2 · superseded", { exact: false }),
   ).toBeVisible();
   await expect(page.getByText("Learned in conversation")).toHaveCount(0);
+});
+
+test("learning queue shows evidence provenance", async ({ page }) => {
+  await page.goto("/workspace/settings/learning");
+  // The Pending pill lists the staged fact; its Details disclosure shows
+  // where the daemon read the evidence and that it still resolves.
+  const row = page.locator("li[data-proposal-id='prop-1']");
+  await expect(row).toContainText("scheduler/flaky-test");
+  await expect(row.getByRole("button", { name: "Approve" })).toBeEnabled();
+  await row.getByRole("button", { name: "Details" }).click();
+  const details = row.getByTestId("proposal-details");
+  await expect(details).toContainText("tool:1");
+  await expect(details).toContainText("seq 42");
+  await expect(details).toContainText("call call-fixture-1");
+  await expect(details).toContainText("digest sha256:012");
+  await expect(details.getByText("Available", { exact: true })).toBeVisible();
+  await expect(
+    details.getByRole("link", { name: "session-fixture-1" }),
+  ).toHaveAttribute("href", "/workspace/chat/session-fixture-1");
+  await expect(details).toContainText("go test ./internal/scheduler");
+  // The Deferred pill requests that status: a procedure whose evidence is
+  // gone — Approve is offered but disabled with the reason, and there is no
+  // Reject (the daemon refuses it outside staged).
+  await page.getByRole("button", { name: "Deferred" }).click();
+  const deferred = page.locator("li[data-proposal-id='prop-2']");
+  await expect(deferred).toContainText("Tag a release");
+  await expect(
+    deferred.getByRole("button", { name: "Approve" }),
+  ).toBeDisabled();
+  await expect(deferred).toContainText("no longer available");
+  await expect(deferred.getByRole("button", { name: "Reject" })).toHaveCount(0);
+  await expect(row).toHaveCount(0);
 });
 
 test("external mode marks runtime settings as deployment-owned", async ({
@@ -1066,6 +1114,25 @@ test("a ?prompt=&send=1 deep link confirms the exact prompt, sends it once and l
   const composer = page.locator(".composer-editor .ProseMirror").first();
   await expect(composer).toBeVisible();
   await expect(composer).toHaveText("");
+});
+
+test("a ?prompt= deep link on an open chat pre-fills that chat's composer and sends nothing", async ({
+  page,
+}) => {
+  // `/workspace/chat/<id>?prompt=` is the same arrival aimed at a stored
+  // chat: its transcript loads, the text waits in ITS composer, the query
+  // goes but the path stays, and no turn ran.
+  await page.goto("/workspace/chat/session-fixture-1?prompt=Follow%20up");
+  await expect(
+    page.getByText("the test races the claim sentinel", { exact: false }),
+  ).toBeVisible();
+  const composer = page.locator(".composer-editor .ProseMirror").first();
+  await expect(composer).toHaveText("Follow up");
+  await expect(page).toHaveURL(/\/workspace\/chat\/session-fixture-1$/);
+  await expect(
+    page.getByRole("dialog", { name: "Send this prompt?" }),
+  ).toHaveCount(0);
+  await expect(page.getByText("Streaming from the fixture.")).toHaveCount(0);
 });
 
 test("the Continue chip on the draft opens the most recent chat without any preference", async ({

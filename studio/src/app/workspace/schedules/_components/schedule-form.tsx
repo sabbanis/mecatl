@@ -27,6 +27,11 @@ import {
   type SchedulePhraseResult,
   toLocalDateTimeInput,
 } from "@/lib/schedule-phrase";
+import {
+  normalizeToolProfile,
+  type SessionToolProfile,
+  TOOL_PROFILE_OPTIONS,
+} from "@/lib/tool-profile";
 
 /**
  * Form state for authoring a schedule.
@@ -39,6 +44,12 @@ import {
  * Both fields are user-editable: `ScheduleFormFields` renders the
  * "Allow file and shell writes" switch and, under it, the permission-mode
  * picker (the TUI form's y/n mutating toggle).
+ *
+ * `profile` is the fire session's TOOL PROFILE (the spec's `profile`, the
+ * same field a chat's create carries): "" = all tools, "no-fs" = the
+ * file-less catalog (no Shell/Read/Edit/Write…; web tools remain). It is
+ * independent of the write opt-in — a no-fs schedule with writes on simply
+ * has nothing file-shaped left to write with.
  */
 export interface ScheduleFormValue {
   name: string;
@@ -54,6 +65,7 @@ export interface ScheduleFormValue {
   oneShotMaxRetries: string;
   allowWrites: boolean;
   writeMode: "default" | "accept_edits";
+  profile: SessionToolProfile;
 }
 
 export function emptyScheduleForm(): ScheduleFormValue {
@@ -69,6 +81,7 @@ export function emptyScheduleForm(): ScheduleFormValue {
     oneShotMaxRetries: "3",
     allowWrites: false,
     writeMode: "accept_edits",
+    profile: "",
   };
 }
 
@@ -111,13 +124,14 @@ export function formFromDraft(draft: ScheduleSpecDraft): ScheduleFormValue {
       draft.mode === PERMISSION_MODES.PERMISSION_MODE_DEFAULT
         ? "default"
         : "accept_edits",
+    profile: normalizeToolProfile(draft.profile),
   };
 }
 
 /**
  * Build the wire draft. `base` is the stored draft on an edit — it supplies
- * the spec fields this form has no controls for (profile, limits)
- * so they survive the PUT-replaces-everything contract.
+ * the spec fields this form has no controls for (limits) so they survive
+ * the PUT-replaces-everything contract.
  */
 export function draftFromForm(
   value: ScheduleFormValue,
@@ -139,7 +153,7 @@ export function draftFromForm(
             timezone: value.timezone.trim(),
           }
         : { kind: "one-shot", at: new Date(value.oneShotAt).getTime() },
-    profile: base?.profile ?? "",
+    profile: value.profile,
     mode,
     mutating: value.allowWrites,
     maxFires: Math.max(0, Number(value.maxFires) || 0),
@@ -467,7 +481,48 @@ export function ScheduleFormFields({
           </div>
         )}
       </div>
+
+      {/* The fire session's tool profile — the same `profile` a chat's create
+          carries. Independent of the write opt-in above. */}
+      <div className="space-y-2">
+        <Label htmlFor="schedule-profile">Tool profile</Label>
+        <Select
+          value={value.profile || ALL_TOOLS_VALUE}
+          onValueChange={(v) =>
+            onChange({ profile: v === ALL_TOOLS_VALUE ? "" : "no-fs" })
+          }
+        >
+          <SelectTrigger id="schedule-profile" className="w-full">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {TOOL_PROFILE_OPTIONS.map((option) => (
+              <SelectItem
+                key={option.id || ALL_TOOLS_VALUE}
+                value={option.id || ALL_TOOLS_VALUE}
+              >
+                {option.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <p id="schedule-profile-note" className="text-xs text-muted-foreground">
+          {toolProfileDescription(value.profile)}
+        </p>
+      </div>
     </div>
+  );
+}
+
+/** Radix Select refuses an empty item value; the default profile ("") rides
+ *  this sentinel inside the control only and never reaches the draft. */
+const ALL_TOOLS_VALUE = "all";
+
+/** The one-line consequence under the tool-profile picker, per profile. */
+export function toolProfileDescription(profile: SessionToolProfile): string {
+  return (
+    TOOL_PROFILE_OPTIONS.find((option) => option.id === profile)?.description ??
+    TOOL_PROFILE_OPTIONS[0].description
   );
 }
 

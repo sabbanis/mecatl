@@ -34,6 +34,16 @@ const oidcStatus = (over: Record<string, unknown> = {}) =>
     ...over,
   });
 
+/** The controller's status route, as `fetchHarnessControlStatus` spells it
+ *  (outside the `/api/mecatl` prefix the stub strips, so match the URL). */
+const CONTROL_STATUS_URL = "/api/mecatl-control/status";
+const controlStatus = (mode: "managed" | "external") => ({
+  mode,
+  provider: mode === "external" ? "external daemon" : "openai",
+  isMock: false,
+  running: true,
+});
+
 afterEach(async () => {
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -73,8 +83,9 @@ describe("RuntimeStatusProvider offline cause", () => {
     ).toBeInTheDocument();
   });
 
-  it("names a daemon 401 as a rejected credential with the env remediation", async () => {
+  it("names an external daemon's 401 as a rejected credential with the env remediation and the settings link", async () => {
     stubHarnessFetch((request) => {
+      if (request.url === CONTROL_STATUS_URL) return controlStatus("external");
       if (request.path === "/api/auth/oidc/status")
         return oidcStatus({ configured: false, state: "not-configured" });
       if (request.path === "/v1/models")
@@ -100,6 +111,54 @@ describe("RuntimeStatusProvider offline cause", () => {
     expect(
       screen.queryByRole("button", { name: /Sign in/ }),
     ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Open sign-in settings" }),
+    ).toHaveAttribute("href", "/workspace/settings/provider");
+    expect(
+      screen.queryByRole("button", { name: "Restart daemon" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("in managed mode a daemon 401 offers Restart daemon — never a link to a settings page with no sign-in card", async () => {
+    const stub = stubHarnessFetch((request) => {
+      if (request.url === CONTROL_STATUS_URL) return controlStatus("managed");
+      if (request.path === "/v1/models")
+        return jsonResponse(401, {
+          code: "unauthenticated",
+          error: "missing or invalid bearer token",
+        });
+      return undefined;
+    });
+    render(
+      <RuntimeStatusProvider>
+        <CauseProbe />
+      </RuntimeStatusProvider>,
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("probe")).toHaveTextContent(
+        "offline:credential-rejected",
+      ),
+    );
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("Credential rejected");
+    expect(alert).toHaveTextContent(/controller's token/);
+    expect(alert).not.toHaveTextContent(/MECATL_AUTH_TOKEN/);
+    expect(
+      screen.getByRole("button", { name: "Restart daemon" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "Open sign-in settings" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Sign in/ }),
+    ).not.toBeInTheDocument();
+    // Nothing asked the OIDC status route: managed mode has no upstream sign-in.
+    expect(
+      stub.requests.some((request) => request.path === "/api/auth/oidc/status"),
+    ).toBe(false);
+    // One banner owns the band: the generic strip did not stack under it.
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    expect(alert).not.toHaveTextContent("Mecatl is unreachable.");
   });
 
   it("keeps the plain 'Mecatl is unreachable.' strip for a daemon that is down", async () => {

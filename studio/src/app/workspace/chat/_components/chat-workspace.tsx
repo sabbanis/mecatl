@@ -90,6 +90,7 @@ import {
 } from "@/lib/session-kinds";
 import { useShortcut } from "@/lib/shortcuts/use-shortcuts";
 import { useThreadSessionIds } from "@/lib/thread-map";
+import type { SessionToolProfile } from "@/lib/tool-profile";
 import { cn } from "@/lib/utils";
 import {
   ChatInput,
@@ -354,6 +355,8 @@ function DraftView({
   onShowSidebar,
   mode,
   onModeChange,
+  profile,
+  onProfileChange,
   models,
   autoModelLabel,
   onModelChange,
@@ -387,6 +390,10 @@ function DraftView({
   /** Pending permission mode, applied when the first send mints the session. */
   mode: SessionPermissionMode;
   onModeChange: (mode: SessionPermissionMode) => void;
+  /** Pending tool profile ("" | "no-fs"), applied when the first send mints
+      the session (the daemon's `CreateSessionRequest.profile`, ADR 0291). */
+  profile: SessionToolProfile;
+  onProfileChange: (profile: SessionToolProfile) => void;
   /** Live daemon models for the picker ("" = auto-routed). */
   models: ComposerModelOption[];
   autoModelLabel: string;
@@ -478,7 +485,6 @@ function DraftView({
               <TurnErrorStrip error={error} onRetry={onRetry} onEdit={onEdit} />
             )}
             <ChatInput
-              rows={1}
               onSend={onSend}
               initialText={seed}
               onInitialTextConsumed={onSeedConsumed}
@@ -489,6 +495,8 @@ function DraftView({
               mobileDocked
               mode={mode}
               onModeChange={onModeChange}
+              profile={profile}
+              onProfileChange={onProfileChange}
               models={models}
               autoModelLabel={autoModelLabel}
               onModelChange={onModelChange}
@@ -669,11 +677,23 @@ export function ChatWorkspace({
   // and lands when the run ends; `busy` mirrors the chat hook's isStreaming,
   // which is declared below this call, hence the state bridge.
   const [modeBusy, setModeBusy] = useState(false);
-  const { mode, modeRef, changeMode, refreshMode, pendingMode } =
-    useSessionMode(isMockSelected ? null : selectedId || null, {
-      busy: modeBusy,
-    });
+  const {
+    mode,
+    modeRef,
+    changeMode,
+    refreshMode,
+    pendingMode,
+    profile,
+    profileRef,
+    profileKnown,
+    changeProfile,
+  } = useSessionMode(isMockSelected ? null : selectedId || null, {
+    busy: modeBusy,
+  });
   const getCreateMode = useCallback(() => modeRef.current, [modeRef]);
+  // The tool profile rides the same draft→mint path as the mode: pending
+  // local state read via ref when the first send mints the session.
+  const getCreateProfile = useCallback(() => profileRef.current, [profileRef]);
 
   // The composer's model picker: live daemon models minus the Studio-side
   // disabled set; "" = auto-routed. Like mode, the pick is pending local
@@ -836,6 +856,7 @@ export function ChatWorkspace({
     createMode: getCreateMode,
     createModel: getCreateModel,
     createEffort: getCreateEffort,
+    createProfile: getCreateProfile,
     // The inventory poll's lifecycle state: running/awaiting attaches the
     // durable watch so an externally-driven run renders live (ADR 0250).
     sessionState: hookSessionId
@@ -1867,12 +1888,16 @@ export function ChatWorkspace({
           // confirms it (passing the pick AS `mode` hid the pending state).
           mode={mode}
           onModeChange={debugChat ? undefined : changeMode}
+          // Display-only: the profile is fixed at create and the daemon never
+          // reports it, so only a chat Studio minted (remembered) shows one.
+          profile={profileKnown ? profile : undefined}
           pendingMode={pendingMode}
           modeSwitchDeferred
           providerRoute={providerRoute}
           modelResolution={sessionDetailStatus}
           debugMcpServers={sessionDetail?.debugMcpServers}
           debugMcpTools={sessionDetail?.debugMcpTools}
+          placement={sessionDetail?.placement ?? null}
           models={modelOptions}
           autoModelLabel={routingEnabled ? "Auto-routed" : "Default model"}
           onSwitchModel={debugChat ? undefined : handleSwitchModel}
@@ -1917,6 +1942,8 @@ export function ChatWorkspace({
             onShowSidebar={() => setSidebarOpen(true)}
             mode={mode}
             onModeChange={changeMode}
+            profile={profile}
+            onProfileChange={changeProfile}
             onLocalCommand={handleSlashBuiltin}
             builtinGates={builtinGates}
             onDraftChange={setHasDraft}
@@ -1957,6 +1984,8 @@ export function ChatWorkspace({
             onShowSidebar={() => setSidebarOpen(true)}
             mode={mode}
             onModeChange={changeMode}
+            profile={profile}
+            onProfileChange={changeProfile}
             onLocalCommand={handleSlashBuiltin}
             builtinGates={builtinGates}
             onDraftChange={setHasDraft}

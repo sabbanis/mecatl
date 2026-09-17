@@ -125,7 +125,12 @@ Each rule is backed by a test; break the rule and its test names you.
    verdict; never offered on the draft, the mock tour or an AI-debug chat.
    (hermetic: session creation is forwarded verbatim; `worktrees.test.ts`,
    `create-body.test.ts`, `worktree-picker-dialog.test.tsx`, the Playwright
-   worktree test.)
+   worktree test.) The chat header SHOWS the placement the daemon bound —
+   the snapshot's `placement` display metadata (label · branch, kind and
+   short revision on hover; "No filesystem" for a no-fs session) as
+   `placement-badge.tsx`, the TUI's startup placement line; never a path,
+   never a selector, hidden when an older daemon omits it
+   (`placement-badge.test.tsx`, `client-actions.test.ts`).
 3. **Credentials never cross the browser/controller boundary.** No key-paste
    UI anywhere; `mecated` reads `~/.config/mecatl/auth.yaml`. The proxy's
    header allowlist excludes `authorization` from the browser.
@@ -429,8 +434,13 @@ Each rule is backed by a test; break the rule and its test names you.
     click), "Open sign-in settings", Retry — and re-probe on the callback
     page's `mecatl-oidc` message and on window focus, so the connected flip
     (and `use-agent-chat`'s transcript rehydrate, the resume of the open
-    chat) never waits for the 5 s poll. A chat-level 401 puts the same title
-    + remedy on the error strip and re-probes at once. Everything else keeps
+    chat) never waits for the 5 s poll. Managed mode has no upstream sign-in:
+    its daemon 401 (the controller's own token refused) gets "Restart daemon"
+    and the controller-token remedy instead of a sign-in link to a provider
+    page with no sign-in card; an `oidc_*` code proves the proxy is external
+    and keeps the sign-in actions whatever `mode` says. A chat-level 401 puts
+    the same title + remedy on the error strip and re-probes at once.
+    Everything else keeps
     "Mecatl is unreachable." There is ONE deployment (MECATL_BASE_URL): no
     saved-target list, and the daemon URL is never rendered (rule 3).
     (`offline-cause.test.ts`, `sdk-auth-errors.test.ts`,
@@ -450,6 +460,19 @@ Each rule is backed by a test; break the rule and its test names you.
     document carries one), omitting every empty value. The pill links to
     Settings → Diagnostics. (`connection-indicator.test.tsx`, the
     Playwright connected-indicator test.)
+23. **The `?prompt=` deep link never sends without a click.** The chat
+    route's arrival prompt (`lib/chat-seed.ts` → `use-seed-prompt.tsx`, the
+    web analogue of `mecatui -p`; the PWA share target lands there too)
+    pre-fills the composer. `&send=1` only puts the exact text behind the
+    `SeedPromptDialog` confirmation, because a URL is drive-by reachable and
+    under posture auto/yolo a prompt is tool execution in the user's
+    workspace; a same-origin referrer proves nothing (a link in a chat
+    message is same-origin). A leading-`/` prompt is a command and stays
+    prefill-only whatever `send` says; control characters other than newline
+    and tab are dropped; the query is stripped with a native replaceState on
+    the CURRENT path once consumed, so a reload or Back never re-seeds.
+    (`chat-seed.test.ts`, `use-seed-prompt.test.tsx`,
+    `seed-prompt-dialog.test.tsx`, the Playwright `?prompt=` tests.)
 
 ## Gotchas
 
@@ -530,6 +553,27 @@ Each rule is backed by a test; break the rule and its test names you.
   `mcp-prompt-picker.test.tsx`, `mcp-resource-picker.test.tsx`,
   `chat-input-mcp-insert.test.tsx`, `registry.test.ts`, the Playwright
   MCP prompt / resource tests.)
+- The per-chat / per-schedule TOOL PROFILE (the daemon's
+  `CreateSessionRequest.profile`, `""` | `"no-fs"`, ADR 0291 — the web
+  analogue of a shell-less run) is picked in the composer's Mode menu
+  ("Tools" section, `tool-profile-picker.tsx`; the pill reads "· No FS") on
+  a DRAFT only and rides the mint (`useSessionMode().profileRef` →
+  `useAgentChat({ createProfile })` → `createHarnessSession({ profile })`,
+  `""` omits the key so the ordinary create body is unchanged). The daemon
+  fixes it at create and reports it on NO snapshot or row, so a live chat
+  shows only what Studio remembered choosing
+  (`src/lib/session-profile-memory.ts`, browser-local, bounded; a chat
+  minted elsewhere is UNKNOWN and shows no line — never a guessed default).
+  Schedules own the same field in the form ("Tool profile" select,
+  `schedule-form.tsx`) and the detail page's Tools fact + `no filesystem`
+  badge. `serverCapabilities.bash === false` (the operator's `--no-shell`)
+  adds a muted "Shell is disabled on this daemon" note; there is no
+  capability flag for profiles, so a pre-0291 daemon's 400 is shown
+  verbatim on the draft. (`tool-profile.test.ts`,
+  `session-profile-memory.test.ts`, `create-body.test.ts`,
+  `use-session-mode.test.ts`, `use-agent-chat.profile.test.ts`,
+  `tool-profile-picker.test.tsx`, `schedule-form.test.tsx`,
+  `use-agent-cron.test.ts`.)
 
 <!-- BEGIN:nextjs-agent-rules -->
 

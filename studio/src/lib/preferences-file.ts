@@ -341,6 +341,9 @@ export const EXCLUDED_STORAGE_KEYS: readonly string[] = [
   // Workspace-services enrollment markers are per session.
   "mecatl-studio.enrollment-dismissed:",
   "mecatl-studio.enrollment-connected:",
+  // Which tool profile each Studio-minted chat was created with — keyed by
+  // daemon session id, so it means nothing on another daemon.
+  "mecatl-studio.session-tool-profiles",
 ];
 
 const ENTRIES_BY_KEY: ReadonlyMap<string, PreferenceEntry> = new Map(

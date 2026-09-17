@@ -2,9 +2,13 @@
 
 /**
  * Remote sign-in card for OIDC-protected external deployments (requirement
- * H3), mounted by the provider settings page in external mode only. Talks
- * only to the server-tier auth routes (`/api/auth/oidc/*`); no token ever
- * reaches this component (rule 3) and no daemon address is rendered.
+ * H3), mounted by the provider settings page in external mode only. It is
+ * also where the workspace's auth-recovery banner sends a signed-out or
+ * expired session ("Open sign-in settings", `features/agent/auth-recovery-
+ * banner.tsx`) — the web analogue of the TUI's `/connect` after a login
+ * failure. Talks only to the server-tier auth routes (`/api/auth/oidc/*`);
+ * no token ever reaches this component (rule 3) and no daemon address is
+ * rendered.
  *
  * Beyond Sign in / Sign out it carries the `mecatui login` review step: an
  * RFC 9728-DISCOVERED profile (issuer, client id, audience, scopes) is listed

@@ -37,6 +37,8 @@ import {
   type SessionPermissionMode,
   type SessionTranscript,
 } from "@/lib/protocol";
+import { rememberSessionProfile } from "@/lib/session-profile-memory";
+import type { SessionToolProfile } from "@/lib/tool-profile";
 import { changedFileFromToolCall } from "@/lib/tool-summary";
 import {
   enqueueAsk,
@@ -676,6 +678,11 @@ export function useAgentChat(
      *  the create independently of the model pick — an auto-routed session
      *  can still ask for a tier. */
     createEffort?: () => string;
+    /** The composer's pending tool profile ("" = the deployment default,
+     *  field omitted; "no-fs" = the file-less catalog, ADR 0291); read at
+     *  mint time like createMode. Fixed at create, so the choice is also
+     *  REMEMBERED browser-locally for the live chat's display-only line. */
+    createProfile?: () => SessionToolProfile;
     /**
      * The session's daemon lifecycle state from the inventory poll
      * (idle/running/awaiting/…). Reactive — when it reads running/awaiting
@@ -924,6 +931,8 @@ export function useAgentChat(
   createModelRef.current = options?.createModel;
   const createEffortRef = useRef(options?.createEffort);
   createEffortRef.current = options?.createEffort;
+  const createProfileRef = useRef(options?.createProfile);
+  createProfileRef.current = options?.createProfile;
   const onRunEndedRef = useRef(options?.onRunEnded);
   onRunEndedRef.current = options?.onRunEnded;
   const onTitleRef = useRef(options?.onTitle);
@@ -2076,6 +2085,7 @@ export function useAgentChat(
         if (!daemonId) {
           const createModel = createModelRef.current?.() ?? null;
           const createEffort = createEffortRef.current?.() ?? "";
+          const createProfile = createProfileRef.current?.() ?? "";
           daemonId = await createHarnessSession(
             encodeSessionPermissionMode(createModeRef.current?.() ?? "default"),
             {
@@ -2086,9 +2096,14 @@ export function useAgentChat(
                   }
                 : {}),
               ...(createEffort ? { reasoningEffort: createEffort } : {}),
+              ...(createProfile ? { profile: createProfile } : {}),
             },
           );
           daemonIdRef.current = daemonId;
+          // The profile is fixed at create and never reported back: remember
+          // it BEFORE the host learns the id, so the live chat's Tools line
+          // can read it the moment the mode hook re-keys onto the new id.
+          rememberSessionProfile(daemonId, createProfile);
           void refreshSlashCommands(daemonId);
           // The pre-mint record above keyed nothing; re-key it now.
           if (attachments) {

@@ -43,7 +43,7 @@ export function EditScheduleDialog({
   onClose: () => void;
 }) {
   // The stored draft is captured once on mount: it seeds the form and supplies
-  // the fields the form has no controls for (profile, limits).
+  // the fields the form has no controls for (limits).
   const [storedDraft] = useState(() => scheduleDraftFromRow(row));
   return (
     <ScheduleDialog

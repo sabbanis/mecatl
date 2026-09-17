@@ -12,7 +12,11 @@ import {
   toWireCapabilities,
 } from "./inventory";
 import { resetHarnessClient } from "./sdk";
-import { jsonResponse, stubHarnessFetch } from "./sdk-test-stub";
+import {
+  jsonResponse,
+  problemResponse,
+  stubHarnessFetch,
+} from "./sdk-test-stub";
 
 /**
  * Pins the daemon inventory contract over the SDK: the routes the SDK hits
@@ -72,6 +76,25 @@ describe("probeHarness", () => {
     const status = await probeHarness();
     expect(status.live).toBe(false);
     expect(status.detail).not.toBe("");
+  });
+
+  it("keeps the proxy's oidc_session_expired code through the SDK's 401 collapse, so the sign-in banner can route it", async () => {
+    // The SDK folds every 401 into AuthenticationError("Authentication
+    // failed") before reading the body; the proxy's code survives only on
+    // the error's `cause`, which toHarnessError reads back.
+    stubHarnessFetch(() =>
+      problemResponse(
+        401,
+        "oidc_session_expired",
+        "The OIDC session expired — sign in again from Settings.",
+      ),
+    );
+    await expect(probeHarness()).resolves.toEqual({
+      live: false,
+      detail: "The OIDC session expired — sign in again from Settings.",
+      status: 401,
+      code: "oidc_session_expired",
+    });
   });
 });
 

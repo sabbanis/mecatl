@@ -33,6 +33,8 @@ const CREATE_ALLOWED = new Set([
   "model_id",
   "provider_id",
   "reasoning_effort",
+  // The tool profile (ADR 0291): "no-fs" only; "" omits the key.
+  "profile",
 ]);
 const FORK_ALLOWED = new Set([
   "title",
@@ -189,6 +191,38 @@ describe("session create bodies stay inside the daemon's strict field set", () =
       "model_id",
       "provider_id",
     ]);
+  });
+
+  it('the "No filesystem" pick rides the create as profile: "no-fs"', async () => {
+    const captured = captureCreates();
+    await createHarnessSession("default", { profile: "no-fs" });
+    const body = captured.body();
+    expect(Object.keys(body).every((k) => CREATE_ALLOWED.has(k))).toBe(true);
+    expect(body).toEqual({ mode: "default", profile: "no-fs" });
+  });
+
+  it("a no-fs create still carries the model and effort picks alongside", async () => {
+    const captured = captureCreates();
+    await createHarnessSession("plan", {
+      modelId: "m",
+      providerId: "openrouter",
+      reasoningEffort: "high",
+      profile: "no-fs",
+    });
+    expect(captured.body()).toEqual({
+      mode: "plan",
+      model_id: "m",
+      provider_id: "openrouter",
+      reasoning_effort: "high",
+      profile: "no-fs",
+    });
+  });
+
+  it('the default profile ("") OMITS the key so the ordinary create body is unchanged', async () => {
+    const captured = captureCreates();
+    await createHarnessSession("default", { profile: "" });
+    expect(Object.hasOwn(captured.body(), "profile")).toBe(false);
+    expect(captured.body()).toEqual({ mode: "default" });
   });
 
   it("effort-switch fork carries reasoning_effort with NO model (the source's model carries)", async () => {

@@ -140,6 +140,11 @@ const capabilities = {
   // GET /v1/mcp/sources (the fixture's `fixture-mcp`).
   session_debug: true,
   debug_mcp: true,
+  // The learning review queue (ADR 0109): Settings → Learning's proposal
+  // list/detail/decision/undo routes below, and the sibling Reflect card's
+  // POST /v1/sessions/{id}/reflect.
+  learning_proposals: true,
+  reflection: true,
 };
 
 const snapshot = {
@@ -177,6 +182,82 @@ const snapshot = {
   },
   capabilities,
 };
+
+// Learning review queue (proto LearningProposal, stdlib-JSON: snake_case,
+// `{seconds}` timestamps, int64 event_seq as a number): one staged fact
+// whose evidence still resolves, and one deferred procedure whose evidence
+// is gone — the Pending/Deferred pills, the Approve gate, and the Details
+// provenance rows all have something to show. `GET /v1/learning/proposals`
+// filters these by the `status` query in the server below.
+const learningProposals = [
+  {
+    id: "prop-1",
+    version: "2",
+    status: "staged",
+    kind: "fact",
+    key: "scheduler/flaky-test",
+    value: "The scheduler test races the claim sentinel; run it with -count=3.",
+    description: "How the flaky scheduler test was diagnosed",
+    triggers: ["scheduler", "flaky"],
+    evidence: [
+      {
+        session_id: sessionID,
+        locator: "tool",
+        ordinal: 1,
+        event_seq: 42,
+        tool_call_id: "call-fixture-1",
+        digest: "sha256:0123456789abcdef",
+        available: true,
+        availability: "",
+        preview: "$ go test ./internal/scheduler -run TestClaim -count=3\nok",
+      },
+    ],
+    decisions: [],
+    created_at: { seconds: 1_755_000_000 },
+    updated_at: { seconds: 1_755_003_600 },
+    project_scoped: false,
+    promotion_available: true,
+    promotion_unavailable_reason: "",
+    learned_skill_id: "",
+  },
+  {
+    id: "prop-2",
+    version: "1",
+    status: "deferred_unsupported",
+    kind: "procedure",
+    key: "release/tag",
+    title: "Tag a release",
+    body: "1. Bump the version\n2. Tag\n3. Push the tag",
+    triggers: ["release"],
+    evidence: [
+      {
+        session_id: "session-fixture-gone",
+        locator: "tool",
+        ordinal: 4,
+        event_seq: 88,
+        tool_call_id: "",
+        digest: "sha256:feedfacecafebeef",
+        available: false,
+        availability: "source session deleted",
+        preview: "",
+      },
+    ],
+    decisions: [
+      {
+        kind: "defer",
+        actor: "daemon",
+        reason: "skills were unsupported",
+        at: { seconds: 1_755_000_100 },
+      },
+    ],
+    created_at: { seconds: 1_755_000_000 },
+    updated_at: { seconds: 1_755_000_100 },
+    project_scoped: false,
+    promotion_available: true,
+    promotion_unavailable_reason: "",
+    learned_skill_id: "",
+  },
+];
 
 const routes = {
   "GET /v1/compatibility": {
@@ -704,6 +785,49 @@ const routes = {
       required_services: 1,
       presentation_url: "",
     },
+  // Learning review queue: the per-proposal read the Details disclosure
+  // performs, the approve/reject decision and the undo (each answers the
+  // proposal at its next version), and the Reflect card's explicit pass.
+  "GET /v1/learning/proposals/prop-1": { proposal: learningProposals[0] },
+  "GET /v1/learning/proposals/prop-2": { proposal: learningProposals[1] },
+  "POST /v1/learning/proposals/prop-1/decision": {
+    proposal: {
+      ...learningProposals[0],
+      version: "3",
+      status: "promoted",
+      promotion: {
+        memory_key: "scheduler/flaky-test",
+        previous_exists: false,
+        previous_version: "",
+        result_version: "1",
+      },
+    },
+  },
+  "POST /v1/learning/proposals/prop-2/decision": {
+    proposal: {
+      ...learningProposals[1],
+      version: "2",
+      status: "skill_materialized",
+      learned_skill_id: "learned-fixture-1",
+    },
+  },
+  "POST /v1/learning/proposals/prop-1/undo": {
+    proposal: { ...learningProposals[0], version: "4", status: "undone" },
+  },
+  "POST /v1/learning/proposals/prop-2/undo": {
+    proposal: { ...learningProposals[1], version: "3", status: "undone" },
+  },
+  [`POST /v1/sessions/${sessionID}/reflect`]: {
+    receipt: {
+      reflection_id: "reflection-fixture-1",
+      disposition: "completed",
+      queued: 0,
+      abstained: false,
+      staged: 1,
+      promoted: 0,
+      conflicted: 0,
+    },
+  },
   "POST /v1/schedules": {},
   "PUT /v1/schedules/nightly-fixture-digest": {},
   "POST /v1/schedules/nightly-fixture-digest/pause": {},
@@ -977,6 +1101,22 @@ http
       writeSSE(response, { cursor: "c2RrY3VyLzEtZml4dHVyZQ", phase: "live" });
       const keepalive = setInterval(() => response.write(": ping\n\n"), 15_000);
       request.on("close", () => clearInterval(keepalive));
+      return;
+    }
+    if (key === "GET /v1/learning/proposals") {
+      // The queue's status pills filter server-side (`?status=`); no page
+      // cursor is ever handed out — two proposals fit one page.
+      const status =
+        new URL(request.url, "http://fixture").searchParams.get("status") ?? "";
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(
+        JSON.stringify({
+          proposals: learningProposals.filter(
+            (proposal) => status === "" || proposal.status === status,
+          ),
+          next_cursor: "",
+        }),
+      );
       return;
     }
     if (key === "GET /v1/usermodel") {

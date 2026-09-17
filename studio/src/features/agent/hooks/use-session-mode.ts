@@ -8,6 +8,8 @@ import {
 } from "@/lib/harness/client";
 import { permissionModeLabel } from "@/lib/permission-mode";
 import type { SessionPermissionMode } from "@/lib/protocol";
+import { recallSessionProfile } from "@/lib/session-profile-memory";
+import type { SessionToolProfile } from "@/lib/tool-profile";
 import { useRuntimeStatus } from "../runtime-status";
 
 /**
@@ -50,6 +52,37 @@ export function useSessionMode(
   } | null>(null);
   const pendingMode =
     pending && pending.sessionId === sessionId ? pending.mode : null;
+
+  // The TOOL PROFILE (ADR 0291's `CreateSessionRequest.profile`): a DRAFT
+  // holds the pick as pending local state, read via `profileRef` when the
+  // first send mints the session; a LIVE chat only shows what Studio
+  // remembers choosing at create (the daemon reports it on no snapshot and
+  // has no switch), so `profileKnown` is false for a chat minted elsewhere.
+  const [profile, setProfile] = useState<SessionToolProfile>("");
+  const profileRef = useRef(profile);
+  profileRef.current = profile;
+  const [profileKnown, setProfileKnown] = useState(true);
+  useEffect(() => {
+    if (!sessionId) {
+      // Back to the draft: the pick starts over at the default.
+      setProfile("");
+      setProfileKnown(true);
+      return;
+    }
+    const remembered = recallSessionProfile(sessionId);
+    setProfile(remembered ?? "");
+    setProfileKnown(remembered !== null);
+  }, [sessionId]);
+  /** Draft only: picks the profile the mint will carry. False (no-op) on a
+   *  live chat — the profile is fixed at create. */
+  const changeProfile = useCallback(
+    (next: SessionToolProfile): boolean => {
+      if (sessionId) return false;
+      setProfile(next);
+      return true;
+    },
+    [sessionId],
+  );
 
   /** The live round-trip: optimistic set, then the echo or the rollback. */
   const applyMode = useCallback((id: string, next: SessionPermissionMode) => {
@@ -146,5 +179,15 @@ export function useSessionMode(
     })();
   }, [sessionId, connected]);
 
-  return { mode, modeRef, changeMode, refreshMode, pendingMode };
+  return {
+    mode,
+    modeRef,
+    changeMode,
+    refreshMode,
+    pendingMode,
+    profile,
+    profileRef,
+    profileKnown,
+    changeProfile,
+  };
 }

@@ -7,6 +7,7 @@ import {
   modeAccentClass,
   modeBadgeVariant,
   modeComposerRingClass,
+  modeDotClass,
   nextPermissionMode,
   PERMISSION_MODE_CYCLE,
   PERMISSION_MODE_OPTIONS,
@@ -80,10 +81,12 @@ describe("mode colour cue", () => {
     expect(modeAccentClass("default")).toBe("");
     expect(modeBadgeVariant("default")).toBeNull();
     expect(modeComposerRingClass("default")).toBe("");
+    expect(modeDotClass("default")).toBe("");
     for (const mode of ["plan", "acceptEdits"] as const) {
       expect(modeAccentClass(mode)).not.toBe("");
       expect(modeBadgeVariant(mode)).not.toBeNull();
       expect(modeComposerRingClass(mode)).toContain("ring-1");
+      expect(modeDotClass(mode)).toMatch(/^bg-/);
     }
   });
 
@@ -94,8 +97,13 @@ describe("mode colour cue", () => {
     expect(modeAccentClass("acceptEdits")).toBe("text-success");
     expect(modeBadgeVariant("acceptEdits")).toBe("success");
     expect(modeComposerRingClass("acceptEdits")).toContain("border-success");
+    // The pill's dot and the box tint share one hue per mode, so the pill
+    // and the rail can never disagree.
+    expect(modeDotClass("plan")).toBe("bg-info");
+    expect(modeDotClass("acceptEdits")).toBe("bg-success");
     // Distinct cues: a glance tells plan from accept-edits.
     expect(modeAccentClass("plan")).not.toBe(modeAccentClass("acceptEdits"));
+    expect(modeDotClass("plan")).not.toBe(modeDotClass("acceptEdits"));
   });
 });
 

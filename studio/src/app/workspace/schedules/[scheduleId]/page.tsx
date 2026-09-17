@@ -43,6 +43,7 @@ import {
 } from "@/lib/formatters";
 import { listScheduleFires } from "@/lib/harness/client";
 import type { ScheduleFireRow, ScheduleRow } from "@/lib/protocol";
+import { toolProfileLabel } from "@/lib/tool-profile";
 import { pageTitleClass } from "@/lib/typography";
 import { EditScheduleDialog } from "../_components/edit-schedule-dialog";
 import { ScheduleStatusBadge } from "../_components/schedule-badges";
@@ -311,6 +312,9 @@ export default function ScheduleDetailPage() {
             <ScheduleStatusBadge row={row} />
             <Badge variant="outline">{permissionModeLabel(row.mode)}</Badge>
             {row.mutating && <Badge variant="warning">mutating</Badge>}
+            {row.profile === "no-fs" && (
+              <Badge variant="outline">no filesystem</Badge>
+            )}
             {firing && (
               <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
                 <Loader2 className="size-3.5 animate-spin" />
@@ -337,6 +341,9 @@ export default function ScheduleDetailPage() {
               <FactRow label="Mode">{permissionModeLabel(row.mode)}</FactRow>
               <FactRow label="Write access">
                 {row.mutating ? "Writes allowed" : "Read-only"}
+              </FactRow>
+              <FactRow label="Tools">
+                {toolProfileLabel(row.profile === "no-fs" ? "no-fs" : "")}
               </FactRow>
               {row.owner && <FactRow label="Owner">{row.owner}</FactRow>}
             </FactGroup>

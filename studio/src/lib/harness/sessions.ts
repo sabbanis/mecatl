@@ -31,6 +31,7 @@ import {
   sessionTranscriptFromSdk,
   translateEvent,
 } from "@/lib/protocol";
+import type { SessionToolProfile } from "@/lib/tool-profile";
 import { HarnessApiError } from "./errors";
 import { getHarnessClient, harness, toHarnessError } from "./sdk";
 
@@ -123,6 +124,11 @@ export async function createHarnessSession(
     /** A reasoning-effort tier (low…max); ""/absent omits the field so the
      *  operator's `--reasoning-effort` default applies. */
     reasoningEffort?: string;
+    /** The tool profile (ADR 0291): "no-fs" attenuates the session to the
+     *  file-less catalog (no Shell/Read/Edit/Write…); ""/absent omits the
+     *  field so the deployment default applies and the ordinary create body
+     *  stays byte-identical. Fixed at create — there is no switch. */
+    profile?: SessionToolProfile;
     signal?: AbortSignal;
   },
 ): Promise<string> {
@@ -130,6 +136,7 @@ export async function createHarnessSession(
     getHarnessClient().sessions.create(
       {
         mode: sessionPermissionModeToSdk(mode),
+        ...(options?.profile ? { profile: options.profile } : {}),
         // Omitted entirely on auto-routing so the daemon's own selection
         // applies. The daemon requires provider_id whenever model_id is set
         // (a bare model is ambiguous across providers).
@@ -834,9 +841,39 @@ interface HarnessSessionTokenUsage {
   reasoningTokens: number;
 }
 
+/**
+ * The server-owned placement's bounded DISPLAY metadata (ADR 0291): the
+ * daemon's kind word (`local`, `git-worktree`, `no-fs`…), a label (a
+ * worktree's directory name), the checked-out branch and the HEAD revision.
+ * Never a path and never a selector — Studio only ever shows it.
+ */
+export interface HarnessPlacement {
+  kind: string;
+  label: string;
+  branch: string;
+  revision: string;
+}
+
+/** The snapshot's `placement`, or null when the daemon omits it or names
+ *  neither a label nor a kind (an older daemon, or no display metadata). */
+function placementFromSnapshot(
+  value: SessionSnapshot["placement"],
+): HarnessPlacement | null {
+  if (!value || !(value.label || value.kind)) return null;
+  return {
+    kind: value.kind,
+    label: value.label,
+    branch: value.branch,
+    revision: value.revision ?? "",
+  };
+}
+
 /** Session-snapshot detail Studio consumes beyond the mode. */
 export interface HarnessSessionDetail {
   resolvedModel: HarnessResolvedModel | null;
+  /** The placement's display metadata the chat header badges (label and
+   *  branch); null on an older daemon or when the snapshot carries none. */
+  placement: HarnessPlacement | null;
   /** The server capabilities echo when the daemon stamps one on the session
    *  (B1.4), in the SDK's camelCase projection; older daemons omit it — fall
    *  back to the compatibility document. */
@@ -889,6 +926,7 @@ export async function fetchHarnessSessionDetail(
           reasoningEffort: resolved.reasoningEffort ?? "",
         }
       : null,
+    placement: placementFromSnapshot(snapshot.placement),
     capabilities: snapshot.capabilities ? { ...snapshot.capabilities } : {},
     tokenUsage: total
       ? {
@@ -927,12 +965,7 @@ export interface HarnessSessionIdentity {
   kind: string;
   mode: SessionPermissionMode;
   resolvedModel: HarnessResolvedModel | null;
-  placement: {
-    kind: string;
-    label: string;
-    branch: string;
-    revision: string;
-  } | null;
+  placement: HarnessPlacement | null;
   /** Unix seconds; 0 when the daemon reports none. */
   createdAtUnix: number;
   turns: number;
@@ -987,7 +1020,6 @@ export function sessionIdentityFromSnapshot(
   fallbackId = "",
 ): HarnessSessionIdentity {
   const resolved = snapshot.resolvedModel;
-  const placement = snapshot.placement;
   const limits = snapshot.limits;
   return {
     id: snapshot.sessionId || fallbackId,
@@ -1004,15 +1036,7 @@ export function sessionIdentityFromSnapshot(
           reasoningEffort: resolved.reasoningEffort ?? "",
         }
       : null,
-    placement:
-      placement && (placement.label || placement.kind)
-        ? {
-            kind: placement.kind,
-            label: placement.label,
-            branch: placement.branch,
-            revision: placement.revision ?? "",
-          }
-        : null,
+    placement: placementFromSnapshot(snapshot.placement),
     createdAtUnix: Number(snapshot.createdAtUnix) || 0,
     turns: Number(snapshot.turns) || 0,
     toolCalls: Number(snapshot.toolCalls) || 0,

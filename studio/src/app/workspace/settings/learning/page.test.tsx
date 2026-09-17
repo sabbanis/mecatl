@@ -1,5 +1,10 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  type LearningProposal,
+  listLearningProposals,
+} from "@/lib/harness/learning";
 import type { HarnessRuntimeSettingsDoc } from "@/lib/harness/runtime-settings";
 import LearningSettingsPage from "./page";
 
@@ -119,5 +124,144 @@ describe("LearningSettingsPage", () => {
         name: "Learning is not enabled on this daemon",
       }),
     ).toBeInTheDocument();
+  });
+});
+
+/**
+ * The review queue's paging and refresh (the TUI's n/p and r): every list
+ * request carries the page size, the Deferred pill sends the daemon's exact
+ * status token, Load more appends the next page by cursor, and Refresh
+ * restarts from the first page.
+ */
+describe("Review queue paging", () => {
+  const listMock = vi.mocked(listLearningProposals);
+  const proposal = (id: string, status = "staged"): LearningProposal => ({
+    id,
+    version: "1",
+    status,
+    kind: "fact",
+    key: `key/${id}`,
+    value: `value of ${id}`,
+    description: "",
+    title: "",
+    body: "",
+    triggers: [],
+    evidence: [
+      {
+        sessionId: "s1",
+        locator: "tool",
+        ordinal: 1,
+        eventSeq: 1,
+        toolCallId: "",
+        digest: "d",
+        available: true,
+        availability: "",
+        preview: "",
+      },
+    ],
+    evidenceCount: 1,
+    decisions: [],
+    promotion: null,
+    createdAtUnix: 0,
+    updatedAtUnix: 0,
+    projectScoped: false,
+    promotionAvailable: true,
+    promotionUnavailableReason: "",
+    learnedSkillId: "",
+  });
+
+  beforeEach(() => {
+    runtimeStatus.serverCapabilities = { learning_proposals: true };
+    listMock.mockReset();
+    listMock.mockResolvedValue({ proposals: [], nextCursor: "" });
+  });
+
+  it("requests the first page with the page size and the Deferred pill's exact token", async () => {
+    const user = userEvent.setup();
+    render(<LearningSettingsPage />);
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(1));
+    expect(listMock.mock.calls[0]?.[0]).toEqual({
+      status: "staged",
+      limit: 50,
+    });
+    await user.click(screen.getByRole("button", { name: "Deferred" }));
+    await waitFor(() => expect(listMock).toHaveBeenCalledTimes(2));
+    expect(listMock.mock.calls[1]?.[0]).toEqual({
+      status: "deferred_unsupported",
+      limit: 50,
+    });
+    expect(screen.getByRole("button", { name: "Deferred" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(
+      await screen.findByText("No deferred proposals."),
+    ).toBeInTheDocument();
+  });
+
+  it("appends the next page through Load more, sending the cursor", async () => {
+    listMock
+      .mockResolvedValueOnce({
+        proposals: [proposal("p1")],
+        nextCursor: "cursor-2",
+      })
+      .mockResolvedValueOnce({
+        // The daemon may repeat a row that moved between pages; it is
+        // listed once.
+        proposals: [proposal("p1"), proposal("p2")],
+        nextCursor: "",
+      });
+    const user = userEvent.setup();
+    render(<LearningSettingsPage />);
+    const list = await screen.findByRole("list");
+    expect(within(list).getAllByRole("listitem")).toHaveLength(1);
+    const more = screen.getByRole("button", { name: "Load more" });
+    await user.click(more);
+    await waitFor(() =>
+      expect(within(list).getAllByRole("listitem")).toHaveLength(2),
+    );
+    expect(listMock.mock.calls[1]?.[0]).toEqual({
+      status: "staged",
+      cursor: "cursor-2",
+      limit: 50,
+    });
+    expect(screen.getByText("key/p2")).toBeInTheDocument();
+    // The last page carried no cursor: nothing more to load.
+    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+  });
+
+  it("hides Load more when the first page is the whole queue", async () => {
+    listMock.mockResolvedValueOnce({
+      proposals: [proposal("p1")],
+      nextCursor: "",
+    });
+    render(<LearningSettingsPage />);
+    await screen.findByText("key/p1");
+    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
+  });
+
+  it("Refresh reloads from the first page", async () => {
+    listMock
+      .mockResolvedValueOnce({
+        proposals: [proposal("p1")],
+        nextCursor: "cursor-2",
+      })
+      .mockResolvedValueOnce({
+        proposals: [proposal("p3")],
+        nextCursor: "",
+      });
+    const user = userEvent.setup();
+    render(<LearningSettingsPage />);
+    await screen.findByText("key/p1");
+    await user.click(screen.getByRole("button", { name: "Refresh proposals" }));
+    await screen.findByText("key/p3");
+    expect(screen.queryByText("key/p1")).toBeNull();
+    // A refresh restarts the walk: no cursor, same page size.
+    expect(listMock).toHaveBeenCalledTimes(2);
+    expect(listMock.mock.calls[1]?.[0]).toEqual({
+      status: "staged",
+      limit: 50,
+    });
+    expect(screen.queryByRole("button", { name: "Load more" })).toBeNull();
   });
 });

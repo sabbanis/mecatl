@@ -38,6 +38,24 @@ function firstValue(value: string | string[] | undefined): string {
   return value ?? "";
 }
 
+/**
+ * Drop C0 control characters and DEL, keeping `\n` and `\t` (the two the
+ * composer renders). A URL carries `%00` or `%1B` verbatim and a share can
+ * pass anything; the composer is a contenteditable, and a NUL or an escape
+ * sequence in a prompt is never something the user meant to send. CRLF
+ * folds to LF because `\r` goes.
+ */
+function stripControls(text: string): string {
+  let out = "";
+  for (const ch of text) {
+    const code = ch.codePointAt(0) ?? 0;
+    const control =
+      (code < 0x20 && code !== 0x0a && code !== 0x09) || code === 0x7f;
+    if (!control) out += ch;
+  }
+  return out;
+}
+
 /** Truncate to the cap without leaving a dangling lead surrogate. */
 function clamp(text: string): string {
   if (text.length <= MAX_CHAT_SEED_CHARS) return text;
@@ -49,8 +67,9 @@ function clamp(text: string): string {
 
 /**
  * Resolve the route's query into a seed, or null when there is nothing to
- * seed. Only the first value of a repeated key counts; whitespace-only text
- * is nothing. A share's `title` and `url` join the text on their own lines
+ * seed. Only the first value of a repeated key counts; control characters
+ * other than newline and tab are dropped; whitespace-only text is nothing.
+ * A share's `title` and `url` join the text on their own lines
  * (a part the text already contains is not repeated), so a page shared from
  * a phone arrives as "Title\nhttps://…" rather than as a bare URL.
  */
@@ -58,9 +77,9 @@ export function resolveChatSeed(
   params: ChatSeedParams | null | undefined,
 ): ChatSeed | null {
   if (!params) return null;
-  const text = firstValue(params.prompt).trim();
-  const title = firstValue(params.title).trim();
-  const url = firstValue(params.url).trim();
+  const text = stripControls(firstValue(params.prompt)).trim();
+  const title = stripControls(firstValue(params.title)).trim();
+  const url = stripControls(firstValue(params.url)).trim();
   const parts: string[] = [];
   if (title && !text.includes(title)) parts.push(title);
   if (text) parts.push(text);

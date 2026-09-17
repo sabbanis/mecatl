@@ -1,9 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   decideDreamPlan,
+  describeDreamDecisionPending,
+  describeDreamUnavailable,
+  describeStaleDreamPlan,
   dreamTargetCapability,
   generateDreamPlan,
+  isDreamInProgress,
   isStaleDreamPlan,
+  listDreamTargets,
 } from "./dream";
 import { HarnessApiError } from "./errors";
 import { resetHarnessClient } from "./sdk";
@@ -142,6 +147,147 @@ describe("isStaleDreamPlan", () => {
       isStaleDreamPlan(new HarnessApiError(409, "dream_in_progress", "")),
     ).toBe(false);
     expect(isStaleDreamPlan(new Error("x"))).toBe(false);
+  });
+
+  it("treats an active conflicting decision (dream_conflict) as no longer actionable", () => {
+    expect(
+      isStaleDreamPlan(new HarnessApiError(412, "dream_conflict", "")),
+    ).toBe(true);
+  });
+});
+
+describe("decision outcome classification", () => {
+  // The two classifiers partition the daemon's dream codes: in progress
+  // (retry the SAME decision), stale (regenerate), or neither (verbatim).
+  const table: Array<[HarnessApiError, "in_progress" | "stale" | "neither"]> = [
+    [new HarnessApiError(409, "dream_in_progress", ""), "in_progress"],
+    [new HarnessApiError(0, "transport", "unreachable"), "in_progress"],
+    [new HarnessApiError(0, "protocol", "bad frame"), "in_progress"],
+    [new HarnessApiError(412, "dream_conflict", ""), "stale"],
+    [new HarnessApiError(410, "dream_terminal_conflict", ""), "stale"],
+    [new HarnessApiError(404, "dream_not_found", ""), "stale"],
+    [new HarnessApiError(404, "", ""), "stale"],
+    [new HarnessApiError(410, "", ""), "stale"],
+    [new HarnessApiError(500, "internal", "boom"), "neither"],
+    [new HarnessApiError(0, "unsupported_feature", ""), "neither"],
+    [new HarnessApiError(409, "conflict", ""), "neither"],
+  ];
+
+  it.each(table)("%o → %s", (error, expected) => {
+    expect(isDreamInProgress(error)).toBe(expected === "in_progress");
+    expect(isStaleDreamPlan(error)).toBe(expected === "stale");
+  });
+
+  it("is never in progress for a non-daemon error", () => {
+    expect(isDreamInProgress(new Error("x"))).toBe(false);
+    expect(isDreamInProgress(undefined)).toBe(false);
+  });
+});
+
+describe("describeStaleDreamPlan", () => {
+  it("words the notice per cause, defaulting to the vanished-plan copy", () => {
+    expect(
+      describeStaleDreamPlan(new HarnessApiError(412, "dream_conflict", "")),
+    ).toMatch(/different decision on that plan is already active/);
+    expect(
+      describeStaleDreamPlan(
+        new HarnessApiError(410, "dream_terminal_conflict", ""),
+      ),
+    ).toMatch(/already reached a different decision/);
+    expect(
+      describeStaleDreamPlan(new HarnessApiError(404, "dream_not_found", "")),
+    ).toMatch(/no longer valid .* generate a new one/);
+    expect(describeStaleDreamPlan(new HarnessApiError(404, "", ""))).toMatch(
+      /generate a new one/,
+    );
+  });
+});
+
+describe("describeDreamDecisionPending", () => {
+  it("names the decision and distinguishes the daemon's in-progress answer from a dropped connection", () => {
+    expect(
+      describeDreamDecisionPending(
+        new HarnessApiError(409, "dream_in_progress", ""),
+        "apply",
+      ),
+    ).toBe(
+      "The daemon is still applying that plan — retry the same decision to retrieve its receipt.",
+    );
+    expect(
+      describeDreamDecisionPending(
+        new HarnessApiError(409, "dream_in_progress", ""),
+        "dismiss",
+      ),
+    ).toMatch(/still dismissing that plan/);
+    expect(
+      describeDreamDecisionPending(
+        new HarnessApiError(0, "transport", "unreachable"),
+        "apply",
+      ),
+    ).toMatch(
+      /connection dropped .* may already be applying .* opposite decision stays unavailable/,
+    );
+  });
+});
+
+describe("describeDreamUnavailable", () => {
+  it("maps the daemon's bounded operator categories to user copy", () => {
+    expect(describeDreamUnavailable("target store is unavailable")).toBe(
+      "This memory store is not available on this daemon.",
+    );
+    expect(describeDreamUnavailable("dream planner is unavailable")).toMatch(
+      /No consolidation planner is configured/,
+    );
+    expect(
+      describeDreamUnavailable(
+        "target store lacks reviewed atomic consolidation",
+      ),
+    ).toBe("This memory store does not support reviewed consolidation.");
+    expect(
+      describeDreamUnavailable("manual dream coordinator is unavailable"),
+    ).toMatch(/coordinator is not running/);
+    expect(
+      describeDreamUnavailable(
+        "manual dreaming is unavailable while ownership enforcement is enabled",
+      ),
+    ).toMatch(/enforces session ownership/);
+    expect(describeDreamUnavailable("manual dreaming is unavailable")).toBe(
+      "Consolidation is not available on this daemon.",
+    );
+    expect(
+      describeDreamUnavailable("no manual dream target is available"),
+    ).toBe("Consolidation is not available on this daemon.");
+  });
+
+  it("passes an unknown category through verbatim (trimmed) and keeps empty empty", () => {
+    expect(describeDreamUnavailable("  planner quota exhausted ")).toBe(
+      "planner quota exhausted",
+    );
+    expect(describeDreamUnavailable("")).toBe("");
+    expect(describeDreamUnavailable("   ")).toBe("");
+  });
+});
+
+describe("listDreamTargets", () => {
+  it("lists every known target the daemon reports, whether or not it can generate", () => {
+    expect(
+      listDreamTargets({
+        user_model: { generate: false, decide: false, unavailable_reason: "x" },
+        project_memory: { generate: true, decide: true },
+      }),
+    ).toEqual(["user_model", "project_memory"]);
+    expect(listDreamTargets({ project_memory: {} })).toEqual([
+      "project_memory",
+    ]);
+  });
+
+  it("is empty for an absent, foreign, or malformed capability object", () => {
+    expect(listDreamTargets(undefined)).toEqual([]);
+    expect(listDreamTargets("nope")).toEqual([]);
+    expect(listDreamTargets({ user_model: true, project_memory: [] })).toEqual(
+      [],
+    );
+    expect(listDreamTargets({ something_else: {} })).toEqual([]);
   });
 });
 

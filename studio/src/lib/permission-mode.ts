@@ -96,6 +96,23 @@ export function modeBadgeVariant(
 }
 
 /**
+ * The filled dot that sits before a mode label on the composer's Mode pill
+ * and the mobile menu's Mode row — the same cue as the box tint, so the pill
+ * and the rail always agree even where the label collapses to "Mode". Empty
+ * for the default mode: no dot means ask-me-first.
+ */
+export function modeDotClass(mode: SessionPermissionMode): string {
+  switch (mode) {
+    case "plan":
+      return "bg-info";
+    case "acceptEdits":
+      return "bg-success";
+    default:
+      return "";
+  }
+}
+
+/**
  * The composer box's border + ring for a non-default mode (the TUI recolours
  * the whole input; a hairline tint is the browser-sized version). Empty for
  * the default, so the caller falls back to its ordinary border.

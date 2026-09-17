@@ -43,6 +43,7 @@ import { cn } from "@/lib/utils";
 import { CreateSkillDialog } from "./_components/create-skill-dialog";
 import { EditSkillDialog } from "./_components/edit-skill-dialog";
 import { LearnedSkillsPanel } from "./_components/learned-skills-panel";
+import { SkillsViewQueryWatcher } from "./_components/view-query-watcher";
 
 /** "pr-feedback" → "Pr Feedback"; the raw slug stays the id/route param. */
 function humanizeSkillName(name: string): string {
@@ -223,6 +224,13 @@ export default function WorkspaceSkillsPage() {
 
   return (
     <div className="h-full overflow-y-auto px-3 pt-6 pb-8 min-[500px]:px-4">
+      {/* `/workspace/skills?view=learned` (the learning queue's "View learned
+          skill" link) lands on the Learned tab. */}
+      <SkillsViewQueryWatcher
+        onView={(view) => {
+          if (view === "learned") setFilter("learned");
+        }}
+      />
       <div className="space-y-5">
         <div className="flex items-center justify-between gap-4">
           <h1

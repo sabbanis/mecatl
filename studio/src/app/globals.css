@@ -537,6 +537,14 @@
   white-space: pre-wrap;
   word-break: break-word;
   overflow-wrap: break-word;
+  /* Growth policy (the TUI's input box): rests at three rows, grows with
+     content to eight, then scrolls inside itself so a long draft never
+     pushes the toolbar or the send button off-screen. Rows map 1:1 onto
+     the 1.5rem line-height; a caller's `rows` / `compact` reach here as
+     --composer-min-rows on the .composer-editor wrapper (composer-frame.ts). */
+  min-height: calc(var(--composer-min-rows, 3) * 1.5rem);
+  max-height: calc(8 * 1.5rem);
+  overflow-y: auto;
 }
 
 .composer-editor .ProseMirror p {
@@ -549,6 +557,16 @@
   pointer-events: none;
   float: left;
   height: 0;
+}
+
+/* Mobile: the docked composer is a single native-messaging line (+, field,
+   mic/send), so it rests at one row whatever the caller asked for. Set on
+   the editor element itself, so it wins over the wrapper's inline
+   --composer-min-rows; the eight-row cap still applies. */
+@media (max-width: 499px) {
+  .composer-editor .ProseMirror {
+    --composer-min-rows: 1;
+  }
 }
 
 /* Mobile: small UI glyphs step up one notch for touch legibility. Unlayered

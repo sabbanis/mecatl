@@ -17,6 +17,15 @@
  *    remote sign-in card (issuer, signed-in identity, sign out).
  *  - **Retry** — the provider's immediate re-probe.
  *
+ * Managed mode is the exception: only the external proxy authenticates
+ * upstream, so a managed-mode 401 is the controller-spawned daemon rejecting
+ * the controller's own token (a daemon restarted out from under it), never
+ * an expired sign-in — and the Settings → Provider page mounts no sign-in
+ * card there. That cause gets **Restart daemon** (the controller re-spawns
+ * it with a fresh token) in place of the sign-in link, and no OIDC status
+ * read. An `oidc_*` cause proves the proxy is external, so it keeps the
+ * sign-in actions whatever `mode` the controller reported.
+ *
  * Reconnect + resume: the banner listens for the callback page's
  * `mecatl-oidc` postMessage and for window focus and calls `onRetry` at once,
  * so the connection flips back without waiting for the 5-second poll. The
@@ -31,7 +40,8 @@
  * (the daemon URL itself is never rendered — rule 3).
  */
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { restartHarnessDaemon } from "@/lib/harness/client";
 import type { OfflineCause } from "./offline-cause";
 
 export const OIDC_STATUS_URL = "/api/auth/oidc/status";
@@ -41,6 +51,10 @@ export const OIDC_POPUP_FEATURES = "width=520,height=680";
 /** The callback page's postMessage type (`src/app/api/auth/oidc/[action]`). */
 export const OIDC_CALLBACK_MESSAGE = "mecatl-oidc";
 export const SIGN_IN_SETTINGS_HREF = "/workspace/settings/provider";
+/** The managed-mode remedy for a rejected credential: the controller holds
+ *  the daemon's token, so no browser sign-in and no env var repairs it. */
+export const MANAGED_CREDENTIAL_REMEDY =
+  "The managed daemon rejected the controller's token. Restart the daemon so the controller issues it a fresh one.";
 
 /** The subset of `/api/auth/oidc/status` the banner reads; never a token. */
 export interface OidcSignInStatus {
@@ -84,19 +98,46 @@ const actionClass =
 export function AuthRecoveryBanner({
   cause,
   onRetry,
+  mode,
 }: {
   cause: OfflineCause;
   onRetry: () => void | Promise<void>;
+  /** The runtime mode the controller reported ("managed" when Studio spawns
+   *  the daemon itself; "external" when it proxies to MECATL_BASE_URL).
+   *  Omitted = external behaviour. */
+  mode?: "managed" | "external";
 }) {
   const [oidc, setOidc] = useState<OidcSignInStatus | null>(null);
+  const [restarting, setRestarting] = useState(false);
+  const [restartError, setRestartError] = useState("");
+  // A managed-mode refusal with no sign-in remedy: the daemon rejected the
+  // controller's token. Signing in cannot help, the provider page has no
+  // sign-in card, and the OIDC status route has nothing to say.
+  const managedCredential = mode === "managed" && cause.signIn === null;
 
   useEffect(() => {
+    if (managedCredential) return;
     const controller = new AbortController();
     void fetchOidcSignInStatus(controller.signal).then((status) => {
       if (!controller.signal.aborted) setOidc(status);
     });
     return () => controller.abort();
-  }, []);
+  }, [managedCredential]);
+
+  const restart = useCallback(async () => {
+    setRestartError("");
+    setRestarting(true);
+    try {
+      await restartHarnessDaemon();
+      await onRetry();
+    } catch (caught) {
+      setRestartError(
+        caught instanceof Error ? caught.message : "The restart failed.",
+      );
+    } finally {
+      setRestarting(false);
+    }
+  }, [onRetry]);
 
   useEffect(() => {
     const onMessage = (event: MessageEvent) => {
@@ -124,6 +165,7 @@ export function AuthRecoveryBanner({
         ? "Sign in"
         : null;
   const showSignIn = signInLabel !== null && oidc?.configured === true;
+  const remedy = managedCredential ? MANAGED_CREDENTIAL_REMEDY : cause.remedy;
 
   return (
     <div
@@ -134,7 +176,7 @@ export function AuthRecoveryBanner({
       <span className="font-medium" title={cause.detail || undefined}>
         {cause.title}
       </span>
-      <span className="hidden sm:inline">{cause.remedy}</span>
+      <span className="hidden sm:inline">{remedy}</span>
       {oidc?.issuer ? (
         <span className="hidden truncate md:inline">
           Target: <span className="font-mono">{oidc.issuer}</span>
@@ -145,9 +187,20 @@ export function AuthRecoveryBanner({
           {signInLabel}
         </button>
       ) : null}
-      <Link href={SIGN_IN_SETTINGS_HREF} className={actionClass}>
-        Open sign-in settings
-      </Link>
+      {managedCredential ? (
+        <button
+          type="button"
+          onClick={() => void restart()}
+          disabled={restarting}
+          className={`${actionClass} disabled:opacity-60`}
+        >
+          {restarting ? "Restarting…" : "Restart daemon"}
+        </button>
+      ) : (
+        <Link href={SIGN_IN_SETTINGS_HREF} className={actionClass}>
+          Open sign-in settings
+        </Link>
+      )}
       <button
         type="button"
         onClick={() => void onRetry()}
@@ -155,6 +208,9 @@ export function AuthRecoveryBanner({
       >
         Retry
       </button>
+      {restartError ? (
+        <span className="basis-full text-center">{restartError}</span>
+      ) : null}
     </div>
   );
 }

@@ -31,6 +31,44 @@ interface LearningDecision {
 }
 
 /**
+ * One evidence handle behind a proposal (proto LearningEvidenceRef): where
+ * the daemon read the supporting content — a source session, a locator
+ * (e.g. `tool`) plus ordinal, the event sequence and tool call — and whether
+ * that source STILL resolves to the recorded digest. `preview` is the
+ * daemon's bounded, ownership-checked re-read of the canonical content.
+ */
+export interface LearningEvidence {
+  sessionId: string;
+  locator: string;
+  ordinal: number;
+  /** int64 on the wire; proposals never approach 2^53 events. */
+  eventSeq: number;
+  toolCallId: string;
+  digest: string;
+  /** True only when the authorized source still resolves to `digest`. */
+  available: boolean;
+  /** The daemon's reason when `available` is false (may be empty). */
+  availability: string;
+  preview: string;
+}
+
+/** The memory write a promotion performed (proto LearningPromotionReceipt). */
+interface LearningPromotionReceipt {
+  memoryKey: string;
+  previousExists: boolean;
+  previousVersion: string;
+  resultVersion: string;
+}
+
+/** The daemon's status vocabulary (engine/learning/proposal.go). */
+export const PROPOSAL_STATUS_STAGED = "staged";
+export const PROPOSAL_STATUS_PROMOTED = "promoted";
+export const PROPOSAL_STATUS_REJECTED = "rejected";
+/** A procedure the daemon could not promote when it was staged (skills were
+ *  unsupported); approving it now materializes a learned-skill draft. */
+export const PROPOSAL_STATUS_DEFERRED = "deferred_unsupported";
+
+/**
  * One learning proposal, projected from the daemon's bounded digest.
  * `status` is the daemon's vocabulary: staged (pending review), promoting,
  * promoted, rejected, deferred_unsupported, conflicted, undone,
@@ -48,8 +86,12 @@ export interface LearningProposal {
   title: string;
   body: string;
   triggers: string[];
+  evidence: LearningEvidence[];
+  /** `evidence.length`, kept for row summaries. */
   evidenceCount: number;
   decisions: LearningDecision[];
+  /** The memory write behind a promoted proposal; null until promoted. */
+  promotion: LearningPromotionReceipt | null;
   createdAtUnix: number;
   updatedAtUnix: number;
   projectScoped: boolean;
@@ -63,6 +105,18 @@ export interface LearningProposal {
 function decodeLearningProposal(
   proposal: ProtoLearningProposal | undefined,
 ): LearningProposal {
+  const evidence = (proposal?.evidence ?? []).map((ref) => ({
+    sessionId: ref.sessionId,
+    locator: ref.locator,
+    ordinal: ref.ordinal,
+    eventSeq: Number(ref.eventSeq),
+    toolCallId: ref.toolCallId,
+    digest: ref.digest,
+    available: ref.available,
+    availability: ref.availability,
+    preview: ref.preview,
+  }));
+  const receipt = proposal?.promotion;
   return {
     id: proposal?.id ?? "",
     version: proposal?.version ?? "",
@@ -74,13 +128,22 @@ function decodeLearningProposal(
     title: proposal?.title ?? "",
     body: proposal?.body ?? "",
     triggers: [...(proposal?.triggers ?? [])],
-    evidenceCount: proposal?.evidence.length ?? 0,
+    evidence,
+    evidenceCount: evidence.length,
     decisions: (proposal?.decisions ?? []).map((decision) => ({
       kind: decision.kind,
       actor: decision.actor,
       reason: decision.reason,
       atUnix: timestampUnix(decision.at),
     })),
+    promotion: receipt
+      ? {
+          memoryKey: receipt.memoryKey,
+          previousExists: receipt.previousExists,
+          previousVersion: receipt.previousVersion,
+          resultVersion: receipt.resultVersion,
+        }
+      : null,
     createdAtUnix: timestampUnix(proposal?.createdAt),
     updatedAtUnix: timestampUnix(proposal?.updatedAt),
     projectScoped: proposal?.projectScoped ?? false,
@@ -88,6 +151,46 @@ function decodeLearningProposal(
     promotionUnavailableReason: proposal?.promotionUnavailableReason ?? "",
     learnedSkillId: proposal?.learnedSkillId ?? "",
   };
+}
+
+/**
+ * Whether Approve is offered — mecatui's `reflectionApprovable`: the
+ * proposal is staged or deferred, this partition can promote, and EVERY
+ * evidence handle still resolves (a proposal with no evidence is never
+ * approvable — `every` alone would be vacuously true). The daemon re-checks
+ * all of this on the decision; the UI only avoids offering what would be
+ * refused. Use `approvalBlockedReason` for the why.
+ */
+export function isProposalApprovable(proposal: LearningProposal): boolean {
+  return approvalBlockedReason(proposal) === undefined;
+}
+
+/**
+ * The plain reason Approve is disabled, undefined when it is allowed. The
+ * daemon's own `promotion_unavailable_reason` wins when it gives one.
+ */
+export function approvalBlockedReason(
+  proposal: LearningProposal,
+): string | undefined {
+  if (
+    proposal.status !== PROPOSAL_STATUS_STAGED &&
+    proposal.status !== PROPOSAL_STATUS_DEFERRED
+  ) {
+    return `A ${proposal.status.replaceAll("_", " ")} proposal cannot be approved.`;
+  }
+  if (!proposal.promotionAvailable) {
+    return (
+      proposal.promotionUnavailableReason ||
+      "This partition has no trusted memory target."
+    );
+  }
+  if (proposal.evidence.length === 0) {
+    return "This proposal records no evidence to verify.";
+  }
+  if (proposal.evidence.some((ref) => !ref.available)) {
+    return "Some of this proposal's evidence is no longer available or has changed.";
+  }
+  return undefined;
 }
 
 export interface LearningProposalPage {
@@ -115,6 +218,24 @@ export async function listLearningProposals(
     proposals: response.proposals.map(decodeLearningProposal),
     nextCursor: response.nextCursor,
   };
+}
+
+/**
+ * Re-reads ONE proposal (`GET /v1/learning/proposals/{id}`): the detail
+ * disclosure calls it so the evidence availability and version it shows are
+ * current, not the list page's snapshot. Same operator-scope rule as list.
+ */
+export async function getLearningProposal(
+  id: string,
+  signal?: AbortSignal,
+): Promise<LearningProposal> {
+  const response = await harness(() =>
+    getHarnessClient().learningProposals.get(
+      { $typeName: "mecatl.v1.GetLearningProposalRequest", id, project: "" },
+      { signal },
+    ),
+  );
+  return decodeLearningProposal(response.proposal);
 }
 
 /**

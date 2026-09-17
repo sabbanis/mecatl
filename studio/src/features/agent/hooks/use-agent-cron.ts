@@ -12,11 +12,17 @@ import {
   type ScheduleRow,
   type ScheduleSpecDraft,
 } from "@/lib/protocol";
+import type { SessionToolProfile } from "@/lib/tool-profile";
 import { useRuntimeStatus } from "../runtime-status";
 import type { CreateCronOpts, CronJob } from "../types";
 
 /** Fields the create-schedule form supplies on top of the shared opts. */
-export type CreateJobInput = CreateCronOpts & { enabled?: boolean };
+export type CreateJobInput = CreateCronOpts & {
+  enabled?: boolean;
+  /** The fire session's tool profile ("" = all tools, the default; "no-fs"
+   *  = the file-less catalog) — the spec's `profile`, ADR 0291. */
+  profile?: SessionToolProfile;
+};
 
 function toCronJob(row: ScheduleRow): CronJob {
   return {
@@ -104,7 +110,7 @@ export function useAgentCron() {
         name: opts.name,
         prompt: opts.instruction,
         trigger: { kind: "cron", cron: opts.schedule, timezone: "" },
-        profile: "",
+        profile: opts.profile ?? "",
         mode: PERMISSION_MODES.PERMISSION_MODE_PLAN,
         mutating: false,
         maxFires: 0,

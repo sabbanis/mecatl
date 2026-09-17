@@ -1,6 +1,8 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionPermissionMode } from "@/lib/protocol";
+import { rememberSessionProfile } from "@/lib/session-profile-memory";
+import { memoryStorage } from "@/test/memory-storage";
 import { useSessionMode } from "./use-session-mode";
 
 /**
@@ -252,5 +254,71 @@ describe("useSessionMode (deferred switch)", () => {
     act(() => result.current.refreshMode());
     expect(fetchHarnessSessionMode).not.toHaveBeenCalled();
     expect(result.current.mode).toBe("default");
+  });
+});
+
+/**
+ * The TOOL PROFILE alongside the mode (the daemon's `CreateSessionRequest.
+ * profile`, ADR 0291): a draft holds the pick locally and exposes it via
+ * `profileRef` for the mint; a live chat shows only what Studio remembered
+ * choosing at create — it never round-trips, because the daemon has no
+ * per-session profile read or switch — and `changeProfile` refuses there.
+ */
+describe("useSessionMode (tool profile)", () => {
+  beforeEach(() => {
+    // A real Storage per test (jsdom's is a method-less shim here); the
+    // global afterEach unstubs it, so nothing leaks between tests.
+    vi.stubGlobal("localStorage", memoryStorage());
+  });
+
+  it("holds a draft's pick locally, mirrored on profileRef, and reports success", () => {
+    const { result } = mount({ sessionId: null, busy: false });
+    expect(result.current.profile).toBe("");
+    expect(result.current.profileKnown).toBe(true);
+    let accepted = false;
+    act(() => {
+      accepted = result.current.changeProfile("no-fs");
+    });
+    expect(accepted).toBe(true);
+    expect(result.current.profile).toBe("no-fs");
+    expect(result.current.profileRef.current).toBe("no-fs");
+    // No daemon call: the profile rides the create body, never a POST.
+    expect(setHarnessSessionMode).not.toHaveBeenCalled();
+  });
+
+  it("recalls the remembered profile of a live chat Studio minted and refuses a change", async () => {
+    rememberSessionProfile("s1", "no-fs");
+    const { result } = mount({ sessionId: "s1", busy: false });
+    await waitFor(() => expect(result.current.profile).toBe("no-fs"));
+    expect(result.current.profileKnown).toBe(true);
+    let accepted = true;
+    act(() => {
+      accepted = result.current.changeProfile("");
+    });
+    expect(accepted).toBe(false);
+    expect(result.current.profile).toBe("no-fs");
+  });
+
+  it("marks a chat Studio did not mint as unknown (no line), never as the default", async () => {
+    const { result } = mount({ sessionId: "s-tui", busy: false });
+    await waitFor(() => expect(fetchHarnessSessionMode).toHaveBeenCalled());
+    expect(result.current.profile).toBe("");
+    expect(result.current.profileKnown).toBe(false);
+  });
+
+  it("re-keys onto the minted id's remembered profile, and resets on the way back to the draft", async () => {
+    const { result, rerender } = mount({ sessionId: null, busy: false });
+    act(() => {
+      result.current.changeProfile("no-fs");
+    });
+    // What the chat hook does at mint: remember, then hand the id over.
+    rememberSessionProfile("s-new", result.current.profileRef.current);
+    rerender({ sessionId: "s-new", busy: false });
+    await waitFor(() => expect(result.current.profile).toBe("no-fs"));
+    expect(result.current.profileKnown).toBe(true);
+
+    rerender({ sessionId: null, busy: false });
+    await waitFor(() => expect(result.current.profile).toBe(""));
+    expect(result.current.profileKnown).toBe(true);
   });
 });

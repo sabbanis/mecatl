@@ -11,6 +11,7 @@ import {
   PHRASE_HINT,
   ScheduleFormFields,
   type ScheduleFormValue,
+  toolProfileDescription,
   WRITE_ACCESS_OFF_NOTE,
   WRITE_ACCESS_ON_NOTE,
 } from "./schedule-form";
@@ -119,6 +120,63 @@ describe("formFromDraft write access", () => {
     const back = draftFromForm(formFromDraft(stored), stored);
     expect(back.mode).toBe(stored.mode);
     expect(back.mutating).toBe(stored.mutating);
+  });
+});
+
+/**
+ * The TOOL PROFILE (the spec's `profile`, ADR 0291 — the same field a chat's
+ * create carries): the form owns it now instead of passing the stored value
+ * through, so a user can attenuate a schedule's fire session to the
+ * file-less catalog or lift that again; the fields the form still has no
+ * control for (limits) keep riding `base`.
+ */
+describe("draftFromForm / formFromDraft tool profile", () => {
+  it('defaults a new schedule to all tools (profile omitted on the wire as "")', () => {
+    expect(emptyScheduleForm().profile).toBe("");
+    expect(draftFromForm(emptyScheduleForm()).profile).toBe("");
+  });
+
+  it("emits the picked no-fs profile", () => {
+    const draft = draftFromForm({ ...emptyScheduleForm(), profile: "no-fs" });
+    expect(draft.profile).toBe("no-fs");
+  });
+
+  it("seeds the form from a stored no-fs spec and narrows an odd stored value", () => {
+    expect(formFromDraft(makeDraft({ profile: "no-fs" })).profile).toBe(
+      "no-fs",
+    );
+    expect(formFromDraft(makeDraft({ profile: "" })).profile).toBe("");
+    // A value outside the closed set (a newer daemon's profile) reads as the
+    // default rather than leaking an unknown string onto the wire.
+    expect(
+      formFromDraft(
+        makeDraft({
+          profile: "gpu" as unknown as ScheduleSpecDraft["profile"],
+        }),
+      ).profile,
+    ).toBe("");
+  });
+
+  it("round-trips a no-fs spec while the carried limits still survive via base", () => {
+    const stored = makeDraft({
+      profile: "no-fs",
+      limits: { maxTurns: 12, maxToolCalls: 40, maxConsecutiveFailures: 3 },
+    });
+    const back = draftFromForm(formFromDraft(stored), stored);
+    expect(back.profile).toBe("no-fs");
+    expect(back.limits).toEqual(stored.limits);
+  });
+
+  it("lets an edit lift the attenuation: the form value wins over the stored base", () => {
+    const stored = makeDraft({ profile: "no-fs" });
+    const value = { ...formFromDraft(stored), profile: "" as const };
+    expect(draftFromForm(value, stored).profile).toBe("");
+  });
+
+  it("names the consequence of each profile", () => {
+    expect(toolProfileDescription("")).toMatch(/Shell and the file tools/);
+    expect(toolProfileDescription("no-fs")).toMatch(/Shell, Read, Edit, Write/);
+    expect(toolProfileDescription("no-fs")).toMatch(/web tools remain/);
   });
 });
 
@@ -462,5 +520,52 @@ describe("CronBuilderFields interval controls", () => {
     expect(screen.getByRole("combobox", { name: "Unit" })).toHaveTextContent(
       "Hours",
     );
+  });
+});
+
+describe("ScheduleFormFields tool profile control", () => {
+  const profileBox = () =>
+    screen.getByRole("combobox", { name: "Tool profile" });
+
+  it("renders All tools by default with its consequence line", () => {
+    render(<Harness />);
+    expect(profileBox()).toHaveTextContent("All tools");
+    expect(screen.getByText(toolProfileDescription(""))).toBeInTheDocument();
+    expect(screen.queryByText(toolProfileDescription("no-fs"))).toBeNull();
+  });
+
+  it("picking No filesystem patches the profile and swaps the line", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<Harness onChange={onChange} />);
+
+    await pickOption(user, profileBox(), "No filesystem");
+
+    expect(onChange).toHaveBeenCalledWith({ profile: "no-fs" });
+    expect(profileBox()).toHaveTextContent("No filesystem");
+    expect(
+      screen.getByText(toolProfileDescription("no-fs")),
+    ).toBeInTheDocument();
+  });
+
+  it("seeds from a no-fs value and can be picked back to All tools", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<Harness initial={{ profile: "no-fs" }} onChange={onChange} />);
+    expect(profileBox()).toHaveTextContent("No filesystem");
+
+    await pickOption(user, profileBox(), "All tools");
+
+    expect(onChange).toHaveBeenCalledWith({ profile: "" });
+    expect(profileBox()).toHaveTextContent("All tools");
+  });
+
+  it("is independent of the write-access switch", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<Harness initial={{ profile: "no-fs" }} onChange={onChange} />);
+    await user.click(screen.getByRole("switch", { name: SWITCH_NAME }));
+    expect(onChange).toHaveBeenCalledWith({ allowWrites: true });
+    expect(profileBox()).toHaveTextContent("No filesystem");
   });
 });

@@ -7,7 +7,8 @@ import {
 
 /**
  * The `?prompt=` deep link's resolver: first value of a repeated key, trimmed,
- * nothing on empty/whitespace, clamped to the cap (never splitting a surrogate
+ * control characters dropped (newline and tab kept), nothing on
+ * empty/whitespace, clamped to the cap (never splitting a surrogate
  * pair), `send=1` and only `send=1` asks for the one-click send, a leading
  * `/` is a command and never auto-sends, and a PWA share's title/url join
  * the text on their own lines without repeating what the text already says.
@@ -29,6 +30,23 @@ describe("resolveChatSeed", () => {
       prompt: "Hello fixture",
       autoSend: false,
     });
+  });
+
+  it("drops control characters but keeps newlines and tabs", () => {
+    expect(
+      resolveChatSeed({
+        prompt: "line one\u0000\u001b[31m\r\nline\ttwo\u007f",
+      }),
+    ).toEqual({ prompt: "line one[31m\nline\ttwo", autoSend: false });
+    // A prompt that is nothing but controls is nothing.
+    expect(resolveChatSeed({ prompt: "\u0000\u0007\u001b" })).toBeNull();
+    // A share's title and url are cleaned the same way.
+    expect(
+      resolveChatSeed({
+        title: "Pa\u0000ge",
+        url: "https://example.test/\u0001",
+      })?.prompt,
+    ).toBe("Page\nhttps://example.test/");
   });
 
   it("takes only the first value of a repeated key", () => {

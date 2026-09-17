@@ -444,10 +444,45 @@ describe("fetchHarnessSessionDetail", () => {
     });
     await expect(fetchHarnessSessionDetail("s1")).resolves.toEqual({
       resolvedModel: null,
+      placement: null,
       capabilities: {},
       tokenUsage: null,
       sessionCapabilities: null,
     });
+  });
+
+  it("projects the placement's display metadata for the header badge (ADR 0291)", async () => {
+    stubHarnessFetch((request) => {
+      if (request.path === "/v1/sessions/s1")
+        return snapshotFor("s1", {
+          placement: {
+            kind: "git-worktree",
+            label: "feature-x",
+            branch: "feature/x",
+            revision: "0123456789abcdef",
+          },
+        });
+      return undefined;
+    });
+    const detail = await fetchHarnessSessionDetail("s1");
+    expect(detail.placement).toEqual({
+      kind: "git-worktree",
+      label: "feature-x",
+      branch: "feature/x",
+      revision: "0123456789abcdef",
+    });
+  });
+
+  it("reports no placement when the snapshot names neither a label nor a kind", async () => {
+    stubHarnessFetch((request) => {
+      if (request.path === "/v1/sessions/s1")
+        return snapshotFor("s1", {
+          placement: { kind: "", label: "", branch: "main", revision: "" },
+        });
+      return undefined;
+    });
+    const detail = await fetchHarnessSessionDetail("s1");
+    expect(detail.placement).toBeNull();
   });
 
   it("maps session_capabilities to the composer's image/audio gate (proto field 21)", async () => {
