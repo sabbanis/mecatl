@@ -5,10 +5,12 @@ import * as React from "react";
 import { cn } from "@/lib/utils";
 
 const buttonVariants = cva(
+  // Every button is pill-shaped (product decision, Sept 2026: the settings'
+  // "Save and restart"-style buttons read as pills, so the whole family does).
   // Height/padding/type from the design system's `.btn` family: default =
   // `.btn` (2.25rem / 0 1.1rem / 0.825rem), sm/icon = `.btn-sm` (2rem /
   // 0 0.85rem / 0.8rem).
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-[0.825rem] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-full text-[0.825rem] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0",
   {
     // `size` is declared before `variant` so the `action` variant's own
     // metrics win the tailwind-merge conflict. `action` is the brand pill
@@ -18,8 +20,8 @@ const buttonVariants = cva(
     variants: {
       size: {
         default: "h-9 px-[1.1rem] py-2",
-        sm: "h-8 rounded-md px-[0.85rem] text-[0.8rem]",
-        lg: "h-11 rounded-md px-8",
+        sm: "h-8 rounded-full px-[0.85rem] text-[0.8rem]",
+        lg: "h-11 rounded-full px-8",
         icon: "h-8 w-8",
       },
       variant: {
