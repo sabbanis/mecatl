@@ -224994,6 +224994,40 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789656972107,
         "tool": "customBiggerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9ccf838aee5740400190529707b71e89d77cd9e7",
+          "message": "feat: complete provider setup UX on unified configuration (#1441)\n\nCo-authored-by: mecatl <noreply@stacklok.com>\nCo-authored-by: Joe Beda <joe@stacklok.com>\nCo-authored-by: Mecatl <noreply@mecatl.dev>",
+          "timestamp": "2026-09-17T09:20:49-07:00",
+          "tree_id": "a434db766ccef61363b7d9dbc150b5f620f27a39",
+          "url": "https://github.com/stacklok/mecatl/commit/9ccf838aee5740400190529707b71e89d77cd9e7"
+        },
+        "date": 1789662713956,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
       }
     ],
     "mecatl scenarios (render allocs, advisory)": [
@@ -326626,6 +326660,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789662710757,
+  "lastUpdate": 1789662715042,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
