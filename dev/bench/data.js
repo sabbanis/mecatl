@@ -221714,6 +221714,40 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789635114039,
         "tool": "customBiggerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jakub@stacklok.com",
+            "name": "Jakub Hrozek",
+            "username": "jhrozek"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fbefea136ef6ba8612c3db8242a512aa0ca11170",
+          "message": "fix(mcp): separate OAuth login and handshake deadlines (#1624)\n\nCo-authored-by: mecatl <noreply@mecatl.dev>",
+          "timestamp": "2026-09-17T11:44:53+02:00",
+          "tree_id": "99642c122dc2edad16e07452765bb419bc6c05b5",
+          "url": "https://github.com/stacklok/mecatl/commit/fbefea136ef6ba8612c3db8242a512aa0ca11170"
+        },
+        "date": 1789638951150,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
       }
     ],
     "mecatl scenarios (render allocs, advisory)": [
@@ -321816,6 +321850,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789638948697,
+  "lastUpdate": 1789638952336,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
