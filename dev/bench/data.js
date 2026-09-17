@@ -249469,6 +249469,45 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789662718261,
         "tool": "customSmallerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "113200276+Nashon-Steffen@users.noreply.github.com",
+            "name": "Nashon-Steffen",
+            "username": "Nashon-Steffen"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "25c0ab8552ec98e9e536d5b234aef39f510771e3",
+          "message": "ci: gate job families on go/sdk/site path relevance (#1644)\n\nCo-authored-by: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-09-17T21:10:37+02:00",
+          "tree_id": "2d519080f35dcc59f79bae2ad061fe283c4c56ee",
+          "url": "https://github.com/stacklok/mecatl/commit/25c0ab8552ec98e9e536d5b234aef39f510771e3"
+        },
+        "date": 1789672882996,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3315,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 108,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1155,
+            "unit": "allocs/op"
+          }
+        ]
       }
     ],
     "mecatl scenarios (smaller-is-better)": [
@@ -327141,6 +327180,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789672879841,
+  "lastUpdate": 1789672884555,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
