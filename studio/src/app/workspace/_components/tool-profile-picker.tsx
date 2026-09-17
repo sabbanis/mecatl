@@ -1,10 +1,12 @@
 "use client";
 
-import { Check } from "lucide-react";
+import { Check, ChevronDown } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuSeparator,
+  DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useOptionalRuntimeStatus } from "@/features/agent/runtime-status";
 import {
@@ -19,10 +21,8 @@ import { cn } from "@/lib/utils";
 /**
  * The composer's TOOLS choice — the daemon's per-session `profile` (ADR
  * 0291): "All tools" or "No filesystem" (the file-less catalog: no Shell,
- * Read, Edit, Write…; web tools remain). It lives INSIDE the Mode menu
- * rather than as its own pill: both are the chat's posture, both are picked
- * on the draft, and a fourth pill would crowd the ~400px side-panel
- * composer.
+ * Read, Edit, Write…; web tools remain). On desktop it is its OWN pill next
+ * to Mode (`ToolProfileSelector`); the mobile mode sheet keeps the rows.
  *
  * Two shapes, one prop contract:
  * - `onProfileChange` present = a DRAFT: the rows pick the profile the first
@@ -49,63 +49,6 @@ function useShellDisabledNote(): string | null {
   return shellDisabledOnDaemon(runtime?.serverCapabilities)
     ? SHELL_DISABLED_NOTE
     : null;
-}
-
-/** The desktop Mode dropdown's Tools section (menu rows). */
-export function ToolProfileMenuSection({
-  profile,
-  onProfileChange,
-}: {
-  profile?: SessionToolProfile;
-  onProfileChange?: (profile: SessionToolProfile) => void;
-}) {
-  const shellNote = useShellDisabledNote();
-  if (!onProfileChange && profile === undefined) return null;
-  return (
-    <>
-      <DropdownMenuSeparator />
-      <DropdownMenuLabel className="text-xs font-medium text-muted-foreground">
-        Tools
-      </DropdownMenuLabel>
-      {onProfileChange ? (
-        TOOL_PROFILE_OPTIONS.map((option) => (
-          <DropdownMenuItem
-            key={option.id || "all"}
-            className="items-start gap-2"
-            onClick={() => onProfileChange(option.id)}
-          >
-            <Check
-              className={cn(
-                "mt-0.5 size-4 shrink-0",
-                (profile ?? "") === option.id
-                  ? "text-foreground"
-                  : "text-transparent",
-              )}
-            />
-            <span className="flex min-w-0 flex-col">
-              <span>{option.label}</span>
-              <span className="text-xs text-muted-foreground">
-                {option.description}
-              </span>
-            </span>
-          </DropdownMenuItem>
-        ))
-      ) : (
-        <p
-          role="note"
-          className="px-2 py-1.5 text-xs text-muted-foreground"
-          data-testid="tool-profile-readonly"
-        >
-          {toolProfileReadOnlyLine(profile ?? "")}
-        </p>
-      )}
-      {shellNote && (
-        <p role="note" className="px-2 py-1.5 text-xs text-muted-foreground">
-          {shellNote}
-        </p>
-      )}
-    </>
-  );
 }
 
 /** The mobile mode sheet's Tools rows (the SheetOptionRow idiom). */
@@ -158,5 +101,89 @@ export function ToolProfileSheetRows({
         </p>
       )}
     </div>
+  );
+}
+
+/**
+ * The desktop composer's Tools pill: a dropdown of the two profiles on a
+ * draft, a read-only pill on a live chat whose profile Studio remembers,
+ * nothing when the profile is unknown.
+ */
+export function ToolProfileSelector({
+  profile,
+  onProfileChange,
+  disabled,
+  className,
+}: {
+  profile?: SessionToolProfile;
+  onProfileChange?: (profile: SessionToolProfile) => void;
+  disabled?: boolean;
+  className?: string;
+}) {
+  const shellNote = useShellDisabledNote();
+  if (!onProfileChange && profile === undefined) return null;
+  const label = toolProfileLabel(profile ?? "");
+  if (!onProfileChange) {
+    return (
+      <span
+        className={cn(className, "cursor-default")}
+        title={toolProfileReadOnlyLine(profile ?? "")}
+        data-testid="tool-profile-pill"
+      >
+        <span className="max-w-40 truncate">Tools: {label}</span>
+      </span>
+    );
+  }
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          size="sm"
+          className={className}
+          disabled={disabled}
+          title={`Tools: ${label}`}
+          data-testid="tool-profile-pill"
+        >
+          <span className="max-w-40 truncate @max-md:hidden">
+            Tools: {label}
+          </span>
+          <span className="hidden @max-md:inline">Tools</span>
+          <ChevronDown className="size-3.5 text-muted-foreground" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        onCloseAutoFocus={(e) => e.preventDefault()}
+        align="start"
+        className="w-72"
+      >
+        {TOOL_PROFILE_OPTIONS.map((option) => (
+          <DropdownMenuItem
+            key={option.id || "all"}
+            className="items-start gap-2"
+            onClick={() => onProfileChange(option.id)}
+          >
+            <Check
+              className={cn(
+                "mt-0.5 size-4 shrink-0",
+                (profile ?? "") === option.id
+                  ? "text-foreground"
+                  : "text-transparent",
+              )}
+            />
+            <span className="flex min-w-0 flex-col">
+              <span>{option.label}</span>
+              <span className="text-xs text-muted-foreground">
+                {option.description}
+              </span>
+            </span>
+          </DropdownMenuItem>
+        ))}
+        {shellNote && (
+          <p role="note" className="px-2 py-1.5 text-xs text-muted-foreground">
+            {shellNote}
+          </p>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }

@@ -19,29 +19,21 @@
  * an empty one lets Radix close the menu.
  */
 
-import { Brain, Check, ImageIcon, Star } from "lucide-react";
+import { Check, Star } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import {
   Command,
+  CommandGroup,
   CommandInput,
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
 import { DropdownMenuSubContent } from "@/components/ui/dropdown-menu";
 import { InputSearch } from "@/components/ui/input-search";
-import { formatContextWindow } from "@/lib/formatters";
 import { type DefaultModel, useDefaultModel } from "@/lib/model-preferences";
 import { cn } from "@/lib/utils";
 import type { ComposerModelOption } from "./chat-input";
-import {
-  isDefaultOption,
-  type ModelProvenance,
-  modelProvenanceLabel,
-} from "./draft-model";
-
-/** The live-chat note above the rows (a pick forks, like an effort switch). */
-export const MODEL_SWITCH_NOTE =
-  "Picking a model continues this chat in a copy on it.";
+import { isDefaultOption, type ModelProvenance } from "./draft-model";
 
 /** Shown in place of the rows when the filter matches nothing. */
 export const NO_MODELS_MATCH = "No models match";
@@ -76,35 +68,11 @@ function optionValue(option: ComposerModelOption): string {
     : `${option.providerId ?? ""}/${option.id}`;
 }
 
-/** The provenance header: `current: {label} — {your pick|Studio default|daemon default}`. */
-function CurrentModelHeader({
-  label,
-  provenance,
-  className,
-}: {
-  label: string;
-  provenance: ModelProvenance;
-  className?: string;
-}) {
-  return (
-    <p
-      data-testid="model-picker-current"
-      className={cn(
-        "flex min-w-0 items-baseline gap-1 text-xs text-muted-foreground",
-        className,
-      )}
-    >
-      <span className="shrink-0">current: </span>
-      <span className="truncate font-medium text-foreground">{label}</span>
-      <span className="shrink-0"> — {modelProvenanceLabel(provenance)}</span>
-    </p>
-  );
-}
-
 /**
- * One row's body: `provider · name` (mono provider), the ★ default marker,
- * then the trailing capability glyphs, context window and current checkmark.
- * The auto row (id "") has no provider, glyphs or window — label only.
+ * One row's body: the model's display name, the ★ default marker and the
+ * current checkmark. Provider and capabilities are NOT repeated per row —
+ * the list is grouped by provider, and the details live on the model's
+ * own documentation, not in a picker a non-technical user scans by name.
  */
 function ModelOptionBody({
   option,
@@ -115,20 +83,9 @@ function ModelOptionBody({
   isDefault: boolean;
   isCurrent: boolean;
 }) {
-  const context = formatContextWindow(option.contextLimit ?? 0);
   return (
     <>
       <span className="flex min-w-0 flex-1 items-center gap-1.5">
-        {option.providerId ? (
-          <>
-            <span className="shrink-0 font-mono text-xs text-muted-foreground">
-              {option.providerId}
-            </span>
-            <span aria-hidden="true" className="text-muted-foreground/60">
-              ·
-            </span>
-          </>
-        ) : null}
         <span className="truncate font-medium">{option.label}</span>
         {isDefault && (
           <Star
@@ -138,34 +95,64 @@ function ModelOptionBody({
           />
         )}
       </span>
-      <span className="flex shrink-0 items-center gap-1.5 text-muted-foreground">
-        {option.image && (
-          <ImageIcon
-            role="img"
-            aria-label="Accepts images"
-            className="size-3.5"
-          />
+      <Check
+        className={cn(
+          "size-4 shrink-0",
+          isCurrent ? "text-foreground" : "text-transparent",
         )}
-        {option.reasoning && (
-          <Brain role="img" aria-label="Reasoning" className="size-3.5" />
-        )}
-        {context && <span className="font-mono text-xs">{context}</span>}
-        <Check
-          className={cn(
-            "size-4 shrink-0",
-            isCurrent ? "text-foreground" : "text-transparent",
-          )}
-        />
-      </span>
+      />
     </>
   );
+}
+
+/** Human name for a provider id as the group heading. */
+const PROVIDER_NAMES: Record<string, string> = {
+  anthropic: "Anthropic",
+  openai: "OpenAI",
+  openrouter: "OpenRouter",
+  toolhive: "ToolHive",
+  mock: "Offline mock",
+};
+function providerGroupLabel(providerId: string): string {
+  if (!providerId) return "Other";
+  return (
+    PROVIDER_NAMES[providerId] ??
+    providerId.charAt(0).toUpperCase() + providerId.slice(1)
+  );
+}
+
+/** The real models grouped by provider, in first-seen provider order. */
+function groupModelsByProvider(
+  options: readonly ComposerModelOption[],
+): { providerId: string; label: string; options: ComposerModelOption[] }[] {
+  const groups = new Map<string, ComposerModelOption[]>();
+  for (const option of options) {
+    const key = option.providerId ?? "";
+    const bucket = groups.get(key);
+    if (bucket) bucket.push(option);
+    else groups.set(key, [option]);
+  }
+  return [...groups.entries()].map(([providerId, items]) => ({
+    providerId,
+    label: providerGroupLabel(providerId),
+    options: items,
+  }));
 }
 
 /** The set/clear label for the default action aimed at `option`. */
 function defaultActionLabel(
   option: ComposerModelOption | null,
   studioDefault: DefaultModel | null,
+  listed: readonly ComposerModelOption[],
 ): string | null {
+  // A default the inventory no longer lists (a stale pick) can only be
+  // cleared, so that action wins over "set the highlighted row".
+  if (
+    studioDefault &&
+    !listed.some((candidate) => isDefaultOption(candidate, studioDefault))
+  ) {
+    return "Clear my default";
+  }
   if (option && option.id !== "" && option.providerId) {
     return isDefaultOption(option, studioDefault)
       ? "Clear my default"
@@ -180,10 +167,10 @@ export interface ModelPickerListProps {
   /** The model in force ("" = auto): the live session's, or the draft's
    *  resolved pick, for the checkmark. */
   selectedId: string;
-  /** Label of the model in force, for the header. */
+  /** Label of the model in force (kept for callers; the list shows no header). */
   currentLabel: string;
   provenance: ModelProvenance;
-  /** Live chat: a pick forks; the note above the rows says so. */
+  /** Live chat: a pick forks the chat onto the model. */
   live: boolean;
   onPick: (option: ComposerModelOption) => void;
 }
@@ -195,19 +182,18 @@ export interface ModelPickerListProps {
 export function ModelSubmenuContent({
   options,
   selectedId,
-  currentLabel,
-  provenance,
-  live,
   onPick,
 }: ModelPickerListProps) {
   const [filter, setFilter] = useState("");
   const { defaultModel, setDefaultModel, clearDefaultModel } =
     useDefaultModel();
-  const auto = options.find((option) => option.id === "") ?? null;
+  // The auto ("Default model") row is deliberately not offered: the list is
+  // the daemon's real models only. With no pick in force nothing is checked.
   const real = options.filter((option) => option.id !== "");
   const rows = filterModelOptions(real, filter);
-  const visible = auto ? [auto, ...rows] : rows;
-  const selectedOption = options.find((option) => option.id === selectedId);
+  const visible = rows;
+  const groups = groupModelsByProvider(rows);
+  const selectedOption = real.find((option) => option.id === selectedId);
   // cmdk's highlighted row (its "value"), controlled so the footer action
   // and Shift+Enter know which model they aim at; starts on the current one.
   const [highlighted, setHighlighted] = useState(() =>
@@ -226,7 +212,12 @@ export function ModelSubmenuContent({
   }, []);
 
   const toggleDefault = (option: ComposerModelOption | null) => {
-    if (option && option.id !== "" && option.providerId) {
+    const stale =
+      defaultModel !== null &&
+      !real.some((candidate) => isDefaultOption(candidate, defaultModel));
+    if (stale) {
+      clearDefaultModel();
+    } else if (option && option.id !== "" && option.providerId) {
       if (isDefaultOption(option, defaultModel)) clearDefaultModel();
       else
         setDefaultModel({ modelId: option.id, providerId: option.providerId });
@@ -235,7 +226,7 @@ export function ModelSubmenuContent({
     }
     inputRef.current?.focus();
   };
-  const actionLabel = defaultActionLabel(highlightedOption, defaultModel);
+  const actionLabel = defaultActionLabel(highlightedOption, defaultModel, real);
 
   return (
     <DropdownMenuSubContent
@@ -283,34 +274,36 @@ export function ModelSubmenuContent({
             }
           }}
         />
-        <div className="space-y-1 px-3 pt-2 pb-1">
-          <CurrentModelHeader label={currentLabel} provenance={provenance} />
-          {live && (
-            <p className="text-xs text-muted-foreground">{MODEL_SWITCH_NOTE}</p>
-          )}
-        </div>
         <CommandList className="max-h-72 p-1">
-          {visible.map((option) => {
-            const isCurrent = option.id === selectedId;
-            return (
-              <CommandItem
-                key={optionValue(option)}
-                value={optionValue(option)}
-                data-current={isCurrent || undefined}
-                onSelect={() => onPick(option)}
-                className={cn(
-                  "flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 text-sm",
-                  isCurrent && "bg-zinc-100 dark:bg-zinc-800",
-                )}
-              >
-                <ModelOptionBody
-                  option={option}
-                  isDefault={isDefaultOption(option, defaultModel)}
-                  isCurrent={isCurrent}
-                />
-              </CommandItem>
-            );
-          })}
+          {groups.map((group) => (
+            <CommandGroup
+              key={group.providerId || "other"}
+              heading={group.label}
+              data-testid={`model-group-${group.providerId || "other"}`}
+            >
+              {group.options.map((option) => {
+                const isCurrent = option.id === selectedId;
+                return (
+                  <CommandItem
+                    key={optionValue(option)}
+                    value={optionValue(option)}
+                    data-current={isCurrent || undefined}
+                    onSelect={() => onPick(option)}
+                    className={cn(
+                      "flex cursor-pointer items-center gap-3 rounded-lg px-3 py-2.5 text-sm",
+                      isCurrent && "bg-zinc-100 dark:bg-zinc-800",
+                    )}
+                  >
+                    <ModelOptionBody
+                      option={option}
+                      isDefault={isDefaultOption(option, defaultModel)}
+                      isCurrent={isCurrent}
+                    />
+                  </CommandItem>
+                );
+              })}
+            </CommandGroup>
+          ))}
           {rows.length === 0 && (
             <p className="px-3 py-4 text-center text-sm text-muted-foreground">
               {NO_MODELS_MATCH}
@@ -342,34 +335,20 @@ export function ModelSubmenuContent({
 export function ModelSheetSection({
   options,
   selectedId,
-  currentLabel,
-  provenance,
-  live,
   onPick,
 }: ModelPickerListProps) {
   const [filter, setFilter] = useState("");
   const { defaultModel, setDefaultModel, clearDefaultModel } =
     useDefaultModel();
-  const auto = options.find((option) => option.id === "") ?? null;
   const real = options.filter((option) => option.id !== "");
   const rows = filterModelOptions(real, filter);
-  const visible = auto ? [auto, ...rows] : rows;
+  const groups = groupModelsByProvider(rows);
 
   return (
     <>
       <p className="px-4 pt-3 pb-1 text-xs font-medium text-muted-foreground">
         Model
       </p>
-      {live && (
-        <p className="px-4 pb-1 text-xs text-muted-foreground">
-          {MODEL_SWITCH_NOTE}
-        </p>
-      )}
-      <CurrentModelHeader
-        label={currentLabel}
-        provenance={provenance}
-        className="px-4 pb-2"
-      />
       <div className="px-4 pb-2">
         <InputSearch
           value={filter}
@@ -379,54 +358,61 @@ export function ModelSheetSection({
           className="w-full"
         />
       </div>
-      {visible.map((option) => {
-        const isCurrent = option.id === selectedId;
-        const isDefault = isDefaultOption(option, defaultModel);
-        const canDefault = option.id !== "" && Boolean(option.providerId);
-        return (
-          <div key={optionValue(option)} className="flex items-stretch">
-            <button
-              type="button"
-              onClick={() => onPick(option)}
-              aria-current={isCurrent || undefined}
-              className="flex min-w-0 flex-1 items-center gap-3 px-4 py-3 text-sm transition-colors hover:bg-muted/50"
-            >
-              <ModelOptionBody
-                option={option}
-                isDefault={isDefault}
-                isCurrent={isCurrent}
-              />
-            </button>
-            {canDefault && (
-              <button
-                type="button"
-                onClick={() =>
-                  isDefault
-                    ? clearDefaultModel()
-                    : setDefaultModel({
-                        modelId: option.id,
-                        providerId: option.providerId ?? "",
-                      })
-                }
-                aria-label={
-                  isDefault
-                    ? "Clear my default"
-                    : `Set ${option.label} as my default`
-                }
-                aria-pressed={isDefault}
-                className="flex shrink-0 items-center px-3 text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
-              >
-                <Star
-                  className={cn(
-                    "size-4",
-                    isDefault && "fill-current text-warning",
-                  )}
-                />
-              </button>
-            )}
-          </div>
-        );
-      })}
+      {groups.map((group) => (
+        <div key={group.providerId || "other"}>
+          <p className="px-4 pt-2 pb-1 text-xs text-muted-foreground">
+            {group.label}
+          </p>
+          {group.options.map((option) => {
+            const isCurrent = option.id === selectedId;
+            const isDefault = isDefaultOption(option, defaultModel);
+            const canDefault = option.id !== "" && Boolean(option.providerId);
+            return (
+              <div key={optionValue(option)} className="flex items-stretch">
+                <button
+                  type="button"
+                  onClick={() => onPick(option)}
+                  aria-current={isCurrent || undefined}
+                  className="flex min-w-0 flex-1 items-center gap-3 px-4 py-3 text-sm transition-colors hover:bg-muted/50"
+                >
+                  <ModelOptionBody
+                    option={option}
+                    isDefault={isDefault}
+                    isCurrent={isCurrent}
+                  />
+                </button>
+                {canDefault && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      isDefault
+                        ? clearDefaultModel()
+                        : setDefaultModel({
+                            modelId: option.id,
+                            providerId: option.providerId ?? "",
+                          })
+                    }
+                    aria-label={
+                      isDefault
+                        ? "Clear my default"
+                        : `Set ${option.label} as my default`
+                    }
+                    aria-pressed={isDefault}
+                    className="flex shrink-0 items-center px-3 text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+                  >
+                    <Star
+                      className={cn(
+                        "size-4",
+                        isDefault && "fill-current text-warning",
+                      )}
+                    />
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ))}
       {rows.length === 0 && (
         <p className="px-4 py-4 text-center text-sm text-muted-foreground">
           {NO_MODELS_MATCH}

@@ -77,7 +77,6 @@ import {
   useMockFeatures,
   useSessionListSide,
   useShowStarterPrompts,
-  useWelcomeDismissed,
 } from "@/lib/profile-preferences";
 import type { SessionPermissionMode } from "@/lib/protocol";
 import { effortLabel } from "@/lib/reasoning-effort";
@@ -85,8 +84,6 @@ import {
   capabilityReasonLabel,
   describeRelationship,
   inspectRowTitle,
-  SESSION_TAB_EMPTY,
-  type SessionTab,
   sessionTabFor,
 } from "@/lib/session-kinds";
 import { useShortcut } from "@/lib/shortcuts/use-shortcuts";
@@ -114,11 +111,7 @@ import { DraftGreeting } from "./draft-greeting";
 import { InspectQueryWatcher } from "./inspect-query-watcher";
 import { InspectSessionGroups, inspectRowDomId } from "./inspect-session-list";
 import { SessionInventoryStatus } from "./session-inventory-status";
-import {
-  SessionKindTabs,
-  StorageMaintenanceLink,
-  useSessionTab,
-} from "./session-kind-tabs";
+import { StorageMaintenanceLink } from "./session-kind-tabs";
 import {
   AgentList,
   MockProjectList,
@@ -136,7 +129,8 @@ import { useLatestChatAutoOpen } from "./use-latest-chat-auto-open";
 import { seedSendWaitReason, useSeedPrompt } from "./use-seed-prompt";
 import { useSessionRowShortcuts } from "./use-session-row-shortcuts";
 import { useWorktreeSwitch } from "./use-worktree-switch";
-import { WelcomeHints, WelcomeMascot } from "./welcome-hints";
+
+const EMPTY_INSPECT_GROUPS: never[] = [];
 
 /** Route for a chat, or the base (a new draft) when none is selected. */
 const chatHref = (id?: string) =>
@@ -184,7 +178,6 @@ function SidebarContent({
   onSelect,
   actions,
   showMockProjects,
-  kindTabs,
   inspectGroups,
   onInspect,
   emptyLabel,
@@ -205,7 +198,6 @@ function SidebarContent({
   /** Labs mock features: list the demo project-grouped chats. */
   showMockProjects: boolean;
   /** The kind tabs under the header (Chats / Runs / Scheduled / Drafts / Other). */
-  kindTabs: React.ReactNode;
   /** Recency groups of the active READ-ONLY tab's rows; empty on a chat tab. */
   inspectGroups: { label: string; sessions: AgentSession[] }[];
   /** Opens a run's read-only transcript (never rebinds the live chat). */
@@ -253,7 +245,6 @@ function SidebarContent({
           </Tooltip>
         )}
       </div>
-      {kindTabs}
 
       <div className="flex-1 overflow-y-auto py-3">
         <SessionInventoryStatus
@@ -345,8 +336,6 @@ function DraftView({
   seed,
   onSeedConsumed,
   onPickSeed,
-  showWelcome,
-  onDismissWelcome,
   showStarterPrompts,
   error,
   onRetry,
@@ -374,9 +363,6 @@ function DraftView({
   seed: string | null;
   onSeedConsumed: () => void;
   onPickSeed: (text: string) => void;
-  /** First-run welcome card (caller gates it on connected + not dismissed). */
-  showWelcome: boolean;
-  onDismissWelcome: () => void;
   /** Starter-prompt chips — hideable in Settings (the --no-banner analogue). */
   showStarterPrompts: boolean;
   error: string | null;
@@ -465,19 +451,13 @@ function DraftView({
       <div className="relative min-h-0 flex-1">
         <div className="flex h-full flex-col items-center justify-center gap-6 overflow-y-auto px-4 pb-40 max-[499px]:pb-24 lg:px-8">
           <div className="w-full max-w-xl space-y-4">
-            <WelcomeMascot />
             <DraftGreeting
-              showWelcome={showWelcome}
-              onDismissWelcome={onDismissWelcome}
               showStarterPrompts={showStarterPrompts}
               onPickSeed={onPickSeed}
             />
             {/* The `--resume-latest` chip: continue the newest quiet chat
                 without any preference set. */}
             <ContinueLatestChip latest={latest} onContinue={onContinueLatest} />
-            {/* The TUI welcome card's caps-tailored rows + identity line;
-                renders only once the daemon is connected. */}
-            <WelcomeHints />
           </div>
         </div>
         <div className="absolute bottom-0 left-0 right-0 px-3 lg:px-4 pb-4 max-[499px]:px-0 max-[499px]:pb-0">
@@ -554,15 +534,7 @@ export function ChatWorkspace({
   // the `/debug-ask` built-in + menu item that park a FAKE permission ask
   // (never sent to the daemon) and the steer trace under the queue strip.
   const { enabled: developerTools } = useDeveloperTools();
-  // First-run welcome card + hideable starter prompts (Settings → Personalize).
-  // Both browser-local; the card is additionally gated below on the daemon
-  // being connected (offline/connecting belongs to the OfflineBanner).
-  const { dismissed: welcomeDismissed, setDismissed: setWelcomeDismissed } =
-    useWelcomeDismissed();
-  const dismissWelcome = useCallback(
-    () => setWelcomeDismissed(true),
-    [setWelcomeDismissed],
-  );
+  // Hideable starter prompts (Settings → Personalize), browser-local.
   const { show: showStarterPrompts } = useShowStarterPrompts();
   const isMobile = useIsMobile();
   const isCompact = useIsCompact();
@@ -895,7 +867,6 @@ export function ChatWorkspace({
   // and the connection state the tab title's Offline/Connecting word reads.
   const {
     serverCapabilities,
-    features,
     posture,
     state: connection,
     refresh: refreshRuntime,
@@ -1040,22 +1011,18 @@ export function ChatWorkspace({
     () => pickLatestEligibleChat(sessions, threadSessionIds),
     [sessions, threadSessionIds],
   );
-  // The Drafts tab exists only when the daemon classifies drafts (the
-  // `session_activity_inventory` feature); then a draft chat lists there,
-  // not under Chats — the TUI's split.
-  const draftsSupported = features.has("session_activity_inventory");
+  // Every chat lists under Chats, drafts included (the sidebar has no kind
+  // tabs); non-chat rows never reach the list.
   const groups = useMemo(() => {
     const recency = groupSessionsByRecency(
-      orderedSessions.filter(
-        (s) => sessionTabFor(s, draftsSupported) === "chats",
-      ),
+      orderedSessions.filter((s) => sessionTabFor(s, false) === "chats"),
     );
     // The Labs mock tour pins atop the list under its own clearly-labeled
     // group — local demo content, never a daemon row.
     return mockFeatures
       ? [{ label: "Mock", sessions: [MOCK_TOUR_SESSION] }, ...recency]
       : recency;
-  }, [orderedSessions, mockFeatures, draftsSupported]);
+  }, [orderedSessions, mockFeatures]);
 
   const selectedSession = useMemo<AgentSession | undefined>(() => {
     if (!selectedId) return undefined;
@@ -1284,59 +1251,11 @@ export function ChatWorkspace({
     ],
   );
 
-  // The inventory kind tabs (the TUI's /sessions overlay tabs). Chats keeps
-  // today's list; Drafts lists draft chats as openable chat rows; Runs /
-  // Scheduled / Other list the hook's inspect-only `runs` as read-only rows
-  // whose click opens the transcript dialog — never a rebind of the live
-  // chat. Other appears only while an unknown kind is actually stored.
-  const tabbedRows = useMemo(() => {
-    const byTab: Record<SessionTab, AgentSession[]> = {
-      chats: [],
-      runs: [],
-      scheduled: [],
-      drafts: [],
-      other: [],
-    };
-    const byRecency = (a: AgentSession, b: AgentSession) =>
-      (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
-    for (const run of [...runs].sort(byRecency)) {
-      byTab[sessionTabFor(run, draftsSupported)].push(run);
-    }
-    for (const chat of orderedSessions) {
-      if (sessionTabFor(chat, draftsSupported) === "drafts") {
-        byTab.drafts.push(chat);
-      }
-    }
-    return byTab;
-  }, [runs, orderedSessions, draftsSupported]);
-  const { tab: sessionTab, setTab: setSessionTab } = useSessionTab({
-    showDrafts: draftsSupported,
-    showOther: tabbedRows.other.length > 0,
-  });
-  const tabCounts: Record<SessionTab, number> = {
-    chats: groups.reduce((n, g) => n + g.sessions.length, 0),
-    runs: tabbedRows.runs.length,
-    scheduled: tabbedRows.scheduled.length,
-    drafts: tabbedRows.drafts.length,
-    other: tabbedRows.other.length,
-  };
-  // Chat rows (openable) for the Chats / Drafts tabs; inspect rows otherwise.
-  const visibleGroups = useMemo(
-    () =>
-      sessionTab === "chats"
-        ? groups
-        : sessionTab === "drafts"
-          ? groupSessionsByRecency(tabbedRows.drafts)
-          : [],
-    [sessionTab, groups, tabbedRows],
-  );
-  const inspectGroups = useMemo(
-    () =>
-      sessionTab === "chats" || sessionTab === "drafts"
-        ? []
-        : groupSessionsByRecency(tabbedRows[sessionTab]),
-    [sessionTab, tabbedRows],
-  );
+  // Only chats list in the sidebar. Child runs and scheduled fires stay
+  // reachable through the read-only transcript dialog (deep links, the
+  // delegation panel, the schedules page) — never as sidebar rows.
+  const visibleGroups = groups;
+  const inspectGroups: typeof groups = EMPTY_INSPECT_GROUPS;
 
   // The read-only transcript dialog (the TUI's Inspect / `v` viewer): a run
   // whose transcript the daemon withholds toasts the reason instead. A deep
@@ -1439,10 +1358,8 @@ export function ChatWorkspace({
     () => visibleGroups.flatMap((g) => g.sessions.map((s) => s.id)),
     [visibleGroups],
   );
-  const inspectOrder = useMemo(
-    () => inspectGroups.flatMap((g) => g.sessions.map((s) => s.id)),
-    [inspectGroups],
-  );
+  // No inspect rows list in the sidebar any more (see inspectGroups).
+  const inspectOrder: string[] = EMPTY_INSPECT_GROUPS;
 
   const navigateBy = useCallback(
     (forward: boolean) => {
@@ -1476,7 +1393,7 @@ export function ChatWorkspace({
             : Math.max(cur - 1, 0);
       handleSelectSession(navOrder[idx]);
     },
-    [navOrder, inspectOrder, selectedId, handleSelectSession],
+    [navOrder, selectedId, handleSelectSession],
   );
 
   useShortcut("chat.new", handleNewChat);
@@ -1510,18 +1427,9 @@ export function ChatWorkspace({
     onSelect: handleSelectSession,
     actions: rowActions,
     showMockProjects: mockFeatures,
-    kindTabs: (
-      <SessionKindTabs
-        value={sessionTab}
-        onChange={setSessionTab}
-        counts={tabCounts}
-        showDrafts={draftsSupported}
-        showOther={tabbedRows.other.length > 0}
-      />
-    ),
     inspectGroups,
     onInspect: handleInspectSession,
-    emptyLabel: SESSION_TAB_EMPTY[sessionTab],
+    emptyLabel: "No chats yet",
     // The TUI's Maintenance tab lives on the Storage settings page here.
     footer:
       serverCapabilities.storage_health === true ? (
@@ -1903,7 +1811,6 @@ export function ChatWorkspace({
           modelResolution={sessionDetailStatus}
           debugMcpServers={sessionDetail?.debugMcpServers}
           debugMcpTools={sessionDetail?.debugMcpTools}
-          placement={sessionDetail?.placement ?? null}
           models={modelOptions}
           autoModelLabel={routingEnabled ? "Auto-routed" : "Default model"}
           onSwitchModel={debugChat ? undefined : handleSwitchModel}
@@ -1937,8 +1844,6 @@ export function ChatWorkspace({
             seed={draftSeed}
             onSeedConsumed={clearDraftSeed}
             onPickSeed={setDraftSeed}
-            showWelcome={!welcomeDismissed && harnessLive && !mockFeatures}
-            onDismissWelcome={dismissWelcome}
             showStarterPrompts={showStarterPrompts}
             error={turnError}
             onRetry={draftCanRetry ? retryLast : undefined}
@@ -1979,8 +1884,6 @@ export function ChatWorkspace({
             seed={draftSeed}
             onSeedConsumed={clearDraftSeed}
             onPickSeed={setDraftSeed}
-            showWelcome={!welcomeDismissed && harnessLive && !mockFeatures}
-            onDismissWelcome={dismissWelcome}
             showStarterPrompts={showStarterPrompts}
             error={turnError}
             onRetry={draftCanRetry ? retryLast : undefined}

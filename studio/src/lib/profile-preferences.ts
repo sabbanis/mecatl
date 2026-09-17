@@ -201,33 +201,6 @@ export function useDeveloperTools() {
   return { enabled, setEnabled };
 }
 
-const WELCOME_DISMISSED_KEY = "mecatl-studio.welcome-dismissed";
-
-/**
- * Whether the first-run welcome card on a new chat has been dismissed. A
- * one-time decision, browser-local (the TUI's welcome splash is likewise a
- * per-terminal moment, not an operator setting): the key stores "1" only
- * once dismissed, so a fresh browser shows the card. Settings → Personalize
- * can bring it back ("Show again" clears the key). Hydrates on mount, so the
- * SSR frame reads "not dismissed" — callers gate the card on the daemon
- * being connected anyway, which is false on that frame.
- */
-export function useWelcomeDismissed() {
-  const [dismissed, setDismissedState] = useState(false);
-  useEffect(() => {
-    if (readLocalStorage(WELCOME_DISMISSED_KEY) === "1") {
-      setDismissedState(true);
-    }
-  }, []);
-
-  const setDismissed = useCallback((next: boolean) => {
-    setDismissedState(next);
-    writeLocalStorage(WELCOME_DISMISSED_KEY, next ? "1" : null);
-  }, []);
-
-  return { dismissed, setDismissed };
-}
-
 const HIDE_STARTER_PROMPTS_KEY = "mecatl-studio.hide-starter-prompts";
 
 /**

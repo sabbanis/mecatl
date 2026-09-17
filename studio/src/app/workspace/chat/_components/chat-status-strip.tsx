@@ -102,7 +102,8 @@ function Separator() {
   );
 }
 
-export function ChatStatusStrip({
+/** The facts the strip and the Session details submenu both render. */
+function useChatStatusFacts({
   session,
   live,
   resolvedModelId,
@@ -112,9 +113,6 @@ export function ChatStatusStrip({
   providerRoute = "",
   mode,
   pendingMode = null,
-  debugMcpServers = [],
-  debugMcpTools = [],
-  onOpenSession,
 }: ChatStatusStripProps) {
   const runtime = useRuntimeStatus();
   const connecting = runtime.state === "connecting";
@@ -163,6 +161,40 @@ export function ChatStatusStrip({
   const tone = postureTone(posture);
 
   const handle = shortSessionHandle(session.id);
+  return {
+    connecting,
+    debugTarget,
+    isDebug,
+    resolving,
+    modelText,
+    effortText,
+    modeText,
+    serverText,
+    posture,
+    tone,
+    handle,
+  };
+}
+
+export function ChatStatusStrip(props: ChatStatusStripProps) {
+  const {
+    session,
+    debugMcpServers = [],
+    debugMcpTools = [],
+    onOpenSession,
+  } = props;
+  const {
+    debugTarget,
+    isDebug,
+    resolving,
+    modelText,
+    effortText,
+    modeText,
+    serverText,
+    posture,
+    tone,
+    handle,
+  } = useChatStatusFacts(props);
 
   return (
     <div

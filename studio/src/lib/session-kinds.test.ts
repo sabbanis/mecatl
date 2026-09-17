@@ -6,7 +6,6 @@ import {
   inspectRowTitle,
   relationshipTerms,
   runInspectHref,
-  SESSION_TABS,
   sessionKindLabel,
   sessionTabFor,
 } from "./session-kinds";
@@ -75,16 +74,6 @@ describe("sessionTabFor", () => {
         activityState: "draft",
       }),
     ).toBe("runs");
-  });
-
-  it("keeps the tab order the TUI uses", () => {
-    expect(SESSION_TABS).toEqual([
-      "chats",
-      "runs",
-      "scheduled",
-      "drafts",
-      "other",
-    ]);
   });
 });
 

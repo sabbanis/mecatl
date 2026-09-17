@@ -46,22 +46,6 @@ test("the live chat's model pill shows the daemon's effective reasoning-effort t
   ).toBeVisible();
 });
 
-test("the chat header badges the session's placement label and branch", async ({
-  page,
-}) => {
-  await page.goto("/workspace/chat");
-  await page.getByText("Fix the flaky scheduler test").first().click();
-  await expect(
-    page.getByText("the test races the claim sentinel", { exact: false }),
-  ).toBeVisible();
-  // The TUI's startup placement line: the snapshot's server-owned display
-  // metadata (fixture placement `local` / `fixture` / `main`), never a path.
-  const badge = page.getByTestId("placement-badge");
-  await expect(badge).toBeVisible();
-  await expect(badge).toHaveText(/fixture · main$/);
-  await expect(badge).toHaveAttribute("title", "Placement: local @ fixture");
-});
-
 test("a tool call parked on a browser sign-in shows the authorization card and re-check resumes the run", async ({
   page,
 }) => {
@@ -277,51 +261,6 @@ test("external mode marks runtime settings as deployment-owned", async ({
     "fixture-daemon",
   );
   await expect(page.getByTestId("about-posture")).toHaveText("trusted");
-});
-
-test("the agent page shows the daemon's persona and marks its settings deployment-owned", async ({
-  page,
-}) => {
-  // The Persona card reads the fixture's GET /v1/soul (a trusted user soul)
-  // and shows the body as plain text behind a disclosure; the settings half
-  // is a controller surface, so external mode renders the managed note in
-  // place of the switches.
-  await page.goto("/workspace/settings/agent");
-  const persona = page.getByTestId("soul-snapshot");
-  await expect(persona.getByTestId("soul-status")).toHaveText("loaded");
-  await expect(persona.getByTestId("soul-provenance")).toHaveText("user");
-  await expect(persona.getByTestId("soul-size")).toHaveText("49 bytes");
-  await page.getByRole("button", { name: "Show persona" }).click();
-  await expect(
-    page.getByText("You are the fixture persona: concise and direct."),
-  ).toBeVisible();
-  await expect(
-    page
-      .getByTestId("soul-settings")
-      .getByText("Managed by the external mecated deployment"),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("switch", { name: "Load a persona" }),
-  ).toHaveCount(0);
-});
-
-test("the Tools page reports the daemon's tool catalog and marks the daemon options deployment-owned", async ({
-  page,
-}) => {
-  // The status rows are the fixture's own capability document (`bash`,
-  // `skills`, `slash_commands`) — daemon truth, rendered in external mode
-  // too; the controls (--skills-dir, --commands-dir) are a controller
-  // surface, so external mode renders the managed note and no switch.
-  await page.goto("/workspace/settings/tools");
-  const card = page.getByTestId("tools-options");
-  await expect(card.getByTestId("tools-status-shell")).toHaveText(
-    /registered|not reported/,
-  );
-  await expect(
-    card.getByText("Managed by the external mecated deployment"),
-  ).toBeVisible();
-  await expect(page.getByRole("switch", { name: "Skill tool" })).toHaveCount(0);
-  await expect(page.getByLabel("Skills directory")).toHaveCount(0);
 });
 
 test("diagnostics shows the daemon-reported posture and its defenses", async ({
@@ -569,57 +508,6 @@ test("a scheduled task's delivery note renders as an attributed card", async ({
   );
 });
 
-test("the first-run welcome card shows once and stays dismissed across reloads", async ({
-  page,
-}) => {
-  // A fresh browser context (no localStorage) on a connected daemon: the
-  // card renders on the draft chat, with its way out.
-  await page.goto("/workspace/chat");
-  await expect(
-    page.getByRole("heading", { name: "Welcome to Mecatl Studio" }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("link", { name: "Keyboard shortcuts & features" }),
-  ).toHaveAttribute("href", "/workspace/shortcuts");
-  await page.getByRole("button", { name: "Dismiss welcome" }).click();
-  await expect(
-    page.getByRole("heading", { name: "Welcome to Mecatl Studio" }),
-  ).toBeHidden();
-  // The greeting and its starter prompts stay — only the card is one-time.
-  await expect(
-    page.getByRole("heading", { name: "What can I help you with?" }),
-  ).toBeVisible();
-  // Dismissal is persisted browser-locally, so a reload does not bring it back.
-  await page.reload();
-  await expect(
-    page.getByRole("heading", { name: "What can I help you with?" }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("heading", { name: "Welcome to Mecatl Studio" }),
-  ).toHaveCount(0);
-});
-
-test("the draft splash shows the mascot and the daemon's capability hints", async ({
-  page,
-}) => {
-  // The fixture advertises memory, agents and scheduling at posture
-  // "trusted", and E2E runs in external mode — so the rows are the
-  // capability-gated ones and the identity line names the external daemon.
-  await page.goto("/workspace/chat");
-  const mascot = page.getByTestId("welcome-mascot");
-  await expect(mascot).toBeVisible();
-  await expect(mascot).toHaveAttribute("src", "/mecatito.png");
-  const hints = page.getByTestId("welcome-hints");
-  await expect(hints.getByText(/Cross-session memory is on/)).toBeVisible();
-  await expect(hints.getByText("Mention an agent")).toBeVisible();
-  await expect(
-    hints.getByRole("link", { name: "Scheduled runs are available" }),
-  ).toHaveAttribute("href", "/workspace/schedules");
-  await expect(page.getByTestId("welcome-identity")).toHaveText(
-    "Connected · external daemon · posture trusted",
-  );
-});
-
 test("storage settings show aggregate health and the clean-up plan", async ({
   page,
 }) => {
@@ -700,77 +588,25 @@ test("a prompt's subagent lifecycle feeds the inline card, the fleet chip, and t
   ).toBeVisible();
 });
 
-test("the chat status strip shows the session handle, the resolved model and the posture badge", async ({
+test("Session details opens the full dialog with the resolved model and safety level", async ({
   page,
 }) => {
   await page.goto("/workspace/chat");
   await page.getByText("Fix the flaky scheduler test").first().click();
-  const strip = page.getByTestId("chat-status-strip");
-  // The bare 12-column handle of `session-fixture-1` (docs/tui.md: no `#`);
-  // its accessible name carries the copy affordance.
-  await expect(
-    strip.getByRole("button", {
-      name: "Session session-fixt: copy the full session id",
-    }),
-  ).toHaveText("session-fixt");
+  await page.getByRole("button", { name: "Chat options" }).click();
+  await page.getByRole("menuitem", { name: "Session details" }).click();
+  const dialog = page.getByRole("dialog");
   // The daemon-RESOLVED model off the snapshot's resolved_model (the fixture
-  // lists it as "fixture-model"), never "resolving model…" once the read lands.
-  await expect(page.getByTestId("chat-status-model")).toHaveText(
-    /fixture-model/,
+  // lists it as "fixture-model").
+  await expect(dialog.getByText("fixture-model")).toBeVisible();
+  // The fixture's compatibility document reports posture "trusted"; E2E runs
+  // against an external daemon.
+  await expect(dialog.getByTestId("session-details-posture")).toHaveText(
+    "Trusted",
   );
-  // The fixture's compatibility document reports posture "trusted": a muted
-  // badge whose tooltip is the `/posture` sentence.
-  const badge = page.getByTestId("chat-posture-badge");
-  await expect(badge).toHaveText("posture trusted");
-  await expect(badge).toHaveAttribute("data-tone", "muted");
-  await expect(badge).toHaveAttribute(
-    "title",
-    /posture trusted — allow-all off/,
+  await expect(dialog.getByTestId("session-details-server")).toContainText(
+    "External deployment",
   );
-});
-
-test("the top navigation shows the daemon-reported posture as a chrome chip on every page", async ({
-  page,
-}) => {
-  // The fixture's compatibility document reports posture "trusted". Unlike
-  // the chat strip's badge this one lives in the shell's top navigation, so
-  // it is visible outside a chat too; it is worded as PROJECT trust (Studio's
-  // own trust switch is what makes the daemon report `trusted`) and links to
-  // Settings → Permissions, where the tier is explained and changed.
-  await page.goto("/workspace/chat");
-  const chip = page.getByTestId("posture-badge");
-  await expect(chip).toBeVisible();
-  await expect(chip).toHaveText("Trusted project");
-  await expect(chip).toHaveAttribute("data-tone", "neutral");
-  await expect(chip).toHaveAttribute("href", "/workspace/settings/permissions");
-  await expect(chip).toHaveAccessibleName(/^Project instructions are trusted/);
-  // Chrome-level: the same chip is on a non-chat page.
-  await page.goto("/workspace/settings/appearance");
-  await expect(page.getByTestId("posture-badge")).toHaveText("Trusted project");
-});
-
-test("the top navigation states the connected daemon on every page", async ({
-  page,
-}) => {
-  // mecatui's affirmative "connected" status line: the healthy state is
-  // stated, not inferred from the absence of an offline banner. The pill is
-  // a `status` live region named by its label around a link to Diagnostics.
-  await page.goto("/workspace/chat");
-  await expect(page.getByRole("status", { name: "Connected" })).toBeVisible();
-  const pill = page.getByTestId("connection-indicator");
-  await expect(pill).toHaveAttribute("data-connection", "connected");
-  await expect(pill).toHaveAttribute("href", "/workspace/settings/diagnostics");
-  // The tooltip carries the facts the runtime probe already holds: this
-  // stack runs Studio in external mode (no provider line — the control
-  // status is a stub) and the fixture reports posture "trusted".
-  await pill.hover();
-  const tooltip = page.getByRole("tooltip");
-  await expect(tooltip).toContainText("Connected to an external daemon");
-  await expect(tooltip).toContainText("Posture: trusted");
-  await expect(tooltip).not.toContainText("Provider:");
-  // Chrome-level: the same cue is on a non-chat page.
-  await page.goto("/workspace/settings/appearance");
-  await expect(page.getByRole("status", { name: "Connected" })).toBeVisible();
 });
 
 test("the workspace-services notice connects through the daemon and clears", async ({
@@ -802,66 +638,18 @@ test("the Permissions page reads the daemon-reported posture in external mode an
   // switch, nothing that would pretend to change a flag Studio cannot pass.
   await page.goto("/workspace/settings/permissions");
   const effectiveRow = page
-    .getByText("Effective posture", { exact: true })
+    .getByText("Safety level", { exact: true })
     .locator("xpath=ancestor::div[2]");
   await expect(
-    effectiveRow.getByText("trusted", { exact: true }),
+    effectiveRow.getByText("Trusted", { exact: true }),
   ).toBeVisible();
   await expect(
     page.getByText("Managed by the external mecated deployment").first(),
   ).toBeVisible();
   await expect(page.getByRole("switch")).toHaveCount(0);
-  await expect(
-    page.getByRole("button", { name: "Operator posture" }),
-  ).toHaveCount(0);
-});
-
-test("the Runs tab lists the fixture subagent and opens its read-only transcript", async ({
-  page,
-}) => {
-  await page.goto("/workspace/chat");
-  // The fixture inventory holds one chat, one subagent and one scheduled
-  // fire: the Chats tab shows only the chat, and the fixture advertises
-  // `session_activity_inventory`, so a Drafts tab is offered too.
-  const tablist = page.getByRole("tablist", { name: "Session kinds" });
-  await expect(tablist.getByRole("tab", { name: /Chats/ })).toHaveAttribute(
-    "aria-selected",
-    "true",
+  await expect(page.getByRole("button", { name: "Safety level" })).toHaveCount(
+    0,
   );
-  await expect(tablist.getByRole("tab", { name: /Drafts/ })).toBeVisible();
-  await expect(page.getByText("Scan the scheduler tests")).toHaveCount(0);
-
-  await tablist.getByRole("tab", { name: /Runs/ }).click();
-  const row = page.getByRole("button", {
-    name: "Inspect run: Scan the scheduler tests",
-  });
-  await expect(row).toBeVisible();
-  // The row is read-only inventory: the chat did not change.
-  await expect(page).toHaveTitle(/^New chat — Mecatl Studio$/);
-  await row.click();
-  const dialog = page.getByRole("dialog");
-  await expect(
-    dialog.getByText("two tests race the claim sentinel", { exact: false }),
-  ).toBeVisible();
-  await expect(
-    dialog.getByText("Subagent of session-fixture-1 · call call-fixture-1"),
-  ).toBeVisible();
-  // The parent link opens the parent chat as a live conversation.
-  await dialog.getByRole("button", { name: "Open parent chat" }).click();
-  await expect(
-    page.getByText("the test races the claim sentinel", { exact: false }),
-  ).toBeVisible();
-
-  // The Scheduled tab lists the fire by what it is (it has no title).
-  await tablist.getByRole("tab", { name: /Scheduled/ }).click();
-  await page
-    .getByRole("button", {
-      name: "Inspect run: Fire of schedule nightly-fixture-digest",
-    })
-    .click();
-  await expect(
-    page.getByRole("dialog").getByText("digest sent", { exact: false }),
-  ).toBeVisible();
 });
 
 test("View transcript in the row menu opens the read-only dialog without opening the chat", async ({
@@ -882,7 +670,7 @@ test("View transcript in the row menu opens the read-only dialog without opening
   await page
     .getByRole("menuitem", { name: "View transcript", exact: true })
     .click();
-  // The same read-only dialog the Runs tab opens, labelled by the chat title,
+  // The read-only transcript dialog, labelled by the chat title,
   // replaying the daemon's authoritative transcript.
   const dialog = page.getByRole("dialog", {
     name: "Fix the flaky scheduler test",

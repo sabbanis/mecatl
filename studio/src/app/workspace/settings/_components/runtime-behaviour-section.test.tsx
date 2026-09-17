@@ -8,15 +8,21 @@ import {
 } from "./runtime-behaviour-section";
 
 /**
- * Settings → Agent → Daemon behaviour: the operator half of the TUI's steer
- * opt-out. Pins that (1) the switch mirrors the saved `steer.enabled`, a
- * flip opens the restart confirm and only the confirm calls
- * `save({ steer: { enabled } })` — Cancel saves nothing; (2) an operator
- * `steer: false` in settings.yaml (inherited) replaces the switch with Off
- * and says why; (3) external mode renders the managed note and offline the
- * offline note, neither with a switch; (4) the row names the daemon's live
- * `capabilities.steer` when it reports one.
+ * Settings → Agent → Agent behaviour: the operator half of the TUI's steer
+ * opt-out, in plain words. Pins that (1) the switch mirrors the saved
+ * `steer.enabled`, a flip opens the restart confirm and only the confirm
+ * calls `save({ steer: { enabled } })` — Cancel saves nothing; (2) an
+ * operator `steer: false` in settings.yaml (inherited) replaces the switch
+ * with Off and says why without naming the file's key; (3) external mode
+ * renders the managed note and offline the offline note, neither with a
+ * switch; (4) the row adds ONE "Right now" line only when the daemon's live
+ * `capabilities.steer` differs from the saved switch; (5) the card never
+ * shows a developer word.
  */
+
+/** Words the product owner ruled out of this card's copy. */
+const JARGON =
+  /daemon|mecated|controller|--[a-z]|steer|session id|in-flight|client/i;
 
 const runtimeSettings = vi.hoisted(() => ({
   live: true,
@@ -40,6 +46,8 @@ vi.mock("@/features/agent/hooks/use-runtime-settings", () => ({
 vi.mock("@/features/agent/runtime-status", () => ({
   useRuntimeStatus: () => runtimeStatus,
 }));
+
+const SWITCH = "Read messages while working";
 
 const doc = (
   overrides: Partial<{
@@ -85,13 +93,15 @@ describe("RuntimeBehaviourSection", () => {
   it("mirrors the saved value and saves steer off only after the restart confirm", async () => {
     const user = userEvent.setup();
     render(<RuntimeBehaviourSection />);
-    const toggle = screen.getByRole("switch", { name: "Mid-run steering" });
+    const toggle = screen.getByRole("switch", { name: SWITCH });
     expect(toggle).toBeChecked();
 
     await user.click(toggle);
     const dialog = await screen.findByRole("alertdialog");
-    expect(dialog).toHaveTextContent("Turn mid-run steering off?");
-    expect(dialog).toHaveTextContent(/The daemon restarts/);
+    expect(dialog).toHaveTextContent("Turn this off?");
+    expect(dialog).toHaveTextContent(
+      "The agent restarts. Anything running will stop.",
+    );
     // Nothing is saved (and the switch does not move) until the confirm.
     expect(runtimeSettings.save).not.toHaveBeenCalled();
     expect(toggle).toBeChecked();
@@ -108,22 +118,22 @@ describe("RuntimeBehaviourSection", () => {
   it("saves nothing when the confirm is cancelled", async () => {
     const user = userEvent.setup();
     render(<RuntimeBehaviourSection />);
-    await user.click(screen.getByRole("switch", { name: "Mid-run steering" }));
+    await user.click(screen.getByRole("switch", { name: SWITCH }));
     await screen.findByRole("alertdialog");
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(runtimeSettings.save).not.toHaveBeenCalled();
     expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
   });
 
-  it("offers to turn steering back on when it is saved off", async () => {
+  it("offers to turn it back on when it is saved off", async () => {
     const user = userEvent.setup();
     runtimeSettings.doc = doc({ enabled: false });
     render(<RuntimeBehaviourSection />);
-    const toggle = screen.getByRole("switch", { name: "Mid-run steering" });
+    const toggle = screen.getByRole("switch", { name: SWITCH });
     expect(toggle).not.toBeChecked();
     await user.click(toggle);
     expect(await screen.findByRole("alertdialog")).toHaveTextContent(
-      "Turn mid-run steering on?",
+      "Turn this on?",
     );
     await user.click(
       screen.getByRole("button", { name: "Restart and turn on" }),
@@ -133,38 +143,43 @@ describe("RuntimeBehaviourSection", () => {
     });
   });
 
-  it("replaces the switch with Off and explains an operator steer: false", () => {
+  it("replaces the switch with Off and explains an operator steer: false in plain words", () => {
     runtimeSettings.doc = doc({ enabled: true, inheritedSteer: false });
     render(<RuntimeBehaviourSection />);
     expect(screen.queryByRole("switch")).not.toBeInTheDocument();
     expect(screen.getByText("Off")).toBeInTheDocument();
-    expect(screen.getByText(/settings\.yaml sets/)).toBeInTheDocument();
-    expect(screen.getByText("steer: false")).toBeInTheDocument();
+    expect(
+      screen.getByText(/turned off in the agent.s own settings file/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/steer: false/)).toBeNull();
   });
 
-  it("names the daemon's live capability in the row and surfaces error and notice", () => {
+  it("adds the Right-now line only when the live capability differs, and surfaces error and notice", () => {
     runtimeStatus.serverCapabilities = { steer: false };
     runtimeSettings.error = "mecated refused to start";
-    runtimeSettings.notice =
-      "Saved. The daemon restarted with the new settings.";
+    runtimeSettings.notice = "Saved.";
     render(<RuntimeBehaviourSection />);
-    expect(
-      screen.getByText(/The daemon currently reports steering off\./),
-    ).toBeInTheDocument();
+    expect(screen.getByText(/Right now this is off\./)).toBeInTheDocument();
     expect(screen.getByRole("alert")).toHaveTextContent(
       "mecated refused to start",
     );
-    expect(screen.getByRole("status")).toHaveTextContent(
-      /The daemon restarted/,
-    );
+    expect(screen.getByRole("status")).toHaveTextContent("Saved.");
+  });
+
+  it("uses no developer vocabulary on the card or in the confirm", async () => {
+    const user = userEvent.setup();
+    runtimeStatus.serverCapabilities = { steer: false };
+    const { container } = render(<RuntimeBehaviourSection />);
+    expect(container.textContent).not.toMatch(JARGON);
+    await user.click(screen.getByRole("switch", { name: SWITCH }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog.textContent).not.toMatch(JARGON);
   });
 
   it("disables the switch while a save is in flight", () => {
     runtimeSettings.busy = "save";
     render(<RuntimeBehaviourSection />);
-    expect(
-      screen.getByRole("switch", { name: "Mid-run steering" }),
-    ).toBeDisabled();
+    expect(screen.getByRole("switch", { name: SWITCH })).toBeDisabled();
   });
 
   it("renders the managed note, not a switch, in external mode", () => {
@@ -190,7 +205,7 @@ describe("RuntimeBehaviourSection", () => {
     runtimeSettings.isLoading = true;
     const { unmount } = render(<RuntimeBehaviourSection />);
     expect(
-      screen.getByText(/Reading the daemon's runtime settings/),
+      screen.getByText(/Reading the agent.s settings/),
     ).toBeInTheDocument();
     unmount();
 
@@ -202,10 +217,25 @@ describe("RuntimeBehaviourSection", () => {
 });
 
 describe("steerRowDescription", () => {
-  it("appends the live capability only when the daemon reports a boolean", () => {
-    expect(steerRowDescription(undefined)).not.toMatch(/currently reports/);
-    expect(steerRowDescription(true)).toMatch(/reports steering on\.$/);
-    expect(steerRowDescription(false)).toMatch(/reports steering off\.$/);
-    expect(steerRowDescription("yes")).not.toMatch(/currently reports/);
+  const base =
+    "On: a message you send while the agent is working is picked up at its next step. Off: it waits until the agent finishes.";
+
+  it("is the plain two-part sentence when the daemon reports nothing", () => {
+    expect(steerRowDescription(undefined, true)).toBe(base);
+    expect(steerRowDescription("yes", false)).toBe(base);
+  });
+
+  it("stays silent when the live value agrees with the switch", () => {
+    expect(steerRowDescription(true, true)).toBe(base);
+    expect(steerRowDescription(false, false)).toBe(base);
+  });
+
+  it("adds one Right-now line when the live value differs", () => {
+    expect(steerRowDescription(false, true)).toBe(
+      `${base} Right now this is off.`,
+    );
+    expect(steerRowDescription(true, false)).toBe(
+      `${base} Right now this is on.`,
+    );
   });
 });

@@ -24,7 +24,7 @@ export const STATUS_LINE_KEY = "mecatl-studio.status-line";
 export type StatusSurface = "header" | "footer";
 export type StatusVariant = "full" | "compact" | "minimal";
 
-export const STATUS_SURFACES: readonly StatusSurface[] = ["header", "footer"];
+const STATUS_SURFACES: readonly StatusSurface[] = ["header", "footer"];
 export const STATUS_VARIANTS: readonly StatusVariant[] = [
   "full",
   "compact",
@@ -44,9 +44,9 @@ export interface StatusLinePreferences {
   intervalSeconds: number;
 }
 
-export const STATUS_TEMPLATE_MAX_CHARS = 500;
-export const STATUS_INTERVAL_MIN_SECONDS = 1;
-export const STATUS_INTERVAL_MAX_SECONDS = 3600;
+const STATUS_TEMPLATE_MAX_CHARS = 500;
+const STATUS_INTERVAL_MIN_SECONDS = 1;
+const STATUS_INTERVAL_MAX_SECONDS = 3600;
 const STATUS_INTERVAL_DEFAULT_SECONDS = 60;
 
 /**

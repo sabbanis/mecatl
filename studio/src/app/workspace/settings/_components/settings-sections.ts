@@ -10,12 +10,10 @@ import {
   Keyboard,
   Network,
   Palette,
-  PanelBottom,
   Route,
   Server,
   ShieldCheck,
   UserRound,
-  Wrench,
 } from "lucide-react";
 
 export interface SettingsSection {
@@ -51,12 +49,6 @@ export const SETTINGS_GROUPS: Array<{
         label: "Keyboard",
         icon: Keyboard,
       },
-      {
-        // mecatui's `status_customization`: the header/footer templates.
-        href: "/workspace/settings/status-line",
-        label: "Status line",
-        icon: PanelBottom,
-      },
       // After Appearance: identity, then how the app looks, then how the chat
       // behaves, then when it interrupts you.
     ],
@@ -73,14 +65,6 @@ export const SETTINGS_GROUPS: Array<{
         href: "/workspace/settings/permissions",
         label: "Permissions",
         icon: ShieldCheck,
-      },
-      {
-        // The managed daemon's tool catalog flags (Skill tool + skills
-        // directory, slash commands) and the Shell tool's status; the
-        // shell-less switch itself stays on Permissions (one writer).
-        href: "/workspace/settings/tools",
-        label: "Tools",
-        icon: Wrench,
       },
       {
         href: "/workspace/settings/memory",
@@ -121,11 +105,6 @@ export const SETTINGS_GROUPS: Array<{
         label: "Storage",
         icon: Database,
       },
-      {
-        href: "/workspace/settings/diagnostics",
-        label: "Diagnostics",
-        icon: Activity,
-      },
     ],
   },
   {
@@ -142,10 +121,15 @@ export const SETTINGS_GROUPS: Array<{
     label: "Support",
     items: [
       {
+        href: "/workspace/settings/diagnostics",
+        label: "Diagnostics",
+        icon: Activity,
+      },
+      {
         // Studio's version, docs and source links, the daemon's identity and
         // the configuration reference — the web analogue of --version/--help.
         href: "/workspace/settings/help",
-        label: "Help & about",
+        label: "About",
         icon: CircleHelp,
       },
     ],

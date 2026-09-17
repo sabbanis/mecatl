@@ -847,7 +847,7 @@ interface HarnessSessionTokenUsage {
  * worktree's directory name), the checked-out branch and the HEAD revision.
  * Never a path and never a selector — Studio only ever shows it.
  */
-export interface HarnessPlacement {
+interface HarnessPlacement {
   kind: string;
   label: string;
   branch: string;

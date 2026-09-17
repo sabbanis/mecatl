@@ -13,15 +13,22 @@ import {
 type Runtime = ReturnType<typeof useHarnessRuntime>;
 
 /**
- * The Permissions page: the daemon-wide posture ladder, project trust and
- * shell-less mode. Pins that (1) every tier is named with its consequence,
- * (2) Save stays disabled until the draft differs and calls the controller
- * with exactly the three flags, (3) an allow-all tier (auto/yolo) confirms
- * with the ADR-0022 warning before any write, (4) the Effective-posture row
- * is CAPABILITY-GATED on the daemon's `capabilities.posture` and explains a
- * saved≠effective difference from Studio's own trust flag, and (5) external
- * mode renders the managed note with no form.
+ * The Permissions page: the daemon-wide posture ladder ("Safety level"),
+ * project trust and shell-less mode, in plain words. Pins that (1) every
+ * tier is named with one plain sentence inside the picker and the row
+ * repeats only the selected one, (2) Save stays disabled until the draft
+ * differs and calls the controller with exactly the three flags, (3) an
+ * allow-all tier (auto/yolo) confirms with the ADR-0022 warning before any
+ * write, (4) the reported tier is CAPABILITY-GATED on the daemon's
+ * `capabilities.posture` — a badge only where there is no picker, one plain
+ * line under the picker when it differs from the saved tier — and (5)
+ * external mode renders the managed note with no form. (6) The card never
+ * shows a developer word: daemon, controller, flags, session ids.
  */
+
+/** Words the product owner ruled out of this card's copy. */
+const JARGON =
+  /daemon|mecated|controller|--[a-z]|AGENTS\.md|soul|catalog|session id|in-flight|allow rule|substitution|subagent|posture/i;
 
 const runtimeStatus = {
   connected: true,
@@ -81,7 +88,8 @@ beforeEach(() => {
 });
 
 describe("PermissionsSection", () => {
-  it("names all four postures with their consequences and shows the saved one", () => {
+  it("names all four levels with one plain sentence each inside the picker, and the row repeats only the saved one", async () => {
+    const user = userEvent.setup();
     render(<PermissionsSection runtime={fakeRuntime()} />);
     expect(POSTURE_OPTIONS.map((option) => option.value)).toEqual([
       "strict",
@@ -89,25 +97,54 @@ describe("PermissionsSection", () => {
       "auto",
       "yolo",
     ]);
-    // Each tier appears in the ladder legend (the selected one ALSO in the
-    // picker trigger and the row description, hence getAll).
+    // The row explains the SELECTED level only; the old legend is gone.
+    expect(screen.getByText("Asks before every change.")).toBeInTheDocument();
+    expect(
+      screen.queryByText("No safeguards. Only on a throwaway machine."),
+    ).toBeNull();
+    const picker = screen.getByRole("button", { name: "Safety level" });
+    expect(picker).toHaveTextContent("Strict");
+    // Every level is explained where the person picks it.
+    await user.click(picker);
     for (const option of POSTURE_OPTIONS) {
-      expect(screen.getAllByText(option.label).length).toBeGreaterThan(0);
-      expect(screen.getAllByText(option.description).length).toBeGreaterThan(0);
+      const item = await screen.findByRole("menuitem", {
+        name: new RegExp(`^${option.label}`),
+      });
+      expect(item).toHaveTextContent(option.description);
     }
-    expect(
-      screen.getAllByText(/Ask before every file change and shell command/),
-    ).not.toHaveLength(0);
-    expect(
-      screen.getByText(/subagent shell substitutions/),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Operator posture" }),
-    ).toHaveTextContent("Strict");
-    // The page says what it is NOT: the per-session Mode selector.
-    expect(
-      screen.getByText(/Mode selector in the composer/),
-    ).toBeInTheDocument();
+  });
+
+  it("uses no developer vocabulary anywhere on the managed card, including the warning and the restart note", async () => {
+    const user = userEvent.setup();
+    runtimeStatus.serverCapabilities = { posture: "trusted" };
+    runtimeStatus.trust = {
+      hasAuthority: true,
+      decision: "drifted",
+      source: "studio",
+      anchor: "a".repeat(64),
+    };
+    const { container } = render(
+      <PermissionsSection
+        runtime={fakeRuntime({
+          permissions: {
+            config: {
+              posture: "strict",
+              trustProject: true,
+              noShell: false,
+              trustOnce: false,
+            },
+            operatorSettings: true,
+          },
+        })}
+      />,
+    );
+    expect(container.textContent).not.toMatch(JARGON);
+    await user.click(screen.getByRole("button", { name: "Safety level" }));
+    await user.click(await screen.findByRole("menuitem", { name: /^Yolo/ }));
+    expect(container.textContent).not.toMatch(JARGON);
+    await user.click(screen.getByRole("button", { name: "Save" }));
+    const dialog = await screen.findByRole("alertdialog");
+    expect(dialog.textContent).not.toMatch(JARGON);
   });
 
   it("keeps Save disabled until the draft differs, then sends exactly the three flags", async () => {
@@ -118,6 +155,9 @@ describe("PermissionsSection", () => {
 
     const shell = screen.getByRole("switch", { name: "Shell tool" });
     expect(shell).toBeChecked();
+    expect(
+      screen.getByText("Let the agent run terminal commands."),
+    ).toBeInTheDocument();
     await user.click(shell);
     expect(shell).not.toBeChecked();
     expect(save).toBeEnabled();
@@ -145,21 +185,19 @@ describe("PermissionsSection", () => {
   it("requires the ADR-0022 confirmation before saving yolo, and cancels cleanly", async () => {
     const user = userEvent.setup();
     render(<PermissionsSection runtime={fakeRuntime()} />);
-    await user.click(screen.getByRole("button", { name: "Operator posture" }));
-    await user.click(await screen.findByRole("menuitem", { name: "Yolo" }));
+    await user.click(screen.getByRole("button", { name: "Safety level" }));
+    await user.click(await screen.findByRole("menuitem", { name: /^Yolo/ }));
     expect(
-      screen.getByRole("button", { name: "Operator posture" }),
+      screen.getByRole("button", { name: "Safety level" }),
     ).toHaveTextContent("Yolo");
     // The in-form warning appears as soon as an allow-all tier is drafted.
-    expect(screen.getByRole("note")).toHaveTextContent(
-      /Isolated, disposable machines only/,
-    );
+    expect(screen.getByRole("note")).toHaveTextContent(/throwaway machine/);
 
     await user.click(screen.getByRole("button", { name: "Save" }));
     const dialog = await screen.findByRole("alertdialog");
-    expect(dialog).toHaveTextContent(/Switch to the yolo posture\?/);
-    expect(dialog).toHaveTextContent(/prompt-injection defence is off/);
-    expect(dialog).toHaveTextContent(/refuses this posture as root/);
+    expect(dialog).toHaveTextContent(/Switch to Yolo\?/);
+    expect(dialog).toHaveTextContent(/removes every safeguard/);
+    expect(dialog).toHaveTextContent(/anything running will stop/);
     expect(savePermissions).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: "Cancel" }));
@@ -167,7 +205,7 @@ describe("PermissionsSection", () => {
 
     await user.click(screen.getByRole("button", { name: "Save" }));
     await user.click(
-      await screen.findByRole("button", { name: "Switch to yolo" }),
+      await screen.findByRole("button", { name: "Switch to Yolo" }),
     );
     expect(savePermissions).toHaveBeenCalledWith({
       posture: "yolo",
@@ -176,30 +214,35 @@ describe("PermissionsSection", () => {
     });
   });
 
-  it("confirms auto too, without the yolo-only substitution warning", async () => {
+  it("confirms auto too, without the yolo-only no-safeguards warning", async () => {
     const user = userEvent.setup();
     render(<PermissionsSection runtime={fakeRuntime()} />);
-    await user.click(screen.getByRole("button", { name: "Operator posture" }));
-    await user.click(await screen.findByRole("menuitem", { name: "Auto" }));
+    await user.click(screen.getByRole("button", { name: "Safety level" }));
+    await user.click(await screen.findByRole("menuitem", { name: /^Auto/ }));
+    expect(screen.getByRole("note")).toHaveTextContent(/without asking/);
     await user.click(screen.getByRole("button", { name: "Save" }));
     const dialog = await screen.findByRole("alertdialog");
-    expect(dialog).toHaveTextContent(/Switch to the auto posture\?/);
-    expect(dialog).not.toHaveTextContent(/prompt-injection defence is off/);
+    expect(dialog).toHaveTextContent(/Switch to Auto\?/);
+    expect(dialog).toHaveTextContent(/without asking/);
+    expect(dialog).not.toHaveTextContent(/removes every safeguard/);
   });
 
-  it("shows the trust switch checked and disabled once the posture implies trust", async () => {
+  it("shows the trust switch checked and disabled once the level implies trust", async () => {
     const user = userEvent.setup();
     render(<PermissionsSection runtime={fakeRuntime()} />);
     const trust = screen.getByRole("switch", { name: "Trust this project" });
     expect(trust).not.toBeChecked();
     expect(trust).toBeEnabled();
+    expect(
+      screen.getByText("Let this project's own instructions guide the agent."),
+    ).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Operator posture" }));
-    await user.click(await screen.findByRole("menuitem", { name: "Trusted" }));
+    await user.click(screen.getByRole("button", { name: "Safety level" }));
+    await user.click(await screen.findByRole("menuitem", { name: /^Trusted/ }));
     expect(trust).toBeChecked();
     expect(trust).toBeDisabled();
     expect(
-      screen.getByText(/Implied by the trusted posture/),
+      screen.getByText("Included in the Trusted level and above."),
     ).toBeInTheDocument();
     // Saving keeps the user's own switch value: the posture carries the trust.
     await user.click(screen.getByRole("button", { name: "Save" }));
@@ -210,12 +253,18 @@ describe("PermissionsSection", () => {
     });
   });
 
-  it("hides the Effective posture row when the daemon does not report one (capability gate)", () => {
+  it("shows no reported-level badge or note in the managed form when saved and reported agree", () => {
+    runtimeStatus.serverCapabilities = { posture: "strict" };
     render(<PermissionsSection runtime={fakeRuntime()} />);
-    expect(screen.queryByText("Effective posture")).not.toBeInTheDocument();
+    // One "Safety level" row — the picker's — and no badge row beside it.
+    expect(screen.getAllByText("Safety level")).toHaveLength(1);
+    expect(
+      screen.queryByText("What the agent is running at right now."),
+    ).toBeNull();
+    expect(screen.queryByText(/Right now the agent is running/)).toBeNull();
   });
 
-  it("shows the Effective posture row from capabilities.posture and explains Studio's own trust raise", () => {
+  it("explains a reported level that differs from the saved one in one plain line (Studio's own trust raise)", () => {
     runtimeStatus.serverCapabilities = { posture: "trusted" };
     render(
       <PermissionsSection
@@ -232,24 +281,25 @@ describe("PermissionsSection", () => {
         })}
       />,
     );
-    expect(screen.getByText("Effective posture")).toBeInTheDocument();
-    expect(screen.getByText("trusted")).toBeInTheDocument();
     expect(
       screen.getByText(
-        "Trusting this project raises the effective posture to trusted.",
+        "Right now the agent is running at Trusted because this project is trusted.",
       ),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByText("What the agent is running at right now."),
+    ).toBeNull();
   });
 
-  it("says nothing extra when saved and effective agree", () => {
-    runtimeStatus.serverCapabilities = { posture: "strict" };
+  it("says nothing about the reported level when the daemon does not report one (capability gate)", () => {
     render(<PermissionsSection runtime={fakeRuntime()} />);
-    expect(screen.getByText("Effective posture")).toBeInTheDocument();
-    expect(screen.queryByText(/The daemon reports/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/raises the effective posture/)).toBeNull();
+    expect(screen.queryByText(/Right now the agent is running/)).toBeNull();
+    expect(
+      screen.queryByText("What the agent is running at right now."),
+    ).toBeNull();
   });
 
-  it("tells the user Studio's flag out-ranks an imported settings file's posture key", () => {
+  it("tells the user this setting takes priority over a separate settings file", () => {
     render(
       <PermissionsSection
         runtime={fakeRuntime({
@@ -265,10 +315,10 @@ describe("PermissionsSection", () => {
         })}
       />,
     );
-    expect(screen.getByText(/overrides that file.s/)).toBeInTheDocument();
+    expect(screen.getByText(/takes priority over it/)).toBeInTheDocument();
   });
 
-  it("renders the managed note and no form in external mode (the effective badge still shows)", () => {
+  it("renders the managed note and no form in external mode (the reported level still shows)", () => {
     runtimeStatus.mode = "external";
     runtimeStatus.serverCapabilities = { posture: "auto" };
     render(
@@ -279,7 +329,11 @@ describe("PermissionsSection", () => {
     expect(
       screen.getByText(/Managed by the external mecated deployment/),
     ).toBeInTheDocument();
-    expect(screen.getByText("auto")).toBeInTheDocument();
+    expect(screen.getByText("Safety level")).toBeInTheDocument();
+    expect(screen.getByText("Auto")).toBeInTheDocument();
+    expect(
+      screen.getByText("What the agent is running at right now."),
+    ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
     expect(screen.queryByRole("switch")).toBeNull();
   });
@@ -293,7 +347,7 @@ describe("PermissionsSection", () => {
   it("reports a controller that did not answer /permissions instead of inventing defaults", () => {
     render(<PermissionsSection runtime={fakeRuntime({ permissions: null })} />);
     expect(
-      screen.getByText(/controller did not report its permissions/),
+      screen.getByText(/could not read these settings/),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
   });
@@ -318,7 +372,9 @@ describe("effectivePostureNote", () => {
         trustProject: true,
         trustOnce: false,
       }),
-    ).toBe("Trusting this project raises the effective posture to trusted.");
+    ).toBe(
+      "Right now the agent is running at Trusted because this project is trusted.",
+    );
     expect(
       effectivePostureNote({
         saved: "strict",
@@ -326,28 +382,41 @@ describe("effectivePostureNote", () => {
         trustProject: false,
         trustOnce: true,
       }),
-    ).toMatch(/for this controller session/);
+    ).toMatch(/trusted until Studio restarts/);
   });
 
   it("does not blame trust when no trust flag was passed", () => {
     expect(
       effectivePostureNote({ ...base, saved: "strict", effective: "trusted" }),
-    ).toMatch(/above the saved strict/);
+    ).toMatch(/above the saved Strict/);
   });
 
   it("explains a lower effective tier as a restart still in flight", () => {
     expect(
       effectivePostureNote({ ...base, saved: "yolo", effective: "strict" }),
-    ).toMatch(/below the saved yolo/);
+    ).toMatch(/below the saved Yolo/);
+  });
+
+  it("never uses a developer word", () => {
+    for (const [saved, effective] of [
+      ["strict", "trusted"],
+      ["strict", "yolo"],
+      ["yolo", "strict"],
+    ]) {
+      expect(
+        effectivePostureNote({ ...base, saved, effective, trustOnce: true }),
+      ).not.toMatch(JARGON);
+    }
   });
 });
 
 /**
  * The "Project trust" row: the controller's resolved decision for the
- * current spawn as words (mecatui's trust states), "Forget trust" for a
- * remembered grant, and "Trust again" for a drifted one — the explicit grant
- * route, because a plain save with the switch already on never re-stamps the
- * anchor. Gated on the controller reporting `/status.trust` at all.
+ * current spawn in plain words (mecatui's trust states), "Forget trust" for
+ * a remembered grant, and "Trust again" for a drifted one — the explicit
+ * grant route, because a plain save with the switch already on never
+ * re-stamps the anchor. Gated on the controller reporting `/status.trust`
+ * at all.
  */
 describe("PermissionsSection project trust row", () => {
   const untrusted: HarnessTrustState = {
@@ -369,20 +438,20 @@ describe("PermissionsSection project trust row", () => {
       },
     });
 
-  it("names every decision", () => {
-    expect(trustRowLabel(untrusted)).toBe("Untrusted");
+  it("names every decision in plain words", () => {
+    expect(trustRowLabel(untrusted)).toBe("Not trusted");
     expect(trustRowLabel({ ...untrusted, decision: "drifted" })).toBe(
-      "Untrusted — instructions changed",
+      "Changed since trusted",
     );
     expect(
       trustRowLabel({ ...untrusted, decision: "once", source: "studio" }),
-    ).toBe("Trusted for this session");
+    ).toBe("Trusted for now");
     expect(
       trustRowLabel({ ...untrusted, decision: "trusted", source: "studio" }),
     ).toBe("Trusted (remembered)");
     expect(
       trustRowLabel({ ...untrusted, decision: "trusted", source: "posture" }),
-    ).toBe("Trusted (by the posture)");
+    ).toBe("Trusted (by safety level)");
   });
 
   it("is absent when the controller reports no trust decision (older controller)", () => {
@@ -390,24 +459,23 @@ describe("PermissionsSection project trust row", () => {
     expect(screen.queryByText("Project trust")).toBeNull();
   });
 
-  it("shows Untrusted with the withheld-instructions explanation and the residual, and no buttons", () => {
+  it("shows Not trusted with the ignored-instructions explanation and no buttons", () => {
     runtimeStatus.trust = untrusted;
     render(<PermissionsSection runtime={fakeRuntime()} />);
     expect(screen.getByText("Project trust")).toBeInTheDocument();
-    expect(screen.getByText("Untrusted")).toBeInTheDocument();
+    expect(screen.getByText("Not trusted")).toBeInTheDocument();
     expect(
-      screen.getByText(/Mecatl withholds until you trust it/),
+      screen.getByText(/ignores them until you trust it/),
     ).toBeInTheDocument();
-    expect(screen.getByText(/not visible here/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Forget trust" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Trust again" })).toBeNull();
   });
 
-  it("says when the project ships nothing a grant would admit", () => {
+  it("says when the project has no instructions of its own", () => {
     runtimeStatus.trust = { ...untrusted, hasAuthority: false };
     render(<PermissionsSection runtime={fakeRuntime()} />);
     expect(
-      screen.getByText(/ships no instructions a grant would admit/),
+      screen.getByText(/no instructions of its own to trust/),
     ).toBeInTheDocument();
   });
 
@@ -421,7 +489,11 @@ describe("PermissionsSection project trust row", () => {
     const runtime = trustedRuntime();
     render(<PermissionsSection runtime={runtime} />);
     expect(screen.getByText("Trusted (remembered)")).toBeInTheDocument();
-    expect(screen.getByText(/re-checks the project/)).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Studio remembers this and re-checks the project each time the agent starts.",
+      ),
+    ).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Forget trust" }));
     expect(savePermissions).toHaveBeenCalledWith({
       posture: "strict",
@@ -436,10 +508,10 @@ describe("PermissionsSection project trust row", () => {
     runtimeStatus.trust = { ...untrusted, decision: "drifted" };
     const runtime = trustedRuntime();
     render(<PermissionsSection runtime={runtime} />);
+    expect(screen.getByText("Changed since trusted")).toBeInTheDocument();
     expect(
-      screen.getByText("Untrusted — instructions changed"),
+      screen.getByText(/instructions changed since you trusted it/),
     ).toBeInTheDocument();
-    expect(screen.getByText(/started without the grant/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Trust again" }));
     await waitFor(() => expect(runtime.trustProject).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(runtimeStatus.refresh).toHaveBeenCalled());
@@ -461,7 +533,7 @@ describe("PermissionsSection project trust row", () => {
     ).toBeDisabled();
   });
 
-  it("reads the posture floor and the session grant as trusted", () => {
+  it("reads the level floor and the for-now grant as trusted", () => {
     runtimeStatus.trust = {
       ...untrusted,
       decision: "trusted",
@@ -482,9 +554,9 @@ describe("PermissionsSection project trust row", () => {
         })}
       />,
     );
-    expect(screen.getByText("Trusted (by the posture)")).toBeInTheDocument();
+    expect(screen.getByText("Trusted (by safety level)")).toBeInTheDocument();
     expect(
-      screen.getByText(/auto posture trusts the project/),
+      screen.getByText("The Auto level trusts this project on its own."),
     ).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Forget trust" })).toBeNull();
   });

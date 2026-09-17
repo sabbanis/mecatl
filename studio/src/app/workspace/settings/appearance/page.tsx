@@ -36,9 +36,7 @@ import {
   useSessionListSide,
   useShowStarterPrompts,
   useUiScale,
-  useWelcomeDismissed,
 } from "@/lib/profile-preferences";
-import { CustomPalettesSection } from "../_components/custom-palettes-section";
 import { OptionField } from "../_components/option-field";
 import { PreferencesFileSection } from "../_components/preferences-file-section";
 import { SettingsCard, SettingsRow } from "../_components/settings-card";
@@ -113,8 +111,6 @@ function PersonalizeCard() {
     useLaunchTarget();
   const { show: showStarterPrompts, setShow: setShowStarterPrompts } =
     useShowStarterPrompts();
-  const { dismissed: welcomeDismissed, setDismissed: setWelcomeDismissed } =
-    useWelcomeDismissed();
 
   // Browser notifications: permission mirrored into state so the row reflects
   // granted / denied / not-yet-asked; "unsupported" hides the row's actions.
@@ -296,20 +292,6 @@ function PersonalizeCard() {
           />
         </SettingsRow>
 
-        <SettingsRow
-          label="Welcome card"
-          description="The first-run introduction on a new chat."
-        >
-          <Button
-            variant="outline"
-            className="w-44 rounded-full"
-            onClick={() => setWelcomeDismissed(false)}
-            disabled={!welcomeDismissed}
-          >
-            {welcomeDismissed ? "Show again" : "Showing"}
-          </Button>
-        </SettingsRow>
-
         {notifyPermission !== "unsupported" && (
           <SettingsRow
             label="Browser notifications"
@@ -355,7 +337,6 @@ export default function AppearanceSettingsPage() {
       {/* mecatui's custom {name, palette} JSON themes: user-added palettes
           (this browser) and the operator's STUDIO_PALETTE_DIR, both listed in
           the Palette picker above. */}
-      <CustomPalettesSection />
       {/* The client-owned settings file, for the web: every preference on
           this page (and the keymap, status line, hidden models…) as one
           strict JSON document that moves between browsers. */}

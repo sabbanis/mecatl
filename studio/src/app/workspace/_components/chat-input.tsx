@@ -7,7 +7,6 @@ import type { SuggestionProps } from "@tiptap/suggestion";
 import {
   ArrowUp,
   Bot,
-  Brain,
   Check,
   ChevronDown,
   ChevronRight,
@@ -50,12 +49,16 @@ import {
   getAgentMentions,
   getSlashCommands,
 } from "@/features/agent/composer-capabilities";
+import { useOptionalRuntimeStatus } from "@/features/agent/runtime-status";
+import { useConfirm } from "@/hooks/use-confirm";
 import { usePrompt } from "@/hooks/use-prompt";
 import {
   classifyAttachment,
   type MediaCapabilities,
 } from "@/lib/attachment-inline";
+import { ALLOW_ALL_POSTURES } from "@/lib/controller-permissions.mjs";
 import { fileKindMeta } from "@/lib/file-meta";
+import { saveHarnessPermissions } from "@/lib/harness/client";
 import { useDefaultModel } from "@/lib/model-preferences";
 import {
   modeAccentClass,
@@ -112,15 +115,10 @@ import {
   type McpPickerKind,
   useMcpComposerInsert,
 } from "./mcp-composer-insert";
-import {
-  MemoryIndicator,
-  MemorySheetSection,
-  MemoryStateLabel,
-} from "./memory-indicator";
 import { ModelSheetSection, ModelSubmenuContent } from "./model-picker";
 import { ModelPickerOpener } from "./model-picker-opener";
 import {
-  ToolProfileMenuSection,
+  ToolProfileSelector,
   ToolProfileSheetRows,
 } from "./tool-profile-picker";
 
@@ -594,6 +592,151 @@ export function ModelEffortSelector({
 }
 
 /**
+ * The operator posture tiers as the Mode menu offers them: plain words for
+ * a non-technical user. Values are the daemon's own ladder (rule 13) and
+ * saving one goes through the SAME controller document as Settings →
+ * Permissions (`saveHarnessPermissions`), which restarts the agent.
+ */
+const POSTURE_MENU_OPTIONS: readonly {
+  value: string;
+  label: string;
+  description: string;
+}[] = [
+  {
+    value: "strict",
+    label: "Strict",
+    description: "Asks before every change.",
+  },
+  {
+    value: "trusted",
+    label: "Trusted",
+    description: "Follows this project's own rules, asks otherwise.",
+  },
+  {
+    value: "auto",
+    label: "Auto",
+    description: "Works without asking. For unattended runs.",
+  },
+  {
+    value: "yolo",
+    label: "Yolo",
+    description: "No safeguards. Only on a throwaway machine.",
+  },
+];
+
+/**
+ * The Mode menu's "Safety level" control: the daemon-wide operator posture
+ * (the same setting as Settings → Permissions), offered where the user
+ * already picks how the agent asks. Managed mode only — in external mode
+ * the deployment owns the flag — and only once the controller has reported
+ * the saved document. Picking Auto/Yolo confirms first (they waive the ask
+ * before every change); the confirm dialog is rendered by the CALLER,
+ * outside the menu, because the menu closes (and unmounts its content) on
+ * the click. Saving restarts the agent; the runtime re-probe flips the
+ * checkmark once the new daemon answers.
+ */
+function usePostureControl() {
+  // Optional: a composer rendered outside the provider (tests, the mock
+  // tour, the thread panel) simply offers no safety-level rows.
+  const runtime = useOptionalRuntimeStatus();
+  const { confirm, ConfirmDialog } = useConfirm();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const permissions = runtime?.permissions ?? null;
+  const available = runtime?.mode === "managed" && permissions !== null;
+  const current = permissions?.posture ?? "";
+
+  const pick = useCallback(
+    async (tier: string) => {
+      if (!permissions || tier === current || busy) return;
+      if (ALLOW_ALL_POSTURES.includes(tier)) {
+        const name = tier === "yolo" ? "Yolo" : "Auto";
+        const ok = await confirm({
+          title: `Switch to ${name}?`,
+          description:
+            tier === "yolo"
+              ? "The agent will make changes and run commands without asking, with no safeguards at all. Only use this on a throwaway machine. The agent restarts and anything running will stop."
+              : "The agent will make changes and run commands without asking first. The agent restarts and anything running will stop.",
+          confirmText: `Switch to ${name}`,
+          destructive: true,
+        });
+        if (!ok) return;
+      }
+      setBusy(true);
+      setError(null);
+      try {
+        await saveHarnessPermissions({ ...permissions, posture: tier });
+        await runtime?.refresh();
+      } catch (cause) {
+        setError(
+          cause instanceof Error
+            ? cause.message
+            : "The safety level could not be changed.",
+        );
+      } finally {
+        setBusy(false);
+      }
+    },
+    [permissions, current, busy, confirm, runtime],
+  );
+
+  return { available, current, busy, error, pick, ConfirmDialog };
+}
+
+/** The "Safety level" rows inside the Mode menu (see usePostureControl). */
+function PostureMenuSection({
+  current,
+  busy,
+  error,
+  onPick,
+}: {
+  current: string;
+  busy: boolean;
+  error: string | null;
+  onPick: (tier: string) => void;
+}) {
+  return (
+    <>
+      <DropdownMenuSeparator />
+      <DropdownMenuGroup>
+        <DropdownMenuLabel className="text-xs text-muted-foreground">
+          Safety level
+        </DropdownMenuLabel>
+        {POSTURE_MENU_OPTIONS.map((option) => (
+          <DropdownMenuItem
+            key={option.value}
+            className="items-start gap-2"
+            disabled={busy}
+            data-testid={`posture-option-${option.value}`}
+            onClick={() => onPick(option.value)}
+          >
+            <Check
+              className={cn(
+                "mt-0.5 size-4 shrink-0",
+                current === option.value
+                  ? "text-foreground"
+                  : "text-transparent",
+              )}
+            />
+            <span className="flex min-w-0 flex-col">
+              <span>{option.label}</span>
+              <span className="text-xs text-muted-foreground">
+                {option.description}
+              </span>
+            </span>
+          </DropdownMenuItem>
+        ))}
+        {error ? (
+          <p role="alert" className="px-2 py-1 text-xs text-destructive">
+            {error}
+          </p>
+        ) : null}
+      </DropdownMenuGroup>
+    </>
+  );
+}
+
+/**
  * The session permission-mode selector (Manual / Plan / Accept edits), the
  * first control in the composer bar. Same pill + container-collapse idiom as
  * the model selector: the current mode wide, the bare word "Mode" narrow,
@@ -609,84 +752,85 @@ export function ModeSelector({
   onModeChange,
   disabled,
   pending = false,
-  profile,
-  onProfileChange,
 }: {
   mode: SessionPermissionMode;
   onModeChange: (mode: SessionPermissionMode) => void;
   disabled?: boolean;
   /** The shown `mode` is a held switch, not yet confirmed by the daemon. */
   pending?: boolean;
-  /** The chat's tool profile for the menu's Tools section (see ChatInput);
-      "no-fs" also suffixes the pill "· No FS". */
-  profile?: SessionToolProfile;
-  onProfileChange?: (profile: SessionToolProfile) => void;
 }) {
+  const posture = usePostureControl();
   const label = permissionModeLabel(mode);
-  const profileSuffix = toolProfilePillSuffix(profile ?? "");
-  const shown = `${pending ? `${label} · pending` : label}${profileSuffix}`;
+  const shown = pending ? `${label} · pending` : label;
   // Plan / Accept edits carry a filled dot in the box tint's hue (the TUI's
   // mode-coloured rail), kept visible where the label collapses to "Mode".
   const dot = modeDotClass(mode);
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          size="sm"
-          className={cn(GHOST_TRIGGER_CLASS, modeAccentClass(mode))}
-          disabled={disabled}
-          title={`Permission mode: ${label}${pending ? " (pending — applies when the run ends)" : ""} — ⇧Tab cycles${profileSuffix ? " · Tools: No filesystem" : ""}`}
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button
+            size="sm"
+            className={cn(GHOST_TRIGGER_CLASS, modeAccentClass(mode))}
+            disabled={disabled}
+            title={`Permission mode: ${label}${pending ? " (pending — applies when the run ends)" : ""} — ⇧Tab cycles`}
+          >
+            {dot && (
+              <span
+                aria-hidden
+                data-testid="mode-dot"
+                className={cn("size-2 shrink-0 rounded-full", dot)}
+              />
+            )}
+            <span className="max-w-40 truncate @max-md:hidden">{shown}</span>
+            <span className="hidden @max-md:inline">Mode</span>
+            <ChevronDown className="size-3.5 text-muted-foreground" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          onCloseAutoFocus={(e) => e.preventDefault()}
+          align="start"
+          className="w-72"
         >
-          {dot && (
-            <span
-              aria-hidden
-              data-testid="mode-dot"
-              className={cn("size-2 shrink-0 rounded-full", dot)}
+          {PERMISSION_MODE_OPTIONS.map((option) => (
+            <DropdownMenuItem
+              key={option.id}
+              className="items-start gap-2"
+              onClick={() => onModeChange(option.id)}
+            >
+              <Check
+                className={cn(
+                  "mt-0.5 size-4 shrink-0",
+                  mode === option.id ? "text-foreground" : "text-transparent",
+                )}
+              />
+              <span className="flex min-w-0 flex-col">
+                <span>{option.label}</span>
+                <span className="text-xs text-muted-foreground">
+                  {option.description}
+                </span>
+              </span>
+            </DropdownMenuItem>
+          ))}
+          {posture.available && (
+            <PostureMenuSection
+              current={posture.current}
+              busy={posture.busy}
+              error={posture.error}
+              onPick={(tier) => void posture.pick(tier)}
             />
           )}
-          <span className="max-w-40 truncate @max-md:hidden">{shown}</span>
-          <span className="hidden @max-md:inline">Mode</span>
-          <ChevronDown className="size-3.5 text-muted-foreground" />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent
-        onCloseAutoFocus={(e) => e.preventDefault()}
-        align="start"
-        className="w-72"
-      >
-        {PERMISSION_MODE_OPTIONS.map((option) => (
-          <DropdownMenuItem
-            key={option.id}
-            className="items-start gap-2"
-            onClick={() => onModeChange(option.id)}
-          >
-            <Check
-              className={cn(
-                "mt-0.5 size-4 shrink-0",
-                mode === option.id ? "text-foreground" : "text-transparent",
-              )}
-            />
-            <span className="flex min-w-0 flex-col">
-              <span>{option.label}</span>
-              <span className="text-xs text-muted-foreground">
-                {option.description}
-              </span>
-            </span>
-          </DropdownMenuItem>
-        ))}
-        <ToolProfileMenuSection
-          profile={profile}
-          onProfileChange={onProfileChange}
-        />
-      </DropdownMenuContent>
-    </DropdownMenu>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      {posture.ConfirmDialog}
+    </>
   );
 }
 
 /**
  * The mobile composer's left-hand options button: a + that opens a bottom
- * sheet with the composer's secondary actions — Add a file, Model, Memory —
- * replacing the desktop toolbar row (hidden on mobile). Model and Memory
+ * sheet with the composer's secondary actions — Add a file, Model —
+ * replacing the desktop toolbar row (hidden on mobile). Model
  * drill into their own sheets; a routed model renders display-only.
  */
 function MobileComposerMenu({
@@ -913,21 +1057,6 @@ function MobileComposerMenu({
                 <ChevronRight className="size-4 text-muted-foreground/60" />
               )}
             </button>
-            <button
-              type="button"
-              className={menuRow}
-              onClick={() => {
-                setMenuOpen(false);
-                setSub("memory");
-              }}
-            >
-              <Brain className="size-4 text-muted-foreground" />
-              <span className="flex-1 text-left">Memory</span>
-              <span className="text-muted-foreground">
-                <MemoryStateLabel />
-              </span>
-              <ChevronRight className="size-4 text-muted-foreground/60" />
-            </button>
           </div>
         </SheetContent>
       </Sheet>
@@ -1038,18 +1167,6 @@ function MobileComposerMenu({
               </>
             )}
           </div>
-        </SheetContent>
-      </Sheet>
-
-      <Sheet
-        open={sub === "memory"}
-        onOpenChange={(open) => {
-          if (!open) setSub(null);
-        }}
-      >
-        <SheetContent side="bottom" className="p-0">
-          <SheetTitle className="sr-only">Memory</SheetTitle>
-          <MemorySheetSection onNavigate={() => setSub(null)} />
         </SheetContent>
       </Sheet>
     </>
@@ -2461,7 +2578,7 @@ export function ChatInput({
       {/* Toolbar sits BEHIND the input box: negative top margin pulls it up
           so its top edge overlaps the input box's bottom rounded corners,
           making the two boxes appear to share a single outline. */}
-      {/* Hidden on mobile: Model and Memory live in the + options sheet. */}
+      {/* Hidden on mobile: Model lives in the + options sheet. */}
       {/* @container: the Model/Memory pills collapse their value labels via
           container queries when THIS row runs narrow (a ~400px side-panel
           composer), independent of the viewport width. */}
@@ -2482,8 +2599,14 @@ export function ChatInput({
                 onModeChange={onModeChange}
                 disabled={disabled || (isStreaming && !modeSwitchDeferred)}
                 pending={modePending}
+              />
+            )}
+            {onModeChange && (
+              <ToolProfileSelector
                 profile={profile}
                 onProfileChange={onProfileChange}
+                disabled={disabled}
+                className={GHOST_TRIGGER_CLASS}
               />
             )}
             <ModelEffortSelector
@@ -2502,7 +2625,6 @@ export function ChatInput({
                 onModelChange?.(id);
               }}
             />
-            <MemoryIndicator className={GHOST_TRIGGER_CLASS} />
           </>
         )}
       </div>

@@ -11,6 +11,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { useOptionalRuntimeStatus } from "@/features/agent/runtime-status";
 import { copyToClipboard } from "@/lib/clipboard";
 import { formatRelativeTime } from "@/lib/formatters";
 import {
@@ -277,6 +278,21 @@ function IdentityRows({
   const state = LIFECYCLE[identity.state];
   const model = identity.resolvedModel;
   const placement = identity.placement;
+  // The daemon-level facts the old status strip carried: which daemon this
+  // chat runs against (never a URL — the proxy hides the address) and the
+  // operator posture it reports. Absent outside the runtime provider.
+  const runtime = useOptionalRuntimeStatus();
+  const serverText = runtime
+    ? runtime.state === "connecting"
+      ? "connecting…"
+      : runtime.state === "offline"
+        ? "offline"
+        : `${runtime.mode === "managed" ? "Managed by Studio" : "External deployment"}${runtime.deployment ? ` · ${runtime.deployment}` : ""}`
+    : "";
+  const posture =
+    typeof runtime?.serverCapabilities.posture === "string"
+      ? runtime.serverCapabilities.posture
+      : "";
   const relationship = identity.relationship;
   const provenance = PROVENANCE_LABEL[identity.titleProvenance];
   return (
@@ -311,6 +327,18 @@ function IdentityRows({
       <Row label="Permission mode">
         {MODE_LABEL[identity.mode] ?? identity.mode}
       </Row>
+      {posture && (
+        <Row label="Safety level">
+          <span data-testid="session-details-posture">
+            {posture.charAt(0).toUpperCase() + posture.slice(1)}
+          </span>
+        </Row>
+      )}
+      {serverText && (
+        <Row label="Server">
+          <span data-testid="session-details-server">{serverText}</span>
+        </Row>
+      )}
       <Row label="Provider">{model?.providerId || "unavailable"}</Row>
       <Row label="Model">{model?.modelId || "unavailable"}</Row>
       {model?.reasoningEffort && (

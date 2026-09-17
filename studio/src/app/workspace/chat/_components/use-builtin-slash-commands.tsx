@@ -24,8 +24,11 @@ import { useDiagnosticsReport } from "@/features/agent/hooks/use-diagnostics-rep
 import type { WorkspaceEnrollmentView } from "@/features/agent/hooks/use-workspace-enrollment";
 import { requestOpenMcpPicker } from "../../_components/mcp-composer-insert";
 import { requestOpenModelPicker } from "../../_components/model-picker-opener";
-import { HELP_ROUTE } from "./help-menu-item";
 import { requestOpenMcpPanel } from "./mcp-panel";
+
+/** Where the `/help` built-in goes: the shortcuts + features reference. */
+const HELP_ROUTE = "/workspace/shortcuts";
+
 import {
   SessionDetailsDialog,
   type SessionDetailsExtras,

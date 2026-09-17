@@ -11,33 +11,8 @@ import type { SessionRelationshipInfo } from "@/lib/protocol/sessions";
  * labels; it never re-derives eligibility (Studio rule 9).
  */
 
-/** The sidebar's inventory tabs, in display order (the TUI's /sessions tabs). */
+/** The inventory kinds a row can belong to (the TUI's /sessions tabs). */
 export type SessionTab = "chats" | "runs" | "scheduled" | "drafts" | "other";
-
-export const SESSION_TABS: readonly SessionTab[] = [
-  "chats",
-  "runs",
-  "scheduled",
-  "drafts",
-  "other",
-];
-
-export const SESSION_TAB_LABELS: Record<SessionTab, string> = {
-  chats: "Chats",
-  runs: "Runs",
-  scheduled: "Scheduled",
-  drafts: "Drafts",
-  other: "Other",
-};
-
-/** The one-line empty state per tab. */
-export const SESSION_TAB_EMPTY: Record<SessionTab, string> = {
-  chats: "No chats yet",
-  runs: "No child runs yet",
-  scheduled: "No scheduled runs yet",
-  drafts: "No drafts",
-  other: "Nothing else stored",
-};
 
 /** The fields a row needs for tab placement (both `SessionSummary` and
  *  `AgentSession` satisfy it). */

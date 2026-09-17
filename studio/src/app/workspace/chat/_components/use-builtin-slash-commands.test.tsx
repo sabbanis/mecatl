@@ -53,6 +53,7 @@ const runtime = vi.hoisted(() => ({
   deployment: "staging-eu",
 }));
 vi.mock("@/features/agent/runtime-status", () => ({
+  useOptionalRuntimeStatus: () => null,
   useRuntimeStatus: () => ({
     mode: runtime.mode,
     deployment: runtime.deployment,

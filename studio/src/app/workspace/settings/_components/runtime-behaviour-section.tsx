@@ -22,13 +22,23 @@ import {
   SettingsRow,
 } from "./settings-card";
 
-/** The Mid-run steering row's description: what the switch does, plus the
- *  daemon's LIVE word on it (`capabilities.steer`) when it reports one. */
-export function steerRowDescription(liveSteer: unknown): string {
+/** The row's visible label; the switch's aria-label repeats it. */
+const STEER_LABEL = "Read messages while working";
+
+/**
+ * The row's description in plain words, plus ONE line when the daemon's
+ * LIVE word on it (`capabilities.steer`) differs from the saved switch —
+ * a restart still in flight, or an operator `steer: false` keeping it off.
+ * Silent when the daemon reports nothing or agrees.
+ */
+export function steerRowDescription(
+  liveSteer: unknown,
+  enabled: boolean,
+): string {
   const base =
-    "On, a message sent while the agent is replying can be steered into the run at its next step. Off respawns the daemon with --no-steer, so every client's mid-run messages queue for the next turn.";
-  if (typeof liveSteer !== "boolean") return base;
-  return `${base} The daemon currently reports steering ${liveSteer ? "on" : "off"}.`;
+    "On: a message you send while the agent is working is picked up at its next step. Off: it waits until the agent finishes.";
+  if (typeof liveSteer !== "boolean" || liveSteer === enabled) return base;
+  return `${base} Right now this is ${liveSteer ? "on" : "off"}.`;
 }
 
 /**
@@ -45,7 +55,9 @@ export function steerRowDescription(liveSteer: unknown): string {
  * note. A `steer: false` in the operator's own settings.yaml already keeps
  * steering off whatever Studio passes (`--no-steer` can only tighten), so
  * the row then reads Off with no switch and says why. Every flip RESTARTS
- * the daemon — in-flight runs end — so the switch confirms first.
+ * the daemon — in-flight runs end — so the switch confirms first. The copy
+ * is written for people who are not developers: "the agent", never the
+ * daemon or its flags.
  */
 export function RuntimeBehaviourSection() {
   const { live, manageable, doc, isLoading, busy, error, notice, save } =
@@ -66,9 +78,8 @@ export function RuntimeBehaviourSection() {
     body = (
       <Note>
         {isLoading
-          ? "Reading the daemon's runtime settings…"
-          : (error ??
-            "The daemon's runtime settings could not be read right now.")}
+          ? "Reading the agent’s settings…"
+          : (error ?? "These settings could not be read right now.")}
       </Note>
     );
   } else {
@@ -76,9 +87,9 @@ export function RuntimeBehaviourSection() {
       <>
         <div className="divide-y divide-border/60">
           <SettingsRow
-            label="Mid-run steering"
+            label={STEER_LABEL}
             htmlFor={inheritedOff ? undefined : "daemon-steer"}
-            description={steerRowDescription(serverCapabilities.steer)}
+            description={steerRowDescription(serverCapabilities.steer, enabled)}
           >
             {inheritedOff ? (
               <span className="text-sm text-muted-foreground">Off</span>
@@ -88,7 +99,7 @@ export function RuntimeBehaviourSection() {
                 checked={enabled}
                 disabled={busy !== ""}
                 onCheckedChange={(next) => setPending(next)}
-                aria-label="Mid-run steering"
+                aria-label={STEER_LABEL}
               />
             )}
           </SettingsRow>
@@ -96,10 +107,8 @@ export function RuntimeBehaviourSection() {
         {inheritedOff ? (
           <div className="mt-3">
             <Note>
-              The operator&rsquo;s settings.yaml sets <code>steer: false</code>,
-              which keeps steering off whatever Studio passes (
-              <code>--no-steer</code> can only tighten). Change that file to
-              hand control back to this switch.
+              This was turned off in the agent&rsquo;s own settings file, so it
+              can&rsquo;t be changed here.
             </Note>
           </div>
         ) : null}
@@ -121,16 +130,10 @@ export function RuntimeBehaviourSection() {
             <AlertDialogContent>
               <AlertDialogHeader>
                 <AlertDialogTitle>
-                  {pending
-                    ? "Turn mid-run steering on?"
-                    : "Turn mid-run steering off?"}
+                  {pending ? "Turn this on?" : "Turn this off?"}
                 </AlertDialogTitle>
                 <AlertDialogDescription>
-                  The daemon restarts with the new setting: in-flight runs end
-                  and their session ids die with them.{" "}
-                  {pending
-                    ? "Clients can steer a running agent again."
-                    : "Every client's mid-run messages will queue for the next turn until steering is turned back on."}
+                  The agent restarts. Anything running will stop.
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>
@@ -153,8 +156,8 @@ export function RuntimeBehaviourSection() {
 
   return (
     <SettingsCard
-      title="Daemon behaviour"
-      description="How the managed daemon runs, for every client. Changes restart it."
+      title="Agent behaviour"
+      description="Applies to everyone using this agent. Changes restart it."
     >
       {body}
     </SettingsCard>

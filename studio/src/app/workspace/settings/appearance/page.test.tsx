@@ -1,17 +1,15 @@
-import { act, render, renderHook, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PaletteProvider } from "@/components/palette-provider";
 import {
   loadOperatorPalettes,
   resetCustomPalettesForTests,
-  useCustomPalettes,
 } from "@/lib/custom-palettes";
 import { memoryStorage } from "@/test/memory-storage";
 import AppearanceSettingsPage from "./page";
 
 const HIDE_STARTER_PROMPTS_KEY = "mecatl-studio.hide-starter-prompts";
-const WELCOME_DISMISSED_KEY = "mecatl-studio.welcome-dismissed";
 
 // The page hosts the Custom palettes section, whose mount starts the
 // one-per-page /api/palettes fetch: stub it and let it settle up front so no
@@ -33,10 +31,9 @@ beforeEach(async () => {
 afterEach(() => resetCustomPalettesForTests());
 
 /**
- * Personalize owns the two new-chat preferences: the starter-prompt switch
- * (the --no-banner analogue, default ON) and the welcome card's "Show again"
- * (only actionable once the card was dismissed). Both are browser-local, so
- * the page writes the same keys the chat reads.
+ * Personalize owns the new-chat preference: the starter-prompt switch (the
+ * --no-banner analogue, default ON). Browser-local, so the page writes the
+ * same key the chat reads.
  */
 describe("AppearanceSettingsPage — new chat preferences", () => {
   beforeEach(() => {
@@ -56,25 +53,6 @@ describe("AppearanceSettingsPage — new chat preferences", () => {
     await userEvent.click(toggle);
     expect(toggle).toBeChecked();
     expect(window.localStorage.getItem(HIDE_STARTER_PROMPTS_KEY)).toBeNull();
-  });
-
-  it("reports the welcome card as showing while it was never dismissed", () => {
-    render(<AppearanceSettingsPage />);
-    expect(screen.getByRole("button", { name: "Showing" })).toBeDisabled();
-    expect(
-      screen.queryByRole("button", { name: "Show again" }),
-    ).not.toBeInTheDocument();
-  });
-
-  it("brings a dismissed welcome card back with Show again", async () => {
-    window.localStorage.setItem(WELCOME_DISMISSED_KEY, "1");
-    render(<AppearanceSettingsPage />);
-    const showAgain = await screen.findByRole("button", { name: "Show again" });
-    expect(showAgain).toBeEnabled();
-
-    await userEvent.click(showAgain);
-    expect(window.localStorage.getItem(WELCOME_DISMISSED_KEY)).toBeNull();
-    expect(screen.getByRole("button", { name: "Showing" })).toBeDisabled();
   });
 });
 
@@ -209,76 +187,6 @@ describe("AppearanceSettingsPage — palette", () => {
   });
 });
 
-/**
- * Custom palettes — mecatui's `{name, palette}` JSON themes — are part of
- * the same "list themes" surface: a user-added palette appears in the
- * Palette picker suffixed with its source, picking it applies and persists
- * the `custom:<name>` id, and the Custom palettes section sits on the page
- * with its editor and format help.
- */
-describe("AppearanceSettingsPage — custom palettes", () => {
-  const PALETTE_KEY = "mecatl-studio.palette";
-
-  afterEach(() => {
-    document.documentElement.removeAttribute("data-palette");
-  });
-
-  it("lists a user palette in the picker with its source and applies it", async () => {
-    const user = userEvent.setup();
-    const custom = renderHook(() => useCustomPalettes());
-    act(() => {
-      custom.result.current.addUserPalette(
-        '{"name":"ember","label":"Ember","palette":{"brand":"#ff6600"}}',
-      );
-    });
-    render(<AppearanceSettingsPage />);
-
-    await user.click(screen.getByRole("button", { name: "Palette" }));
-    const item = await screen.findByRole("menuitem", {
-      name: /Ember · custom/,
-    });
-    expect(item).toHaveTextContent("Custom palette added in this browser.");
-    // The built-ins are still there, unsuffixed.
-    expect(
-      screen.getByRole("menuitem", { name: /^Aztec/ }),
-    ).toBeInTheDocument();
-
-    await user.click(item);
-    expect(screen.getByRole("button", { name: "Palette" })).toHaveTextContent(
-      "Ember · custom",
-    );
-    expect(document.documentElement.getAttribute("data-palette")).toBe(
-      "custom:ember",
-    );
-    expect(window.localStorage.getItem(PALETTE_KEY)).toBe("custom:ember");
-    // The section below lists it too, with its own controls.
-    expect(
-      screen.getByRole("button", { name: "Remove Ember" }),
-    ).toBeInTheDocument();
-  });
-
-  it("renders the Custom palettes section with its editor and help", () => {
-    render(<AppearanceSettingsPage />);
-    expect(
-      screen.getByRole("heading", { name: "Custom palettes" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByLabelText("Palette document (JSON)"),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Upload .json" }),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText("Document format and allowed tokens"),
-    ).toBeInTheDocument();
-  });
-});
-
-/**
- * "Start on" is the `--resume-latest` analogue: a new draft by default, or
- * the most recent quiet chat, persisted browser-locally under the key the
- * chat workspace's launch effect reads.
- */
 describe("AppearanceSettingsPage — start on", () => {
   const LAUNCH_KEY = "mecatl-studio.launch-target";
 

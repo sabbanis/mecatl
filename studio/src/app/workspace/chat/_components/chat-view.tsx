@@ -5,6 +5,7 @@ import {
   ArrowLeft,
   Bug,
   CirclePlus,
+  Copy,
   Ellipsis,
   FileText,
   FoldVertical,
@@ -28,6 +29,10 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
@@ -75,7 +80,6 @@ import {
   createThreadHarnessSession,
   ThreadSourceBusyError,
 } from "@/lib/harness/client";
-import type { HarnessPlacement } from "@/lib/harness/sessions";
 import {
   type SessionListSide,
   useEnterSendBehavior,
@@ -130,7 +134,6 @@ import {
 } from "./delegation-panel";
 import { FilePreview } from "./file-preview";
 import { FleetStatusChip } from "./fleet-status-chip";
-import { HelpMenuItem, HelpSheetItem } from "./help-menu-item";
 import { MarkdownCanvasPanel } from "./markdown-canvas-panel";
 import {
   MCP_PANEL_TITLE,
@@ -141,7 +144,6 @@ import {
 import { MessageBubble } from "./message-bubble";
 import { MockProviderNotice } from "./mock-provider-notice";
 import { PermissionModeBadge } from "./permission-mode-badge";
-import { PlacementBadge } from "./placement-badge";
 import { QueuedMessageStrip } from "./queued-message-strip";
 import { PAGE_FRACTION, scrollPositionPercent } from "./scroll-position";
 import { ScrollToBottomPill } from "./scroll-to-bottom-pill";
@@ -447,7 +449,6 @@ function MobileChatMenu({
                 onDone={() => setOpen(false)}
               />
             )}
-            <HelpSheetItem onSelect={() => setOpen(false)} />
             <CopySessionIdSheetItem
               session={session}
               onDone={() => setOpen(false)}
@@ -1086,7 +1087,6 @@ export function ChatView({
   modeSwitchDeferred = false,
   debugMcpServers,
   debugMcpTools,
-  placement = null,
   readOnlyPlaceholder,
   mode,
   onModeChange,
@@ -1243,9 +1243,6 @@ export function ChatView({
   debugMcpServers?: string[];
   /** The debugger MCP tools those servers mounted (the strip's notice). */
   debugMcpTools?: string[];
-  /** The session's server-owned placement DISPLAY metadata (ADR 0291) off
-      the snapshot — the header's worktree/branch badge; null hides it. */
-  placement?: HarnessPlacement | null;
   /** The latest turn's input tokens (turn.end): the meter's occupancy. */
   contextOccupancy?: number;
   /** The transient status line under the transcript (a no-progress nudge,
@@ -1778,9 +1775,6 @@ export function ChatView({
           >
             {session.title || "Untitled"}
           </h2>
-          {/* mecatui's startup placement line, kept in the header: the
-              worktree and branch this chat's session is bound to. */}
-          <PlacementBadge placement={placement} />
           {/* The user's header status line (Settings → Status line): a
               reserved lane over the session facts, empty until customised. */}
           <TemplatedStatusLine
@@ -1899,10 +1893,10 @@ export function ChatView({
                   <Ellipsis className="size-4" />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-52">
-                {/* Token usage as the daemon reported it (was a header pill;
-                    it lives in the menu now). Hidden until any lands. */}
+              <DropdownMenuContent align="end" className="w-56">
+                {/* Token usage as the daemon reported it. Hidden until any lands. */}
                 <UsageMenuRow usage={usage} />
+                {/* View */}
                 <DropdownMenuItem
                   onClick={() => setShowToolCalls(!showActivity)}
                 >
@@ -1915,16 +1909,12 @@ export function ChatView({
                   <ListTree className="size-4 mr-2 text-muted-foreground" />
                   {expandDetails ? "Collapse details" : "Expand details"}
                 </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                {/* Conversation actions */}
                 {onCompact && (
                   <DropdownMenuItem disabled={isStreaming} onClick={onCompact}>
                     <FoldVertical className="size-4 mr-2 text-muted-foreground" />
                     Compact conversation
-                  </DropdownMenuItem>
-                )}
-                {onInjectDebugAsk && (
-                  <DropdownMenuItem onClick={onInjectDebugAsk}>
-                    <Bug className="size-4 mr-2 text-muted-foreground" />
-                    Inject fake approval
                   </DropdownMenuItem>
                 )}
                 {onClear && (
@@ -1933,22 +1923,39 @@ export function ChatView({
                     disabledReason={clearDisabledReason}
                   />
                 )}
-                {onSwitchWorktree && (
-                  <SwitchWorktreeMenuItem onSelect={onSwitchWorktree} />
-                )}
-                <TranscriptMenuItems
-                  messages={messages}
-                  botName={botName}
-                  onSelectTranscript={selectTranscript}
-                />
-                {onOpenDetails && (
-                  <SessionDetailsMenuItem onSelect={onOpenDetails} />
-                )}
-                <HelpMenuItem />
-                <CopySessionIdMenuItem session={session} />
                 {onFork && (
                   <ForkChatMenuItem session={session} onSelect={onFork} />
                 )}
+                {onSwitchWorktree && (
+                  <SwitchWorktreeMenuItem onSelect={onSwitchWorktree} />
+                )}
+                {onInjectDebugAsk && (
+                  <DropdownMenuItem onClick={onInjectDebugAsk}>
+                    <Bug className="size-4 mr-2 text-muted-foreground" />
+                    Inject fake approval
+                  </DropdownMenuItem>
+                )}
+                <DropdownMenuSeparator />
+                {/* Copy: the transcript (select / copy) and the session id */}
+                <DropdownMenuSub>
+                  <DropdownMenuSubTrigger>
+                    <Copy className="size-4 mr-2 text-muted-foreground" />
+                    Copy
+                  </DropdownMenuSubTrigger>
+                  <DropdownMenuSubContent className="w-56">
+                    <TranscriptMenuItems
+                      messages={messages}
+                      botName={botName}
+                      onSelectTranscript={selectTranscript}
+                    />
+                    <CopySessionIdMenuItem session={session} />
+                  </DropdownMenuSubContent>
+                </DropdownMenuSub>
+                {onOpenDetails && (
+                  <SessionDetailsMenuItem onSelect={onOpenDetails} />
+                )}
+                <DropdownMenuSeparator />
+                {/* This chat */}
                 {onRename && (
                   <DropdownMenuItem onClick={onRename}>
                     <Pencil className="size-4 mr-2 text-muted-foreground" />
@@ -1991,24 +1998,25 @@ export function ChatView({
           )}
         </div>
 
-        {/* The persistent status strip (mecatui's header bar): session handle
-            · effective model (+ route/effort) · mode (+ pending) · server,
-            with the daemon-reported posture badge; amber DEBUG target row +
-            privacy line on an AI-debug session. */}
-        <ChatStatusStrip
-          session={session}
-          live={live}
-          resolvedModelId={contextInfo?.modelLabel || null}
-          reasoningEffort={contextInfo?.effort}
-          modelResolution={modelResolution}
-          models={models}
-          providerRoute={providerRoute}
-          mode={mode}
-          pendingMode={pendingMode}
-          debugMcpServers={debugMcpServers}
-          debugMcpTools={debugMcpTools}
-          onOpenSession={onOpenSession}
-        />
+        {/* The session facts live under ⋯ → Session details; the amber strip
+            (DEBUG target + privacy line) stays visible on an AI-debug
+            session only, where it is the durable disclosure. */}
+        {session.debugTargetSessionId ? (
+          <ChatStatusStrip
+            session={session}
+            live={live}
+            resolvedModelId={contextInfo?.modelLabel || null}
+            reasoningEffort={contextInfo?.effort}
+            modelResolution={modelResolution}
+            models={models}
+            providerRoute={providerRoute}
+            mode={mode}
+            pendingMode={pendingMode}
+            debugMcpServers={debugMcpServers}
+            debugMcpTools={debugMcpTools}
+            onOpenSession={onOpenSession}
+          />
+        ) : null}
 
         <div className="relative flex-1 min-h-0">
           <section

@@ -6,7 +6,6 @@ import { ModelEffortSelector } from "./chat-input";
 import {
   FILTER_MODELS_LABEL,
   filterModelOptions,
-  MODEL_SWITCH_NOTE,
   NO_MODELS_MATCH,
 } from "./model-picker";
 
@@ -54,8 +53,6 @@ async function openModels(user: ReturnType<typeof userEvent.setup>) {
 const rowNames = () =>
   screen.getAllByRole("option").map((row) => row.textContent ?? "");
 
-const header = () => screen.getByTestId("model-picker-current");
-
 /**
  * The pure filter behind both pickers: a case-insensitive substring match
  * over provider id, model id and display name.
@@ -96,7 +93,7 @@ describe("Model picker", () => {
     vi.stubGlobal("localStorage", memoryStorage());
   });
 
-  it("renders provider · name rows with capability glyphs and the context window, auto first", async () => {
+  it("lists the models by name, grouped by provider, with no auto row, header or capability data", async () => {
     const user = userEvent.setup();
     render(
       <ModelEffortSelector
@@ -109,21 +106,24 @@ describe("Model picker", () => {
       />,
     );
     await openModels(user);
-    const rows = screen.getAllByRole("option");
-    expect(rows[0]).toHaveTextContent("Auto-routed");
-    expect(rows[1]).toHaveTextContent("openai·GPT-5400k");
-    expect(rows[2]).toHaveTextContent("anthropic·Sonnet200k");
-    // No context label for an unknown (0) window.
-    expect(rows[3]).toHaveTextContent("openrouter·Small");
-    expect(rows[3]).not.toHaveTextContent("k");
-    // Glyphs carry accessible names; GPT-5 has both, Sonnet reasoning only.
-    expect(screen.getAllByRole("img", { name: "Accepts images" })).toHaveLength(
-      1,
-    );
-    expect(screen.getAllByRole("img", { name: "Reasoning" })).toHaveLength(2);
+    // Provider groups in first-seen order, one heading each.
+    expect(screen.getByText("OpenAI")).toBeInTheDocument();
+    expect(screen.getByText("Anthropic")).toBeInTheDocument();
+    expect(screen.getByText("OpenRouter")).toBeInTheDocument();
+    // Rows are the display names only: no provider prefix, no context
+    // window, no capability glyphs, and no "Default model"/auto row.
+    expect(rowNames()).toEqual(["GPT-5", "Sonnet", "Small"]);
+    expect(
+      screen.queryAllByRole("img", { name: "Accepts images" }),
+    ).toHaveLength(0);
+    expect(screen.queryAllByRole("img", { name: "Reasoning" })).toHaveLength(0);
+    expect(screen.queryByRole("option", { name: /Auto-routed/ })).toBeNull();
+    expect(screen.queryByTestId("model-picker-current")).toBeNull();
     // The current model is marked.
-    expect(rows[1]).toHaveAttribute("data-current", "true");
-    expect(screen.getByText(MODEL_SWITCH_NOTE)).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: /GPT-5/ })).toHaveAttribute(
+      "data-current",
+      "true",
+    );
   });
 
   it("filters rows by provider, id or name and shows an empty state", async () => {
@@ -139,17 +139,14 @@ describe("Model picker", () => {
     );
     const input = await openModels(user);
     fireEvent.change(input, { target: { value: "anthro" } });
-    await waitFor(() =>
-      expect(rowNames()).toEqual(["Default model", "anthropic·Sonnet200k"]),
-    );
+    await waitFor(() => expect(rowNames()).toEqual(["Sonnet"]));
     fireEvent.change(input, { target: { value: "claude-son" } });
-    await waitFor(() => expect(rowNames()).toHaveLength(2));
+    await waitFor(() => expect(rowNames()).toHaveLength(1));
     fireEvent.change(input, { target: { value: "gemini" } });
     await waitFor(() =>
       expect(screen.getByText(NO_MODELS_MATCH)).toBeInTheDocument(),
     );
-    // The auto row stays pinned even when nothing else matches.
-    expect(rowNames()).toEqual(["Default model"]);
+    expect(screen.queryAllByRole("option")).toHaveLength(0);
   });
 
   it("two-stage Escape: clears a non-empty filter first, closes the menu when empty", async () => {
@@ -165,10 +162,10 @@ describe("Model picker", () => {
     );
     const input = await openModels(user);
     fireEvent.change(input, { target: { value: "small" } });
-    await waitFor(() => expect(rowNames()).toHaveLength(2));
+    await waitFor(() => expect(rowNames()).toHaveLength(1));
     fireEvent.keyDown(input, { key: "Escape" });
     // Stage one: the filter is cleared, the menu stays open.
-    await waitFor(() => expect(rowNames()).toHaveLength(4));
+    await waitFor(() => expect(rowNames()).toHaveLength(3));
     expect(
       screen.getByRole("combobox", { name: FILTER_MODELS_LABEL }),
     ).toHaveValue("");
@@ -181,7 +178,7 @@ describe("Model picker", () => {
     );
   });
 
-  it("live chat: picking a row forks, re-picking the current one is a no-op, auto forks with null", async () => {
+  it("live chat: picking a row forks, re-picking the current one is a no-op", async () => {
     const user = userEvent.setup();
     const onSwitchModel = vi.fn();
     render(
@@ -207,28 +204,10 @@ describe("Model picker", () => {
     expect(onSwitchModel).toHaveBeenCalledWith(
       expect.objectContaining({ id: "claude-sonnet", providerId: "anthropic" }),
     );
-    await openModels(user);
-    fireEvent.click(screen.getByRole("option", { name: /Default model/ }));
-    expect(onSwitchModel).toHaveBeenLastCalledWith(null);
   });
 
-  it("header names the live model and its provenance: daemon default, your pick, Studio default", async () => {
+  it("the footer action sets and clears the browser-local default for the highlighted row", async () => {
     const user = userEvent.setup();
-    const view = render(
-      <ModelEffortSelector
-        models={models}
-        onSwitchModel={() => {}}
-        onSwitchEffort={() => {}}
-        currentModelId=""
-        currentEffort=""
-      />,
-    );
-    await openModels(user);
-    expect(header()).toHaveTextContent(
-      "current: Default model — daemon default",
-    );
-    view.unmount();
-
     render(
       <ModelEffortSelector
         models={models}
@@ -239,26 +218,22 @@ describe("Model picker", () => {
       />,
     );
     await openModels(user);
-    expect(header()).toHaveTextContent("current: Sonnet — your pick");
-    // Marking it as the default relabels the provenance live.
     fireEvent.click(
       screen.getByRole("button", { name: "Set Sonnet as my default" }),
     );
     await waitFor(() =>
-      expect(header()).toHaveTextContent("current: Sonnet — Studio default"),
+      expect(
+        screen.getByRole("img", { name: "Your default for new chats" }),
+      ).toBeInTheDocument(),
     );
-    expect(
-      screen.getByRole("img", { name: "Your default for new chats" }),
-    ).toBeInTheDocument();
     expect(window.localStorage.getItem(DEFAULT_KEY)).toBe(
       '{"modelId":"claude-sonnet","providerId":"anthropic"}',
     );
     // The action flips to clear for the highlighted default row.
     fireEvent.click(screen.getByRole("button", { name: "Clear my default" }));
     await waitFor(() =>
-      expect(header()).toHaveTextContent("current: Sonnet — your pick"),
+      expect(window.localStorage.getItem(DEFAULT_KEY)).toBeNull(),
     );
-    expect(window.localStorage.getItem(DEFAULT_KEY)).toBeNull();
   });
 
   it("Shift+Enter marks the highlighted row as the default instead of picking it", async () => {
@@ -288,49 +263,27 @@ describe("Model picker", () => {
     ).toBeInTheDocument();
   });
 
-  it("draft: an untouched picker starts on the Studio default and reports the resolved pick", async () => {
+  it("draft: an untouched picker starts on the Studio default", async () => {
     window.localStorage.setItem(
       DEFAULT_KEY,
       '{"modelId":"claude-sonnet","providerId":"anthropic"}',
     );
     const user = userEvent.setup();
-    const onModelChange = vi.fn();
     render(
       <ModelEffortSelector
         models={models}
-        onModelChange={onModelChange}
+        onModelChange={() => {}}
         onEffortChange={() => {}}
       />,
     );
     // The trigger shows the default, not "Default model".
     expect(trigger()).toHaveAttribute("title", "Sonnet · Auto");
     await openModels(user);
-    expect(header()).toHaveTextContent("current: Sonnet — Studio default");
     expect(screen.getByRole("option", { name: /Sonnet/ })).toHaveAttribute(
       "data-current",
       "true",
     );
-    // Picking the auto row is an explicit pick for the daemon default.
-    fireEvent.click(screen.getByRole("option", { name: /Default model/ }));
-    expect(onModelChange).toHaveBeenCalledWith("");
-    await waitFor(() =>
-      expect(trigger()).toHaveAttribute("title", "Default model · Auto"),
-    );
-    await openModels(user);
-    expect(header()).toHaveTextContent("current: Default model — your pick");
-    // Reset returns to untouched (null), so the Studio default applies again.
-    fireEvent.keyDown(
-      screen.getByRole("combobox", { name: FILTER_MODELS_LABEL }),
-      { key: "Escape" },
-    );
-    await user.click(trigger());
-    fireEvent.click(
-      await screen.findByRole("menuitem", { name: "Reset to default" }),
-    );
-    expect(onModelChange).toHaveBeenLastCalledWith(null);
-    await waitFor(() =>
-      expect(trigger()).toHaveAttribute("title", "Sonnet · Auto"),
-    );
+    expect(screen.queryByRole("option", { name: /Default model/ })).toBeNull();
   });
 
   it("draft: a Studio default the inventory lacks is not applied — the daemon default stands", async () => {
@@ -348,9 +301,6 @@ describe("Model picker", () => {
     );
     expect(trigger()).toHaveAttribute("title", "Default model · Auto");
     await openModels(user);
-    expect(header()).toHaveTextContent(
-      "current: Default model — daemon default",
-    );
     // No row wears the star, but the stale default can still be cleared.
     expect(
       screen.queryByRole("img", { name: "Your default for new chats" }),

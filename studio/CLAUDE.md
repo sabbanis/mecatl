@@ -24,6 +24,14 @@ already-running controller). Setting `MECATL_BASE_URL` selects external mode.
 The hermetic suite (`npm run test:server`) builds Next first — a stale build is
 the usual reason it fails mysteriously.
 
+The draft chat shows only the greeting and starter prompts: the first-run
+welcome card, mascot and capability hints, the sidebar's Chats / Runs /
+Scheduled / Drafts tabs (chats only list now; runs and fires stay reachable
+through the read-only transcript dialog), the header's placement badge and
+the Settings → Status line / Tools / Persona surfaces were removed for a
+non-technical audience (September 2026). The status-line templates still
+render their DEFAULTS (`src/lib/statusline`), with no settings page.
+
 Studio's own build stamp (Settings → Provider → About's `Studio` row, the
 `/diagnostics` report's `client build:` line; `src/lib/studio-build.ts`) is
 inlined at `next build` by `next.config.ts` (`NEXT_PUBLIC_STUDIO_BUILD` =
@@ -174,7 +182,9 @@ Each rule is backed by a test; break the rule and its test names you.
     `--trust-project` and `--no-shell`, and never `--headless` (mecated
     raises the trust floor for trusted+ on interactive roots — the page's
     "implied by the posture" claim depends on it). The daemon-wide posture is
-    NOT the composer's per-session Mode; the EFFECTIVE tier is
+    NOT the composer's per-session Mode (the Mode menu's "Safety level"
+    rows write the SAME permissions document — one writer, two entry
+    points); the EFFECTIVE tier is
     `serverCapabilities.posture` (capability-gated: absent on an older
     daemon). External mode: `permissions: null`, every `/permissions` verb
     409. The four tiers are the SDK's `ServerPosture` ladder and nothing
@@ -381,10 +391,14 @@ Each rule is backed by a test; break the rule and its test names you.
     (`harness/storage.test.ts`, `use-storage-maintenance.test.ts`,
     `use-typed-confirm.test.tsx`, the three `storage-*-card.test.tsx`,
     `sessions-changed.test.ts`, the Playwright storage test.)
-19. **The chat status strip is mecatui's header bar, and it never shows an
-    address.** Under every chat's title row, `chat-status-strip.tsx`
-    renders session handle · effective model · mode · server with the
-    daemon-reported posture badge. The handle is the documented BARE
+19. **The session facts live in the Session details dialog, and never show
+    an address.** ⋯ → Session details (`session-details-dialog.tsx`) carries
+    the session id, resolved model, permission mode, safety level (the
+    daemon-reported posture) and server (managed by Studio / external
+    deployment, never a host). `chat-status-strip.tsx` renders ONLY for an
+    AI-debug session (the amber DEBUG target + privacy line); an ordinary
+    chat has no strip, so the conversation keeps its height. The strip's
+    rules below still hold where it renders. The handle is the documented BARE
     12-column literal (`src/lib/protocol/session-handle.ts` mirrors
     `client.SessionHandle` byte for byte; no `#`); a click copies the full
     id. The model is the snapshot's RESOLVED model (display name from the
@@ -452,20 +466,14 @@ Each rule is backed by a test; break the rule and its test names you.
     (`offline-cause.test.ts`, `sdk-auth-errors.test.ts`,
     `auth-recovery-banner.test.tsx`, `runtime-status.auth.test.tsx`,
     `use-agent-chat.auth-failure.test.ts`, hermetic 401 relay row.)
-22. **The healthy connection is stated, never inferred.** The top nav's
-    `connection-indicator.tsx` (mecatui's "connected" status line) always
-    renders — a dot plus "Connected" / "Connecting…" / "Offline" /
-    "Sign in required" / "Credential rejected", the offline label named
-    by `offlineCause.kind` (`describeConnection`) — inside a
-    `role="status"` live region so the flip is announced. It adds no probe:
-    everything reads off `RuntimeStatusProvider`, so it can never disagree
-    with the banners. The tooltip lists the facts that poll already holds
-    (managed `mecated` vs an external daemon; the provider in managed mode
-    only — the external control status is a stub — with the offline mock
-    flagged; the deployment label; `Posture: <tier>` when the compatibility
-    document carries one), omitting every empty value. The pill links to
-    Settings → Diagnostics. (`connection-indicator.test.tsx`, the
-    Playwright connected-indicator test.)
+22. **The top nav carries no status chips.** The former connection
+    indicator and posture badge were removed for a non-technical audience:
+    an unhealthy connection is the banners' job (offline / auth-recovery /
+    live-feed reconnecting), the daemon's posture is read in Settings →
+    Permissions, Settings → Diagnostics and ⋯ → Session details, and
+    changed from Settings → Permissions or the composer's Mode menu
+    ("Safety level", `usePostureControl` in `chat-input.tsx`, the same
+    `saveHarnessPermissions` write with the same Auto/Yolo confirmation).
 23. **The `?prompt=` deep link never sends without a click.** The chat
     route's arrival prompt (`lib/chat-seed.ts` → `use-seed-prompt.tsx`, the
     web analogue of `mecatui -p`; the PWA share target lands there too)
@@ -505,11 +513,12 @@ Each rule is backed by a test; break the rule and its test names you.
     the resolved path (`project` / `user` / `studio` / `other`), never a
     hard-coded "project". Both verbs are studio-header-gated (the GET names
     directories on this machine; the proxy adds the header) and 409 in
-    external mode. The UI is three cards over ONE scaffold
+    external mode. The UI is two cards over ONE scaffold (the former Settings → Tools
+    page — skills directory, slash-command templates — was removed as
+    operator configuration; the document keeps those fields at their
+    defaults)
     (`daemon-options-card.tsx`: draft, "Restart required", AlertDialog
-    confirm, Discard): Settings → Tools (`tools-options-card.tsx`, plus the
-    daemon-reported `bash`/`skills`/`slash_commands` status rows in BOTH
-    modes — the Shell switch stays on Permissions), Settings → MCP tools
+    confirm, Discard): Settings → MCP tools
     (`mcp-discovery-card.tsx`) and Settings → Memory
     (`memory-stores-card.tsx`, with the `capabilities.memory`/`user_model`
     rows — the TUI's "memory is on" note). What the UI shows as ON is
@@ -564,8 +573,9 @@ Each rule is backed by a test; break the rule and its test names you.
   newer wins; unknown on either side adopts) — header, sidebar and tab
   title update live. The SDK's `client.status` store is mirrored by
   `use-connection-status.ts` into `connection-status-banner.tsx` (layout
-  band): `reconnecting` = amber "Live feed reconnecting…" (no attempt
-  count — `AttachOptions` has no reconnect callback), `unauthorized` =
+  band): `reconnecting` = amber "Live feed reconnecting…" (the state, not
+  a counter — the SDK's per-watch `AttachOptions.onReconnect` exists, but
+  one number over several watches would mislead), `unauthorized` =
   destructive strip that re-probes the runtime ONCE so the auth-recovery
   banner takes over, quiet whenever the runtime banner already owns the
   band. (`events.test.ts` session.title, `session-title.test.ts`,
@@ -575,7 +585,7 @@ Each rule is backed by a test; break the rule and its test names you.
   ENDS the prompt stream without a result; only the authorization controls
   move the run again (`GET …/mcp-authorizations/{id}/presentation`, and the
   BODYLESS `POST …/recheck` / `…/cancel` SSE relays — the daemon 400s any
-  body byte; `mcp-authorization-fetch.ts` strips the SDK's `{}`). The
+  body byte; the SDK posts no body on those routes). The
   takeover card (`authorization-panel.tsx`) fetches the URL only when opened
   or copied — it never rides an event — and after an open/copy
   `use-agent-chat` re-checks every 3 s (a 10 s first-event bound per
@@ -603,9 +613,9 @@ Each rule is backed by a test; break the rule and its test names you.
   MCP prompt / resource tests.)
 - The per-chat / per-schedule TOOL PROFILE (the daemon's
   `CreateSessionRequest.profile`, `""` | `"no-fs"`, ADR 0291 — the web
-  analogue of a shell-less run) is picked in the composer's Mode menu
-  ("Tools" section, `tool-profile-picker.tsx`; the pill reads "· No FS") on
-  a DRAFT only and rides the mint (`useSessionMode().profileRef` →
+  analogue of a shell-less run) is picked from the composer's own Tools
+  pill (`ToolProfileSelector` in `tool-profile-picker.tsx`, next to Mode;
+  the mobile mode sheet keeps the rows) on a DRAFT only and rides the mint (`useSessionMode().profileRef` →
   `useAgentChat({ createProfile })` → `createHarnessSession({ profile })`,
   `""` omits the key so the ordinary create body is unchanged). The daemon
   fixes it at create and reports it on NO snapshot or row, so a live chat
@@ -622,20 +632,12 @@ Each rule is backed by a test; break the rule and its test names you.
   `use-session-mode.test.ts`, `use-agent-chat.profile.test.ts`,
   `tool-profile-picker.test.tsx`, `schedule-form.test.tsx`,
   `use-agent-cron.test.ts`.)
-- The composer's Memory pill is a READ-ONLY indicator, never a switch
-  (`memory-indicator.tsx`): memory is a daemon setting (`--memory-dir`,
-  `--no-user-model`) with no per-session API, so the pill reports the
-  daemon's own `serverCapabilities.memory` (Remember/Recall registered —
-  the TUI's "memory is on" welcome note) and `serverCapabilities.user_model`
-  — "On" when either store is on, "Off" only when both are reported off,
-  "Unknown" against a daemon that reports neither or while unreachable
-  (never a stale On) — and opens a popover listing both stores plus a link
-  to Settings → Memory, whose copy says in external mode that the
-  operator's flags decide and the page cannot change them. The mobile
-  options sheet shows the same read-only rows. It replaced a local On/Off
-  toggle that never reached the daemon; do not bring one back. Hidden
-  outside `RuntimeStatusProvider`. (`memory-indicator.test.tsx`,
-  `chat-input-memory.test.tsx`.)
+- The composer has NO memory pill: memory is a daemon setting
+  (`--memory-dir`, `--no-user-model`) with no per-session API, so the only
+  place it is shown or changed is Settings → Memory
+  (`memory-stores-card.tsx` reads the daemon's `serverCapabilities.memory`
+  / `user_model` through `readMemoryStores`). Do not add a per-chat toggle:
+  it could never reach the daemon.
 
 <!-- BEGIN:nextjs-agent-rules -->
 

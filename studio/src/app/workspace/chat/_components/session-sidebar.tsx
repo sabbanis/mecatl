@@ -533,41 +533,6 @@ export function SessionList({
   );
 }
 
-/**
- * The def color hint is frontmatter relayed verbatim, so only a small safe
- * subset is honored as a CSS color: common named colors or a hex literal.
- * Anything else falls back to the default muted tint.
- */
-const AGENT_COLOR_NAMES = new Set([
-  "red",
-  "orange",
-  "amber",
-  "yellow",
-  "lime",
-  "green",
-  "emerald",
-  "teal",
-  "cyan",
-  "sky",
-  "blue",
-  "indigo",
-  "violet",
-  "purple",
-  "magenta",
-  "fuchsia",
-  "pink",
-  "rose",
-  "brown",
-  "gray",
-  "grey",
-]);
-
-function safeAgentColor(color: string): string | undefined {
-  const value = color.trim().toLowerCase();
-  if (AGENT_COLOR_NAMES.has(value)) return value;
-  return /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/.test(value) ? value : undefined;
-}
-
 /** Title-attribute tooltip: description, then the def's scope details. */
 function agentRowTooltip(agent: RosterAgent): string | undefined {
   const lines: string[] = [];
@@ -582,9 +547,8 @@ function agentRowTooltip(agent: RosterAgent): string | undefined {
 /**
  * The daemon's real agent roster, listed below the chat groups. Agents are
  * not chat containers — selecting one simply starts a new chat draft. Each
- * row shows the def's pinned model ("auto" when it inherits), tints its
- * avatar with the def's color hint, and carries tools + permission mode in
- * the tooltip (D2.2).
+ * row carries the def's tools + permission mode in the tooltip (D2.2); the
+ * avatar is deliberately untinted and the model is not shown.
  */
 export function AgentList({
   agents,
@@ -596,7 +560,6 @@ export function AgentList({
   return (
     <div className="flex flex-col">
       {agents.map((agent) => {
-        const tint = safeAgentColor(agent.color);
         return (
           <button
             key={agent.name}
@@ -606,17 +569,11 @@ export function AgentList({
             aria-label={`New chat with ${agent.name}`}
             className="group flex items-center gap-2.5 border-l-[3px] border-transparent py-2 pr-3 pl-3 text-left transition-colors hover:bg-accent"
           >
-            <span
-              className="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground"
-              style={tint ? { color: tint } : undefined}
-            >
+            <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
               <Bot className="size-3.5" />
             </span>
             <span className="min-w-0 flex-1 truncate text-[0.85rem] font-medium text-muted-foreground group-hover:text-foreground select-none">
               {agent.name}
-            </span>
-            <span className="max-w-[45%] shrink-0 truncate font-mono text-[10px] text-muted-foreground/50 select-none">
-              {agent.model || "auto"}
             </span>
           </button>
         );

@@ -52,7 +52,7 @@ export interface HarnessModel {
  * file, and the provider card only reports status.
  */
 export function useHarnessRuntime() {
-  const { connected, mode } = useRuntimeStatus();
+  const { connected, mode, provider } = useRuntimeStatus();
   const [status, setStatus] = useState<HarnessControlStatus | null>(null);
   const [router, setRouter] = useState<HarnessRouterConfig | null>(null);
   const [permissions, setPermissions] = useState<{
@@ -86,12 +86,16 @@ export function useHarnessRuntime() {
     }
   }, []);
 
+  // Re-read when the connection flips AND when the active provider changes:
+  // a provider switch restarts the daemon with a different model catalogue,
+  // and a composer mounted before the switch must not keep the old list.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `provider` is the re-read trigger, not a value the effect reads
   useEffect(() => {
     if (!connected) return;
     const controller = new AbortController();
     void load(controller.signal);
     return () => controller.abort();
-  }, [connected, load]);
+  }, [connected, provider, load]);
 
   const refresh = useCallback(async () => {
     await load();

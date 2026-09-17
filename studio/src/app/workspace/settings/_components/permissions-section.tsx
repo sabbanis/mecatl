@@ -29,8 +29,13 @@ import {
 
 type Runtime = ReturnType<typeof useHarnessRuntime>;
 
-/** The ladder, lowest tier first, with the plain-language consequence of
- *  each tier for the person choosing it. */
+/**
+ * The ladder, lowest tier first, each with ONE plain sentence on what it
+ * means for the person choosing it. The values are the SDK's posture ladder
+ * (pinned by posture-vocabulary.test.ts); the labels and sentences are the
+ * only words a user sees — the picker shows every one, the row repeats the
+ * selected one.
+ */
 export const POSTURE_OPTIONS: readonly {
   value: string;
   label: string;
@@ -39,28 +44,29 @@ export const POSTURE_OPTIONS: readonly {
   {
     value: "strict",
     label: "Strict",
-    description:
-      "Ask before every file change and shell command. Nothing checked into the project can widen that.",
+    description: "Asks before every change.",
   },
   {
     value: "trusted",
     label: "Trusted",
-    description:
-      "Honour this project's allow rules, soul, agents, commands and skills. Still asks where no rule allows.",
+    description: "Follows this project's own rules, asks otherwise.",
   },
   {
     value: "auto",
     label: "Auto",
-    description:
-      "Auto-approve tools; ask only where a rule says so. For unattended runs.",
+    description: "Works without asking. For unattended runs.",
   },
   {
     value: "yolo",
     label: "Yolo",
-    description:
-      "Auto-run everything, including subagent shell substitutions. Isolated, disposable machines only.",
+    description: "No safeguards. Only on a throwaway machine.",
   },
 ];
+
+/** The user-facing name of a tier (the raw value for one Studio does not know). */
+function postureLabel(tier: string): string {
+  return POSTURE_OPTIONS.find((option) => option.value === tier)?.label ?? tier;
+}
 
 const badgeVariantFor = (
   posture: string,
@@ -78,12 +84,12 @@ const badgeVariantFor = (
 };
 
 /**
- * Why the daemon's EFFECTIVE posture (capabilities.posture) differs from the
- * SAVED one, or null when they agree. Studio passes `--posture` explicitly,
- * so an imported settings file cannot be the cause; the one expected raise
- * is Studio's own trust flag (mecated folds `--trust-project` to at least
- * `trusted`). Anything else is most likely a restart still in flight.
- * Exported for its vitest.
+ * One plain line on why the daemon's EFFECTIVE tier (capabilities.posture)
+ * differs from the SAVED one, or null when they agree. Studio passes
+ * `--posture` explicitly, so an imported settings file cannot be the cause;
+ * the one expected raise is Studio's own trust flag (mecated folds
+ * `--trust-project` to at least `trusted`). Anything else is most likely a
+ * restart still in flight. Exported for its vitest.
  */
 export function effectivePostureNote({
   saved,
@@ -97,60 +103,59 @@ export function effectivePostureNote({
   trustOnce: boolean;
 }): string | null {
   if (effective === saved) return null;
+  const running = `Right now the agent is running at ${postureLabel(effective)}`;
   if (
     saved === "strict" &&
     effective === "trusted" &&
     (trustProject || trustOnce)
   ) {
     return trustOnce && !trustProject
-      ? "Trusting this project for this controller session raises the effective posture to trusted."
-      : "Trusting this project raises the effective posture to trusted.";
+      ? `${running} because this project is trusted until Studio restarts.`
+      : `${running} because this project is trusted.`;
   }
   if (postureRank(effective) > postureRank(saved)) {
-    return `The daemon reports ${effective}, above the saved ${saved}. It may still be restarting on the new flags; if this stays, something in the daemon's own environment raised it.`;
+    return `${running}, above the saved ${postureLabel(saved)}. It may still be restarting; if this stays, something outside Studio raised it.`;
   }
-  return `The daemon reports ${effective}, below the saved ${saved}. It may still be restarting on the new flags.`;
+  return `${running}, below the saved ${postureLabel(saved)}. It may still be restarting.`;
 }
 
 /**
  * The "Project trust" row's badge text for the controller's resolved
- * decision (mecatui's trust states, as words). Exported for its vitest.
+ * decision (mecatui's trust states, in plain words). Exported for its vitest.
  */
 export function trustRowLabel(trust: HarnessTrustState): string {
   switch (trust.decision) {
     case "trusted":
       return trust.source === "posture"
-        ? "Trusted (by the posture)"
+        ? "Trusted (by safety level)"
         : "Trusted (remembered)";
     case "once":
-      return "Trusted for this session";
+      return "Trusted for now";
     case "drifted":
-      return "Untrusted — instructions changed";
+      return "Changed since trusted";
     default:
-      return "Untrusted";
+      return "Not trusted";
   }
 }
 
-/** The row's explanation: what the decision means and what it cannot see. */
+/** The row's one- or two-sentence explanation of the decision. */
 function trustRowDescription(
   trust: HarnessTrustState,
   posture: string,
 ): string {
-  const residual =
-    "A grant made in mecatui or settings.yaml is not visible here.";
   switch (trust.decision) {
     case "trusted":
       return trust.source === "posture"
-        ? `The ${posture} posture trusts the project on its own; the trust switch and the anchor do not matter at this tier.`
-        : "Studio remembers this grant and re-checks the project's soul, agents, commands and skills at every daemon start; a change withholds the grant until you trust the project again.";
+        ? `The ${postureLabel(posture)} level trusts this project on its own.`
+        : "Studio remembers this and re-checks the project each time the agent starts.";
     case "once":
-      return "Granted for this controller session only — it lasts until Studio's controller restarts and is never saved.";
+      return "Lasts until Studio restarts. Not saved.";
     case "drifted":
-      return "The project's soul, agents, commands or skills changed since you trusted it, so the daemon started without the grant (checked at each start). Review the changes, then trust it again.";
+      return "This project's instructions changed since you trusted it, so the agent is not following them. Check the changes, then trust it again.";
     default:
       return trust.hasAuthority
-        ? `This project ships instructions (soul, agents, commands, skills or allow rules) that Mecatl withholds until you trust it. ${residual}`
-        : `This project ships no instructions a grant would admit. ${residual}`;
+        ? "This project has its own instructions. The agent ignores them until you trust it."
+        : "This project has no instructions of its own to trust.";
   }
 }
 
@@ -159,7 +164,8 @@ function trustRowDescription(
  * mecated spawn flags owned by Studio's controller (never a settings.yaml
  * key). Every save restarts the daemon. This is NOT the composer's
  * per-session Mode selector: that is the session permission mode; this is
- * the ceiling every session runs under.
+ * the ceiling every session runs under. The copy is written for people who
+ * are not developers: "the agent", never the daemon or its flags.
  */
 export function PermissionsSection({ runtime }: { runtime: Runtime }) {
   const runtimeStatus = useRuntimeStatus();
@@ -171,19 +177,25 @@ export function PermissionsSection({ runtime }: { runtime: Runtime }) {
   const [draft, setDraft] = useState<HarnessPermissionsConfig | null>(null);
 
   // CAPABILITY GATE: an older daemon omits the posture from its
-  // compatibility document; the row renders only when it is present.
+  // compatibility document; the badge renders only when it is present.
   const effective =
     typeof serverCapabilities.posture === "string"
       ? serverCapabilities.posture
       : null;
 
+  // Shown only where there is no picker (external mode, or a controller
+  // that did not answer): there the reported tier is the only way to see
+  // the level at all. The managed form explains a difference in one line
+  // under the picker instead.
   const effectiveRow =
     effective !== null ? (
       <SettingsRow
-        label="Effective posture"
-        description="What the daemon reports it is running at right now."
+        label="Safety level"
+        description="What the agent is running at right now."
       >
-        <Badge variant={badgeVariantFor(effective)}>{effective}</Badge>
+        <Badge variant={badgeVariantFor(effective)}>
+          {postureLabel(effective)}
+        </Badge>
       </SettingsRow>
     ) : null;
 
@@ -217,8 +229,7 @@ export function PermissionsSection({ runtime }: { runtime: Runtime }) {
             <div className="divide-y divide-border/60">{effectiveRow}</div>
           )}
           <Note>
-            The controller did not report its permissions. Restart Studio (task
-            studio:dev) so the current controller is running.
+            Studio could not read these settings. Restart Studio and try again.
           </Note>
         </div>
       </SettingsCard>
@@ -256,13 +267,12 @@ export function PermissionsSection({ runtime }: { runtime: Runtime }) {
   const save = async () => {
     if (allowAll && view.posture !== saved.posture) {
       const confirmed = await confirm({
-        title: `Switch to the ${view.posture} posture?`,
-        description: `Allow-all waives the built-in ask before every file change and shell command — daemon-wide, for every session. Only a Deny in any scope and a deliberately configured Ask still apply.${
+        title: `Switch to ${selected.label}?`,
+        description:
           view.posture === "yolo"
-            ? " Yolo also lets a subagent run $() and backtick substitutions unreviewed — the child prompt-injection defence is off. Use it on an isolated, disposable machine only."
-            : ""
-        } mecated refuses this posture as root outside a declared sandbox. The daemon restarts and in-flight runs end.`,
-        confirmText: `Switch to ${view.posture}`,
+            ? "Yolo removes every safeguard: the agent runs everything without asking, for everyone using it. Only use this on a throwaway machine. The agent restarts and anything running will stop."
+            : "Auto lets the agent make changes and run commands without asking, for everyone using it. The agent restarts and anything running will stop.",
+        confirmText: `Switch to ${selected.label}`,
         destructive: true,
       });
       if (!confirmed) return;
@@ -303,21 +313,15 @@ export function PermissionsSection({ runtime }: { runtime: Runtime }) {
   return (
     <SettingsCard
       title="Permissions"
-      description="The daemon-wide operator posture every session runs under. The Mode selector in the composer (Manual, Accept edits, Plan) is per session and separate."
+      description="How much the agent may do on its own. Changes restart the agent."
     >
       <div className="flex flex-col gap-4">
         <div className="divide-y divide-border/60">
-          <SettingsRow
-            label="Operator posture"
-            description={selected.description}
-          >
+          <SettingsRow label="Safety level" description={selected.description}>
             <OptionField
-              label="Operator posture"
+              label="Safety level"
               value={view.posture}
-              options={POSTURE_OPTIONS.map(({ value, label }) => ({
-                value,
-                label,
-              }))}
+              options={POSTURE_OPTIONS}
               onChange={(posture) => {
                 if (POSTURES.includes(posture)) patch({ posture });
               }}
@@ -329,8 +333,8 @@ export function PermissionsSection({ runtime }: { runtime: Runtime }) {
             htmlFor="permissions-trust-project"
             description={
               trustImplied
-                ? `Implied by the ${view.posture} posture: mecated raises project trust for trusted and above.`
-                : "Honour the project's checked-in allow rules, AGENTS.md, soul, agents, commands and skills. Only for a repository you trust — a checked-in allow rule can auto-approve tool calls."
+                ? "Included in the Trusted level and above."
+                : "Let this project's own instructions guide the agent."
             }
           >
             <Switch
@@ -375,7 +379,7 @@ export function PermissionsSection({ runtime }: { runtime: Runtime }) {
           <SettingsRow
             label="Shell tool"
             htmlFor="permissions-shell"
-            description="When off, the Shell tool is removed from the daemon's catalog; file tools stay available."
+            description="Let the agent run terminal commands."
           >
             <Switch
               id="permissions-shell"
@@ -383,8 +387,6 @@ export function PermissionsSection({ runtime }: { runtime: Runtime }) {
               onCheckedChange={(checked) => patch({ noShell: !checked })}
             />
           </SettingsRow>
-
-          {effectiveRow}
         </div>
 
         {allowAll && (
@@ -398,36 +400,22 @@ export function PermissionsSection({ runtime }: { runtime: Runtime }) {
             />
             <span>
               {view.posture === "yolo"
-                ? "Yolo auto-runs every tool, including subagent shell substitutions, for every session on this daemon. Isolated, disposable machines only."
-                : "Auto approves every tool call unless a rule says otherwise, for every session on this daemon."}
+                ? "Yolo removes every safeguard. Only use it on a throwaway machine."
+                : "Auto lets the agent work without asking, for everyone using it."}
             </span>
           </p>
         )}
 
         {differenceNote && <Note>{differenceNote}</Note>}
 
-        <dl className="grid gap-x-4 gap-y-1 text-xs text-muted-foreground sm:grid-cols-[auto_1fr]">
-          {POSTURE_OPTIONS.map((option) => (
-            <div key={option.value} className="contents">
-              <dt className="font-medium text-foreground">{option.label}</dt>
-              <dd>{option.description}</dd>
-            </div>
-          ))}
-        </dl>
-
         {runtime.permissions?.operatorSettings && (
           <Note>
-            An imported operator settings file is active. Studio passes the
-            posture as an explicit flag, so this setting overrides that
-            file&rsquo;s <code className="font-mono">posture:</code> key in
-            either direction.
+            A separate settings file is also in use. The safety level chosen
+            here takes priority over it.
           </Note>
         )}
 
-        <Note>
-          Saving restarts the daemon: in-flight runs end and session ids die
-          with it.
-        </Note>
+        <Note>Saving restarts the agent. Anything running will stop.</Note>
 
         <div className="flex flex-wrap items-center justify-end gap-2">
           {dirty && (

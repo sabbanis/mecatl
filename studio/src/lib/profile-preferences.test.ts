@@ -7,7 +7,6 @@ import {
   useLaunchTarget,
   useShowStarterPrompts,
   useShowToolCalls,
-  useWelcomeDismissed,
 } from "./profile-preferences";
 
 const KEY = "mecatl-studio.show-tool-calls";
@@ -89,43 +88,6 @@ describe("useShowToolCalls", () => {
     act(() => thread.result.current.setShowToolCalls(true));
     expect(chat.result.current.showToolCalls).toBe(true);
     expect(thread.result.current.showToolCalls).toBe(true);
-  });
-});
-
-/**
- * The first-run welcome card is a ONE-TIME decision: dismissing it persists
- * (a reload — a fresh mount — must not bring it back), a fresh browser shows
- * it (nothing stored), and Settings' "Show again" clears the key rather than
- * storing "0".
- */
-describe("useWelcomeDismissed", () => {
-  const WELCOME_KEY = "mecatl-studio.welcome-dismissed";
-
-  beforeEach(() => {
-    vi.stubGlobal("localStorage", memoryStorage());
-  });
-
-  it("defaults to not dismissed and stores nothing", () => {
-    const { result } = renderHook(() => useWelcomeDismissed());
-    expect(result.current.dismissed).toBe(false);
-    expect(window.localStorage.getItem(WELCOME_KEY)).toBeNull();
-  });
-
-  it("persists a dismissal across mounts and clears it on show-again", () => {
-    const first = renderHook(() => useWelcomeDismissed());
-    act(() => first.result.current.setDismissed(true));
-    expect(first.result.current.dismissed).toBe(true);
-    expect(window.localStorage.getItem(WELCOME_KEY)).toBe("1");
-    first.unmount();
-
-    // A reload (fresh mount) reads the dismissal back — the card stays gone.
-    const second = renderHook(() => useWelcomeDismissed());
-    expect(second.result.current.dismissed).toBe(true);
-
-    // "Show again" returns to the default by removing the key.
-    act(() => second.result.current.setDismissed(false));
-    expect(second.result.current.dismissed).toBe(false);
-    expect(window.localStorage.getItem(WELCOME_KEY)).toBeNull();
   });
 });
 

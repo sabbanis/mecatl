@@ -59,7 +59,7 @@ export interface StatusFacts {
 }
 
 /** One row of the template reference: the placeholder key and what it shows. */
-export interface StatusFactRef {
+interface StatusFactRef {
   key: string;
   label: string;
   /** How the fact renders from `SAMPLE_STATUS_FACTS` (human formatting). */
@@ -73,7 +73,7 @@ export interface StatusFactRef {
  * `template.ts`'s `formatFact` — the reference table is what the chips and
  * the docs table render from.
  */
-export const STATUS_FACT_KEYS: readonly StatusFactRef[] = [
+const STATUS_FACT_KEYS: readonly StatusFactRef[] = [
   { key: "model", label: "Effective model", example: "gpt-5.1" },
   { key: "effort", label: "Reasoning effort", example: "High" },
   { key: "provider", label: "Active provider", example: "openai" },
