@@ -481,6 +481,11 @@ test("external mode injects daemon auth server-side and disables local controls"
     ["runtime-settings", "GET"],
     ["runtime-settings", "PUT"],
     ["soul/approve", "POST"],
+    // The daemon options (the two memory stores, --skills-dir, slash
+    // commands, MCP discovery) are spawn flags of the MANAGED daemon:
+    // external owns them, read included.
+    ["daemon-options", "GET"],
+    ["daemon-options", "PUT"],
     // The two project-trust grants (the workspace banner's "Trust project"
     // / "Trust for this session") write the MANAGED controller's own trust
     // registry and restart its daemon: external owns its trust decision.
@@ -841,6 +846,12 @@ test("controller policy rejects CSRF and DNS-rebinding requests", () => {
     ["GET", "/runtime-settings"],
     ["PUT", "/runtime-settings"],
     ["POST", "/soul/approve"],
+    // The daemon options name the skills/memory/user-model directories on
+    // this machine and the PUT restarts the daemon (and creates
+    // directories): another loopback-origin page must not read or write
+    // them.
+    ["GET", "/daemon-options"],
+    ["PUT", "/daemon-options"],
     // The project-trust grants raise what a checked-in allow rule may
     // auto-approve and restart the daemon: another loopback-origin page must
     // never be able to trust the workspace on the user's behalf.

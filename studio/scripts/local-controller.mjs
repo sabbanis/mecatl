@@ -61,6 +61,17 @@ import {
   normalizeDaemonDefaults,
 } from "../src/lib/daemon-defaults.mjs";
 import {
+  DEFAULT_COMMAND_DIRS,
+  DEFAULT_DAEMON_OPTIONS,
+  daemonOptionArgs,
+  daemonOptionDirFields,
+  effectiveDaemonDirs,
+  normalizeDaemonOptions,
+  optionDirScope,
+  optionDirWithinRoots,
+  resolveOptionDir,
+} from "../src/lib/daemon-options.mjs";
+import {
   CUSTOM_PROVIDER_API_FLAVORS,
   customProviderProbeURL,
   describeProviderRow,
@@ -170,10 +181,24 @@ const diagnosticsOptionsFile = resolve(
   studioStateDir,
   "diagnostics-options.json",
 );
-// Project-scoped skills only. A SKILL.md steers the model the same way AGENTS.md
-// does, so discovery is deliberately pinned to the workspace and we never pass
-// --skills-conventional (which would also pull in ~/.claude/skills and the
-// user-global mecatl dir — a much wider trust surface than this app should open).
+// The Studio-owned DAEMON OPTIONS (src/lib/daemon-options.mjs): the
+// per-project memory store on/off + location, the user model on/off +
+// location + review interval, skill discovery on/off + location, slash
+// commands on/off + location, and the four MCP discovery flags. Spawn flags
+// again — never a settings.yaml key; the default document is the
+// pre-feature command line byte for byte. Distinct from the diagnostics
+// options above and the runtime settings (learning/steer/soul); `--no-shell`
+// stays the permissions document's — one writer per flag.
+const daemonOptionsFile = resolve(studioStateDir, "daemon-options.json");
+let daemonOptions = DEFAULT_DAEMON_OPTIONS;
+// Skills are project-scoped by DEFAULT: a SKILL.md steers the model the same
+// way AGENTS.md does, so discovery is pinned to <workspace>/.mecatl/skills
+// unless the daemon options relocate it (a trust decision the Tools page
+// labels as such, confined to the workspace / the mecatl config dir), and we
+// never pass --skills-conventional (which would also pull in ~/.claude/skills
+// and the user-global mecatl dir — a much wider trust surface than this app
+// should open). With `skills.enabled` off the directory is still owned and
+// edited here; the spawn simply omits --skills-dir, which drops the Skill tool.
 let skillsDir = skillsDirFor(workspace);
 // Disabled skills are MOVED into a holding area inside the pinned skills dir,
 // not deleted and not flagged: mecated's discovery walks only the direct
@@ -200,9 +225,33 @@ let memoryDir = memoryDirFor(workspace, defaultWorkspace);
  */
 function applyWorkspace(root) {
   workspace = root;
-  skillsDir = skillsDirFor(root);
+  applyDaemonOptions(daemonOptions);
+}
+
+/** The pinned/default locations the daemon options fall back to for the
+ *  LIVE root — what `daemonOptionArgs` renders when no override is saved
+ *  and what GET /daemon-options reports as the placeholders. */
+function daemonOptionContext() {
+  return {
+    workspace,
+    pinnedSkillsDir: skillsDirFor(workspace),
+    defaultMemoryDir: memoryDirFor(workspace, defaultWorkspace),
+  };
+}
+
+/**
+ * Adopts a daemon-options document and re-derives the two directories the
+ * controller itself reads (the skills CRUD routes, /status): the override
+ * when saved — a relative one resolves against the live root, so a root
+ * change (POST /workspace) moves it along — else the pinned/default
+ * location. Called by applyWorkspace too, so the two stay one derivation.
+ */
+function applyDaemonOptions(next) {
+  daemonOptions = next;
+  const dirs = effectiveDaemonDirs(daemonOptions, daemonOptionContext());
+  skillsDir = dirs.skillsDir;
   disabledSkillsDir = resolve(skillsDir, ".disabled");
-  memoryDir = memoryDirFor(root, defaultWorkspace);
+  memoryDir = dirs.memoryDir;
 }
 // mecated's user-global config directory (XDG). The daemon defaults'
 // `apiKeyFile` is confined to it: the controller reads AND rewrites the
@@ -234,6 +283,17 @@ const userSettingsFile = process.env.XDG_CONFIG_HOME
 const userSoulFile = resolve(mecatlConfigDir, "soul.md");
 // A function, not a frozen array: the live root can change (POST /workspace).
 const soulFileRoots = () => [mecatlConfigDir, workspace];
+// mecated's conventional user-model store when no --user-model-dir is passed
+// (cmd/mecated flag help) — the Memory page's placeholder, display only.
+const defaultUserModelDir = resolve(mecatlConfigDir, "usermodel");
+// Where a browser-chosen daemon-options directory (skills, project memory,
+// user model, commands) may sit: the live root, the default root (a
+// non-default root's memory store lives under its .scratch) or the mecatl
+// config dir. A SKILL.md or a command template steers the model like
+// AGENTS.md, and the controller mkdir's the skills/memory dirs before every
+// spawn, so an unconstrained path would let the browser plant model-steering
+// content — or create directories — anywhere the daemon's user can write.
+const optionDirRoots = () => [workspace, defaultWorkspace, mecatlConfigDir];
 // mecated's --ready-file target: the atomically-published mecated-ready/1
 // document carrying the RESOLVED listener addresses (the daemon binds
 // 127.0.0.1:0 and reports what the kernel picked), pid, api_major, features,
@@ -1166,6 +1226,112 @@ async function loadRuntimeSettings() {
   }
 }
 
+/** Atomic (tmp + rename), owner-only. Flags only — no settings.yaml key. */
+async function persistDaemonOptions(config) {
+  await mkdir(studioStateDir, { recursive: true, mode: 0o700 });
+  const temp = `${daemonOptionsFile}.tmp`;
+  await writeFile(temp, `${JSON.stringify(config, null, 2)}\n`, {
+    mode: 0o600,
+  });
+  await rename(temp, daemonOptionsFile);
+}
+
+/** The saved daemon options, or the defaults when none were saved yet. A
+ *  corrupt file is logged and ignored, never honoured. */
+async function loadDaemonOptions() {
+  try {
+    return normalizeDaemonOptions(
+      JSON.parse(await readFile(daemonOptionsFile, "utf8")),
+    );
+  } catch (error) {
+    if (error?.code !== "ENOENT")
+      process.stderr.write(
+        `[daemon-options] saved configuration ignored: ${error.message || error}\n`,
+      );
+    return DEFAULT_DAEMON_OPTIONS;
+  }
+}
+
+/**
+ * The filesystem half of the daemon-options directory check (the shape half
+ * is normalizeOptionDir): every SET directory, resolved against the live
+ * root, must sit under one of optionDirRoots() lexically AND after
+ * realpath() of its deepest existing ancestor (a symlinked parent cannot
+ * escape; the directory itself may not exist yet — the spawn creates the
+ * skills/memory ones), and an existing path must be a real directory, not a
+ * symlink or a file. Throws a 400-shaped error naming the field.
+ */
+async function validateOptionDirs(config) {
+  const bad = (message) =>
+    Object.assign(new Error(message), { statusCode: 400 });
+  const roots = optionDirRoots();
+  const realRoots = await Promise.all(
+    roots.map((root) => realpath(root).catch(() => root)),
+  );
+  for (const [field, dir] of daemonOptionDirFields(config)) {
+    const path = resolveOptionDir(dir, workspace);
+    if (!optionDirWithinRoots(path, roots))
+      throw bad(
+        `${field} must be inside the workspace ${workspace}${
+          defaultWorkspace !== workspace ? `, ${defaultWorkspace}` : ""
+        } or ${mecatlConfigDir}`,
+      );
+    let probe = path;
+    let info = null;
+    while (probe !== "/") {
+      try {
+        info = await lstat(probe);
+        break;
+      } catch {
+        probe = dirname(probe);
+      }
+    }
+    if (info && probe === path) {
+      if (info.isSymbolicLink()) throw bad(`${field} must not be a symlink`);
+      if (!info.isDirectory()) throw bad(`${field} must be a directory`);
+    }
+    const real = await realpath(probe).catch(() => "");
+    const realPath = real ? `${real}${path.slice(probe.length)}` : "";
+    if (!realPath || !optionDirWithinRoots(realPath, realRoots))
+      throw bad(`${field} resolves outside the allowed directories`);
+  }
+}
+
+/** The GET /daemon-options body: the saved document, the locations it
+ *  falls back to (the form's placeholders), the directories THIS spawn
+ *  resolved to, and where they may sit. Paths on this machine, never
+ *  contents. */
+function daemonOptionsDocument() {
+  const context = daemonOptionContext();
+  return {
+    options: daemonOptions,
+    defaults: {
+      skillsDir: context.pinnedSkillsDir,
+      memoryDir: context.defaultMemoryDir,
+      userModelDir: defaultUserModelDir,
+      commandDirs: DEFAULT_COMMAND_DIRS,
+    },
+    effective: effectiveDaemonDirs(daemonOptions, context),
+    allowedRoots: optionDirRoots(),
+  };
+}
+
+/** The `/status` mirror: the switches the CURRENT child was spawned with,
+ *  read-only, one poll for the UI. */
+function daemonOptionsStatus() {
+  return {
+    projectMemory: daemonOptions.projectMemory.enabled,
+    userModel: daemonOptions.userModel.enabled,
+    userModelReviewInterval: daemonOptions.userModel.reviewInterval,
+    skills: daemonOptions.skills.enabled,
+    commands: daemonOptions.commands.enabled,
+    toolhive: daemonOptions.mcp.toolhive,
+    toolhiveGroup: daemonOptions.mcp.toolhiveGroup,
+    mcpResourceTools: daemonOptions.mcp.resourceTools,
+    mcpPrompts: daemonOptions.mcp.prompts,
+  };
+}
+
 /**
  * The filesystem half of the soul-path check (the shape half is
  * normalizeSoulFile): the path must sit under the mecatl config dir or the
@@ -1879,12 +2045,25 @@ async function startMecatl(kind, { adminRetry = false } = {}) {
     await writeRuntimeSettingsYAML(runtimeSettings);
     args.push("--permission-config", runtimeSettingsFile);
   }
-  // mecated refuses to start on a missing --skills-dir, and an empty directory is
-  // the correct "no skills yet" state, so create it before every spawn.
-  await mkdir(skillsDir, { recursive: true });
-  args.push("--skills-dir", skillsDir);
-  await mkdir(memoryDir, { recursive: true });
-  args.push("--memory-dir", memoryDir);
+  // The daemon options as spawn flags (src/lib/daemon-options.mjs): the
+  // skills/memory directories (mecated refuses to start on a missing
+  // --skills-dir, and an empty directory is the correct "no skills yet"
+  // state, so each ENABLED store's directory is created before every spawn
+  // — a disabled one gets neither the mkdir nor the flag, which is how
+  // mecated turns Remember/Recall and the Skill tool off), the user-model
+  // flags, slash commands and MCP discovery. The default document renders
+  // the pre-feature command line byte for byte. Every directory passed the
+  // containment check at save time (validateOptionDirs).
+  const optionDirs = effectiveDaemonDirs(daemonOptions, daemonOptionContext());
+  if (daemonOptions.skills.enabled)
+    await mkdir(optionDirs.skillsDir, { recursive: true });
+  if (daemonOptions.projectMemory.enabled)
+    await mkdir(optionDirs.memoryDir, { recursive: true });
+  if (daemonOptions.userModel.enabled && optionDirs.userModelDir)
+    await mkdir(optionDirs.userModelDir, { recursive: true });
+  if (daemonOptions.commands.enabled && optionDirs.commandsDir)
+    await mkdir(optionDirs.commandsDir, { recursive: true });
+  args.push(...daemonOptionArgs(daemonOptions, daemonOptionContext()));
   // The saved daemon defaults as spawn flags: the model pair is emitted for
   // THIS kind only (mecated validates --default-model against the current
   // default provider fail-fast), the rest is global. An empty document adds
@@ -2468,8 +2647,31 @@ const server = http.createServer(async (request, response) => {
           ...trustDecision(permissionsConfig, { trustOnce, trustDrifted }),
           anchor: liveTrustAnchor,
         },
-        skills: { dir: skillsDir, scope: "project" },
-        memory: { dir: memoryDir, scope: "project" },
+        // The skills/memory directories the CURRENT child was spawned with
+        // (or would be — `enabled: false` means the spawn omitted the
+        // flag), scoped by which allowed root holds them.
+        skills: {
+          dir: skillsDir,
+          scope: optionDirScope(skillsDir, {
+            workspace,
+            defaultWorkspace,
+            configDir: mecatlConfigDir,
+          }),
+          enabled: daemonOptions.skills.enabled,
+        },
+        memory: {
+          dir: memoryDir,
+          scope: optionDirScope(memoryDir, {
+            workspace,
+            defaultWorkspace,
+            configDir: mecatlConfigDir,
+          }),
+          enabled: daemonOptions.projectMemory.enabled,
+        },
+        // The saved daemon options the child was spawned with (spawn flags:
+        // the two memory stores, the Skill tool, slash commands, MCP
+        // discovery) — switches only, no paths beyond the two above.
+        daemonOptions: daemonOptionsStatus(),
         // The session store the daemon was spawned with: durable dir
         // (resolved) or in-memory, plus the default the form falls back to.
         // Paths only — the store's CONTENTS never cross here.
@@ -3997,6 +4199,58 @@ const server = http.createServer(async (request, response) => {
     }
     return;
   }
+  // Daemon options: the two memory stores, skill discovery, slash commands,
+  // MCP discovery (src/lib/daemon-options.mjs). GET reads the saved document
+  // plus the fallback locations and the directories this spawn resolved to
+  // (studio-header-gated: it names directories on this machine); PUT
+  // replaces it whole, restarts mecated, and rolls the previous document
+  // back when the new flags make it refuse to start. Every set directory is
+  // confined to the workspace / default root / mecatl config dir BEFORE
+  // anything is persisted or created.
+  if (request.method === "GET" && requestURL.pathname === "/daemon-options") {
+    response.end(JSON.stringify(daemonOptionsDocument()));
+    return;
+  }
+  if (request.method === "PUT" && requestURL.pathname === "/daemon-options") {
+    try {
+      if (
+        !String(request.headers["content-type"] || "")
+          .toLowerCase()
+          .startsWith("application/json")
+      )
+        throw Object.assign(
+          new Error("Content-Type must be application/json"),
+          { statusCode: 415 },
+        );
+      const next = normalizeDaemonOptions(
+        JSON.parse((await readBody(request, 16_384)).toString("utf8")),
+      );
+      await validateOptionDirs(next);
+      await queueRestart(async () => {
+        const previous = daemonOptions;
+        applyDaemonOptions(next);
+        await persistDaemonOptions(next);
+        try {
+          await startMecatl(preferredKind());
+        } catch (error) {
+          applyDaemonOptions(previous);
+          await persistDaemonOptions(previous);
+          await startMecatl(preferredKind());
+          throw new Error(
+            `${error.message || error} (previous daemon options restored)`,
+          );
+        }
+      });
+      response.end(JSON.stringify({ ok: true, options: daemonOptions }));
+    } catch (error) {
+      jsonError(
+        response,
+        error.statusCode || 400,
+        error.message || "Could not update the daemon options",
+      );
+    }
+    return;
+  }
   if (request.method === "GET" && requestURL.pathname === "/model-router") {
     response.end(
       JSON.stringify({
@@ -4102,6 +4356,10 @@ server.listen(8788, "127.0.0.1", async () => {
   permissionsConfig = await loadPermissions();
   diagnosticsOptions = await loadDiagnosticsOptions();
   storageSettings = await loadStorageSettings();
+  // The saved daemon options BEFORE the root: applyWorkspace derives the
+  // skills/memory directories from both (an override, else the root's
+  // pinned/default location).
+  daemonOptions = await loadDaemonOptions();
   // The saved root (or the default) BEFORE the first spawn: the spawn
   // flags, the trust probes and the derived directories all read it.
   applyWorkspace(await loadWorkspace());

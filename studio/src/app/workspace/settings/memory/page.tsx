@@ -19,13 +19,27 @@ import {
 import { type MemoryEntry, useAgentMemory } from "@/features/agent";
 import { ConsolidateMemoryCard } from "./_components/consolidate-memory";
 import { MemoryFootprint } from "./_components/memory-footprint";
+import { MemoryStoresCard } from "./_components/memory-stores-card";
 
 /**
- * The agent's remembered facts, read-only — a settings subpage. The one
- * mutation offered is the daemon-curated consolidation flow below the table
- * (ADR 0227), which never accepts free-text content (memory rule 8).
+ * Settings → Memory: the two daemon memory STORES (on/off + location, the
+ * controller's spawn flags — the TUI's --memory-dir / --no-user-model
+ * controls) above the agent's remembered user-model facts, read-only. The
+ * one content mutation offered is the daemon-curated consolidation flow
+ * below the table (ADR 0227), which never accepts free-text content (memory
+ * rule 8). The stores card renders whatever state the table is in: with the
+ * user model off it is how a managed-mode operator turns it back on.
  */
 export default function MemorySettingsPage() {
+  return (
+    <>
+      <MemoryStoresCard />
+      <MemoryEntriesSection />
+    </>
+  );
+}
+
+function MemoryEntriesSection() {
   const memory = useAgentMemory();
   const sort = useTableSort<"name" | "remembers">("name");
 

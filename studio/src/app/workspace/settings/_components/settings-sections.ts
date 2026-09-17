@@ -15,6 +15,7 @@ import {
   Server,
   ShieldCheck,
   UserRound,
+  Wrench,
 } from "lucide-react";
 
 export interface SettingsSection {
@@ -72,6 +73,14 @@ export const SETTINGS_GROUPS: Array<{
         href: "/workspace/settings/permissions",
         label: "Permissions",
         icon: ShieldCheck,
+      },
+      {
+        // The managed daemon's tool catalog flags (Skill tool + skills
+        // directory, slash commands) and the Shell tool's status; the
+        // shell-less switch itself stays on Permissions (one writer).
+        href: "/workspace/settings/tools",
+        label: "Tools",
+        icon: Wrench,
       },
       {
         href: "/workspace/settings/memory",

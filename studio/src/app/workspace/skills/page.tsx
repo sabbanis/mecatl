@@ -43,6 +43,7 @@ import { cn } from "@/lib/utils";
 import { CreateSkillDialog } from "./_components/create-skill-dialog";
 import { EditSkillDialog } from "./_components/edit-skill-dialog";
 import { LearnedSkillsPanel } from "./_components/learned-skills-panel";
+import { SkillToolDisabledBanner } from "./_components/skill-tool-disabled-banner";
 import { SkillsViewQueryWatcher } from "./_components/view-query-watcher";
 
 /** "pr-feedback" → "Pr Feedback"; the raw slug stays the id/route param. */
@@ -232,6 +233,9 @@ export default function WorkspaceSkillsPage() {
         }}
       />
       <div className="space-y-5">
+        {/* The daemon's own `capabilities.skills === false`: the Skill tool
+            is off, so nothing listed here reaches the agent until it is on. */}
+        <SkillToolDisabledBanner />
         <div className="flex items-center justify-between gap-4">
           <h1
             className={pageTitleClass("truncate pb-0 text-3xl leading-tight")}

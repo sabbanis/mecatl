@@ -158,8 +158,14 @@ Each rule is backed by a test; break the rule and its test names you.
     (`src/lib/protocol/schedules.test.ts`: carried round-trip.)
 11. **Requests are protojson; responses are stdlib JSON.** Never echo a decoded
     response back as a request body. (`schedules.test.ts`: the asymmetry test.)
-12. **Skills are project-scoped only.** The controller pins `--skills-dir` and
-    never passes `--skills-conventional`.
+12. **Skills are project-scoped by default, and the controller owns the
+    directory.** The controller passes ONE `--skills-dir` — the workspace's
+    `.mecatl/skills` unless the daemon-options document relocates it (rule
+    24: a trust decision, confined to the workspace / default root / mecatl
+    config dir) — and never `--skills-conventional`. With the Skill tool
+    switched off it passes NO `--skills-dir` (that is how mecated drops the
+    tool); the Skills page still edits and parks skills in the owned
+    directory, and shows the daemon's `skills: false` as a banner.
 13. **Posture, project trust and shell-less mode are spawn FLAGS, never a
     settings.yaml key.** Settings → Permissions saves a Studio-owned
     `permissions.json`; the controller turns it into `--posture <tier>`
@@ -473,6 +479,48 @@ Each rule is backed by a test; break the rule and its test names you.
     the CURRENT path once consumed, so a reload or Back never re-seeds.
     (`chat-seed.test.ts`, `use-seed-prompt.test.tsx`,
     `seed-prompt-dialog.test.tsx`, the Playwright `?prompt=` tests.)
+24. **Daemon options are controller-owned spawn FLAGS; the browser never
+    composes a mecated flag.** The Studio-owned `daemon-options.json`
+    (`GET|PUT /daemon-options`, `src/lib/daemon-options.mjs`) carries the
+    knobs mecatui documents for the tool catalog and the two memory stores:
+    project memory (`--memory-dir`; OFF = the flag omitted, which is how
+    mecated turns Remember/Recall off — never a `--no-memory`), the user
+    model (`--no-user-model`, `--user-model-dir`,
+    `--user-model-review-interval`, emitted only when ≠ 1), skill discovery
+    (`--skills-dir`; OFF = omitted, rule 12), slash commands
+    (`--commands-dir` when a dir is set, else `--enable-commands`; OFF =
+    nothing, mecated's default) and MCP discovery (`--toolhive=false`,
+    `--toolhive-group` only while discovery is on, `--mcp-resource-tools=false`,
+    `--mcp-prompts=false`). The DEFAULT document is the pre-feature command
+    line byte for byte. Knobs with another owner are NOT here — `--no-shell`
+    is the permissions document's (rule 13), learning/steer/soul are the
+    runtime settings' — one writer per flag. Every set directory is a TRUST
+    BOUNDARY (mecated's flag help: a SKILL.md or command template steers
+    the model like AGENTS.md) and is confined at save time to the live
+    workspace, the default root or the mecatl config dir, lexically AND
+    after realpath of its deepest existing ancestor; an existing path must
+    be a real directory. Only an ENABLED store's directory is created
+    before the spawn. A refused start rolls the previous document back.
+    `/status.skills` / `.memory` gain `enabled` and a `scope` computed from
+    the resolved path (`project` / `user` / `studio` / `other`), never a
+    hard-coded "project". Both verbs are studio-header-gated (the GET names
+    directories on this machine; the proxy adds the header) and 409 in
+    external mode. The UI is three cards over ONE scaffold
+    (`daemon-options-card.tsx`: draft, "Restart required", AlertDialog
+    confirm, Discard): Settings → Tools (`tools-options-card.tsx`, plus the
+    daemon-reported `bash`/`skills`/`slash_commands` status rows in BOTH
+    modes — the Shell switch stays on Permissions), Settings → MCP tools
+    (`mcp-discovery-card.tsx`) and Settings → Memory
+    (`memory-stores-card.tsx`, with the `capabilities.memory`/`user_model`
+    rows — the TUI's "memory is on" note). What the UI shows as ON is
+    always the daemon's capability document, never the saved document, and
+    `useDaemonOptions().save` re-probes it after the restart.
+    (`src/lib/daemon-options.test.ts`, `harness/daemon-options.test.ts`,
+    `use-daemon-options.test.ts`, `daemon-options-card.test.tsx`,
+    `tools-options-card.test.tsx`, `mcp-discovery-card.test.tsx`,
+    `memory-stores-card.test.tsx`, `skill-tool-disabled-banner.test.tsx`,
+    `controller-security.test.ts`, hermetic 409 + header-gate rows, the
+    Playwright external-mode Tools test.)
 
 ## Gotchas
 

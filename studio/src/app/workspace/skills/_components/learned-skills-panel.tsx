@@ -23,6 +23,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { onRunFinished } from "@/features/agent/run-signals";
 import { useRuntimeStatus } from "@/features/agent/runtime-status";
 import { formatRelativeTime } from "@/lib/formatters";
 import {
@@ -146,7 +147,19 @@ export function LearnedSkillsPanel() {
     if (!connected) return;
     const controller = new AbortController();
     void load(controller.signal);
-    return () => controller.abort();
+    // Kept fresh without a reload (mecatui re-lists receipts on every run
+    // result): a run terminal this page observed re-reads the list, and so
+    // does the tab coming back into view after the daemon may have moved.
+    const stopRuns = onRunFinished(() => void load(controller.signal));
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") void load(controller.signal);
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      controller.abort();
+      stopRuns();
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [connected, load]);
 
   const runMutation = async (mutation: PendingMutation) => {

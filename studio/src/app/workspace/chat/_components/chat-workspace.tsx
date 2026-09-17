@@ -35,6 +35,7 @@ import type { SessionInventoryWalk } from "@/features/agent/hooks/use-agent-sess
 import { useAwayNotice } from "@/features/agent/hooks/use-away-notice";
 import { useDeliveryFollow } from "@/features/agent/hooks/use-delivery-follow";
 import { useHarnessRuntime } from "@/features/agent/hooks/use-harness-runtime";
+import { useLearnedSkillChangeNotices } from "@/features/agent/hooks/use-learned-skill-change-notices";
 import { useSessionMode } from "@/features/agent/hooks/use-session-mode";
 import { useWorkspaceEnrollment } from "@/features/agent/hooks/use-workspace-enrollment";
 import { pickLatestEligibleChat } from "@/features/agent/latest-chat";
@@ -1124,6 +1125,11 @@ export function ChatWorkspace({
     messages,
     refreshTranscript,
   });
+
+  // Learned-skill change receipts after a run (mecatui's post-ResultMsg
+  // ListSkillChanges + status line): one toast per run that produced new
+  // receipts, pointing at the Skills page's Learned view. Capability-gated.
+  useLearnedSkillChangeNotices();
 
   const handleSelectSession = useCallback(
     (id: string) => {

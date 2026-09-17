@@ -305,6 +305,25 @@ test("the agent page shows the daemon's persona and marks its settings deploymen
   ).toHaveCount(0);
 });
 
+test("the Tools page reports the daemon's tool catalog and marks the daemon options deployment-owned", async ({
+  page,
+}) => {
+  // The status rows are the fixture's own capability document (`bash`,
+  // `skills`, `slash_commands`) — daemon truth, rendered in external mode
+  // too; the controls (--skills-dir, --commands-dir) are a controller
+  // surface, so external mode renders the managed note and no switch.
+  await page.goto("/workspace/settings/tools");
+  const card = page.getByTestId("tools-options");
+  await expect(card.getByTestId("tools-status-shell")).toHaveText(
+    /registered|not reported/,
+  );
+  await expect(
+    card.getByText("Managed by the external mecated deployment"),
+  ).toBeVisible();
+  await expect(page.getByRole("switch", { name: "Skill tool" })).toHaveCount(0);
+  await expect(page.getByLabel("Skills directory")).toHaveCount(0);
+});
+
 test("diagnostics shows the daemon-reported posture and its defenses", async ({
   page,
 }) => {

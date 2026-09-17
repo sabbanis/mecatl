@@ -84,6 +84,7 @@ import {
   shouldAutoProceed,
 } from "../plan-ask";
 import { buildPromptPayload } from "../prompt-payload";
+import { emitRunFinished } from "../run-signals";
 import { useRuntimeStatus } from "../runtime-status";
 import type { SessionTitleUpdate } from "../session-title";
 import { resolveSteerSupported } from "../steer-support";
@@ -1012,6 +1013,10 @@ export function useAgentChat(
   const settlePlanTerminal = useCallback(
     (daemonId: string, stop: string | undefined) => {
       onRunEndedRef.current?.(stop ?? "");
+      // The page-wide run-terminal signal (mecatui re-lists learned-skill
+      // receipts on every ResultMsg): fired here so BOTH live arms — the
+      // prompt stream and the durable watch — announce, and replay never does.
+      emitRunFinished({ sessionId: daemonId, stop: stop ?? "" });
       const arm = planProceedArmRef.current;
       planProceedArmRef.current = null;
       if (

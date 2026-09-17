@@ -103,6 +103,32 @@ describe("requestIsAllowed", () => {
     ).toBe(true);
   });
 
+  it("gates /daemon-options in BOTH directions: it names directories on this machine and the PUT restarts the daemon", () => {
+    // Deliberately NOT in the header-free read list (unlike /status): the
+    // GET reports the skills/memory/user-model directories, and the proxy
+    // always adds the header for the UI's own reads.
+    expect(
+      requestIsAllowed(request("GET"), url("/daemon-options"), options),
+    ).toBe(false);
+    expect(
+      requestIsAllowed(request("PUT"), url("/daemon-options"), options),
+    ).toBe(false);
+    expect(
+      requestIsAllowed(
+        request("GET", { "x-mecatl-studio-request": "1" }),
+        url("/daemon-options"),
+        options,
+      ),
+    ).toBe(true);
+    expect(
+      requestIsAllowed(
+        request("PUT", { "x-mecatl-studio-request": "1" }),
+        url("/daemon-options"),
+        options,
+      ),
+    ).toBe(true);
+  });
+
   it("still refuses a non-loopback Host or a foreign Origin on the read", () => {
     expect(
       requestIsAllowed(
