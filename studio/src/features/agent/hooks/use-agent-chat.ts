@@ -801,11 +801,8 @@ export function useAgentChat(
   // `usage`: the transcript rehydrate carries no delegation data, so it holds
   // what this tab observed live or via the durable watch's replay.
   const [fleet, setFleet] = useState<DelegationFleet>(emptyFleet);
-  // The latest turn's input tokens (turn.end) — the context occupancy the
-  // meter reads. ASSIGNED per turn, never summed; 0 until a turn ends.
-  const [contextOccupancy, setContextOccupancy] = useState(0);
-  // The GET-session detail: the resolved model + context window the meter
-  // is measured against, and the daemon's durable cumulative token usage.
+  // The GET-session detail: the resolved model + context window, and the
+  // daemon's durable cumulative token usage.
   const [sessionDetail, setSessionDetail] =
     useState<HarnessSessionDetail | null>(null);
   // What this chat may send as media (the TUI's `attach:` gate): the
@@ -1033,10 +1030,10 @@ export function useAgentChat(
   );
 
   // Opening a chat (or switching) reads its detail. A failure just leaves
-  // the meter on the visit-local figures — it is never load-bearing.
+  // the Token usage rows on the visit-local figures — it is never
+  // load-bearing.
   useEffect(() => {
     setSessionDetail(null);
-    setContextOccupancy(0);
     setProviderRoute("");
     // A draft has nothing to resolve yet: settled, not "resolving".
     setSessionDetailStatus(sessionId ? "loading" : "ok");
@@ -1092,7 +1089,7 @@ export function useAgentChat(
     setError(null);
     setStatusMessage(null);
     setStatus("idle");
-    // Usage is per-visit, per-chat: the context meter must not carry one
+    // Usage is per-visit, per-chat: the Token usage rows must not carry one
     // chat's spend into the next.
     setUsage({
       inputTokens: 0,
@@ -1355,10 +1352,7 @@ export function useAgentChat(
             if (live) flush();
             break;
           case "turn_end":
-            // The latest turn's input is the context occupancy — replay's
-            // LAST turn_end sets it too, so a reload never falls back to the
-            // summed-usage numerator; the stats land on the bubble either way.
-            setContextOccupancy(event.inputTokens);
+            // The stats land on the bubble whether live or replayed.
             rebuilt = reduceWatchEvent(rebuilt, event, nextId);
             frames += 1;
             if (live || frames % 200 === 0) flush();
@@ -1850,12 +1844,11 @@ export function useAgentChat(
             break;
           case "turn_end":
             // One model exchange closed: fold its cost onto the bubble's
-            // stat line and take its input as the current context occupancy.
+            // stat line.
             patch((message) => ({
               ...message,
               turnStats: accumulateTurnStats(message.turnStats, event),
             }));
-            setContextOccupancy(event.inputTokens);
             break;
           case "usage":
             // The daemon reports per-run figures; the chat total is their
@@ -3376,8 +3369,6 @@ export function useAgentChat(
     /** Every child this session's runs delegated, aggregated across turns
      *  (per-visit, like usage — rebuilt from the durable watch's replay). */
     fleet,
-    /** The latest turn's input tokens: the context meter's occupancy. */
-    contextOccupancy,
     /** The GET-session detail (resolved model + window, durable usage). */
     sessionDetail,
     /** Whether that detail read is pending, landed, or failed — the status

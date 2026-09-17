@@ -20,8 +20,8 @@ const CARD_HEADING_CLASS =
 
 /**
  * The legend for the token figures the chat ··· menu shows (its "Token
- * usage" rows) and the context meter builds on. The labels are the menu's
- * own words, so a reader can match them line for line.
+ * usage" rows). The labels are the menu's own words, so a reader can match
+ * them line for line.
  */
 const USAGE_LEGEND: readonly { label: string; note: string }[] = [
   { label: "input", note: "Tokens the model read this visit." },
@@ -184,9 +184,7 @@ export function ShortcutsReference() {
         </ul>
         <p className="mt-3 text-xs text-muted-foreground">
           Figures appear in the chat ··· menu once the daemon reports them; a
-          provider without prompt caching shows input and output only. The
-          context meter is approximate: input + output counted this visit over
-          the model&rsquo;s window.
+          provider without prompt caching shows input and output only.
         </p>
       </section>
     </div>

@@ -816,9 +816,9 @@ export async function fetchSessionTranscriptMessages(
 
 /**
  * The provider+model a session actually resolved to (the snapshot's
- * `resolved_model` echo, ADR 0244): the effective model label and the
- * context window the context meter is measured against. Null when the daemon
- * reports none (older daemon / unresolved model).
+ * `resolved_model` echo, ADR 0244): the effective model label and its
+ * context window. Null when the daemon reports none (older daemon /
+ * unresolved model).
  */
 interface HarnessResolvedModel {
   providerId: string;

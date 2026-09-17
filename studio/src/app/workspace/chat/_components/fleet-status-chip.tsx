@@ -9,8 +9,8 @@ import type { DelegationTab } from "./delegation-panel";
 /**
  * The fleet status chip — the web analogue of mecatui's footer delegation
  * segments (cmd/mecatui/ui/footer.go): an always-visible, aggregate glance
- * at every child this chat ran, sitting beside the context meter in the
- * composer strip so it survives scrolling the transcript. One segment per
+ * at every child this chat ran, sitting in the composer strip so it
+ * survives scrolling the transcript. One segment per
  * delegation family, each opening the Agents panel on its tab:
  *
  * - subagents `N running · M done` once ≥1 subagent has started; a

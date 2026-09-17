@@ -212,14 +212,7 @@ export default function WorkspaceSkillsPage() {
       <div className="flex size-11 items-center justify-center rounded-full bg-muted">
         <Sparkles className="size-5 text-muted-foreground" />
       </div>
-      <div className="space-y-1">
-        <p className="text-sm font-medium">No skills here yet</p>
-        <p className="max-w-sm text-sm text-muted-foreground">
-          Drop a <code className="font-mono text-xs">SKILL.md</code> into{" "}
-          <code className="font-mono text-xs">.mecatl/skills</code> and it'll
-          show up here, ready for the agent to use.
-        </p>
-      </div>
+      <p className="text-sm font-medium">No skills here yet</p>
     </div>
   );
 

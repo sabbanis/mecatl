@@ -856,8 +856,8 @@ const promptFrames = [
   },
   // One foreground subagent's lifecycle inside the turn (proto `Subagent`,
   // snake_case protojson; int64 duration_ms as a string): start → one tool
-  // → end. It feeds the inline delegation card, the fleet chip beside the
-  // context meter, and the Agents panel.
+  // → end. It feeds the inline delegation card, the fleet chip in the
+  // composer strip, and the Agents panel.
   {
     type: "subagent.start",
     run_id: runID,

@@ -31,11 +31,15 @@ sidebar's Chats / Runs / Scheduled / Drafts tabs (chats only list now; runs
 and fires stay reachable through the read-only transcript dialog); the chat
 header's placement badge and status strip (facts moved to ⋯ → Session
 details); the top-nav connection and posture chips; the composer's Memory
-pill; and the Settings pages Status line, Tools, Persona, Keyboard
+pill and its context pill (the chat shows no context-window usage at all —
+token figures live only in ⋯ → Token usage; the Agents panel's per-member
+meter stays); the Skills page's empty-state hint about dropping a
+`SKILL.md` into `.mecatl/skills` (the empty state is just "No skills here
+yet"); and the Settings pages Status line, Tools, Persona, Keyboard
 (rebinding), Model router and Workspace, plus the Preferences-file card, the
 Custom-palettes card, the performance/pprof card, the posture card, the
 store-location and retention cards and the configuration reference. The
-status-line templates still render their DEFAULTS (`src/lib/statusline`).
+status-line template library (`src/lib/statusline`) is gone with the strip.
 Every settings card uses plain language ("the agent"), has no subtitle under
 its title, and shows no restart sentence: single-switch cards (memory
 stores, agent behaviour, usage statistics, the default model) apply on the

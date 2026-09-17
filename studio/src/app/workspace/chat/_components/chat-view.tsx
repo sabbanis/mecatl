@@ -124,7 +124,6 @@ import {
   ClearConversationMenuItem,
   ClearConversationSheetItem,
 } from "./clear-conversation-menu-item";
-import { meterOccupancy } from "./context-meter";
 import {
   type DelegationFocus,
   DelegationPanel,
@@ -1029,7 +1028,6 @@ export function ChatView({
   botName,
   live = false,
   usage,
-  contextOccupancy = 0,
   statusMessage = null,
   error,
   onRetry,
@@ -1219,8 +1217,8 @@ export function ChatView({
       fork of this chat rooted at a sibling git worktree); present only when
       the daemon lists worktrees and the row may mint a successor. */
   onSwitchWorktree?: () => void;
-  /** The session's effective model + context window (B1.1): feeds the slim
-      approximate context meter near the composer. */
+  /** The session's effective model + context window (B1.1): feeds the
+      composer's Model pill (the resolved model id and effort tier). */
   contextInfo?: {
     modelLabel: string;
     contextWindow: number;
@@ -1242,8 +1240,6 @@ export function ChatView({
   debugMcpServers?: string[];
   /** The debugger MCP tools those servers mounted (the strip's notice). */
   debugMcpTools?: string[];
-  /** The latest turn's input tokens (turn.end): the meter's occupancy. */
-  contextOccupancy?: number;
   /** The transient status line under the transcript (a no-progress nudge,
       the recover notice, how the last run stopped); null = nothing to say. */
   statusMessage?: StatusMessage | null;
@@ -2091,8 +2087,8 @@ export function ChatView({
             )}
             <div className="max-w-[768px] space-y-1.5 max-[499px]:max-w-none">
               {/* The fleet chip (the TUI footer's delegation segments): the
-                  persistent running/done glance per family, above the
-                  context meter, each segment opening the Agents panel. */}
+                  persistent running/done glance per family, each segment
+                  opening the Agents panel. */}
               <FleetStatusChip
                 fleet={fleet}
                 onOpen={(tab) => openDelegationPanel(tab)}
@@ -2160,14 +2156,6 @@ export function ChatView({
                   draftKey={session.id}
                   escapePress={escapePress}
                   onDraftChange={handleDraftChange}
-                  contextUsage={
-                    contextInfo && contextInfo.contextWindow > 0
-                      ? {
-                          used: meterOccupancy(contextOccupancy, usage),
-                          contextWindow: contextInfo.contextWindow,
-                        }
-                      : null
-                  }
                   mobileDocked
                   modelLockedLabel={
                     live ? session.model || "Auto-routed" : undefined

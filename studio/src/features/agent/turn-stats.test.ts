@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   accumulateTurnStats,
   cacheHitRate,
-  contextBand,
   formatPercent,
   formatTurnStat,
   isTrivialTurn,
@@ -167,18 +166,5 @@ describe("formatTurnStat", () => {
         stats({ inputTokens: 100, outputTokens: 60, durationMs: 840 }),
       ),
     ).toBe("↑100 ↓60 · 840ms");
-  });
-});
-
-describe("contextBand", () => {
-  it.each([
-    [0, "ok"],
-    [0.599, "ok"],
-    [0.6, "warn"],
-    [0.849, "warn"],
-    [0.85, "danger"],
-    [1, "danger"],
-  ] as const)("maps %d to %s", (fraction, band) => {
-    expect(contextBand(fraction)).toBe(band);
   });
 });

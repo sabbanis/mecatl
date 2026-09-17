@@ -104,9 +104,6 @@ describe("ShortcutsReference", () => {
     ]) {
       expect(screen.getByText(label)).toBeInTheDocument();
     }
-    expect(
-      screen.getByText(/The context meter is approximate/),
-    ).toBeInTheDocument();
   });
 
   it("offline: shows the connect copy and no feature rows", () => {

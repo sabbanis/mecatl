@@ -15,10 +15,6 @@ export const TRIVIAL_TURN_TOKENS = 50;
 /** Cache-hit rate under which the stat line omits the "N% cached" facet. */
 export const TURN_STAT_CACHE_FLOOR = 0.1;
 
-/** Context-pressure bands as a fraction of the window: ok < warn < danger. */
-export const CONTEXT_WARN_FRACTION = 0.6;
-export const CONTEXT_DANGER_FRACTION = 0.85;
-
 /** The figures one `turn.end` frame contributes. */
 export interface TurnEndFigures {
   durationMs: number;
@@ -100,13 +96,4 @@ export function formatTurnStat(stats: TurnStats): string {
   if (rate >= TURN_STAT_CACHE_FLOOR)
     parts.push(`${formatPercent(rate)} cached`);
   return parts.join(" · ");
-}
-
-export type ContextBand = "ok" | "warn" | "danger";
-
-/** Maps a context-window fill fraction to its pressure band. */
-export function contextBand(fraction: number): ContextBand {
-  if (fraction >= CONTEXT_DANGER_FRACTION) return "danger";
-  if (fraction >= CONTEXT_WARN_FRACTION) return "warn";
-  return "ok";
 }

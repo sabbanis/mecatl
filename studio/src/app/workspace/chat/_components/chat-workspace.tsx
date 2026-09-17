@@ -835,7 +835,6 @@ export function ChatWorkspace({
     respondToClarification,
     usage,
     fleet,
-    contextOccupancy,
     sessionDetail,
     sessionDetailStatus,
     providerRoute,
@@ -1875,7 +1874,6 @@ export function ChatWorkspace({
                 }
               : null
           }
-          contextOccupancy={contextOccupancy}
           botName={agentName}
           sidebarOpen={open}
           sidebarSide={sidebarSide}

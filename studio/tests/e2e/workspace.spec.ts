@@ -40,7 +40,7 @@ test("the live chat's model pill shows the daemon's effective reasoning-effort t
   ).toBeVisible();
   // The composer's model + effort trigger reads "{model} · {effort}" from
   // the snapshot's resolved_model (the fixture echoes reasoning_effort
-  // "medium"); the ContextMeter needs counted tokens and is not the oracle.
+  // "medium").
   await expect(
     page.locator('button[title="fixture-model · Medium"]').first(),
   ).toBeVisible();
@@ -509,8 +509,8 @@ test("a prompt's subagent lifecycle feeds the inline card, the fleet chip, and t
   await page.keyboard.type("Scan the scheduler tests for me");
   await page.getByRole("button", { name: "Send message" }).first().click();
   // The fixture streams subagent.start → tool → end inside the turn: the
-  // turn's delegation card names the child, and the persistent chip beside
-  // the context meter tallies it once the end frame lands.
+  // turn's delegation card names the child, and the persistent chip in the
+  // composer strip tallies it once the end frame lands.
   await expect(
     page.getByText("subagent: Scan the scheduler tests", { exact: false }),
   ).toBeVisible();
