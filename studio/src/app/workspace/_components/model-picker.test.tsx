@@ -206,63 +206,6 @@ describe("Model picker", () => {
     );
   });
 
-  it("the footer action sets and clears the browser-local default for the highlighted row", async () => {
-    const user = userEvent.setup();
-    render(
-      <ModelEffortSelector
-        models={models}
-        onSwitchModel={() => {}}
-        onSwitchEffort={() => {}}
-        currentModelId="claude-sonnet"
-        currentEffort=""
-      />,
-    );
-    await openModels(user);
-    fireEvent.click(
-      screen.getByRole("button", { name: "Set Sonnet as my default" }),
-    );
-    await waitFor(() =>
-      expect(
-        screen.getByRole("img", { name: "Your default for new chats" }),
-      ).toBeInTheDocument(),
-    );
-    expect(window.localStorage.getItem(DEFAULT_KEY)).toBe(
-      '{"modelId":"claude-sonnet","providerId":"anthropic"}',
-    );
-    // The action flips to clear for the highlighted default row.
-    fireEvent.click(screen.getByRole("button", { name: "Clear my default" }));
-    await waitFor(() =>
-      expect(window.localStorage.getItem(DEFAULT_KEY)).toBeNull(),
-    );
-  });
-
-  it("Shift+Enter marks the highlighted row as the default instead of picking it", async () => {
-    const user = userEvent.setup();
-    const onSwitchModel = vi.fn();
-    render(
-      <ModelEffortSelector
-        models={models}
-        onSwitchModel={onSwitchModel}
-        onSwitchEffort={() => {}}
-        currentModelId="gpt-5"
-        currentEffort=""
-      />,
-    );
-    const input = await openModels(user);
-    // The highlight starts on the current model.
-    fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
-    await waitFor(() =>
-      expect(window.localStorage.getItem(DEFAULT_KEY)).toBe(
-        '{"modelId":"gpt-5","providerId":"openai"}',
-      ),
-    );
-    expect(onSwitchModel).not.toHaveBeenCalled();
-    // The menu stays open for further filtering.
-    expect(
-      screen.getByRole("combobox", { name: FILTER_MODELS_LABEL }),
-    ).toBeInTheDocument();
-  });
-
   it("draft: an untouched picker starts on the Studio default", async () => {
     window.localStorage.setItem(
       DEFAULT_KEY,
@@ -301,13 +244,9 @@ describe("Model picker", () => {
     );
     expect(trigger()).toHaveAttribute("title", "Default · Auto");
     await openModels(user);
-    // No row wears the star, but the stale default can still be cleared.
+    // No row wears the star for a default the inventory no longer lists.
     expect(
       screen.queryByRole("img", { name: "Your default for new chats" }),
     ).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Clear my default" }));
-    await waitFor(() =>
-      expect(window.localStorage.getItem(DEFAULT_KEY)).toBeNull(),
-    );
   });
 });

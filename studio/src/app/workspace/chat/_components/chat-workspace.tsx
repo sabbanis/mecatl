@@ -114,7 +114,6 @@ import { DraftGreeting } from "./draft-greeting";
 import { InspectQueryWatcher } from "./inspect-query-watcher";
 import { InspectSessionGroups, inspectRowDomId } from "./inspect-session-list";
 import { SessionInventoryStatus } from "./session-inventory-status";
-import { StorageMaintenanceLink } from "./session-kind-tabs";
 import {
   type ChatFolderActions,
   FolderGroupMenu,
@@ -195,7 +194,6 @@ function SidebarContent({
   inspectGroups,
   onInspect,
   emptyLabel,
-  footer,
 }: {
   onNewChat: () => void;
   isLoading: boolean;
@@ -218,7 +216,6 @@ function SidebarContent({
   /** The active tab's empty-state line. */
   emptyLabel: string;
   /** Rendered after the lists (the storage-maintenance link). */
-  footer?: React.ReactNode;
 }) {
   return (
     <>
@@ -345,7 +342,6 @@ function SidebarContent({
             </p>
           )
         )}
-        {!isLoading && footer}
       </div>
     </>
   );
@@ -1553,11 +1549,6 @@ export function ChatWorkspace({
     inspectGroups,
     onInspect: handleInspectSession,
     emptyLabel: "No chats yet",
-    // The TUI's Maintenance tab lives on the Storage settings page here.
-    footer:
-      serverCapabilities.storage_health === true ? (
-        <StorageMaintenanceLink />
-      ) : undefined,
   };
 
   // Clear conversation (the TUI's /clear handoff): the daemon cancels a

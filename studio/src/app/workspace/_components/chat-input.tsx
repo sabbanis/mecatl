@@ -73,7 +73,6 @@ import {
   useEnterSendBehavior,
 } from "@/lib/profile-preferences";
 import type { SessionPermissionMode } from "@/lib/protocol";
-import { effortLabel } from "@/lib/reasoning-effort";
 import {
   type SessionToolProfile,
   toolProfilePillSuffix,

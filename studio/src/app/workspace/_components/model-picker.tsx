@@ -30,7 +30,7 @@ import {
 } from "@/components/ui/command";
 import { DropdownMenuSubContent } from "@/components/ui/dropdown-menu";
 import { InputSearch } from "@/components/ui/input-search";
-import { type DefaultModel, useDefaultModel } from "@/lib/model-preferences";
+import { useDefaultModel } from "@/lib/model-preferences";
 import { cn } from "@/lib/utils";
 import type { ComposerModelOption } from "./chat-input";
 import { isDefaultOption, type ModelProvenance } from "./draft-model";
@@ -139,28 +139,6 @@ function groupModelsByProvider(
   }));
 }
 
-/** The set/clear label for the default action aimed at `option`. */
-function defaultActionLabel(
-  option: ComposerModelOption | null,
-  studioDefault: DefaultModel | null,
-  listed: readonly ComposerModelOption[],
-): string | null {
-  // A default the inventory no longer lists (a stale pick) can only be
-  // cleared, so that action wins over "set the highlighted row".
-  if (
-    studioDefault &&
-    !listed.some((candidate) => isDefaultOption(candidate, studioDefault))
-  ) {
-    return "Clear my default";
-  }
-  if (option && option.id !== "" && option.providerId) {
-    return isDefaultOption(option, studioDefault)
-      ? "Clear my default"
-      : `Set ${option.label} as my default`;
-  }
-  return studioDefault ? "Clear my default" : null;
-}
-
 export interface ModelPickerListProps {
   /** Every option, the auto row (id "") first. */
   options: readonly ComposerModelOption[];
@@ -185,22 +163,14 @@ export function ModelSubmenuContent({
   onPick,
 }: ModelPickerListProps) {
   const [filter, setFilter] = useState("");
-  const { defaultModel, setDefaultModel, clearDefaultModel } =
-    useDefaultModel();
+  const { defaultModel } = useDefaultModel();
   // The auto ("Default model") row is deliberately not offered: the list is
   // the daemon's real models only. With no pick in force nothing is checked.
   const real = options.filter((option) => option.id !== "");
   const rows = filterModelOptions(real, filter);
-  const visible = rows;
+  const _visible = rows;
   const groups = groupModelsByProvider(rows);
-  const selectedOption = real.find((option) => option.id === selectedId);
-  // cmdk's highlighted row (its "value"), controlled so the footer action
-  // and Shift+Enter know which model they aim at; starts on the current one.
-  const [highlighted, setHighlighted] = useState(() =>
-    selectedOption ? optionValue(selectedOption) : "",
-  );
-  const highlightedOption =
-    visible.find((option) => optionValue(option) === highlighted) ?? null;
+  const _selectedOption = real.find((option) => option.id === selectedId);
   const inputRef = useRef<HTMLInputElement>(null);
 
   // Radix focuses the submenu container for keyboard users AFTER the
@@ -210,23 +180,6 @@ export function ModelSubmenuContent({
     const frame = requestAnimationFrame(() => inputRef.current?.focus());
     return () => cancelAnimationFrame(frame);
   }, []);
-
-  const toggleDefault = (option: ComposerModelOption | null) => {
-    const stale =
-      defaultModel !== null &&
-      !real.some((candidate) => isDefaultOption(candidate, defaultModel));
-    if (stale) {
-      clearDefaultModel();
-    } else if (option && option.id !== "" && option.providerId) {
-      if (isDefaultOption(option, defaultModel)) clearDefaultModel();
-      else
-        setDefaultModel({ modelId: option.id, providerId: option.providerId });
-    } else if (defaultModel) {
-      clearDefaultModel();
-    }
-    inputRef.current?.focus();
-  };
-  const actionLabel = defaultActionLabel(highlightedOption, defaultModel, real);
 
   return (
     <DropdownMenuSubContent
@@ -243,18 +196,7 @@ export function ModelSubmenuContent({
         shouldFilter={false}
         loop
         label={FILTER_MODELS_LABEL}
-        value={highlighted}
-        onValueChange={setHighlighted}
         className="rounded-none bg-transparent"
-        onKeyDown={(event) => {
-          // The ctrl+g analogue: Shift+Enter marks the highlighted row as
-          // the default instead of picking it.
-          if (event.key === "Enter" && event.shiftKey) {
-            event.preventDefault();
-            event.stopPropagation();
-            toggleDefault(highlightedOption);
-          }
-        }}
       >
         <CommandInput
           ref={inputRef}
@@ -310,18 +252,6 @@ export function ModelSubmenuContent({
             </p>
           )}
         </CommandList>
-        {actionLabel && (
-          <div className="flex items-center justify-end border-t px-3 py-2">
-            <button
-              type="button"
-              title="Shift+Enter"
-              onClick={() => toggleDefault(highlightedOption)}
-              className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
-            >
-              {actionLabel}
-            </button>
-          </div>
-        )}
       </Command>
     </DropdownMenuSubContent>
   );

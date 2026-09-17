@@ -44,10 +44,6 @@ export function ModelPickerShortcut({ onOpen }: { onOpen: () => void }) {
   return null;
 }
 
-/** The live-chat note above the tiers (a pick forks, like a model switch). */
-export const EFFORT_SWITCH_NOTE =
-  "Picking an effort continues this chat in a copy on it.";
-
 /** Shown when the picked/current model reports `reasoning: false`. */
 export const NO_REASONING_WARNING =
   "This model reports no reasoning support — a tier may be ignored.";
@@ -84,11 +80,6 @@ export function EffortMenuItems({
   const current = effortTier(value);
   return (
     <>
-      {live && (
-        <p className="px-3 pb-1.5 text-xs text-muted-foreground">
-          {EFFORT_SWITCH_NOTE}
-        </p>
-      )}
       {modelReasoning === false && (
         <p role="note" className="px-3 pb-1.5 text-xs text-warning">
           {NO_REASONING_WARNING}
@@ -156,11 +147,6 @@ export function EffortSheetSection({
       <legend className="px-4 pt-3 pb-1 text-xs font-medium text-muted-foreground">
         Effort
       </legend>
-      {live && (
-        <p className="px-4 pb-1 text-xs text-muted-foreground">
-          {EFFORT_SWITCH_NOTE}
-        </p>
-      )}
       {modelReasoning === false && (
         <p role="note" className="px-4 pb-1 text-xs text-warning">
           {NO_REASONING_WARNING}

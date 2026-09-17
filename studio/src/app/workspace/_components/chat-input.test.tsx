@@ -11,7 +11,7 @@ import {
   resolveComposerAction,
   resolveComposerSubmission,
 } from "./chat-input";
-import { EFFORT_SWITCH_NOTE, NO_REASONING_WARNING } from "./effort-picker";
+import { NO_REASONING_WARNING } from "./effort-picker";
 
 // The composer's `/` menu reads the daemon's command list through this
 // module-level getter; the local-command tests swap it for a fixed roster
@@ -484,7 +484,6 @@ describe("ModelEffortSelector", () => {
     expect(
       screen.getByRole("menuitemradio", { name: "Medium" }),
     ).toHaveAttribute("aria-checked", "true");
-    expect(screen.getByText(EFFORT_SWITCH_NOTE)).toBeInTheDocument();
     // A reasoning model: no warning.
     expect(screen.queryByRole("note")).toBeNull();
     // Picking a different tier forks with the WIRE value.
@@ -558,9 +557,7 @@ describe("ModelEffortSelector", () => {
       />,
     );
     expect(trigger()).toHaveAttribute("title", "Default · Auto");
-    expect(screen.queryByText(EFFORT_SWITCH_NOTE)).toBeNull();
     await openEffort(user);
-    expect(screen.queryByText(EFFORT_SWITCH_NOTE)).toBeNull();
     pick("Extra high");
     expect(onEffortChange).toHaveBeenCalledWith("xhigh");
     // Radix closes the menu on select; the trigger reflects the pick.

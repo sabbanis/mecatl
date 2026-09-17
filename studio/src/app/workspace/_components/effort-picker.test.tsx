@@ -7,7 +7,6 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
-  EFFORT_SWITCH_NOTE,
   EffortMenuItems,
   EffortSheetSection,
   effortTriggerLabel,
@@ -81,11 +80,9 @@ describe("EffortMenuItems (desktop submenu)", () => {
     const { unmount } = renderMenu(
       <EffortMenuItems value="" onPick={() => {}} live />,
     );
-    expect(await screen.findByText(EFFORT_SWITCH_NOTE)).toBeInTheDocument();
     unmount();
     renderMenu(<EffortMenuItems value="" onPick={() => {}} />);
     await screen.findAllByRole("menuitemradio");
-    expect(screen.queryByText(EFFORT_SWITCH_NOTE)).toBeNull();
   });
 
   it("warns only when the model reports no reasoning support", async () => {
@@ -137,7 +134,6 @@ describe("EffortSheetSection (mobile sheet)", () => {
         modelReasoning={false}
       />,
     );
-    expect(screen.getByText(EFFORT_SWITCH_NOTE)).toBeInTheDocument();
     expect(screen.getByRole("note")).toHaveTextContent(NO_REASONING_WARNING);
     await user.click(screen.getByRole("button", { name: "Low" }));
     expect(onPick).toHaveBeenCalledWith("low");
