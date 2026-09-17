@@ -12,9 +12,10 @@
  * SDK reconnects it from the last cursor with backoff, or when the feed's
  * request is refused with a 401 while the probe still passes.
  *
- *  - `reconnecting`: an amber strip naming what is happening. The SDK does
- *    not expose the attempt count (its `AttachOptions` has no reconnect
- *    callback yet), so the copy is the state, not a counter.
+ *  - `reconnecting`: an amber strip naming what is happening. The copy is
+ *    the state, not a counter: the SDK's per-watch `AttachOptions.onReconnect`
+ *    reports attempts for ONE watch, while this strip reads the client-wide
+ *    status store, and a single number over several watches would mislead.
  *  - `unauthorized`: a destructive strip, and an IMMEDIATE runtime re-probe
  *    (once per transition) so the provider's own auth-recovery banner — the
  *    one that names the cause class and offers Sign in when OIDC is

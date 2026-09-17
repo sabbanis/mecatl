@@ -27,6 +27,16 @@ For installation and API entry points, see the [TypeScript SDK README](./README.
   `encoding/json` (`{"seconds", "nanos"}` objects) — learning proposals,
   learned skills, dream plans, schedule specs and fires, and session
   snapshots no longer fail with `ProtocolError` against a real daemon.
+- `session.mcpAuthorization(id).recheck()` and `.cancel()` now post with no
+  request body over HTTP; the daemon rejects any body on those controls, so
+  the `{}` the empty request message encoded to failed with HTTP 400.
+- Added `AttachOptions.onReconnect`, an observer called before each watch
+  reconnect attempt with the attempt number and the backoff delay, so a client
+  can show "reconnecting…" state; a throwing listener never breaks the loop.
+- Exported `PLAN_APPROVAL_TOOL` and `PLAN_APPROVED_PROCEED_TEXT` so clients
+  that render plan asks or continuation prompts share the SDK's constants
+  instead of mirroring the daemon's strings.
+
 ## [0.2.0](https://www.npmjs.com/package/%40stacklok-oss%2Fmecatl-sdk/v/0.2.0)
 
 - fix(sdk): align Biome schema version (#1426) ([`ebb14c7`](https://github.com/stacklok/mecatl/commit/ebb14c78823946909a5ec2957d42b485bcef1e96))

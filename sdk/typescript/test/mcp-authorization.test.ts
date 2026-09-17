@@ -18,6 +18,7 @@ interface RecordedRequest {
   readonly body: Record<string, unknown> | undefined;
   readonly method: string;
   readonly path: string;
+  readonly rawBody: BodyInit | null | undefined;
 }
 
 function sse(frames: readonly unknown[]): Response {
@@ -40,7 +41,7 @@ function httpHarness(
       typeof init?.body === "string"
         ? (JSON.parse(init.body) as Record<string, unknown>)
         : undefined;
-    requests.push({ body, method, path: url.pathname });
+    requests.push({ body, method, path: url.pathname, rawBody: init?.body });
     if (url.pathname === "/v1/compatibility") {
       return Response.json({ api_major: 1, features: options.features ?? ["http_steer"] });
     }
@@ -103,7 +104,9 @@ describe("session.mcpAuthorization (HTTP)", () => {
     const outcome = await session.mcpAuthorization(authorizationId).recheck().result();
     expect(outcome.result).toMatchObject({ runId: "run-2", stopReason: "end_turn", text: "done" });
     const recheck = requests.find((request) => request.path.endsWith("/recheck"));
-    expect(recheck?.body).toEqual({});
+    // The daemon rejects any body on the authorization controls (HTTP 400).
+    expect(recheck?.body).toBeUndefined();
+    expect(recheck?.rawBody).toBeUndefined();
     await client.close();
   });
 
@@ -123,9 +126,11 @@ describe("session.mcpAuthorization (HTTP)", () => {
     const session = await client.sessions.get(sessionId);
     const outcome = await session.mcpAuthorization(authorizationId).cancel().result();
     expect(outcome.result).toBeUndefined();
-    expect(
-      requests.some((request) => request.path.endsWith("/cancel") && request.method === "POST"),
-    ).toBe(true);
+    const cancel = requests.find(
+      (request) => request.path.endsWith("/cancel") && request.method === "POST",
+    );
+    expect(cancel).toBeDefined();
+    expect(cancel?.rawBody).toBeUndefined();
     await client.close();
   });
 

@@ -17,25 +17,22 @@
  * harness-framed proceed prompt itself once the plan run ends.
  */
 
+import {
+  PLAN_APPROVAL_TOOL,
+  PLAN_APPROVED_PROCEED_TEXT,
+} from "@stacklok-oss/mecatl-sdk";
+
 import type { AgentMessage } from "./types";
 
 /**
- * The engine's plan-approval signalling tool. Mirrors the SDK's
- * `PLAN_APPROVAL_TOOL` (sdk/typescript/src/plan.ts), which the package entry
- * does not export as a value yet.
+ * The engine's plan-approval signalling tool and the harness-framed prompt
+ * that starts the execution run after an interactively approved plan. Both
+ * are the SDK's own constants (sdk/typescript/src/plan.ts), re-exported so
+ * the feature keeps one import path; the proceed text is byte-identical to
+ * mecatui's `planApprovedProceedText`, so every client starts execution with
+ * the same recorded user turn.
  */
-export const PLAN_APPROVAL_TOOL = "PresentPlan";
-
-/**
- * The harness-framed prompt that starts the execution run after an
- * interactively approved plan. Byte-identical to the SDK's
- * `PLAN_APPROVED_PROCEED_TEXT` (sdk/typescript/src/plan.ts, the
- * MECATL_PLAN_APPROVED_PROCEED_TEXT block) and to mecatui's
- * `planApprovedProceedText`, so every client starts execution with the same
- * recorded user turn.
- */
-export const PLAN_APPROVED_PROCEED_TEXT =
-  "Plan approved by operator. Proceed with execution.";
+export { PLAN_APPROVAL_TOOL, PLAN_APPROVED_PROCEED_TEXT };
 
 /** The run's terminal stop after an approved plan (session.StopPlanApproved). */
 export const STOP_PLAN_APPROVED = "plan_approved";

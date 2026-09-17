@@ -103,6 +103,8 @@ This reference describes the declarations exported by `@stacklok-oss/mecatl-sdk`
 | [`PermissionAskEventPayload`](#api-permissionaskeventpayload-interface) | Interface |
 | [`PermissionAskResponder`](#api-permissionaskresponder-typealias) | Type alias |
 | [`PermissionVerdict`](#api-permissionverdict-typealias) | Type alias |
+| [`PLAN_APPROVAL_TOOL`](#api-plan-approval-tool-variable) | Variable |
+| [`PLAN_APPROVED_PROCEED_TEXT`](#api-plan-approved-proceed-text-variable) | Variable |
 | [`PlanApprovalRequiredError`](#api-planapprovalrequirederror-class) | Class |
 | [`PlanApprovalResponder`](#api-planapprovalresponder-typealias) | Type alias |
 | [`PlanApprovalVerdict`](#api-planapprovalverdict-typealias) | Type alias |
@@ -1046,6 +1048,17 @@ Includes durable records omitted by the high-level view by default.
 
 ```ts
 includeLogOnly?: boolean;
+```
+
+<Heading as="h4" id="api-attachoptions-onreconnect-propertysignature"><code>AttachOptions.onReconnect</code></Heading>
+
+Called before each resumable reconnect attempt (never for the first connection, never after detach) with the 1-based attempt number and the backoff delay about to be waited.
+
+```ts
+onReconnect?: (info: {
+        readonly attempt: number;
+        readonly delayMs: number;
+    }) => void;
 ```
 
 <Heading as="h4" id="api-attachoptions-signal-propertysignature"><code>AttachOptions.signal</code></Heading>
@@ -6879,6 +6892,22 @@ Watch phases this SDK understands.
 
 ```ts
 MECATL_WATCH_PHASES: readonly ["gap", "live", "replay"]
+```
+
+<Heading as="h3" id="api-plan-approval-tool-variable"><code>PLAN_APPROVAL_TOOL</code></Heading>
+
+The daemon's plan-approval tool name: a permission ask for this tool is a plan presented for operator review rather than an ordinary tool call.
+
+```ts
+PLAN_APPROVAL_TOOL = "PresentPlan"
+```
+
+<Heading as="h3" id="api-plan-approved-proceed-text-variable"><code>PLAN_APPROVED_PROCEED_TEXT</code></Heading>
+
+The exact prompt the daemon expects when an approved plan continues into execution; clients that start the continuation themselves must send it verbatim.
+
+```ts
+PLAN_APPROVED_PROCEED_TEXT = "Plan approved by operator. Proceed with execution."
 ```
 
 <Heading as="h3" id="api-serverfeature-variable"><code>ServerFeature</code></Heading>

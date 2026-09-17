@@ -82,6 +82,10 @@ export interface AttachedRun extends SessionActivity {
 export interface AttachOptions {
     from?: "now" | "start" | SdkCursor;
     includeLogOnly?: boolean;
+    onReconnect?: (info: {
+        readonly attempt: number;
+        readonly delayMs: number;
+    }) => void;
     signal?: AbortSignal;
 }
 
@@ -803,6 +807,12 @@ export type PermissionAskResponder = (ask: PermissionAskEventPayload, signal: Ab
 
 // @public
 export type PermissionVerdict = "allow_once" | "allow_always" | "deny";
+
+// @public
+export const PLAN_APPROVAL_TOOL = "PresentPlan";
+
+// @public
+export const PLAN_APPROVED_PROCEED_TEXT = "Plan approved by operator. Proceed with execution.";
 
 // @public
 export class PlanApprovalRequiredError extends InvalidStateError {

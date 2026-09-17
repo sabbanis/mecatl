@@ -164,6 +164,7 @@ export type {
   PlanResolution,
   PlanResolutionResult,
 } from "./plan.js";
+export { PLAN_APPROVAL_TOOL, PLAN_APPROVED_PROCEED_TEXT } from "./plan.js";
 export type { RawClient, RawClientOptions } from "./raw.js";
 export {
   createRawClient,

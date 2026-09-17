@@ -22,7 +22,6 @@ import {
 } from "@stacklok-oss/mecatl-sdk";
 
 import { HarnessApiError } from "./errors";
-import { stripMcpAuthorizationControlBody } from "./mcp-authorization-fetch";
 
 /** The proxy path the SDK's `/v1/...` routes are appended to. */
 const HARNESS_BASE_URL = "/api/mecatl";
@@ -34,11 +33,8 @@ export function getHarnessClient(): Client {
   client ??= connect({
     baseUrl: HARNESS_BASE_URL,
     credentials: "same-origin",
-    // The one request-shaping step between the SDK and the wire: drop the
-    // empty-object body SDK 0.2.0 posts to the MCP authorization controls
-    // (the daemon rejects any body there). See mcp-authorization-fetch.ts.
-    fetch: (input, init) =>
-      globalThis.fetch(input, stripMcpAuthorizationControlBody(input, init)),
+    // Resolved per call, never bound at construction (see the module note).
+    fetch: (input, init) => globalThis.fetch(input, init),
   });
   return client;
 }
