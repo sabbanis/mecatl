@@ -3,7 +3,10 @@
 import {
   Bot,
   Bug,
+  Check,
   ChevronDown,
+  ChevronLeft,
+  ChevronRight,
   ChevronUp,
   Ellipsis,
   FolderClosed,
@@ -365,8 +368,43 @@ function useLongPress(onLongPress: () => void) {
   return { firedRef, handlers };
 }
 
-/** The long-press bottom sheet: the same rename/delete actions as the
- *  hover "…" menu, honoring the daemon row's capabilities and reasons. */
+const SHEET_ROW_CLASS =
+  "flex w-full items-center gap-3 px-4 py-3 text-sm transition-colors hover:bg-muted/50 disabled:opacity-50";
+
+/** One choice in the sheet's folder picker; the chat's current folder (or
+ *  "No folder") carries the check and `aria-current`, the SessionRow idiom. */
+function FolderPickRow({
+  label,
+  current,
+  onPick,
+}: {
+  label: string;
+  current: boolean;
+  onPick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={SHEET_ROW_CLASS}
+      aria-current={current ? "true" : undefined}
+      onClick={onPick}
+    >
+      <Check
+        aria-hidden
+        className={cn(
+          "size-4 shrink-0 text-muted-foreground",
+          !current && "invisible",
+        )}
+      />
+      <span className="min-w-0 flex-1 truncate text-left">{label}</span>
+    </button>
+  );
+}
+
+/** The long-press bottom sheet: the same actions as the hover "…" menu —
+ *  rename/delete honoring the daemon row's capabilities and reasons, and
+ *  "Move to folder", which swaps the sheet to a one-tap folder picker (the
+ *  submenu's folders / "No folder" / "New folder…", with Back). */
 function SessionActionsSheet({
   session,
   actions,
@@ -382,8 +420,76 @@ function SessionActionsSheet({
     actions.onDebug !== undefined &&
     !session.debugTargetSessionId &&
     !isMockTourSession(session.id);
-  const row =
-    "flex w-full items-center gap-3 px-4 py-3 text-sm transition-colors hover:bg-muted/50 disabled:opacity-50";
+  // Folders file real daemon rows only; the mock tour's group is pinned.
+  const folders = isMockTourSession(session.id) ? undefined : actions.folders;
+  const [view, setView] = useState<"actions" | "folders">("actions");
+  const row = SHEET_ROW_CLASS;
+
+  if (view === "folders" && folders) {
+    const current = chatFolderOf(folders.assignments, session.id);
+    const pick = (folderId: string | null) => {
+      onClose();
+      folders.onMove(session.id, folderId);
+    };
+    return (
+      <Sheet
+        open
+        onOpenChange={(open) => {
+          if (!open) onClose();
+        }}
+      >
+        {/* No description: the rows are the whole content (Radix warns
+            about a missing one unless the attribute is cleared). */}
+        <SheetContent
+          side="bottom"
+          className="p-0"
+          aria-describedby={undefined}
+        >
+          <SheetTitle className="sr-only">{MOVE_TO_FOLDER_LABEL}</SheetTitle>
+          <div className="py-2">
+            <div className="flex items-center gap-1 pt-1 pr-4 pb-2 pl-2">
+              <button
+                type="button"
+                aria-label="Back to chat options"
+                className="flex size-8 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground"
+                onClick={() => setView("actions")}
+              >
+                <ChevronLeft className="size-4" />
+              </button>
+              <p className="min-w-0 flex-1 truncate text-sm font-semibold">
+                {MOVE_TO_FOLDER_LABEL}
+              </p>
+            </div>
+            {folders.folders.map((folder) => (
+              <FolderPickRow
+                key={folder.id}
+                label={folder.name}
+                current={current === folder.id}
+                onPick={() => pick(folder.id)}
+              />
+            ))}
+            <FolderPickRow
+              label={NO_FOLDER_LABEL}
+              current={current === null}
+              onPick={() => pick(null)}
+            />
+            <div className="mx-4 my-1 border-t border-border" />
+            <button
+              type="button"
+              className={row}
+              onClick={() => {
+                onClose();
+                folders.onMoveToNew(session.id);
+              }}
+            >
+              <FolderPlus className="size-4 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 text-left">{NEW_FOLDER_LABEL}</span>
+            </button>
+          </div>
+        </SheetContent>
+      </Sheet>
+    );
+  }
 
   return (
     <Sheet
@@ -392,7 +498,7 @@ function SessionActionsSheet({
         if (!open) onClose();
       }}
     >
-      <SheetContent side="bottom" className="p-0">
+      <SheetContent side="bottom" className="p-0" aria-describedby={undefined}>
         <SheetTitle className="sr-only">Chat options</SheetTitle>
         <div className="py-2">
           <p className="truncate px-4 pt-1 pb-2 text-sm font-semibold">
@@ -426,6 +532,19 @@ function SessionActionsSheet({
               onSelect={() => actions.onFork?.(session.id)}
               onDone={onClose}
             />
+          )}
+          {folders && (
+            <button
+              type="button"
+              className={row}
+              onClick={() => setView("folders")}
+            >
+              <FolderInput className="size-4 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 flex-1 text-left">
+                {MOVE_TO_FOLDER_LABEL}
+              </span>
+              <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
+            </button>
           )}
           <button
             type="button"

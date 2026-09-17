@@ -420,3 +420,132 @@ describe("FolderGroupMenu", () => {
     expect(screen.queryByRole("button")).toBeNull();
   });
 });
+
+/**
+ * The touch long-press bottom sheet (phones have no hover "…"): a hold on
+ * the row opens it, and "Move to folder" swaps it to a one-tap picker —
+ * the folders with the current one marked, "No folder", "New folder…" —
+ * so a chat can be filed without a pointer. Hidden without folder actions
+ * and on the mock tour row, exactly like the menu.
+ */
+
+/** A ~450 ms touch hold on the row (mouse pointers never open the sheet). */
+async function openSheet() {
+  const rowButton = screen.getByRole("button", {
+    name: "Open chat: Fix the flaky test",
+  });
+  fireEvent.pointerDown(rowButton, {
+    pointerType: "touch",
+    clientX: 10,
+    clientY: 10,
+  });
+  const sheet = await screen.findByRole("dialog");
+  fireEvent.pointerUp(rowButton, { pointerType: "touch" });
+  return sheet;
+}
+
+describe("SessionActionsSheet Move to folder", () => {
+  it("opens a picker from the sheet with the chat's current folder marked", async () => {
+    render(
+      <SessionList
+        sessions={[session()]}
+        selectedId=""
+        onSelect={() => {}}
+        actions={actions({ folders: folderActions() })}
+      />,
+    );
+    const sheet = await openSheet();
+    expect(within(sheet).getByText("Fix the flaky test")).toBeVisible();
+    fireEvent.click(
+      within(sheet).getByRole("button", { name: MOVE_TO_FOLDER_LABEL }),
+    );
+    expect(
+      screen.getByRole("dialog", { name: MOVE_TO_FOLDER_LABEL }),
+    ).toBeVisible();
+    const marked = (name: string) =>
+      within(sheet).getByRole("button", { name }).getAttribute("aria-current");
+    expect(marked("Work")).toBeNull();
+    expect(marked("Home")).toBe("true");
+    expect(marked(NO_FOLDER_LABEL)).toBeNull();
+    expect(
+      within(sheet).getByRole("button", { name: NEW_FOLDER_LABEL }),
+    ).toBeVisible();
+    // Back returns to the chat's actions without filing anything.
+    fireEvent.click(
+      within(sheet).getByRole("button", { name: "Back to chat options" }),
+    );
+    expect(
+      within(sheet).getByRole("button", { name: MOVE_TO_FOLDER_LABEL }),
+    ).toBeVisible();
+    expect(within(sheet).queryByRole("button", { name: "Home" })).toBeNull();
+  });
+
+  it("files the chat with one tap, closes the sheet, and never opens the chat", async () => {
+    const folders = folderActions();
+    const onSelect = vi.fn();
+    render(
+      <SessionList
+        sessions={[session()]}
+        selectedId=""
+        onSelect={onSelect}
+        actions={actions({ folders })}
+      />,
+    );
+    const toPicker = async () => {
+      const sheet = await openSheet();
+      fireEvent.click(
+        within(sheet).getByRole("button", { name: MOVE_TO_FOLDER_LABEL }),
+      );
+      return sheet;
+    };
+
+    let sheet = await toPicker();
+    fireEvent.click(within(sheet).getByRole("button", { name: "Work" }));
+    expect(folders.onMove).toHaveBeenCalledWith("session-abc", "f-work");
+    expect(screen.queryByRole("dialog")).toBeNull();
+
+    sheet = await toPicker();
+    fireEvent.click(
+      within(sheet).getByRole("button", { name: NO_FOLDER_LABEL }),
+    );
+    expect(folders.onMove).toHaveBeenCalledWith("session-abc", null);
+
+    sheet = await toPicker();
+    fireEvent.click(
+      within(sheet).getByRole("button", { name: NEW_FOLDER_LABEL }),
+    );
+    expect(folders.onMoveToNew).toHaveBeenCalledWith("session-abc");
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(onSelect).not.toHaveBeenCalled();
+  });
+
+  it("offers no Move to folder without folder actions, nor on the mock tour row", async () => {
+    const { unmount } = render(
+      <SessionList
+        sessions={[session()]}
+        selectedId=""
+        onSelect={() => {}}
+        actions={actions()}
+      />,
+    );
+    let sheet = await openSheet();
+    expect(
+      within(sheet).queryByRole("button", { name: MOVE_TO_FOLDER_LABEL }),
+    ).toBeNull();
+    expect(within(sheet).getByRole("button", { name: "Rename" })).toBeVisible();
+    unmount();
+
+    render(
+      <SessionList
+        sessions={[session({ id: MOCK_TOUR_SESSION.id })]}
+        selectedId=""
+        onSelect={() => {}}
+        actions={actions({ folders: folderActions() })}
+      />,
+    );
+    sheet = await openSheet();
+    expect(
+      within(sheet).queryByRole("button", { name: MOVE_TO_FOLDER_LABEL }),
+    ).toBeNull();
+  });
+});
