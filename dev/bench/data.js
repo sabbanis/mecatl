@@ -224010,6 +224010,40 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789651083686,
         "tool": "customBiggerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jakub@stacklok.com",
+            "name": "Jakub Hrozek",
+            "username": "jhrozek"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a74b0f1e7c6d23d87018b35f6c84f8d01294b265",
+          "message": "test(mecatui): use a short perf admin socket path (#1681)\n\nCo-authored-by: mecatl <noreply@mecatl.dev>",
+          "timestamp": "2026-09-17T15:22:20+02:00",
+          "tree_id": "53f1fdf989585d8f65079a9a0ef6ebcccc0978ae",
+          "url": "https://github.com/stacklok/mecatl/commit/a74b0f1e7c6d23d87018b35f6c84f8d01294b265"
+        },
+        "date": 1789651997450,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
       }
     ],
     "mecatl scenarios (render allocs, advisory)": [
@@ -325183,6 +325217,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789651994528,
+  "lastUpdate": 1789651998275,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
