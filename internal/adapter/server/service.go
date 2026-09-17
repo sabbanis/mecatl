@@ -1303,7 +1303,11 @@ type runState struct {
 	// run has settled. It must outlive the run-entry call itself.
 	runContextStop       context.CancelFunc
 	execution            ExecutionRunHandle
+	executionMu          sync.Mutex
+	executionClosed      bool
 	executionRenewCancel context.CancelFunc
+	executionRenewDone   chan struct{}
+	executionTeardown    sync.Once
 	awaiting             atomic.Bool
 	// titleRevision is the last title metadata revision successfully persisted and
 	// published for this run. It starts from the admitted durable snapshot so
@@ -3027,6 +3031,7 @@ func (s *Service) Close() {
 		} else if admissionCancel != nil {
 			admissionCancel()
 		}
+		s.teardownExecution(rs)
 	}
 	s.waitDetachedControlRelays()
 
@@ -3392,10 +3397,14 @@ func (s *Service) ReconcileReferenceIntents(ctx context.Context) {
 			continue
 		}
 		if intent.PendingDelete {
-			err = lifecycle.CancelReferenceIntentDelete(ctx, intent)
-		} else {
-			err = lifecycle.CommitReferenceIntent(ctx, intent)
+			// Presence after an earlier ambiguous delete attempt is not proof that the
+			// attempt had no effect: a delayed commit may still remove this incarnation.
+			// Keep the exact pending intent until absence proves deletion or an explicit
+			// retry obtains a deterministic outcome.
+			retained = true
+			continue
 		}
+		err = lifecycle.CommitReferenceIntent(ctx, intent)
 		if err != nil {
 			retained = true
 		}
@@ -3689,7 +3698,6 @@ func (s *Service) DeleteSession(ctx context.Context, id session.SessionID) error
 			s.closeSessionLocal(id)
 			return nil
 		}
-		s.cancelReferenceDelete(ctx, referenceDelete)
 		if errors.Is(err, port.ErrPruneUnsupported) {
 			return ErrSessionDeleteUnsupported
 		}
@@ -3760,7 +3768,6 @@ func (s *Service) DeleteSessionForRetentionCandidate(ctx context.Context, candid
 	}
 	deleted, err := deleter.DeleteSessionIfUnchanged(ctx, candidate)
 	if err != nil {
-		s.cancelReferenceDelete(ctx, referenceDelete)
 		if errors.Is(err, port.ErrPruneUnsupported) {
 			return ErrSessionDeleteUnsupported
 		}
@@ -3848,7 +3855,6 @@ func (s *Service) DeleteSessionForRetention(ctx context.Context, id session.Sess
 			s.closeSessionLocal(id)
 			return nil
 		}
-		s.cancelReferenceDelete(ctx, referenceDelete)
 		if errors.Is(err, port.ErrPruneUnsupported) {
 			return ErrSessionDeleteUnsupported
 		}
@@ -4710,7 +4716,7 @@ func (s *Service) startRunContent(ctx context.Context, id session.SessionID, tex
 	if registered, ok := s.LookupRun(id); ok {
 		s.mu.Lock()
 		st := s.runs[id]
-		nativeUndrained := st != nil && st.run == registered && st.execution != nil
+		nativeUndrained := st != nil && st.run == registered && s.cfg.ExecutionAccess != nil && s.cfg.ExecutionAccess.Applies(sess.EnvironmentRef)
 		s.mu.Unlock()
 		if !sess.State.IsTerminal() || nativeUndrained {
 			return nil, fmt.Errorf("%w: session %q still has an active or undrained run", ErrFailedPrecondition, id)
@@ -7981,13 +7987,7 @@ func (s *Service) cleanupRunAdmission(id session.SessionID, st *runState, promot
 		return
 	}
 	s.cancelRegisteredRunState(id, st, nil, true)
-	if st.execution != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := st.execution.Release(ctx); err != nil {
-			s.logDiscoveryError(context.Background(), "execution admission rollback failed", err)
-		}
-		cancel()
-	}
+	s.teardownExecution(st)
 	s.removeRunState(id, st)
 }
 
@@ -8082,17 +8082,31 @@ func (s *Service) acquireExecution(ctx context.Context, st *runState, sess *sess
 		_ = handle.Release(context.WithoutCancel(ctx))
 		return tool.Environment{}, ErrInvalidPlacementBinding
 	}
+	st.executionMu.Lock()
+	if st.executionClosed {
+		st.executionMu.Unlock()
+		_ = handle.Release(context.WithoutCancel(ctx))
+		return tool.Environment{}, ErrPlacementUnavailable
+	}
 	st.execution = handle
+	st.executionMu.Unlock()
 	return env, nil
 }
 
 func (s *Service) startExecutionRenewal(_ session.SessionID, st *runState, run *agent.Run) {
-	if st.execution == nil {
+	st.executionMu.Lock()
+	if st.execution == nil || st.executionClosed {
+		st.executionMu.Unlock()
 		return
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	st.executionRenewCancel = cancel
+	st.executionRenewDone = make(chan struct{})
+	done := st.executionRenewDone
+	handle := st.execution
+	st.executionMu.Unlock()
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(20 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -8101,7 +8115,7 @@ func (s *Service) startExecutionRenewal(_ session.SessionID, st *runState, run *
 				return
 			case <-ticker.C:
 				renewCtx, stop := context.WithTimeout(ctx, 10*time.Second)
-				err := st.execution.Renew(renewCtx)
+				err := handle.Renew(renewCtx)
 				stop()
 				if err != nil {
 					s.logDiscoveryError(context.Background(), "execution ownership renewal failed", err)
@@ -8111,6 +8125,33 @@ func (s *Service) startExecutionRenewal(_ session.SessionID, st *runState, run *
 			}
 		}
 	}()
+}
+
+func (s *Service) teardownExecution(st *runState) {
+	if st == nil {
+		return
+	}
+	st.executionTeardown.Do(func() {
+		st.executionMu.Lock()
+		st.executionClosed = true
+		cancelRenew := st.executionRenewCancel
+		done := st.executionRenewDone
+		handle := st.execution
+		st.executionMu.Unlock()
+		if cancelRenew != nil {
+			cancelRenew()
+		}
+		if done != nil {
+			<-done
+		}
+		if handle != nil {
+			releaseCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			if err := handle.Release(releaseCtx); err != nil {
+				s.logDiscoveryError(context.Background(), "execution ownership release failed", err)
+			}
+			cancel()
+		}
+	})
 }
 
 // FinishRun removes run from the in-flight registry for id. It is the EXPORTED
@@ -8132,16 +8173,7 @@ func (s *Service) FinishRun(id session.SessionID, run *agent.Run) {
 	if parked && st.sess != nil {
 		pending, pendingOK = st.sess.PendingAuthorization()
 	}
-	if st.executionRenewCancel != nil {
-		st.executionRenewCancel()
-	}
-	if st.execution != nil {
-		releaseCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := st.execution.Release(releaseCtx); err != nil {
-			s.logDiscoveryError(context.Background(), "execution ownership release failed", err)
-		}
-		cancel()
-	}
+	s.teardownExecution(st)
 	s.removeRunState(id, st)
 	if parked {
 		s.scheduleAuthorizationExpiry(id, pending, pendingOK)
