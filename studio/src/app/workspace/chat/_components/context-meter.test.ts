@@ -1,10 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  contextFallbackLabel,
-  contextUtilisation,
-  meterOccupancy,
-  usageFacets,
-} from "./context-meter";
+import { contextUtilisation, meterOccupancy } from "./context-meter";
 
 /**
  * Pins the context-meter math: the latest turn's input tokens (the context
@@ -48,39 +43,5 @@ describe("meterOccupancy", () => {
     expect(
       meterOccupancy(Number.NaN, { inputTokens: 5, outputTokens: 0 }),
     ).toBe(5);
-  });
-});
-
-describe("contextFallbackLabel", () => {
-  it("renders the bare humanised size when the window is unknown", () => {
-    expect(contextFallbackLabel(42_100)).toBe("ctx 42.1k");
-    expect(contextFallbackLabel(900)).toBe("ctx 900");
-    expect(contextFallbackLabel(-1)).toBe("ctx 0");
-  });
-});
-
-describe("usageFacets", () => {
-  it("renders input/output, the cache-write count when any, and a material hit rate", () => {
-    expect(
-      usageFacets({
-        inputTokens: 12_000,
-        outputTokens: 3_400,
-        cacheReadTokens: 6_000,
-        cacheWriteTokens: 250,
-      }),
-    ).toEqual(["↑12.0k ↓3.4k", "⊕250", "50% cached"]);
-  });
-
-  it("omits the cache facets under their floors and is empty with nothing counted", () => {
-    expect(
-      usageFacets({
-        inputTokens: 1_000,
-        outputTokens: 10,
-        cacheReadTokens: 50,
-        cacheWriteTokens: 0,
-      }),
-    ).toEqual(["↑1.0k ↓10"]);
-    expect(usageFacets({ inputTokens: 0, outputTokens: 0 })).toEqual([]);
-    expect(usageFacets(null)).toEqual([]);
   });
 });

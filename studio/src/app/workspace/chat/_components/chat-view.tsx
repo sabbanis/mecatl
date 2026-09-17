@@ -88,7 +88,6 @@ import {
 } from "@/lib/profile-preferences";
 import type { SessionPermissionMode } from "@/lib/protocol";
 import { useShortcut } from "@/lib/shortcuts/use-shortcuts";
-import { buildStatusFacts } from "@/lib/statusline/facts";
 import {
   composeThreadPrompt,
   getThreadSession,
@@ -125,6 +124,7 @@ import {
   ClearConversationMenuItem,
   ClearConversationSheetItem,
 } from "./clear-conversation-menu-item";
+import { meterOccupancy } from "./context-meter";
 import {
   type DelegationFocus,
   DelegationPanel,
@@ -167,7 +167,6 @@ import {
   SwitchWorktreeMenuItem,
   SwitchWorktreeSheetItem,
 } from "./switch-worktree-menu-item";
-import { TemplatedStatusLine } from "./templated-status-line";
 import { ToolCallPanel } from "./tool-call-panel";
 import {
   CopyTranscriptMenuItem,
@@ -1322,37 +1321,7 @@ export function ChatView({
   // The global Expand details preference (the TUI's ctrl+t): whether tool
   // rows, reasoning summaries and raw error payloads start expanded.
   const { expandDetails, setExpandDetails } = useExpandDetails();
-  // The status-line facts (Settings → Status line): every session, model,
-  // context, usage and runtime fact the header and footer templates may
-  // render, built from this view's props + the runtime status.
   const runtime = useRuntimeStatus();
-  const statusFacts = useMemo(
-    () =>
-      buildStatusFacts({
-        session,
-        mode,
-        isStreaming,
-        awaitingApproval: !!pendingApproval,
-        contextInfo,
-        contextOccupancy,
-        usage,
-        queued: queuedMessages.length,
-        providerRoute,
-        runtime,
-      }),
-    [
-      session,
-      mode,
-      isStreaming,
-      pendingApproval,
-      contextInfo,
-      contextOccupancy,
-      usage,
-      queuedMessages.length,
-      providerRoute,
-      runtime,
-    ],
-  );
   // Every path this conversation's Edit/Write calls touched, first-seen
   // order — the header's "N files" indicator and the changed-files panel.
   const changedFiles = useMemo(
@@ -1775,13 +1744,6 @@ export function ChatView({
           >
             {session.title || "Untitled"}
           </h2>
-          {/* The user's header status line (Settings → Status line): a
-              reserved lane over the session facts, empty until customised. */}
-          <TemplatedStatusLine
-            surface="header"
-            facts={statusFacts}
-            className="hidden max-w-[45%] shrink truncate text-xs text-muted-foreground min-[500px]:block"
-          />
           {/* mecatui's header `mode <x>`: silent on Manual, coloured for
               Plan / Accept edits, "· pending" while a mid-run switch is held. */}
           <PermissionModeBadge
@@ -2135,15 +2097,6 @@ export function ChatView({
                 fleet={fleet}
                 onOpen={(tab) => openDelegationPanel(tab)}
               />
-              {/* The footer status line (Settings → Status line). Its default
-                  template is `{{context_meter}}` — the shipped effective-model
-                  + three-band context meter + usage facets — so the visible
-                  default is unchanged until someone customises it. */}
-              <TemplatedStatusLine
-                surface="footer"
-                facts={statusFacts}
-                className="px-2 text-[11px] text-muted-foreground/80"
-              />
               <QueuedMessageStrip
                 queued={queuedMessages}
                 pendingSteers={pendingSteers}
@@ -2207,6 +2160,14 @@ export function ChatView({
                   draftKey={session.id}
                   escapePress={escapePress}
                   onDraftChange={handleDraftChange}
+                  contextUsage={
+                    contextInfo && contextInfo.contextWindow > 0
+                      ? {
+                          used: meterOccupancy(contextOccupancy, usage),
+                          contextWindow: contextInfo.contextWindow,
+                        }
+                      : null
+                  }
                   mobileDocked
                   modelLockedLabel={
                     live ? session.model || "Auto-routed" : undefined

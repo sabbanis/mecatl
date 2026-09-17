@@ -23,6 +23,7 @@ import {
   TriangleAlert,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ContextPill } from "@/app/workspace/chat/_components/context-meter";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -157,6 +158,9 @@ interface ChatInputProps {
   models?: ComposerModelOption[];
   /** Label for the empty (daemon-picks) entry. */
   autoModelLabel?: string;
+  /** The live chat's context occupancy for the compact pill next to the
+      other controls (bar + percentage only); null/undefined hides it. */
+  contextUsage?: { used: number; contextWindow: number } | null;
   /** Preview an attached file in the canvas panel. */
   onPreviewAttachment?: (file: File) => void;
   disabled?: boolean;
@@ -1687,6 +1691,7 @@ export function ChatInput({
   onLocalCommand,
   builtinGates,
   mediaCapabilities,
+  contextUsage,
   escapePress,
   onDraftChange,
   draftKey,
@@ -2620,6 +2625,13 @@ export function ChatInput({
             {onModeChange && (
               <SafetyLevelSelector
                 disabled={disabled}
+                className={GHOST_TRIGGER_CLASS}
+              />
+            )}
+            {contextUsage && (
+              <ContextPill
+                used={contextUsage.used}
+                contextWindow={contextUsage.contextWindow}
                 className={GHOST_TRIGGER_CLASS}
               />
             )}

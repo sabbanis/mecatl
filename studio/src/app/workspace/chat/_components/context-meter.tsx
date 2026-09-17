@@ -14,16 +14,8 @@
  * current size ("ctx 42.1k") rather than disappearing.
  */
 
-import {
-  type ContextBand,
-  cacheHitRate,
-  contextBand,
-  formatPercent,
-  TURN_STAT_CACHE_FLOOR,
-} from "@/features/agent/turn-stats";
+import { type ContextBand, contextBand } from "@/features/agent/turn-stats";
 import { formatTokens } from "@/lib/formatters";
-import { effortLabel } from "@/lib/reasoning-effort";
-import { contextMeterLabel } from "@/lib/statusline/facts";
 import { cn } from "@/lib/utils";
 
 /** The session-cumulative token figures the facets render. */
@@ -63,73 +55,40 @@ export function meterOccupancy(
   return Math.max(0, usage.inputTokens) + Math.max(0, usage.outputTokens);
 }
 
-/** The bar-less label shown when the context window is unknown. */
-export function contextFallbackLabel(used: number): string {
-  return `ctx ${formatTokens(Math.max(0, used))}`;
-}
-
-/**
- * The cumulative token facets beside the meter: input/output always, the
- * cache-write count when any, and the cache-hit rate once material.
- */
-export function usageFacets(usage?: ContextMeterUsage | null): string[] {
-  if (!usage || usage.inputTokens + usage.outputTokens <= 0) return [];
-  const facets = [
-    `↑${formatTokens(Math.max(0, usage.inputTokens))} ↓${formatTokens(
-      Math.max(0, usage.outputTokens),
-    )}`,
-  ];
-  if ((usage.cacheWriteTokens ?? 0) > 0) {
-    facets.push(`⊕${formatTokens(usage.cacheWriteTokens ?? 0)}`);
-  }
-  const rate = cacheHitRate(usage);
-  if (rate >= TURN_STAT_CACHE_FLOOR)
-    facets.push(`${formatPercent(rate)} cached`);
-  return facets;
-}
-
 const BAND_FILL: Record<ContextBand, string> = {
   ok: "bg-brand/60",
   warn: "bg-warning",
   danger: "bg-destructive",
 };
 
-const OCCUPANCY_TITLE =
-  "Context in use: the tokens the model was sent on its latest turn (system prompt and tool schemas are counted by the daemon) against the model's context window.";
-const FALLBACK_TITLE =
-  "Approximate: the session's cumulative input and output tokens, until a turn reports how much context it used.";
-
 /**
- * The bar + "used / window · N%" pair on its own (the `{{context_bar}}`
- * placeholder of a custom status line), or the bare `ctx 42.1k` when the
- * window is unknown. Hides itself when nothing is counted, like the strip.
+ * The composer bar's context pill: a short bar and the percentage of the
+ * model's context window in use — nothing else (no model name, no token
+ * counts). The exact figures ride the tooltip. Hidden while nothing is
+ * counted or the window is unknown.
  */
-export function ContextMeterBar({
+export function ContextPill({
   used,
   contextWindow,
   className,
 }: {
-  /** The context occupancy (see `meterOccupancy`). */
   used: number;
-  /** The resolved model's context window; <= 0 when unknown. */
   contextWindow: number;
   className?: string;
 }) {
   if (!Number.isFinite(used) || used <= 0) return null;
   const fraction = contextUtilisation(used, contextWindow);
-  if (fraction === null) {
-    return (
-      <span className={cn("whitespace-nowrap tabular-nums", className)}>
-        {contextFallbackLabel(used)}
-      </span>
-    );
-  }
+  if (fraction === null) return null;
   const band = contextBand(fraction);
   const percent = Math.round(fraction * 100);
   return (
-    <span className={cn("inline-flex items-center gap-2", className)}>
+    <span
+      data-testid="context-pill"
+      title={`Context used: ${formatTokens(used)} of ${formatTokens(contextWindow)} tokens (${percent}%)`}
+      className={cn("cursor-default gap-2", className)}
+    >
       <span
-        className="h-1 w-16 shrink-0 overflow-hidden rounded-full bg-border"
+        className="h-1 w-10 shrink-0 overflow-hidden rounded-full bg-border"
         aria-hidden="true"
       >
         <span
@@ -139,71 +98,13 @@ export function ContextMeterBar({
       </span>
       <span
         className={cn(
-          "whitespace-nowrap tabular-nums",
+          "tabular-nums text-muted-foreground",
           band === "warn" && "text-warning",
           band === "danger" && "font-medium text-destructive",
         )}
       >
-        {contextMeterLabel(used, contextWindow)}
-        {band === "danger" && (
-          <>
-            {" "}
-            <span role="img" aria-label="context nearly full">
-              ⚠
-            </span>
-          </>
-        )}
+        {percent}%
       </span>
     </span>
-  );
-}
-
-export function ContextMeter({
-  modelLabel,
-  effort,
-  contextWindow,
-  occupancyTokens,
-  usage,
-  className,
-}: {
-  /** The effective model (resolved_model.model_id); "" when unknown. */
-  modelLabel: string;
-  /** The effective reasoning-effort tier (resolved_model.reasoning_effort);
-   *  "" / absent when the daemon echoes none — then only the model shows. */
-  effort?: string;
-  /** The resolved model's context window; <= 0 when unknown. */
-  contextWindow: number;
-  /** The latest turn's input tokens (turn.end); 0 before any turn this visit. */
-  occupancyTokens: number;
-  /** The session's cumulative usage (daemon figure, or this visit's sum). */
-  usage?: ContextMeterUsage | null;
-  /** Extra root classes (the status-line lane supplies its own padding). */
-  className?: string;
-}) {
-  const used = meterOccupancy(occupancyTokens, usage);
-  // Nothing counted yet: "0%" on a chat whose history the daemon still
-  // carries would be a lie, so stay quiet.
-  if (used <= 0) return null;
-  const facets = usageFacets(usage);
-  return (
-    <div
-      className={cn(
-        "flex items-center gap-2 px-2 text-[11px] text-muted-foreground/80",
-        className,
-      )}
-      title={occupancyTokens > 0 ? OCCUPANCY_TITLE : FALLBACK_TITLE}
-    >
-      {modelLabel && (
-        <span className="truncate font-medium">
-          {effort ? `${modelLabel} · ${effortLabel(effort)}` : modelLabel}
-        </span>
-      )}
-      <ContextMeterBar used={used} contextWindow={contextWindow} />
-      {facets.length > 0 && (
-        <span className="hidden whitespace-nowrap tabular-nums text-muted-foreground/60 sm:inline">
-          {facets.join(" · ")}
-        </span>
-      )}
-    </div>
   );
 }

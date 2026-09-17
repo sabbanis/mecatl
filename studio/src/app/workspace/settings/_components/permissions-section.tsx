@@ -324,6 +324,22 @@ export function PermissionsSection({ runtime }: { runtime: Runtime }) {
               }}
             />
           </SettingsRow>
+          {allowAll && (
+            <p
+              role="note"
+              className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+            >
+              <ShieldAlert
+                aria-hidden="true"
+                className="mt-0.5 size-4 shrink-0"
+              />
+              <span>
+                {view.posture === "yolo"
+                  ? "Yolo removes every safeguard. Only use it on a throwaway machine."
+                  : "Auto lets the agent work without asking, for everyone using it."}
+              </span>
+            </p>
+          )}
 
           <SettingsRow
             label="Trust this project"
@@ -385,23 +401,6 @@ export function PermissionsSection({ runtime }: { runtime: Runtime }) {
             />
           </SettingsRow>
         </div>
-
-        {allowAll && (
-          <p
-            role="note"
-            className="flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
-          >
-            <ShieldAlert
-              aria-hidden="true"
-              className="mt-0.5 size-4 shrink-0"
-            />
-            <span>
-              {view.posture === "yolo"
-                ? "Yolo removes every safeguard. Only use it on a throwaway machine."
-                : "Auto lets the agent work without asking, for everyone using it."}
-            </span>
-          </p>
-        )}
 
         {differenceNote && <Note>{differenceNote}</Note>}
 
