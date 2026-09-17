@@ -245432,6 +245432,45 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789635117848,
         "tool": "customSmallerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jakub@stacklok.com",
+            "name": "Jakub Hrozek",
+            "username": "jhrozek"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fbefea136ef6ba8612c3db8242a512aa0ca11170",
+          "message": "fix(mcp): separate OAuth login and handshake deadlines (#1624)\n\nCo-authored-by: mecatl <noreply@mecatl.dev>",
+          "timestamp": "2026-09-17T11:44:53+02:00",
+          "tree_id": "99642c122dc2edad16e07452765bb419bc6c05b5",
+          "url": "https://github.com/stacklok/mecatl/commit/fbefea136ef6ba8612c3db8242a512aa0ca11170"
+        },
+        "date": 1789638954721,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3283,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 73,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1154,
+            "unit": "allocs/op"
+          }
+        ]
       }
     ],
     "mecatl scenarios (smaller-is-better)": [
@@ -321850,6 +321889,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789638952336,
+  "lastUpdate": 1789638955954,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
