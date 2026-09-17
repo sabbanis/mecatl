@@ -223026,6 +223026,40 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789644853419,
         "tool": "customBiggerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jakub@stacklok.com",
+            "name": "Jakub Hrozek",
+            "username": "jhrozek"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a60ad34b8199ef37c4b705735d844a44167577c0",
+          "message": "fix(providers): honor live custom model input modalities (#1659)\n\nCo-authored-by: mecatl <noreply@mecatl.dev>",
+          "timestamp": "2026-09-17T13:23:48+02:00",
+          "tree_id": "73376014d90e14ea89eb865fda223c3c36a4fb9a",
+          "url": "https://github.com/stacklok/mecatl/commit/a60ad34b8199ef37c4b705735d844a44167577c0"
+        },
+        "date": 1789645551131,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
       }
     ],
     "mecatl scenarios (render allocs, advisory)": [
@@ -323740,6 +323774,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789645547151,
+  "lastUpdate": 1789645551871,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
