@@ -23,6 +23,7 @@ const runtime = vi.hoisted(() => ({
   mode: "external" as "managed" | "external",
   deployment: "staging-eu",
   serverCapabilities: {} as Record<string, unknown>,
+  workspace: "",
 }));
 vi.mock("@/features/agent/runtime-status", () => ({
   useRuntimeStatus: () => runtime,
@@ -47,6 +48,7 @@ beforeEach(() => {
   runtime.mode = "external";
   runtime.deployment = "staging-eu";
   runtime.serverCapabilities = { posture: "trusted" };
+  runtime.workspace = "";
   probe.mockReset();
   probe.mockResolvedValue(OK_PROBE);
   vi.stubEnv("NEXT_PUBLIC_STUDIO_BUILD", "0.1.0+abc1234");
@@ -87,6 +89,33 @@ describe("AboutDaemonCard", () => {
     expect(screen.getByText("staging-eu")).toBeInTheDocument();
     expect(screen.getByTestId("about-posture")).toHaveTextContent("trusted");
     expect(screen.queryByTestId("about-server-identity")).toBeNull();
+  });
+
+  it("adds a Workspace row, in either mode, when the runtime reports a root — and it joins the debug blob", async () => {
+    runtime.workspace = "/workspace/from-deployment";
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    render(<AboutDaemonCard selectedProviderId="openrouter" />);
+    expect(screen.getByTestId("about-workspace")).toHaveTextContent(
+      "/workspace/from-deployment",
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("about-server-build")).toHaveTextContent(
+        "fixture",
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Copy debug info" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    const lines = String(writeText.mock.calls[0]?.[0]).split("\n");
+    // Right after the server mode, before the daemon's identity rows.
+    expect(lines.slice(0, 3)).toEqual([
+      "Studio: 0.1.0+abc1234",
+      "Server mode: external",
+      "Workspace: /workspace/from-deployment",
+    ]);
   });
 
   it("stays rendered against an older daemon, naming the missing route", async () => {

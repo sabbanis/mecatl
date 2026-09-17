@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   fetchHarnessCompatibility,
   fetchHarnessUserModel,
+  fetchHarnessUserModelEntry,
   listHarnessAgents,
   listHarnessCommands,
   listHarnessModelInventory,
@@ -298,16 +299,25 @@ describe("listHarnessAgents / listHarnessSkills", () => {
 });
 
 describe("fetchHarnessUserModel", () => {
-  it("reads the index only (keys + descriptions) and the byte size", async () => {
+  it("reads the index (keys + descriptions), the byte size and the digest", async () => {
     const stub = stubHarnessFetch(() => ({
       entries: [{ key: "editor", description: "Prefers vim" }],
       size_bytes: 42,
+      sha256: "a".repeat(64),
     }));
     const model = await fetchHarnessUserModel();
+    // The index read is key-less: no `?key=` reaches the daemon.
     expect(stub.last().url).toBe("/api/mecatl/v1/usermodel");
     expect(model).toEqual({
       entries: [{ key: "editor", description: "Prefers vim" }],
       sizeBytes: 42,
+      sha256: "a".repeat(64),
+    });
+  });
+
+  it('folds a daemon that sends no digest into sha256 ""', async () => {
+    stubHarnessFetch(() => ({ entries: [], size_bytes: 0 }));
+    await expect(fetchHarnessUserModel()).resolves.toMatchObject({
       sha256: "",
     });
   });
@@ -320,6 +330,109 @@ describe("fetchHarnessUserModel", () => {
       }),
     );
     await expect(fetchHarnessUserModel()).rejects.toMatchObject({
+      name: "HarnessApiError",
+      code: "unimplemented",
+      status: 501,
+    });
+  });
+});
+
+describe("fetchHarnessUserModelEntry", () => {
+  const wireRevision = {
+    key: "editor config",
+    value: "Tabs, width 4",
+    description: "Prefers tabs",
+    version: "3",
+    status: "active",
+    writer: "agent",
+    origin: "reflection",
+    source_session_id: "s-1",
+    source_proposal_id: "p-9",
+    updated_at: { seconds: 1_755_000_000 },
+  };
+
+  it("sends the key as `?key=` and decodes current, history and history_available", async () => {
+    const stub = stubHarnessFetch(() => ({
+      entries: [{ key: "editor config", description: "Prefers tabs" }],
+      size_bytes: 42,
+      sha256: "b".repeat(64),
+      detail: {
+        current: wireRevision,
+        history: [
+          {
+            version: "2",
+            status: "superseded",
+            updated_at: { seconds: 1_754_000_000 },
+          },
+        ],
+        history_available: true,
+      },
+    }));
+    const detail = await fetchHarnessUserModelEntry("editor config");
+    // URLSearchParams encoding: the space becomes `+`, the key rides the query.
+    expect(stub.last().url).toBe("/api/mecatl/v1/usermodel?key=editor+config");
+    expect(detail).toEqual({
+      current: {
+        key: "editor config",
+        value: "Tabs, width 4",
+        description: "Prefers tabs",
+        version: "3",
+        status: "active",
+        writer: "agent",
+        origin: "reflection",
+        sourceSessionId: "s-1",
+        sourceProposalId: "p-9",
+        updatedAtUnix: 1_755_000_000,
+      },
+      history: [
+        {
+          key: "",
+          value: "",
+          description: "",
+          version: "2",
+          status: "superseded",
+          writer: "",
+          origin: "",
+          sourceSessionId: "",
+          sourceProposalId: "",
+          updatedAtUnix: 1_754_000_000,
+        },
+      ],
+      historyAvailable: true,
+    });
+  });
+
+  it("reports history_available=false honestly (legacy store) with an unset timestamp as 0", async () => {
+    stubHarnessFetch(() => ({
+      entries: [],
+      detail: {
+        current: { ...wireRevision, updated_at: undefined },
+        history: [],
+        history_available: false,
+      },
+    }));
+    const detail = await fetchHarnessUserModelEntry("editor config");
+    expect(detail?.historyAvailable).toBe(false);
+    expect(detail?.history).toEqual([]);
+    expect(detail?.current.updatedAtUnix).toBe(0);
+  });
+
+  it("resolves null when the daemon answers without `detail` (the key no longer matches)", async () => {
+    stubHarnessFetch(() => ({
+      entries: [{ key: "other", description: "x" }],
+      size_bytes: 1,
+    }));
+    await expect(fetchHarnessUserModelEntry("gone")).resolves.toBeNull();
+  });
+
+  it("surfaces --no-user-model as the same typed error the index read throws", async () => {
+    stubHarnessFetch(() =>
+      jsonResponse(501, {
+        code: "unimplemented",
+        error: "user model is disabled",
+      }),
+    );
+    await expect(fetchHarnessUserModelEntry("editor")).rejects.toMatchObject({
       name: "HarnessApiError",
       code: "unimplemented",
       status: 501,

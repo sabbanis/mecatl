@@ -77,6 +77,11 @@ export interface HarnessControlStatus {
   authFile: string;
   /** The controller's workspace label — display only (Studio rule 2). */
   workspace: string;
+  /** The root the managed controller falls back to (the monorepo), so the
+   *  Workspace card can say when the live root differs and offer "Reset to
+   *  default". Absent in external mode and against an older controller.
+   *  Display only, like `workspace`. */
+  defaultWorkspace?: string;
   /**
    * The SAVED permissions the managed daemon was spawned with (operator
    * posture, project trust, shell-less mode — CLI flags, never a
@@ -184,6 +189,7 @@ export async function fetchHarnessControlStatus(
       selectedProvider?: string | null;
       authFile?: string;
       workspace?: string;
+      defaultWorkspace?: string;
       permissions?: unknown;
       trust?: unknown;
       storage?: unknown;
@@ -232,6 +238,10 @@ export async function fetchHarnessControlStatus(
       skillsDir: body.skills?.dir ?? "",
       memoryDir: body.memory?.dir ?? "",
       workspace: typeof body.workspace === "string" ? body.workspace : "",
+      defaultWorkspace:
+        typeof body.defaultWorkspace === "string"
+          ? body.defaultWorkspace
+          : undefined,
       permissions: readPermissions(body.permissions),
       trust: readTrustState(body.trust),
       storage: readStorageState(body.storage),
@@ -287,6 +297,24 @@ export async function saveHarnessPermissions(
       trustProject: config.trustProject,
       noShell: config.noShell,
     }),
+  });
+  if (!response.ok) throw await apiError(response);
+}
+
+/**
+ * Points the managed daemon at another workspace root — the TUI's
+ * `--workspace` deployment choice (Settings → Workspace). RESTARTS the
+ * daemon against `path`; the controller validates it on ITS filesystem
+ * (absolute, exists, a directory, not Studio's state dir) and a start
+ * mecated refuses is rolled back there and surfaces here as the thrown
+ * error. The path is a controller-side operator setting — it is never a
+ * session placement input (Studio rule 2).
+ */
+export async function saveHarnessWorkspace(path: string): Promise<void> {
+  const response = await fetch(`${CONTROL_API}/workspace`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path }),
   });
   if (!response.ok) throw await apiError(response);
 }

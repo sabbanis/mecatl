@@ -368,7 +368,7 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     id: "composer.slash",
     combo: "/",
     description:
-      "Slash commands — built-ins (/clear /help /session /retry /diagnostics /compact) and workspace commands",
+      "Slash commands — Studio built-ins (/clear /help /session /retry /compact /mcp /models /skills …, capability-gated) and this chat's workspace commands",
     group: "Composer",
     fixed: true,
   },

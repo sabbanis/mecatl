@@ -444,6 +444,10 @@ test("external mode injects daemon auth server-side and disables local controls"
     // The session-store location / in-memory switch is a spawn flag of the
     // MANAGED daemon too.
     ["storage", "POST"],
+    // As is the workspace root the MANAGED daemon is spawned against
+    // (--workspace): the external deployment chose its own, and Studio
+    // only ever shows the MECATL_WORKSPACE label for it.
+    ["workspace", "POST"],
     // As are its retention limits / sweep cadence / main-deletion
     // acknowledgement.
     ["retention", "POST"],
@@ -813,6 +817,10 @@ test("controller policy rejects CSRF and DNS-rebinding requests", () => {
     // The session-store write relocates (or drops) the daemon's persistence;
     // another loopback-origin page must not be able to do that.
     ["POST", "/storage"],
+    // The workspace-root write points mecated at ANY directory on the
+    // operator's machine and restarts it there; another loopback-origin
+    // page must never be able to do that.
+    ["POST", "/workspace"],
     // The retention write can switch on automatic deletion of the user's
     // own chats; another loopback-origin page must never reach it.
     ["POST", "/retention"],

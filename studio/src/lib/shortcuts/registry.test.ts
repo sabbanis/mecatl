@@ -310,6 +310,21 @@ describe("shortcut registry", () => {
     }
   });
 
+  it("documents the `/` palette as Studio built-ins plus the chat's workspace commands", () => {
+    const def = SHORTCUTS.find((s) => s.id === "composer.slash");
+    expect(def?.combo).toBe("/");
+    expect(def?.group).toBe("Composer");
+    expect(def?.fixed).toBe(true);
+    // Both layers are named, and the capability gate is stated so the
+    // reference does not promise a row the daemon may hide.
+    expect(def?.description).toMatch(/built-ins/);
+    expect(def?.description).toMatch(/workspace commands/);
+    expect(def?.description).toMatch(/capability-gated/);
+    for (const name of ["/clear", "/help", "/session", "/mcp", "/models"]) {
+      expect(def?.description).toContain(name);
+    }
+  });
+
   it("documents the permission-mode cycle as a fixed ⇧Tab composer row (the TUI's shift+tab)", () => {
     const def = SHORTCUTS.find((s) => s.id === "composer.mode.cycle");
     expect(def?.combo).toBe("shift+tab");

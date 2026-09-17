@@ -96,11 +96,18 @@ import {
 } from "../src/lib/runtime-settings.mjs";
 import {
   normalizeStorageSettings,
-  resolveStoreDir,
-  storageArgs,
   storageDefaultsFromEnv,
   storageStatus,
 } from "../src/lib/storage-settings.mjs";
+import {
+  memoryDirFor,
+  normalizeWorkspaceConfig,
+  skillsDirFor,
+  storageArgsFor,
+  storeDirFor,
+  validateWorkspacePath,
+  WORKSPACE_STATE_FILE,
+} from "../src/lib/workspace-config.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 // Studio is a module INSIDE the mecatl monorepo, so the harness it drives is
@@ -108,8 +115,16 @@ const here = dirname(fileURLToPath(import.meta.url));
 // `bin/mecated` (built by `task build`), and the cwd every run inherits.
 const mecatlDir = resolve(here, "../..");
 const binary = resolve(mecatlDir, "bin/mecated");
-const workspace = mecatlDir;
+// The DEFAULT workspace root. The LIVE root below is reassignable at runtime
+// through POST /workspace (Settings → Workspace) — the web analogue of the
+// TUI's `--workspace` deployment choice — and applyWorkspace re-derives
+// every root-dependent directory, so the existing readers of these
+// bindings need no per-site change. A saved root lives in
+// studio-workspace.json; the default writes no file.
+const defaultWorkspace = mecatlDir;
+let workspace = defaultWorkspace;
 const studioStateDir = resolve(here, "../.scratch");
+const workspaceStateFile = resolve(studioStateDir, WORKSPACE_STATE_FILE);
 const operatorSettingsFile = resolve(studioStateDir, "operator-settings.yaml");
 const routerSettingsFile = resolve(
   studioStateDir,
@@ -159,18 +174,36 @@ const diagnosticsOptionsFile = resolve(
 // does, so discovery is deliberately pinned to the workspace and we never pass
 // --skills-conventional (which would also pull in ~/.claude/skills and the
 // user-global mecatl dir — a much wider trust surface than this app should open).
-const skillsDir = resolve(workspace, ".mecatl/skills");
+let skillsDir = skillsDirFor(workspace);
 // Disabled skills are MOVED into a holding area inside the pinned skills dir,
 // not deleted and not flagged: mecated's discovery walks only the direct
 // children of --skills-dir looking for <name>/SKILL.md, so a nested dir is
 // invisible to it, and the skill-name grammar forbids a leading dot, so
 // `.disabled` can never collide with a real skill.
-const disabledSkillsDir = resolve(skillsDir, ".disabled");
+let disabledSkillsDir = resolve(skillsDir, ".disabled");
 // Per-project memory (the Remember/Recall/SearchMemory tools) is OFF in mecated
 // until --memory-dir is passed, unlike the user model which is on by default. The
 // store is per-project by design, so it lives beside the session store rather than
 // in a shared location. Consolidation stays off: it spends tokens in the background.
-const memoryDir = resolve(workspace, ".scratch/studio-memory");
+// A NON-default root keys its memory (and its session store) by a hash of
+// its path UNDER THE DEFAULT ROOT's .scratch (src/lib/workspace-config.mjs):
+// per-root, but never sprouting state inside a foreign repo.
+let memoryDir = memoryDirFor(workspace, defaultWorkspace);
+
+/**
+ * Points the LIVE root at `root` and re-derives every root-dependent
+ * directory: project skills follow the root (the one directory the
+ * controller creates inside it), memory and the session store are keyed
+ * per root under the default root's .scratch. The trust registry and the
+ * spawn flags read `workspace` at spawn time, so the next startMecatl
+ * picks the new root up with no further plumbing.
+ */
+function applyWorkspace(root) {
+  workspace = root;
+  skillsDir = skillsDirFor(root);
+  disabledSkillsDir = resolve(skillsDir, ".disabled");
+  memoryDir = memoryDirFor(root, defaultWorkspace);
+}
 // mecated's user-global config directory (XDG). The daemon defaults'
 // `apiKeyFile` is confined to it: the controller reads AND rewrites the
 // credentials file for the provider inventory/removal routes, so a
@@ -199,7 +232,8 @@ const userSettingsFile = process.env.XDG_CONFIG_HOME
 // an unconstrained path would turn the browser into a file-read oracle over
 // anything the daemon's user can read (auth.yaml, SSH keys).
 const userSoulFile = resolve(mecatlConfigDir, "soul.md");
-const soulFileRoots = [mecatlConfigDir, workspace];
+// A function, not a frozen array: the live root can change (POST /workspace).
+const soulFileRoots = () => [mecatlConfigDir, workspace];
 // mecated's --ready-file target: the atomically-published mecated-ready/1
 // document carrying the RESOLVED listener addresses (the daemon binds
 // 127.0.0.1:0 and reports what the kernel picked), pid, api_major, features,
@@ -668,6 +702,22 @@ let adminAddr = "";
 // modelRouterConfig, so a failed restart can roll back to "no file".
 let storageSettings = null;
 const effectiveStorage = () => storageSettings ?? storageDefaults;
+// The `/status.storage` projection against the LIVE root: the saved
+// document resolves as storageStatus always did, but `dir`/`defaultDir`
+// are the PER-ROOT directories the spawn actually uses (byte-identical for
+// the default root; `-<rootKey>`-suffixed under the default root's .scratch
+// for any other) — so the Storage card shows the path the daemon has.
+const currentStorageStatus = () => {
+  const settings = effectiveStorage();
+  return {
+    ...storageStatus(settings, defaultWorkspace, storageDefaults),
+    dir:
+      settings.persistence === "durable"
+        ? storeDirFor(settings, workspace, defaultWorkspace)
+        : "",
+    defaultDir: storeDirFor(storageDefaults, workspace, defaultWorkspace),
+  };
+};
 // The SAVED retention document (POST /retention), or null while mecated's
 // own defaults apply (no flags passed) — the same null-means-unsaved shape
 // as storageSettings, so a failed restart can roll back to "no file".
@@ -1129,7 +1179,7 @@ async function loadRuntimeSettings() {
 async function validateSoulFile(path) {
   const bad = (message) =>
     Object.assign(new Error(message), { statusCode: 400 });
-  if (!soulFileWithinRoots(path, soulFileRoots))
+  if (!soulFileWithinRoots(path, soulFileRoots()))
     throw bad(
       `soul.file must be inside ${mecatlConfigDir} or the workspace ${workspace}`,
     );
@@ -1147,7 +1197,7 @@ async function validateSoulFile(path) {
     );
   const real = await realpath(path).catch(() => "");
   const realRoots = await Promise.all(
-    soulFileRoots.map((root) => realpath(root).catch(() => root)),
+    soulFileRoots().map((root) => realpath(root).catch(() => root)),
   );
   if (!real || !soulFileWithinRoots(real, realRoots))
     throw bad("soul.file resolves outside the allowed directories");
@@ -1451,6 +1501,56 @@ async function loadStorageSettings() {
   }
 }
 
+/** The saved workspace root: atomic (tmp + rename), owner-only. The DEFAULT
+ *  root writes no file — the state dir stays clean until a root is chosen,
+ *  and a rollback to the default removes the document again. */
+async function persistWorkspace(root) {
+  if (root === defaultWorkspace) {
+    await rm(workspaceStateFile, { force: true });
+    return;
+  }
+  await mkdir(studioStateDir, { recursive: true, mode: 0o700 });
+  const temp = `${workspaceStateFile}.tmp`;
+  await writeFile(temp, `${JSON.stringify({ workspace: root }, null, 2)}\n`, {
+    mode: 0o600,
+  });
+  await rename(temp, workspaceStateFile);
+}
+
+/** The saved workspace root, or the default when none was saved. A corrupt
+ *  document falls back to the default (normalizeWorkspaceConfig); a saved
+ *  root that no longer exists / is no longer a directory is logged and
+ *  ALSO falls back — mecated would otherwise fail every start against it. */
+async function loadWorkspace() {
+  let saved;
+  try {
+    saved = normalizeWorkspaceConfig(
+      JSON.parse(await readFile(workspaceStateFile, "utf8")),
+      defaultWorkspace,
+    ).workspace;
+  } catch (error) {
+    if (error?.code !== "ENOENT")
+      process.stderr.write(
+        `[workspace] saved root ignored: ${error.message || error}\n`,
+      );
+    return defaultWorkspace;
+  }
+  if (saved === defaultWorkspace) return defaultWorkspace;
+  try {
+    return await validateWorkspacePath(saved, {
+      realpath,
+      stat,
+      defaultWorkspace,
+      forbidden: [studioStateDir],
+    });
+  } catch (error) {
+    process.stderr.write(
+      `[workspace] saved root ${saved} ignored, using the default: ${error.message || error}\n`,
+    );
+    return defaultWorkspace;
+  }
+}
+
 /** Atomic (tmp + rename), owner-only. Spawn flags — no settings.yaml key. */
 async function persistRetentionSettings(config) {
   await mkdir(studioStateDir, { recursive: true, mode: 0o700 });
@@ -1741,14 +1841,22 @@ async function startMecatl(kind, { adminRetry = false } = {}) {
   // (mecated has no --no-store; an empty --store-dir IS the in-memory store).
   // A path mkdir refuses fails this start, which the POST /storage rollback
   // turns into the 400 body and a restart on the previous document.
+  //
+  // Both are PER-ROOT (src/lib/workspace-config.mjs): a non-default root's
+  // store is `<default>/.scratch/studio-sessions-<rootKey>` — a session is
+  // bound to the placement it was created in (ADR 0291), so a shared store
+  // would list chats that cannot run — and the default root keeps the
+  // historical path byte for byte.
   const storage = effectiveStorage();
   if (storage.persistence === "durable")
-    await mkdir(resolveStoreDir(storage, workspace), { recursive: true });
+    await mkdir(storeDirFor(storage, workspace, defaultWorkspace), {
+      recursive: true,
+    });
   const args = [
     "serve",
     "--workspace",
     workspace,
-    ...storageArgs(storage, workspace),
+    ...storageArgsFor(storage, workspace, defaultWorkspace),
     "--grpc-addr",
     "127.0.0.1:0",
     // An ephemeral HTTP port: the kernel picks it at bind(2) time and the
@@ -2318,9 +2426,11 @@ const server = http.createServer(async (request, response) => {
         // now, if any.
         configuredProviders,
         selectedProvider: activeProviderOverride,
-        // The client has no other way to learn this: it is resolved from THIS
-        // file's location, so a clone anywhere works with no source edit.
+        // The LIVE workspace root the daemon was spawned against (a display
+        // label in the browser, never a placement input — Studio rule 2)
+        // and the default it falls back to; POST /workspace changes it.
         workspace,
+        defaultWorkspace,
         gateway: gateway ? { name: gateway.name, url: gateway.url } : null,
         toolhiveGateway: {
           available: toolhiveReady,
@@ -2363,7 +2473,7 @@ const server = http.createServer(async (request, response) => {
         // The session store the daemon was spawned with: durable dir
         // (resolved) or in-memory, plus the default the form falls back to.
         // Paths only — the store's CONTENTS never cross here.
-        storage: storageStatus(effectiveStorage(), workspace, storageDefaults),
+        storage: currentStorageStatus(),
         // The retention flags the daemon was spawned with (or that mecated's
         // defaults apply) and who manages them. The EFFECTIVE policy is the
         // daemon's own GET /v1/storage/health.
@@ -3578,20 +3688,95 @@ const server = http.createServer(async (request, response) => {
         }
       });
       response.end(
-        JSON.stringify({
-          ok: true,
-          storage: storageStatus(
-            effectiveStorage(),
-            workspace,
-            storageDefaults,
-          ),
-        }),
+        JSON.stringify({ ok: true, storage: currentStorageStatus() }),
       );
     } catch (error) {
       jsonError(
         response,
         error.statusCode || 400,
         error.message || "Could not update the session store",
+      );
+    }
+    return;
+  }
+  // Workspace root: POST /workspace { path } — the TUI's `--workspace`
+  // deployment choice, made from Settings → Workspace. Header-gated like
+  // every write (a loopback-origin page must never point mecated at a
+  // directory of its choosing). The path is validated on the controller's
+  // own filesystem (absolute, exists, a directory, not Studio's state dir;
+  // src/lib/workspace-config.mjs) and the daemon restarts against it. A
+  // start the new root makes mecated refuse rolls the previous root back,
+  // restarts on it, and surfaces the failure as the 400 body.
+  //
+  // Trust does NOT travel with the root: a REMEMBERED grant was given for
+  // the previous root's instruction files (its anchor is a content hash,
+  // so two authority-less roots would otherwise read as the same grant),
+  // and the this-process "trust once" likewise — both are withdrawn on a
+  // change, and the new root's banner asks again if it carries authority.
+  // /status.workspace is the read half; the same-root save is a no-op.
+  if (request.method === "POST" && requestURL.pathname === "/workspace") {
+    try {
+      if (
+        !String(request.headers["content-type"] || "")
+          .toLowerCase()
+          .startsWith("application/json")
+      )
+        throw Object.assign(
+          new Error("Content-Type must be application/json"),
+          { statusCode: 415 },
+        );
+      const body = JSON.parse(
+        (await readBody(request, 16_384)).toString("utf8"),
+      );
+      const next = await validateWorkspacePath(body?.path, {
+        realpath,
+        stat,
+        defaultWorkspace,
+        forbidden: [studioStateDir],
+      });
+      let changed = false;
+      if (next !== workspace) {
+        await queueRestart(async () => {
+          const previous = workspace;
+          const previousPermissions = permissionsConfig;
+          const previousTrustOnce = trustOnce;
+          applyWorkspace(next);
+          await persistWorkspace(next);
+          trustOnce = false;
+          if (permissionsConfig.trustProject) {
+            permissionsConfig = {
+              ...permissionsConfig,
+              trustProject: false,
+              trustAnchor: "",
+            };
+            await persistPermissions(permissionsConfig);
+          }
+          try {
+            await startMecatl(preferredKind());
+            changed = true;
+          } catch (error) {
+            applyWorkspace(previous);
+            await persistWorkspace(previous);
+            trustOnce = previousTrustOnce;
+            if (permissionsConfig !== previousPermissions) {
+              permissionsConfig = previousPermissions;
+              await persistPermissions(permissionsConfig);
+            }
+            await startMecatl(preferredKind());
+            throw new Error(
+              `${error.message || error} (previous workspace root restored)`,
+            );
+          }
+        });
+      }
+      response.end(
+        JSON.stringify({ ok: true, changed, workspace, defaultWorkspace }),
+      );
+    } catch (error) {
+      jsonError(
+        response,
+        error.statusCode || 400,
+        error.message || "Could not change the workspace root",
       );
     }
     return;
@@ -3917,6 +4102,9 @@ server.listen(8788, "127.0.0.1", async () => {
   permissionsConfig = await loadPermissions();
   diagnosticsOptions = await loadDiagnosticsOptions();
   storageSettings = await loadStorageSettings();
+  // The saved root (or the default) BEFORE the first spawn: the spawn
+  // flags, the trust probes and the derived directories all read it.
+  applyWorkspace(await loadWorkspace());
   retentionSettings = await loadRetentionSettings();
   applyDaemonDefaults(await loadDaemonDefaults());
   toolhiveReady = await detectToolhiveGateway();

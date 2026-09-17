@@ -10,7 +10,7 @@ chats).
 Run through the root Taskfile, not bare npm:
 
 ```sh
-task build          # repo root first — studio's managed mode spawns ../bin/mecated
+task build          # repo root first — studio's managed mode spawns ../bin/mecated against the configured root (default: the repo; Settings → Workspace)
 task studio:dev     # start Studio + its mecated supervisor (background; logs in studio/dev.log)
 task studio:stop    # stop web server + controller + the mecated it supervises
 task studio:test    # vitest run + the hermetic server-tier suite (builds first)
@@ -101,7 +101,21 @@ Each rule is backed by a test; break the rule and its test names you.
    proxy forwards create bodies verbatim — no `workspace` injection into
    session/team/schedule creation, no `?workspace=` on `/v1/commands` (it is
    keyed by `session_id`). `MECATL_WORKSPACE` (external) and the controller's
-   `/status` `workspace` are display-only labels. The one placement CHOICE
+   `/status` `workspace` are display-only labels in the browser: the latter
+   is the spawn root the MANAGED controller owns (the TUI's `--workspace`),
+   changeable from Settings → Workspace via the header-gated
+   `POST /workspace` — validated on the controller's OWN filesystem
+   (`src/lib/workspace-config.mjs`: absolute, exists, a directory, not the
+   state dir), persisted in `studio-workspace.json`, a restart; a non-default
+   root gets its OWN session store and memory dir keyed by a path hash UNDER
+   the default root's `.scratch` (chats belong to their root and reappear
+   when you switch back; a foreign repo gains only `.mecatl/skills`), and a
+   change withdraws the remembered/once project-trust grants. `/status` also
+   carries `defaultWorkspace`; the About card shows a `Workspace` row in
+   both modes. It is never sent to the daemon as a placement.
+   (`workspace-config.test.ts`, `client-status.test.ts`,
+   `workspace-section.test.tsx`, `about-daemon-card.test.tsx`, hermetic 409
+   + header-gate rows.) The one placement CHOICE
    Studio offers — "Switch worktree…" in the chat menu
    (`worktree-picker-dialog.tsx`) — travels as the daemon's OPAQUE
    `worktree_selector` from `GET /v1/worktrees?session_id=`, on ClearSession
@@ -422,6 +436,20 @@ Each rule is backed by a test; break the rule and its test names you.
     (`offline-cause.test.ts`, `sdk-auth-errors.test.ts`,
     `auth-recovery-banner.test.tsx`, `runtime-status.auth.test.tsx`,
     `use-agent-chat.auth-failure.test.ts`, hermetic 401 relay row.)
+22. **The healthy connection is stated, never inferred.** The top nav's
+    `connection-indicator.tsx` (mecatui's "connected" status line) always
+    renders — a dot plus "Connected" / "Connecting…" / "Offline" /
+    "Sign in required" / "Credential rejected", the offline label named
+    by `offlineCause.kind` (`describeConnection`) — inside a
+    `role="status"` live region so the flip is announced. It adds no probe:
+    everything reads off `RuntimeStatusProvider`, so it can never disagree
+    with the banners. The tooltip lists the facts that poll already holds
+    (managed `mecated` vs an external daemon; the provider in managed mode
+    only — the external control status is a stub — with the offline mock
+    flagged; the deployment label; `Posture: <tier>` when the compatibility
+    document carries one), omitting every empty value. The pill links to
+    Settings → Diagnostics. (`connection-indicator.test.tsx`, the
+    Playwright connected-indicator test.)
 
 ## Gotchas
 

@@ -251,15 +251,18 @@ describe("local-controller spawn", () => {
     expect(source).not.toMatch(/["'`]\.scratch\/studio-sessions["'`]/);
   });
 
-  it("spreads storageArgs over the effective document into the mecated args, right after --workspace", () => {
+  it("spreads the per-root storage args over the effective document into the mecated args, right after --workspace", () => {
+    // storageArgsFor (src/lib/workspace-config.mjs) wraps storageArgs'
+    // grammar with the per-root store directory: byte-identical for the
+    // default root, `-<rootKey>`-suffixed for a chosen one.
     expect(source).toMatch(
-      /"--workspace",\s*workspace,\s*\.\.\.storageArgs\(storage, workspace\),/,
+      /"--workspace",\s*workspace,\s*\.\.\.storageArgsFor\(storage, workspace, defaultWorkspace\),/,
     );
   });
 
   it("creates the durable directory before the spawn and loads the saved document before the first start", () => {
     expect(source).toMatch(
-      /if \(storage\.persistence === "durable"\)\s*await mkdir\(resolveStoreDir\(storage, workspace\), \{ recursive: true \}\)/,
+      /if \(storage\.persistence === "durable"\)\s*await mkdir\(storeDirFor\(storage, workspace, defaultWorkspace\), \{\s*recursive: true,?\s*\}\)/,
     );
     expect(source).toMatch(/storageSettings = await loadStorageSettings\(\);/);
     expect(source).toMatch(/requestURL\.pathname === "\/storage"/);

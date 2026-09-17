@@ -39,6 +39,8 @@ describe("slash command layers", () => {
 
     const merged = getAllSlashCommands({ manualCompaction: true });
     const names = merged.map((command) => command.name);
+    // No capability document: the always-present built-ins only (the
+    // capability-gated set is hidden fail-closed), then the daemon's list.
     expect(names).toEqual([
       "clear",
       "help",
@@ -46,6 +48,8 @@ describe("slash command layers", () => {
       "retry",
       "diagnostics",
       "compact",
+      "title",
+      "learning",
       "review",
     ]);
     expect(merged.find((c) => c.name === "diagnostics")?.builtin).toBe(true);

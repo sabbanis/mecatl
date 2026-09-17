@@ -6,11 +6,13 @@ import { useAgentAvatar, useAgentDisplayName } from "@/lib/profile-preferences";
 import { AvatarPicker } from "../_components/avatar-picker";
 import { RuntimeBehaviourSection } from "../_components/runtime-behaviour-section";
 import { SettingsCard, SettingsRow } from "../_components/settings-card";
+import { SoulSection } from "../_components/soul-section";
 
 /**
  * The agent's cosmetic identity — display name and picture, browser-local
  * (no daemon concept of either). The picture replaces the default bot mark
- * in chat.
+ * in chat. Below it, the DAEMON-side agent: its runtime behaviour and the
+ * persona (soul) it injects as turn-0 context.
  */
 export default function AgentSettingsPage() {
   const { name, setName, defaultName } = useAgentDisplayName();
@@ -51,6 +53,10 @@ export default function AgentSettingsPage() {
           of the steer opt-out (mecated --no-steer). The browser-local "Queue
           only" Enter preference lives on Settings → Personalize. */}
       <RuntimeBehaviourSection />
+      {/* The daemon's resolved persona (GET /v1/soul, read-only) and, in
+          managed mode, the soul spawn flags (--no-soul / --soul-strict /
+          --soul-file / the one-shot --approve-soul) via the controller. */}
+      <SoulSection />
     </>
   );
 }

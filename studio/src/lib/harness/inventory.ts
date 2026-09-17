@@ -13,6 +13,7 @@ import {
   isUnsupportedByDaemon,
   toHarnessError,
 } from "./sdk";
+import { timestampUnix } from "./time";
 
 export interface HarnessStatus {
   live: boolean;
@@ -128,8 +129,9 @@ export async function fetchHarnessCompatibility(
 
 /**
  * Reads the harness user model: durable facts the agent has stored about the
- * operator, cross-project. The API returns the INDEX only — key plus one-line
- * description — and never entry values, which the agent loads with RecallUser.
+ * operator, cross-project. The key-less read returns the INDEX — key plus
+ * one-line description — never entry values; one fact's value and revision
+ * history come from `fetchHarnessUserModelEntry` (the TUI's lazy `enter`).
  *
  * There is no write endpoint: the agent curates memory through injection-scanned
  * tool calls, so this is read-only by construction, not by choice.
@@ -138,7 +140,8 @@ export interface HarnessUserModel {
   entries: { key: string; description: string }[];
   /** Aggregate byte length of the rendered entries. */
   sizeBytes: number;
-  /** The proto index carries no digest; always "" (nothing renders it). */
+  /** Lowercase-hex SHA-256 over the rendered entries — tells at a glance
+   *  whether the store changed between reads; "" when the daemon sent none. */
   sha256: string;
 }
 
@@ -157,7 +160,91 @@ export async function fetchHarnessUserModel(
       description: entry.description,
     })),
     sizeBytes: Number(response.sizeBytes),
-    sha256: "",
+    sha256: response.sha256 ?? "",
+  };
+}
+
+/** One read-only lifecycle revision of a fact (proto `UserModelRevision`). */
+export interface HarnessUserModelRevision {
+  key: string;
+  value: string;
+  description: string;
+  version: string;
+  status: string;
+  writer: string;
+  origin: string;
+  sourceSessionId: string;
+  sourceProposalId: string;
+  /** Unix seconds; 0 when the store recorded no timestamp. */
+  updatedAtUnix: number;
+}
+
+/**
+ * One fact's exact detail (proto `UserModelDetail`): the current revision
+ * plus the bounded prior revisions, in the order the daemon delivers them
+ * (newest first). `historyAvailable` false means the store/driver supplied
+ * only the current legacy value — say so, never render it as "no history".
+ */
+export interface HarnessUserModelDetail {
+  current: HarnessUserModelRevision;
+  history: HarnessUserModelRevision[];
+  historyAvailable: boolean;
+}
+
+/** The wire revision, typed structurally (the SDK does not export the type). */
+interface WireUserModelRevision {
+  key: string;
+  value: string;
+  description: string;
+  version: string;
+  status: string;
+  writer: string;
+  origin: string;
+  sourceSessionId: string;
+  sourceProposalId: string;
+  updatedAt?: { seconds: bigint | number } | undefined;
+}
+
+function toUserModelRevision(
+  revision: WireUserModelRevision,
+): HarnessUserModelRevision {
+  return {
+    key: revision.key,
+    value: revision.value,
+    description: revision.description,
+    version: revision.version,
+    status: revision.status,
+    writer: revision.writer,
+    origin: revision.origin,
+    sourceSessionId: revision.sourceSessionId,
+    sourceProposalId: revision.sourceProposalId,
+    updatedAtUnix: timestampUnix(revision.updatedAt),
+  };
+}
+
+/**
+ * Reads ONE fact's value and revision history (`GET /v1/usermodel?key=`), the
+ * web analogue of the TUI viewer's `enter`. Resolves null when the daemon
+ * answers without `detail`: the key no longer exactly matches an entry, so an
+ * index row the caller still holds is stale. A `--no-user-model` daemon
+ * throws the same typed error as the index read.
+ */
+export async function fetchHarnessUserModelEntry(
+  key: string,
+  signal?: AbortSignal,
+): Promise<HarnessUserModelDetail | null> {
+  const response = await harness(() =>
+    getHarnessClient().userModel.get(
+      { $typeName: "mecatl.v1.GetUserModelRequest", key },
+      { signal },
+    ),
+  );
+  const detail = response.detail;
+  if (!detail?.current) return null;
+  return {
+    current: toUserModelRevision(detail.current),
+    history: (detail.history ?? []).map(toUserModelRevision),
+    historyAvailable: detail.historyAvailable === true,
   };
 }
 

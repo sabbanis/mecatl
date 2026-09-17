@@ -134,6 +134,7 @@ import { useLatestChatAutoOpen } from "./use-latest-chat-auto-open";
 import { seedSendWaitReason, useSeedPrompt } from "./use-seed-prompt";
 import { useSessionRowShortcuts } from "./use-session-row-shortcuts";
 import { useWorktreeSwitch } from "./use-worktree-switch";
+import { WelcomeHints, WelcomeMascot } from "./welcome-hints";
 
 /** Route for a chat, or the base (a new draft) when none is selected. */
 const chatHref = (id?: string) =>
@@ -456,6 +457,7 @@ function DraftView({
       <div className="relative min-h-0 flex-1">
         <div className="flex h-full flex-col items-center justify-center gap-6 overflow-y-auto px-4 pb-40 max-[499px]:pb-24 lg:px-8">
           <div className="w-full max-w-xl space-y-4">
+            <WelcomeMascot />
             <DraftGreeting
               showWelcome={showWelcome}
               onDismissWelcome={onDismissWelcome}
@@ -465,6 +467,9 @@ function DraftView({
             {/* The `--resume-latest` chip: continue the newest quiet chat
                 without any preference set. */}
             <ContinueLatestChip latest={latest} onContinue={onContinueLatest} />
+            {/* The TUI welcome card's caps-tailored rows + identity line;
+                renders only once the daemon is connected. */}
+            <WelcomeHints />
           </div>
         </div>
         <div className="absolute bottom-0 left-0 right-0 px-3 lg:px-4 pb-4 max-[499px]:px-0 max-[499px]:pb-0">
@@ -869,6 +874,7 @@ export function ChatWorkspace({
   const {
     serverCapabilities,
     features,
+    posture,
     state: connection,
     refresh: refreshRuntime,
   } = useRuntimeStatus();
@@ -1521,6 +1527,7 @@ export function ChatWorkspace({
     builtinGates,
     handleSlashBuiltin,
     sessionDetailsDialog,
+    soulDialog,
     openSessionDetails,
   } = useBuiltinSlashCommands({
     sessionId: isMockSelected ? null : selectedId || null,
@@ -1530,6 +1537,19 @@ export function ChatWorkspace({
     hasFailedStep: status === "error",
     compactSupported,
     developerTools,
+    // The capability-gated built-ins (`/mcp /agents /skills /models …`)
+    // read the daemon's document; `/posture` its reported tier.
+    serverCapabilities,
+    posture,
+    // `/title`: the same Rename prompt as the chat menu, only where the
+    // row's `rename` capability allows it (never on a draft or the mock).
+    onRename:
+      selectedSession && !isMockSelected && selectedSession.canRename === true
+        ? () => sessionActions.onRename(selectedSession.id)
+        : undefined,
+    // `/tools-connect` and `/tools-cancel` drive the enrollment notice's
+    // own connect / retry / cancel.
+    enrollment,
     onInjectDebugAsk: injectDebugApproval,
     onCompact: () => void handleCompact(),
     onRetry: () => void retryLast(),
@@ -1588,6 +1608,7 @@ export function ChatWorkspace({
       {ConfirmDialog}
       {PromptDialog}
       {sessionDetailsDialog}
+      {soulDialog}
       {debugSessionDialog}
       {worktreePickerDialog}
       {seedPromptDialog}

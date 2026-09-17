@@ -74,7 +74,8 @@ export function AboutDaemonCard({
   selectedProviderId?: string;
 }) {
   const router = useRouter();
-  const { state, mode, deployment, serverCapabilities } = useRuntimeStatus();
+  const { state, mode, deployment, serverCapabilities, workspace } =
+    useRuntimeStatus();
   const connected = state === "connected";
   const { compose } = useDiagnosticsReport();
   const [probe, setProbe] = useState<HarnessServerInfoProbe | null>(null);
@@ -109,6 +110,16 @@ export function AboutDaemonCard({
     { label: "Studio", value: studioBuild(), testId: "about-studio-build" },
     { label: "Server mode", value: mode, testId: "about-server-mode" },
   ];
+  // The root the daemon was spawned against (the TUI's `--workspace`):
+  // display only (Studio rule 2), in either mode, when the controller /
+  // deployment reported one.
+  if (workspace) {
+    rows.push({
+      label: "Workspace",
+      value: workspace,
+      testId: "about-workspace",
+    });
+  }
   if (info) {
     rows.push({
       label: "Build",

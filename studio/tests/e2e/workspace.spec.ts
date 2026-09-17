@@ -179,6 +179,29 @@ test("memory renders the user model, read-only", async ({ page }) => {
       .getByText("prefers tabs over spaces", { exact: false })
       .filter({ visible: true }),
   ).toBeVisible();
+  // The footprint line: N facts · M bytes · sha256 <12 hex> (renderUserModelMeta).
+  await expect(page.getByTestId("memory-footprint")).toHaveText(
+    "1 fact · 64 bytes · sha256 ffffffffffff",
+  );
+});
+
+test("memory detail shows the fact value and history", async ({ page }) => {
+  // The detail page performs the key-scoped read (`?key=prefers-tabs`), so
+  // the fact's VALUE, its daemon-derived provenance and the bounded revision
+  // list render — not just the index description.
+  await page.goto("/workspace/memory/prefers-tabs");
+  await expect(
+    page.getByText("Tabs, width 4").filter({ visible: true }),
+  ).toBeVisible();
+  await expect(page.getByText("reflection", { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "session-fixture-1" }),
+  ).toHaveAttribute("href", "/workspace/chat/session-fixture-1");
+  await expect(page.getByText("1 bounded revision")).toBeVisible();
+  await expect(
+    page.getByText("2 · superseded", { exact: false }),
+  ).toBeVisible();
+  await expect(page.getByText("Learned in conversation")).toHaveCount(0);
 });
 
 test("external mode marks runtime settings as deployment-owned", async ({
@@ -206,6 +229,32 @@ test("external mode marks runtime settings as deployment-owned", async ({
     "fixture-daemon",
   );
   await expect(page.getByTestId("about-posture")).toHaveText("trusted");
+});
+
+test("the agent page shows the daemon's persona and marks its settings deployment-owned", async ({
+  page,
+}) => {
+  // The Persona card reads the fixture's GET /v1/soul (a trusted user soul)
+  // and shows the body as plain text behind a disclosure; the settings half
+  // is a controller surface, so external mode renders the managed note in
+  // place of the switches.
+  await page.goto("/workspace/settings/agent");
+  const persona = page.getByTestId("soul-snapshot");
+  await expect(persona.getByTestId("soul-status")).toHaveText("loaded");
+  await expect(persona.getByTestId("soul-provenance")).toHaveText("user");
+  await expect(persona.getByTestId("soul-size")).toHaveText("49 bytes");
+  await page.getByRole("button", { name: "Show persona" }).click();
+  await expect(
+    page.getByText("You are the fixture persona: concise and direct."),
+  ).toBeVisible();
+  await expect(
+    page
+      .getByTestId("soul-settings")
+      .getByText("Managed by the external mecated deployment"),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("switch", { name: "Load a persona" }),
+  ).toHaveCount(0);
 });
 
 test("diagnostics shows the daemon-reported posture and its defenses", async ({
@@ -483,6 +532,27 @@ test("the first-run welcome card shows once and stays dismissed across reloads",
   ).toHaveCount(0);
 });
 
+test("the draft splash shows the mascot and the daemon's capability hints", async ({
+  page,
+}) => {
+  // The fixture advertises memory, agents and scheduling at posture
+  // "trusted", and E2E runs in external mode — so the rows are the
+  // capability-gated ones and the identity line names the external daemon.
+  await page.goto("/workspace/chat");
+  const mascot = page.getByTestId("welcome-mascot");
+  await expect(mascot).toBeVisible();
+  await expect(mascot).toHaveAttribute("src", "/mecatito.png");
+  const hints = page.getByTestId("welcome-hints");
+  await expect(hints.getByText(/Cross-session memory is on/)).toBeVisible();
+  await expect(hints.getByText("Mention an agent")).toBeVisible();
+  await expect(
+    hints.getByRole("link", { name: "Scheduled runs are available" }),
+  ).toHaveAttribute("href", "/workspace/schedules");
+  await expect(page.getByTestId("welcome-identity")).toHaveText(
+    "Connected · external daemon · posture trusted",
+  );
+});
+
 test("storage settings show aggregate health and the clean-up plan", async ({
   page,
 }) => {
@@ -610,6 +680,30 @@ test("the top navigation shows the daemon-reported posture as a chrome chip on e
   // Chrome-level: the same chip is on a non-chat page.
   await page.goto("/workspace/settings/appearance");
   await expect(page.getByTestId("posture-badge")).toHaveText("Trusted project");
+});
+
+test("the top navigation states the connected daemon on every page", async ({
+  page,
+}) => {
+  // mecatui's affirmative "connected" status line: the healthy state is
+  // stated, not inferred from the absence of an offline banner. The pill is
+  // a `status` live region named by its label around a link to Diagnostics.
+  await page.goto("/workspace/chat");
+  await expect(page.getByRole("status", { name: "Connected" })).toBeVisible();
+  const pill = page.getByTestId("connection-indicator");
+  await expect(pill).toHaveAttribute("data-connection", "connected");
+  await expect(pill).toHaveAttribute("href", "/workspace/settings/diagnostics");
+  // The tooltip carries the facts the runtime probe already holds: this
+  // stack runs Studio in external mode (no provider line — the control
+  // status is a stub) and the fixture reports posture "trusted".
+  await pill.hover();
+  const tooltip = page.getByRole("tooltip");
+  await expect(tooltip).toContainText("Connected to an external daemon");
+  await expect(tooltip).toContainText("Posture: trusted");
+  await expect(tooltip).not.toContainText("Provider:");
+  // Chrome-level: the same cue is on a non-chat page.
+  await page.goto("/workspace/settings/appearance");
+  await expect(page.getByRole("status", { name: "Connected" })).toBeVisible();
 });
 
 test("the workspace-services notice connects through the daemon and clears", async ({

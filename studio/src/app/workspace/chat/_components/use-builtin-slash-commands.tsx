@@ -13,6 +13,7 @@ import {
   type BuiltinGates,
   type BuiltinOutcome,
   gatedReason,
+  isBuiltinGatedOff,
   type StudioBuiltinCommand,
 } from "@/features/agent/composer-builtins";
 import {
@@ -20,11 +21,23 @@ import {
   DEBUG_ASK_NONE_YET,
 } from "@/features/agent/debug-ask";
 import { useDiagnosticsReport } from "@/features/agent/hooks/use-diagnostics-report";
+import type { WorkspaceEnrollmentView } from "@/features/agent/hooks/use-workspace-enrollment";
+import { requestOpenMcpPicker } from "../../_components/mcp-composer-insert";
+import { requestOpenModelPicker } from "../../_components/model-picker-opener";
 import { HELP_ROUTE } from "./help-menu-item";
+import { requestOpenMcpPanel } from "./mcp-panel";
 import {
   SessionDetailsDialog,
   type SessionDetailsExtras,
 } from "./session-details-dialog";
+import { SoulDialog } from "./soul-dialog";
+import { NOT_IDLE_HINT } from "./workspace-enrollment-notice";
+
+/** Where the page-backed built-ins go (the TUI's panels are Studio pages). */
+export const SKILLS_ROUTE = "/workspace/skills";
+export const SCHEDULES_ROUTE = "/workspace/schedules";
+export const MEMORY_SETTINGS_ROUTE = "/workspace/settings/memory";
+export const LEARNING_SETTINGS_ROUTE = "/workspace/settings/learning";
 
 /** The chat-workspace state the built-ins act on. */
 export interface BuiltinSlashDeps {
@@ -64,6 +77,19 @@ export interface BuiltinSlashDeps {
   /** Inventory-row facts the `/session` dialog shows beyond the snapshot:
    *  the `copy_id` capability and the row's last-write time. */
   sessionDetails?: SessionDetailsExtras;
+  /** The daemon's compatibility capabilities (runtime-status
+   *  `serverCapabilities`, SNAKE_CASE wire keys): gates the
+   *  capability-gated built-ins in the palette and on send. */
+  serverCapabilities?: Readonly<Record<string, unknown>>;
+  /** The daemon-reported effective posture (runtime-status `posture`; ""
+   *  on an older daemon, which hides `/posture`). */
+  posture?: string;
+  /** Opens the Rename prompt for the selected chat; absent on a draft or a
+   *  row the daemon marks unrenamable (`/title` then says so). */
+  onRename?: () => void | Promise<void>;
+  /** The workspace-services enrollment view (`/tools-connect`,
+   *  `/tools-cancel` drive its connect / retry / cancel). */
+  enrollment?: WorkspaceEnrollmentView | null;
 }
 
 export const RETRY_WHILE_STREAMING =
@@ -76,9 +102,69 @@ export const COMPACT_WHILE_STREAMING =
 export const COMPACT_NONE_YET = "No session yet — nothing to compact";
 export const DIAGNOSTICS_WHILE_STREAMING =
   "Wait for the run to finish before sending diagnostics";
+export const TITLE_NONE_YET =
+  "No session yet — send a message, then rename the chat";
+export const TITLE_NOT_ALLOWED = "This chat cannot be renamed";
+export const MCP_PANEL_NONE_YET =
+  "No session yet — the MCP panel belongs to a chat";
+export const MCP_PICKER_UNAVAILABLE =
+  "Insert from MCP is not available in this composer";
+export const MODEL_PICKER_UNAVAILABLE =
+  "The model picker is not available in this chat";
+export const ENROLLMENT_CONNECTED = "Workspace services are already connected";
+const ENROLLMENT_NOT_REQUIRED =
+  "This deployment needs no workspace services setup";
+export const ENROLLMENT_ALREADY_PENDING =
+  "Setup is already in progress — /tools-cancel stops it";
+export const ENROLLMENT_NONE_PENDING =
+  "No workspace services setup is in progress";
+export const ENROLLMENT_NONE_YET =
+  "No session yet — send a message, then connect workspace services";
+/** The `/posture` toast line; the posture word follows. */
+export const POSTURE_PREFIX = "Daemon posture: ";
 
 const ok: BuiltinOutcome = { ok: true };
 const refuse = (warning: string): BuiltinOutcome => ({ ok: false, warning });
+
+/**
+ * The palette gates for one deps snapshot — pure, so the memo below and the
+ * dispatcher's own gate check read the SAME table (composer-builtins.ts):
+ * a row the palette shows is never refused as unavailable. The capability
+ * document rides along verbatim (the table reads the wire keys); the
+ * `/posture` gate reads `capabilities.posture`, so the narrowed `posture`
+ * dep is folded in for a caller that passes only the word. A caller passing
+ * neither gets no document at all — the same fail-closed reading as an
+ * empty one. The developer-tools gate is carried only while ON (absent
+ * reads as off), so a daemon-only gates object stays exactly
+ * `{ manualCompaction }`.
+ */
+export function builtinGatesFor(
+  deps: Pick<
+    BuiltinSlashDeps,
+    "compactSupported" | "developerTools" | "serverCapabilities" | "posture"
+  >,
+): BuiltinGates {
+  return {
+    manualCompaction: deps.compactSupported,
+    ...(deps.developerTools === true ? { developerTools: true } : {}),
+    ...(deps.serverCapabilities || deps.posture
+      ? {
+          capabilities: {
+            ...(deps.serverCapabilities ?? {}),
+            ...(deps.posture ? { posture: deps.posture } : {}),
+          },
+        }
+      : {}),
+  };
+}
+
+/** True when the daemon's capabilities hide `name` from the palette. */
+function isCapabilityOff(
+  name: StudioBuiltinCommand,
+  deps: BuiltinSlashDeps,
+): boolean {
+  return isBuiltinGatedOff(name, builtinGatesFor(deps));
+}
 
 /**
  * Answers the composer's Studio built-ins (`/clear /help /session /retry
@@ -96,6 +182,8 @@ export function useBuiltinSlashCommands(deps: BuiltinSlashDeps): {
   handleSlashBuiltin: (name: StudioBuiltinCommand) => BuiltinOutcome;
   /** Render inside the workspace so `/session` has somewhere to open. */
   sessionDetailsDialog: ReactElement;
+  /** Render inside the workspace so `/soul` has somewhere to open. */
+  soulDialog: ReactElement;
   /** Opens the same dialog from a menu item or the ⌘I shortcut; on a draft
    *  (no daemon session yet) it says so in a toast instead. */
   openSessionDetails: () => void;
@@ -111,15 +199,20 @@ export function useBuiltinSlashCommands(deps: BuiltinSlashDeps): {
 
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [detailsSessionId, setDetailsSessionId] = useState<string | null>(null);
+  // `/soul`: the daemon's resolved soul, read when the dialog opens.
+  const [soulOpen, setSoulOpen] = useState(false);
 
   // The developer-tools gate is carried only while ON (absent reads as off),
   // so a daemon-only gates object stays exactly `{ manualCompaction }`.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: builtinGatesFor reads exactly these four deps
   const builtinGates = useMemo<BuiltinGates>(
-    () => ({
-      manualCompaction: deps.compactSupported,
-      ...(deps.developerTools === true ? { developerTools: true } : {}),
-    }),
-    [deps.compactSupported, deps.developerTools],
+    () => builtinGatesFor(deps),
+    [
+      deps.compactSupported,
+      deps.developerTools,
+      deps.serverCapabilities,
+      deps.posture,
+    ],
   );
 
   const handleSlashBuiltin = useCallback(
@@ -177,6 +270,92 @@ export function useBuiltinSlashCommands(deps: BuiltinSlashDeps): {
           if (!d.sessionId) return refuse(DEBUG_ASK_NONE_YET);
           return d.onInjectDebugAsk() ? ok : refuse(DEBUG_ASK_ALREADY_PENDING);
         }
+        case "title":
+          if (!d.sessionId) return refuse(TITLE_NONE_YET);
+          if (!d.onRename) return refuse(TITLE_NOT_ALLOWED);
+          void d.onRename();
+          return ok;
+        case "mcp": {
+          // The panel is the chat view's: a draft has none to open, so the
+          // window-event request would go unanswered.
+          if (isCapabilityOff(name, d)) return refuse(gatedReason(name));
+          if (!d.sessionId) return refuse(MCP_PANEL_NONE_YET);
+          requestOpenMcpPanel();
+          return ok;
+        }
+        case "prompts":
+        case "resources": {
+          if (isCapabilityOff(name, d)) return refuse(gatedReason(name));
+          const kind = name === "prompts" ? "prompt" : "resource";
+          return requestOpenMcpPicker(kind)
+            ? ok
+            : refuse(MCP_PICKER_UNAVAILABLE);
+        }
+        case "agents":
+          // The composer types the `@` into the emptied field, which opens
+          // the agent roster (the suggestion plugin reads the document).
+          if (isCapabilityOff(name, d)) return refuse(gatedReason(name));
+          return { ok: true, insertText: "@" };
+        case "skills":
+          if (isCapabilityOff(name, d)) return refuse(gatedReason(name));
+          router.push(SKILLS_ROUTE);
+          return ok;
+        case "soul":
+          if (isCapabilityOff(name, d)) return refuse(gatedReason(name));
+          setSoulOpen(true);
+          return ok;
+        case "usermodel":
+        case "dream":
+          if (isCapabilityOff(name, d)) return refuse(gatedReason(name));
+          router.push(MEMORY_SETTINGS_ROUTE);
+          return ok;
+        case "reflections":
+        case "reflect":
+          if (isCapabilityOff(name, d)) return refuse(gatedReason(name));
+          router.push(LEARNING_SETTINGS_ROUTE);
+          return ok;
+        case "learning":
+          router.push(LEARNING_SETTINGS_ROUTE);
+          return ok;
+        case "models":
+        case "effort":
+          if (isCapabilityOff(name, d)) return refuse(gatedReason(name));
+          return requestOpenModelPicker()
+            ? ok
+            : refuse(MODEL_PICKER_UNAVAILABLE);
+        case "schedule":
+          if (isCapabilityOff(name, d)) return refuse(gatedReason(name));
+          router.push(SCHEDULES_ROUTE);
+          return ok;
+        case "tools-connect": {
+          if (isCapabilityOff(name, d)) return refuse(gatedReason(name));
+          const e = d.enrollment;
+          if (!e?.supported) return refuse(ENROLLMENT_NONE_YET);
+          if (e.phase === "connected") return refuse(ENROLLMENT_CONNECTED);
+          if (e.phase === "not_required")
+            return refuse(ENROLLMENT_NOT_REQUIRED);
+          if (e.phase === "pending") return refuse(ENROLLMENT_ALREADY_PENDING);
+          if (!e.idle) return refuse(NOT_IDLE_HINT);
+          // A failed enrollment retries (the notice's Retry); anything else
+          // connects afresh — the same two actions the notice offers.
+          if (e.phase === "failed") e.retry();
+          else e.connect();
+          return ok;
+        }
+        case "tools-cancel": {
+          if (isCapabilityOff(name, d)) return refuse(gatedReason(name));
+          const e = d.enrollment;
+          if (!e?.supported || e.phase !== "pending") {
+            return refuse(ENROLLMENT_NONE_PENDING);
+          }
+          if (!e.idle) return refuse(NOT_IDLE_HINT);
+          e.cancel();
+          return ok;
+        }
+        case "posture":
+          if (!d.posture) return refuse(gatedReason(name));
+          toast.info(`${POSTURE_PREFIX}${d.posture}`);
+          return ok;
         default:
           return ok;
       }
@@ -205,10 +384,13 @@ export function useBuiltinSlashCommands(deps: BuiltinSlashDeps): {
     />
   );
 
+  const soulDialog = <SoulDialog open={soulOpen} onOpenChange={setSoulOpen} />;
+
   return {
     builtinGates,
     handleSlashBuiltin,
     sessionDetailsDialog,
+    soulDialog,
     openSessionDetails,
   };
 }

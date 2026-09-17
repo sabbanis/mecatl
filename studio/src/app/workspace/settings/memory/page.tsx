@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/table";
 import { type MemoryEntry, useAgentMemory } from "@/features/agent";
 import { ConsolidateMemoryCard } from "./_components/consolidate-memory";
+import { MemoryFootprint } from "./_components/memory-footprint";
 
 /**
  * The agent's remembered facts, read-only — a settings subpage. The one
@@ -93,6 +94,7 @@ export default function MemorySettingsPage() {
 
   return (
     <>
+      <MemoryFootprint store={memory.store} />
       <div className="overflow-hidden rounded-lg border">
         <Table>
           <TableHeader className="max-[499px]:hidden">

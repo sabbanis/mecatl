@@ -18,6 +18,40 @@ export type StudioBuiltinCommand =
   | "retry"
   | "diagnostics"
   | "compact"
+  /** Rename this chat (the chat ··· menu's Rename prompt). */
+  | "title"
+  /** The MCP tools panel (`mcp` or `mcp_connector_status`). */
+  | "mcp"
+  /** The "Insert from MCP" prompt picker (`mcp`). */
+  | "prompts"
+  /** The "Insert from MCP" resource picker (`mcp`). */
+  | "resources"
+  /** Opens the `@` agent roster in the composer (`agents`). */
+  | "agents"
+  /** The Skills page (`skills`). */
+  | "skills"
+  /** The daemon's resolved soul (`soul`). */
+  | "soul"
+  /** Settings → Memory, the user model (`user_model`). */
+  | "usermodel"
+  /** Settings → Learning, the proposals (`learning_proposals`). */
+  | "reflections"
+  /** Settings → Learning, run a reflection (`reflection`). */
+  | "reflect"
+  /** Settings → Memory, consolidate on demand (`manual_dream`). */
+  | "dream"
+  /** The model and effort picker (`model_selection`). */
+  | "models"
+  | "effort"
+  /** The Scheduled tab (`scheduling`). */
+  | "schedule"
+  /** Workspace-services enrollment (`workspace_enrollment`). */
+  | "tools-connect"
+  | "tools-cancel"
+  /** Settings → Learning (the operator's learning mode). */
+  | "learning"
+  /** The daemon-reported effective posture (`posture`). */
+  | "posture"
   /** Developer tools only: inject a FAKE permission ask (debug-ask.ts). */
   | "debug-ask";
 
@@ -29,6 +63,11 @@ export interface BuiltinGates {
   /** Settings → Labs "Developer tools" is on: offers `/debug-ask`. A
    *  browser preference, not a daemon capability — absent reads as off. */
   readonly developerTools?: boolean;
+  /** The daemon's compatibility capabilities as the runtime-status provider
+   *  exposes them (SNAKE_CASE wire keys, `serverCapabilities`). Gates the
+   *  capability-gated set (`/mcp /agents /skills /soul …`); absent — a
+   *  surface with no runtime status — hides all of them (fail-closed). */
+  readonly capabilities?: Readonly<Record<string, unknown>>;
 }
 
 /** Fail-closed default: every gated built-in hidden. */
@@ -44,7 +83,12 @@ export interface BuiltinSlashCommand {
   readonly builtin: true;
 }
 
-/** The fixed palette order — the TUI's, minus `/quit`. */
+/**
+ * The fixed palette order: the always-present six first (the TUI's, minus
+ * `/quit`), then the capability-gated set in the TUI's order, then the two
+ * operator-setting rows. Not ported — no Studio surface in this area:
+ * `/quit`, `/sessions`, `/connect`, `/team`, `/worktrees`.
+ */
 const BUILTIN_ORDER: readonly StudioBuiltinCommand[] = [
   "clear",
   "help",
@@ -52,6 +96,24 @@ const BUILTIN_ORDER: readonly StudioBuiltinCommand[] = [
   "retry",
   "diagnostics",
   "compact",
+  "title",
+  "mcp",
+  "prompts",
+  "resources",
+  "agents",
+  "skills",
+  "soul",
+  "usermodel",
+  "reflections",
+  "reflect",
+  "dream",
+  "models",
+  "effort",
+  "schedule",
+  "tools-connect",
+  "tools-cancel",
+  "posture",
+  "learning",
 ];
 
 /**
@@ -71,6 +133,24 @@ const BUILTIN_DESCRIPTIONS: Readonly<Record<StudioBuiltinCommand, string>> = {
     "retry the last eligible failed model step without resending its prompt",
   diagnostics: "send a concise client and server diagnostics report",
   compact: "compact this session's model history",
+  title: "rename this chat",
+  mcp: "show the MCP tools panel — this chat's connectors and sources",
+  prompts: "insert an MCP prompt into the draft",
+  resources: "insert an MCP resource into the draft",
+  agents: "open the @ agent roster",
+  skills: "browse the skills",
+  soul: "show the soul the daemon applies",
+  usermodel: "show the user model (Settings → Memory)",
+  reflections: "review learning proposals (Settings → Learning)",
+  reflect: "run a reflection (Settings → Learning)",
+  dream: "consolidate memory on demand (Settings → Memory)",
+  models: "open the model and effort picker",
+  effort: "open the model and effort picker on the Effort tiers",
+  schedule: "open the scheduled runs",
+  "tools-connect": "connect workspace services for this chat",
+  "tools-cancel": "cancel the workspace services setup in progress",
+  learning: "learning mode settings (Settings → Learning)",
+  posture: "show the daemon's effective posture",
   "debug-ask":
     "inject a fake permission ask to exercise the approval panel (developer tools; never sent to the daemon)",
 };
@@ -105,11 +185,108 @@ export function isStudioBuiltinCommand(
   );
 }
 
+/** True for a non-null, non-array object with at least one own key — the
+ *  `manual_dream` capability is a per-target object, empty when no target
+ *  can be consolidated (help-features.ts reads it the same way). */
+function nonEmptyObject(value: unknown): boolean {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    Object.keys(value).length > 0
+  );
+}
+
+/**
+ * The capability each gated built-in needs, read off the SNAKE_CASE wire
+ * document. Every check is an explicit `=== true` (absence is "not
+ * enabled", Studio's daemon-only rule — help-features.ts reads the same
+ * keys the same way), with ONE exception: `/models` and `/effort` mirror
+ * the composer's own picker gate (`effortSupported`, chat-input.tsx) —
+ * the picker is shown unless the daemon says `model_selection: false`, so
+ * the palette never hides a picker the toolbar shows, nor offers one it
+ * hides. `/posture` needs the non-empty tier word, `/dream` the non-empty
+ * per-target object.
+ */
+function capabilityGatedOff(
+  name: StudioBuiltinCommand,
+  caps: Readonly<Record<string, unknown>>,
+): boolean {
+  switch (name) {
+    case "mcp":
+      return !(caps.mcp === true || caps.mcp_connector_status === true);
+    case "prompts":
+    case "resources":
+      return caps.mcp !== true;
+    case "agents":
+      return caps.agents !== true;
+    case "skills":
+      return caps.skills !== true;
+    case "soul":
+      return caps.soul !== true;
+    case "usermodel":
+      return caps.user_model !== true;
+    case "reflections":
+      return caps.learning_proposals !== true;
+    case "reflect":
+      return caps.reflection !== true;
+    case "dream":
+      return !nonEmptyObject(caps.manual_dream);
+    case "models":
+    case "effort":
+      return caps.model_selection === false;
+    case "schedule":
+      return caps.scheduling !== true;
+    case "tools-connect":
+    case "tools-cancel":
+      return caps.workspace_enrollment !== true;
+    case "posture":
+      return typeof caps.posture !== "string" || caps.posture === "";
+    default:
+      return false;
+  }
+}
+
+/** The built-ins that need a capability document at all; with none (a
+ *  surface outside the runtime-status provider) every one is hidden. */
+const CAPABILITY_GATED: ReadonlySet<StudioBuiltinCommand> =
+  new Set<StudioBuiltinCommand>([
+    "mcp",
+    "prompts",
+    "resources",
+    "agents",
+    "skills",
+    "soul",
+    "usermodel",
+    "reflections",
+    "reflect",
+    "dream",
+    "models",
+    "effort",
+    "schedule",
+    "tools-connect",
+    "tools-cancel",
+    "posture",
+  ]);
+
 /** A built-in the daemon's capabilities — or, for the developer tools,
- *  the Labs preference — hide from the palette. */
+ *  the Labs preference — hide from the palette. The ONE gate the palette,
+ *  the send-path classifier and the dispatcher all read, so a row the
+ *  palette shows is never refused as unavailable and vice versa. */
+export function isBuiltinGatedOff(
+  name: StudioBuiltinCommand,
+  gates: BuiltinGates,
+): boolean {
+  return isGatedOff(name, gates);
+}
+
 function isGatedOff(name: StudioBuiltinCommand, gates: BuiltinGates): boolean {
   if (name === "compact") return !gates.manualCompaction;
   if (name === "debug-ask") return gates.developerTools !== true;
+  if (CAPABILITY_GATED.has(name)) {
+    if (!gates.capabilities) return true;
+    return capabilityGatedOff(name, gates.capabilities);
+  }
   return false;
 }
 
@@ -183,8 +360,10 @@ export function classifySlashLine(
 
 /**
  * What a built-in dispatcher reports back to the composer: `ok` clears the
- * editor; a refusal keeps the text in place and shows `warning` above it.
+ * editor (then types `insertText`, when set, into the emptied field — how
+ * `/agents` opens the `@` roster); a refusal keeps the text in place and
+ * shows `warning` above it.
  */
 export type BuiltinOutcome =
-  | { readonly ok: true }
+  | { readonly ok: true; readonly insertText?: string }
   | { readonly ok: false; readonly warning: string };

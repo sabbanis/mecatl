@@ -25,6 +25,7 @@ import {
   undoLearningPromotion,
 } from "@/lib/harness/learning";
 import { cn } from "@/lib/utils";
+import { LearningModeSection } from "../_components/learning-mode-section";
 import { Note, SettingsCard } from "../_components/settings-card";
 
 /**
@@ -49,38 +50,47 @@ export default function LearningSettingsPage() {
     runtime.serverCapabilities.learning_proposals === true;
   const reflectionSupported = runtime.serverCapabilities.reflection === true;
 
-  if (!proposalsSupported && !reflectionSupported) {
-    return (
-      <div className="rounded-xl border bg-card p-5">
-        <div className="flex items-start gap-3">
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted">
-            <GraduationCap className="size-5 text-muted-foreground" />
-          </div>
-          <div className="min-w-0 space-y-1">
-            <h2 className="text-sm font-semibold">
-              Learning is not supported by this daemon
-            </h2>
-            <p className="text-sm text-muted-foreground">
-              This daemon reports neither learning proposals nor reflection in
-              its capabilities. Enable learning in the daemon&rsquo;s settings
-              (learning.mode) to review what the agent wants to remember.
-            </p>
-          </div>
-        </div>
-      </div>
-    );
-  }
+  const learningSupported = proposalsSupported || reflectionSupported;
 
+  // The mode control renders FIRST whatever the capabilities say: with
+  // learning off the daemon advertises neither proposals nor reflection, and
+  // this card is how a managed-mode operator turns it on.
   return (
     <>
-      {proposalsSupported ? (
-        <ProposalQueueCard connected={runtime.connected} />
+      <LearningModeSection />
+      {!learningSupported ? (
+        <div className="rounded-xl border bg-card p-5">
+          <div className="flex items-start gap-3">
+            <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted">
+              <GraduationCap className="size-5 text-muted-foreground" />
+            </div>
+            <div className="min-w-0 space-y-1">
+              <h2 className="text-sm font-semibold">
+                Learning is not enabled on this daemon
+              </h2>
+              <p className="text-sm text-muted-foreground">
+                This daemon reports neither learning proposals nor reflection.
+                Turn learning on above (managed mode) or set learning.mode in
+                the daemon&rsquo;s settings, then review what the agent wants to
+                remember here.
+              </p>
+            </div>
+          </div>
+        </div>
       ) : (
-        <SettingsCard title="Review queue">
-          <Note>Learning proposals are not enabled on this daemon.</Note>
-        </SettingsCard>
+        <>
+          {proposalsSupported ? (
+            <ProposalQueueCard connected={runtime.connected} />
+          ) : (
+            <SettingsCard title="Review queue">
+              <Note>Learning proposals are not enabled on this daemon.</Note>
+            </SettingsCard>
+          )}
+          {reflectionSupported && (
+            <ReflectionCard connected={runtime.connected} />
+          )}
+        </>
       )}
-      {reflectionSupported && <ReflectionCard connected={runtime.connected} />}
     </>
   );
 }

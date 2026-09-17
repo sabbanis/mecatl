@@ -47,7 +47,12 @@ export function mergeRuntimeSettings(
  * soul), and gate the whole persona card on `soulSupported`.
  */
 export function useRuntimeSettings() {
-  const { connected, mode, serverCapabilities } = useRuntimeStatus();
+  const {
+    connected,
+    mode,
+    serverCapabilities,
+    refresh: refreshRuntime,
+  } = useRuntimeStatus();
   const manageable = mode === "managed";
   const [doc, setDoc] = useState<HarnessRuntimeSettingsDoc | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -102,6 +107,11 @@ export function useRuntimeSettings() {
           mergeRuntimeSettings(doc.config, patch),
         );
         await load();
+        // The restarted daemon may advertise different capabilities
+        // (learning.mode flips learning_proposals / reflection): re-probe
+        // now so the gates update without waiting for the poll. Best-effort
+        // — the save itself has already succeeded.
+        await refreshRuntime().catch(() => undefined);
         setNotice("Saved. The daemon restarted with the new settings.");
         return true;
       } catch (caught) {
@@ -111,7 +121,7 @@ export function useRuntimeSettings() {
         setBusy("");
       }
     },
-    [doc, load],
+    [doc, load, refreshRuntime],
   );
 
   /** Accepts the current soul as the drift baseline (one restart with

@@ -31,6 +31,7 @@ const {
     connected: true,
     mode: "managed" as "managed" | "external",
     serverCapabilities: {} as Record<string, unknown>,
+    refresh: vi.fn(async () => undefined),
   },
 }));
 
@@ -147,6 +148,9 @@ describe("useRuntimeSettings", () => {
       learning: { mode: "review", sensitivity: "" },
     });
     expect(fetchHarnessRuntimeSettings).toHaveBeenCalledTimes(2);
+    // The restart may have changed what the daemon advertises: the runtime
+    // is re-probed once, after the re-read, so capability gates flip now.
+    expect(runtime.refresh).toHaveBeenCalledTimes(1);
     expect(result.current.doc?.config.learning.mode).toBe("review");
     expect(result.current.notice).toMatch(/daemon restarted/);
     expect(result.current.busy).toBe("");
@@ -172,6 +176,8 @@ describe("useRuntimeSettings", () => {
     expect(result.current.doc?.config).toEqual(config);
     expect(fetchHarnessRuntimeSettings).toHaveBeenCalledTimes(1);
     expect(result.current.notice).toBeNull();
+    // Nothing restarted, so nothing to re-probe.
+    expect(runtime.refresh).not.toHaveBeenCalled();
   });
 
   it("approveSoul posts the one-shot approval then re-reads", async () => {

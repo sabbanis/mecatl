@@ -194,6 +194,21 @@ const routes = {
     build_id: "fixture",
     server_implementation: "fixture-daemon",
   },
+  // The resolved persona (proto GetSoulResponse → SoulInfo) behind the
+  // `soul: true` capability above: Settings → Agent's Persona card and the
+  // chat's /soul built-in render it. Stdlib-JSON shape: snake_case fields,
+  // the provenance enum as its ordinal (1 = SOUL_PROVENANCE_USER).
+  "GET /v1/soul": {
+    soul: {
+      content: "You are the fixture persona: concise and direct.",
+      size_bytes: 49,
+      sha256: "a".repeat(64),
+      present: true,
+      provenance: 1,
+      trusted: true,
+      drifted: false,
+    },
+  },
   // The resolved MCP source inventory the "Debug with AI" dialog lists its
   // attachable debugger servers from (proto ListMcpSourcesResponse), and
   // Settings → MCP tools / the chat's MCP tools panel render by source. The
@@ -873,6 +888,32 @@ function writeProblem(response, status, code, detail) {
   );
 }
 
+// The key-scoped user-model read (`GET /v1/usermodel?key=prefers-tabs`)
+// adds `detail` — the fact's value plus its bounded revision history — with
+// the daemon's snake_case keys and `{seconds}` timestamps
+// (GetUserModelResponse.detail is populated only on an exact key match).
+const userModelDetail = {
+  current: {
+    key: "prefers-tabs",
+    value: "Tabs, width 4",
+    description: "The operator prefers tabs over spaces.",
+    version: "3",
+    status: "active",
+    writer: "agent",
+    origin: "reflection",
+    source_session_id: "session-fixture-1",
+    updated_at: { seconds: 1_755_000_000 },
+  },
+  history: [
+    {
+      version: "2",
+      status: "superseded",
+      updated_at: { seconds: 1_754_000_000 },
+    },
+  ],
+  history_available: true,
+};
+
 function writeSSE(response, frame) {
   response.write(`data: ${JSON.stringify(frame)}\n\n`);
 }
@@ -936,6 +977,22 @@ http
       writeSSE(response, { cursor: "c2RrY3VyLzEtZml4dHVyZQ", phase: "live" });
       const keepalive = setInterval(() => response.write(": ping\n\n"), 15_000);
       request.on("close", () => clearInterval(keepalive));
+      return;
+    }
+    if (key === "GET /v1/usermodel") {
+      // The index read ignores the query; an exact `?key=` match adds `detail`.
+      const wanted = new URL(request.url, "http://fixture").searchParams.get(
+        "key",
+      );
+      const index = routes[key];
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(
+        JSON.stringify(
+          wanted === "prefers-tabs"
+            ? { ...index, detail: userModelDetail }
+            : index,
+        ),
+      );
       return;
     }
     const body = routes[key];

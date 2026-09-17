@@ -154,6 +154,10 @@ export function RuntimeStatusProvider({ children }: { children: ReactNode }) {
   }, [probe]);
 
   const refresh = useCallback(async () => {
+    // A forced re-probe re-reads the capabilities too: a settings save has
+    // just restarted the daemon (learning.mode flips what it advertises),
+    // and the 5 s poll may never have seen it down.
+    capabilitiesLoaded.current = false;
     await probe();
   }, [probe]);
 

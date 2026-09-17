@@ -40,6 +40,7 @@ import {
 } from "@/lib/profile-preferences";
 import { CustomPalettesSection } from "../_components/custom-palettes-section";
 import { OptionField } from "../_components/option-field";
+import { PreferencesFileSection } from "../_components/preferences-file-section";
 import { SettingsCard, SettingsRow } from "../_components/settings-card";
 
 const THEME_OPTIONS = [
@@ -355,6 +356,10 @@ export default function AppearanceSettingsPage() {
           (this browser) and the operator's STUDIO_PALETTE_DIR, both listed in
           the Palette picker above. */}
       <CustomPalettesSection />
+      {/* The client-owned settings file, for the web: every preference on
+          this page (and the keymap, status line, hidden models…) as one
+          strict JSON document that moves between browsers. */}
+      <PreferencesFileSection />
     </>
   );
 }

@@ -5,6 +5,7 @@ import {
   CircleHelp,
   Database,
   FlaskConical,
+  FolderGit2,
   GraduationCap,
   Keyboard,
   Network,
@@ -98,6 +99,13 @@ export const SETTINGS_GROUPS: Array<{
         // connect form; the route keeps its historical name.
         label: "MCP tools",
         icon: Network,
+      },
+      {
+        // The managed daemon's workspace root (the TUI's `--workspace`):
+        // shown in both modes, changeable in managed mode.
+        href: "/workspace/settings/workspace",
+        label: "Workspace",
+        icon: FolderGit2,
       },
       {
         href: "/workspace/settings/storage",

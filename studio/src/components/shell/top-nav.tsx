@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { buildUserNav } from "@/components/app/nav-items";
+import { ConnectionIndicator } from "@/components/shell/connection-indicator";
 import { GlobalSearch } from "@/components/shell/global-search";
 import { PostureBadge } from "@/components/shell/posture-badge";
 import {
@@ -96,6 +97,11 @@ export function TopNav() {
             chip for a trusted project); nothing for strict or an older
             daemon. Chrome-level so it shows on every workspace page. */}
         <PostureBadge />
+
+        {/* The affirmative connection cue (mecatui's "connected" status
+            line): always rendered, so the healthy state is stated rather
+            than inferred from the absence of an offline banner. */}
+        <ConnectionIndicator />
 
         {/* GlobalSearch owns its trigger, dialog, and the ⌘K shortcut; it is
             styled for a light surface, so restyle the trigger (and its kbd

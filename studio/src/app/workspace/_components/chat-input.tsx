@@ -108,6 +108,7 @@ import {
   useMcpComposerInsert,
 } from "./mcp-composer-insert";
 import { ModelSheetSection, ModelSubmenuContent } from "./model-picker";
+import { ModelPickerOpener } from "./model-picker-opener";
 
 interface ProjectItem {
   id: string;
@@ -472,7 +473,14 @@ export function ModelEffortSelector({
   return (
     <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
       {shortcutWired && (
-        <ModelPickerShortcut onOpen={() => setMenuOpen(true)} />
+        <>
+          <ModelPickerShortcut onOpen={() => setMenuOpen(true)} />
+          {/* The `/models` and `/effort` built-ins' way in (F7's twin). */}
+          <ModelPickerOpener
+            surface="desktop"
+            onOpen={() => setMenuOpen(true)}
+          />
+        </>
       )}
       <DropdownMenuTrigger asChild>
         <Button
@@ -784,6 +792,16 @@ function MobileComposerMenu({
           if (files.length > 0) onFilesSelected(files);
         }}
       />
+      {/* `/models` / `/effort` on a phone: open the sheet on its Model page. */}
+      {(onSwitchModel || onModelChange) && (
+        <ModelPickerOpener
+          surface="mobile"
+          onOpen={() => {
+            setSub("model");
+            setMenuOpen(true);
+          }}
+        />
+      )}
       <Button
         size="icon"
         className="size-8 rounded-full border-0 bg-transparent text-muted-foreground shadow-none hover:bg-muted/60"
@@ -1422,7 +1440,31 @@ interface ComposerMenu {
   kind: "agent" | "command";
   items: ComposerMenuItem[];
   index: number;
+  /** The text typed after the trigger char (the no-match hint names it). */
+  query: string;
   select: (item: ComposerMenuItem) => void;
+}
+
+/** The muted source tag on a `/` row: Studio's own or the daemon's. */
+export function commandSourceTag(item: ComposerMenuItem): string {
+  return item.builtin ? "built-in" : "workspace";
+}
+
+/**
+ * The `/` palette's empty state, shown INSTEAD of nothing when the typed
+ * token matches no command: names the token and says what Enter does (the
+ * text goes to the agent unchanged). Null for the `@` menu and for an
+ * empty query (the bare `/` with no commands at all shows no popover).
+ */
+export function commandNoMatchHint(menu: {
+  kind: "agent" | "command";
+  items: readonly unknown[];
+  query: string;
+}): string | null {
+  if (menu.kind !== "command" || menu.items.length > 0 || !menu.query) {
+    return null;
+  }
+  return `No command matches /${menu.query} — Enter sends it as text`;
 }
 
 /**
@@ -1607,6 +1649,11 @@ export function ChatInput({
         }
         props.editor.commands.clearContent();
         setText("");
+        if (outcome?.insertText) {
+          // `/agents`: type the `@` into the emptied field so the agent
+          // roster opens (the suggestion plugin reads the document).
+          props.editor.chain().focus().insertContent(outcome.insertText).run();
+        }
         return;
       }
       props.command(item);
@@ -1625,6 +1672,7 @@ export function ChatInput({
           kind,
           items: props.items,
           index: 0,
+          query: props.query,
           select: (item) => selectMenuItem(kind, props, item),
         });
       },
@@ -1638,6 +1686,7 @@ export function ChatInput({
             kind,
             items: props.items,
             index,
+            query: props.query,
             select: (item) => selectMenuItem(kind, props, item),
           };
         });
@@ -1842,6 +1891,10 @@ export function ChatInput({
         }
         editor?.commands.clearContent();
         setText("");
+        if (outcome?.insertText && editor) {
+          // `/agents` typed out: the `@` opens the roster in the emptied field.
+          editor.chain().focus().insertContent(outcome.insertText).run();
+        }
         return;
       }
       const files = attachedFiles.length > 0 ? attachedFiles : undefined;
@@ -2097,6 +2150,19 @@ export function ChatInput({
     >
       {/* Autocomplete popover (agent @-mentions or slash commands), floating
           above the input box. Driven by TipTap's suggestion lifecycle. */}
+      {menu && menu.items.length === 0 && commandNoMatchHint(menu) && (
+        // The `/` palette's empty state: not a row (nothing to pick — Enter
+        // falls through to the plain send), just the hint.
+        <div className="absolute bottom-full left-0 right-0 z-30 mb-2 overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-xl">
+          <p
+            role="status"
+            data-testid="composer-command-no-match"
+            className="px-3 py-2 text-xs text-muted-foreground"
+          >
+            {commandNoMatchHint(menu)}
+          </p>
+        </div>
+      )}
       {menu && menu.items.length > 0 && (
         <div className="absolute bottom-full left-0 right-0 z-30 mb-2 overflow-hidden rounded-xl border border-border bg-popover text-popover-foreground shadow-xl">
           <div className="max-h-64 overflow-y-auto py-1">
@@ -2146,6 +2212,16 @@ export function ChatInput({
                 <span className="truncate text-xs text-muted-foreground">
                   {item.secondary}
                 </span>
+                {menu.kind === "command" && (
+                  // Where the row comes from: Studio itself (runs locally)
+                  // or the daemon's workspace commands (sent as a prompt).
+                  <span
+                    data-testid="composer-command-source"
+                    className="ml-auto shrink-0 text-[10px] uppercase tracking-wide text-muted-foreground/80"
+                  >
+                    {commandSourceTag(item)}
+                  </span>
+                )}
               </button>
             ))}
           </div>

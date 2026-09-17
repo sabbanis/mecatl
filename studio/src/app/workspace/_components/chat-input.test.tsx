@@ -5,6 +5,8 @@ import {
   AttachmentPill,
   agentMenuItems,
   commandMenuItems,
+  commandNoMatchHint,
+  commandSourceTag,
   ModelEffortSelector,
   resolveComposerAction,
   resolveComposerSubmission,
@@ -153,6 +155,8 @@ describe("commandMenuItems", () => {
 
   it("lists the Studio builtins first, in fixed order, then the daemon's commands", () => {
     const items = commandMenuItems("", { gates: OPEN });
+    // No capability document: only the always-present built-ins, then
+    // the daemon's list.
     expect(items.map((i) => i.id)).toEqual([
       "clear",
       "help",
@@ -160,14 +164,71 @@ describe("commandMenuItems", () => {
       "retry",
       "diagnostics",
       "compact",
+      "title",
+      "learning",
       "review",
     ]);
     expect(items[1]?.primary).toBe("/help");
     expect(items[1]?.secondary).toBe(STUDIO_HELP);
-    // Builtin rows carry the mark the palette renders as a terminal glyph;
-    // daemon rows do not.
-    expect(items.slice(0, 6).every((i) => i.builtin === true)).toBe(true);
-    expect(items[6]?.builtin).toBeUndefined();
+    // Builtin rows carry the mark the palette renders as a terminal glyph
+    // and the "built-in" source tag; daemon rows read "workspace".
+    expect(items.slice(0, 8).every((i) => i.builtin === true)).toBe(true);
+    expect(items[8]?.builtin).toBeUndefined();
+    expect(items.slice(0, 8).map(commandSourceTag)).toEqual(
+      Array(8).fill("built-in"),
+    );
+    expect(commandSourceTag(items[8] as (typeof items)[number])).toBe(
+      "workspace",
+    );
+  });
+
+  it("adds the capability-gated built-ins the daemon enables, ahead of the daemon's commands", () => {
+    const items = commandMenuItems("", {
+      gates: {
+        ...OPEN,
+        capabilities: { mcp: true, agents: true, posture: "auto" },
+      },
+    });
+    const ids = items.map((i) => i.id);
+    expect(ids).toEqual([
+      "clear",
+      "help",
+      "session",
+      "retry",
+      "diagnostics",
+      "compact",
+      "title",
+      "mcp",
+      "prompts",
+      "resources",
+      "agents",
+      // /models and /effort ride the picker's gate (absent = shown).
+      "models",
+      "effort",
+      "posture",
+      "learning",
+      "review",
+    ]);
+    expect(ids).not.toContain("skills");
+    expect(items.find((i) => i.id === "mcp")?.secondary).toMatch(/MCP tools/);
+  });
+
+  it("names the typed token in the no-match hint, and only for the `/` menu", () => {
+    expect(
+      commandNoMatchHint({ kind: "command", items: [], query: "zzz" }),
+    ).toBe("No command matches /zzz — Enter sends it as text");
+    // Rows to pick, an empty query (the bare `/`) or the `@` menu: no hint.
+    expect(
+      commandNoMatchHint({ kind: "command", items: [{}], query: "zzz" }),
+    ).toBeNull();
+    expect(
+      commandNoMatchHint({ kind: "command", items: [], query: "" }),
+    ).toBeNull();
+    expect(
+      commandNoMatchHint({ kind: "agent", items: [], query: "zzz" }),
+    ).toBeNull();
+    // The hint is what the palette renders when the prefix matches nothing.
+    expect(commandMenuItems("zzz", { gates: OPEN })).toEqual([]);
   });
 
   it("hides /compact unless the daemon enables manual compaction", () => {
