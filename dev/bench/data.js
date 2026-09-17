@@ -248001,6 +248001,45 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789651087857,
         "tool": "customSmallerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jakub@stacklok.com",
+            "name": "Jakub Hrozek",
+            "username": "jhrozek"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a74b0f1e7c6d23d87018b35f6c84f8d01294b265",
+          "message": "test(mecatui): use a short perf admin socket path (#1681)\n\nCo-authored-by: mecatl <noreply@mecatl.dev>",
+          "timestamp": "2026-09-17T15:22:20+02:00",
+          "tree_id": "53f1fdf989585d8f65079a9a0ef6ebcccc0978ae",
+          "url": "https://github.com/stacklok/mecatl/commit/a74b0f1e7c6d23d87018b35f6c84f8d01294b265"
+        },
+        "date": 1789652001104,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3298.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 88,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1155,
+            "unit": "allocs/op"
+          }
+        ]
       }
     ],
     "mecatl scenarios (smaller-is-better)": [
@@ -325217,6 +325256,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789651998275,
+  "lastUpdate": 1789652001900,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
