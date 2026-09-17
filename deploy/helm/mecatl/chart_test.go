@@ -61,6 +61,12 @@ func TestManagedUsesKubernetesWorkloadJWTBootstrapByDefault(t *testing.T) {
 		}
 	}
 	bundle := renderedResource(out, "mecatl/charts/mecabroker/templates/deployment.yaml")
+	if strings.Count(bundle, "name: workload-jwt-bootstrap") != 2 || strings.Contains(bundle, "name: workload-jwt-ca") || strings.Contains(bundle, "name: workload-jwt-token") {
+		t.Fatalf("managed bootstrap rendered overlapping workload-JWT volumes:\n%s", bundle)
+	}
+	if !strings.Contains(bundle, "name: kube-root-ca.crt") || !strings.Contains(bundle, "key: ca.crt, path: ca.pem") {
+		t.Fatal("managed bootstrap omitted the projected Kubernetes CA source")
+	}
 	serviceAccountToken := bundle[strings.Index(bundle, "serviceAccountToken:"):]
 	if strings.Contains(strings.Split(serviceAccountToken, "expirationSeconds:")[0], "audience:") {
 		t.Fatal("managed bootstrap default unexpectedly rendered a token audience")

@@ -67,8 +67,7 @@ spec:
           volumeMounts:
             - {name: tls, mountPath: /var/run/mecabroker/tls, readOnly: true}
 {{- if include "mecabroker.kubernetesBootstrap" . }}
-            - {name: workload-jwt-ca, mountPath: /var/run/mecabroker/workload-jwt/ca.pem, subPath: ca.pem, readOnly: true}
-            - {name: workload-jwt-token, mountPath: /var/run/mecabroker/workload-jwt, readOnly: true}
+            - {name: workload-jwt-bootstrap, mountPath: /var/run/mecabroker/workload-jwt, readOnly: true}
 {{- else }}
             - {name: workload-jwt, mountPath: /var/run/mecabroker/workload-jwt, readOnly: true}
 {{- end }}
@@ -93,16 +92,14 @@ spec:
               - {key: {{ .Values.listener.tls.certKey }}, path: {{ .Values.listener.tls.certKey }}}
               - {key: {{ .Values.listener.tls.keyKey }}, path: {{ .Values.listener.tls.keyKey }}}
 {{- if include "mecabroker.kubernetesBootstrap" . }}
-        - name: workload-jwt-ca
-          configMap:
-            name: kube-root-ca.crt
-            defaultMode: 0440
-            items:
-              - {key: ca.crt, path: ca.pem}
-        - name: workload-jwt-token
+        - name: workload-jwt-bootstrap
           projected:
             defaultMode: 0440
             sources:
+              - configMap:
+                  name: kube-root-ca.crt
+                  items:
+                    - {key: ca.crt, path: ca.pem}
               - serviceAccountToken:
                   path: token
                   {{ if $bootstrapAPIAudience }}
