@@ -804,7 +804,9 @@ export function ModeSelector({
               className={cn("size-2 shrink-0 rounded-full", dot)}
             />
           )}
-          <span className="max-w-40 truncate @max-md:hidden">{shown}</span>
+          <span className="max-w-40 truncate @max-md:hidden">
+            Mode <span className="text-muted-foreground">{shown}</span>
+          </span>
           <span className="hidden @max-md:inline">Mode</span>
           <ChevronDown className="size-3.5 text-muted-foreground" />
         </Button>

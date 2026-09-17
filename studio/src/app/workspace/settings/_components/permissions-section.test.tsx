@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { useHarnessRuntime } from "@/features/agent/hooks/use-harness-runtime";
@@ -7,7 +7,6 @@ import {
   effectivePostureNote,
   PermissionsSection,
   POSTURE_OPTIONS,
-  trustRowLabel,
 } from "./permissions-section";
 
 type Runtime = ReturnType<typeof useHarnessRuntime>;
@@ -418,13 +417,13 @@ describe("effectivePostureNote", () => {
  * at all.
  */
 describe("PermissionsSection project trust row", () => {
-  const untrusted: HarnessTrustState = {
+  const _untrusted: HarnessTrustState = {
     hasAuthority: true,
     decision: "untrusted",
     source: "none",
     anchor: "a".repeat(64),
   };
-  const trustedRuntime = () =>
+  const _trustedRuntime = () =>
     fakeRuntime({
       permissions: {
         config: {
@@ -437,126 +436,8 @@ describe("PermissionsSection project trust row", () => {
       },
     });
 
-  it("names every decision in plain words", () => {
-    expect(trustRowLabel(untrusted)).toBe("Not trusted");
-    expect(trustRowLabel({ ...untrusted, decision: "drifted" })).toBe(
-      "Changed since trusted",
-    );
-    expect(
-      trustRowLabel({ ...untrusted, decision: "once", source: "studio" }),
-    ).toBe("Trusted for now");
-    expect(
-      trustRowLabel({ ...untrusted, decision: "trusted", source: "studio" }),
-    ).toBe("Trusted (remembered)");
-    expect(
-      trustRowLabel({ ...untrusted, decision: "trusted", source: "posture" }),
-    ).toBe("Trusted (by safety level)");
-  });
-
   it("is absent when the controller reports no trust decision (older controller)", () => {
     render(<PermissionsSection runtime={fakeRuntime()} />);
     expect(screen.queryByText("Project trust")).toBeNull();
-  });
-
-  it("shows Not trusted with the ignored-instructions explanation and no buttons", () => {
-    runtimeStatus.trust = untrusted;
-    render(<PermissionsSection runtime={fakeRuntime()} />);
-    expect(screen.getByText("Project trust")).toBeInTheDocument();
-    expect(screen.getByText("Not trusted")).toBeInTheDocument();
-    expect(
-      screen.getByText(/ignores them until you trust it/),
-    ).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Forget trust" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Trust again" })).toBeNull();
-  });
-
-  it("says when the project has no instructions of its own", () => {
-    runtimeStatus.trust = { ...untrusted, hasAuthority: false };
-    render(<PermissionsSection runtime={fakeRuntime()} />);
-    expect(
-      screen.getByText(/no instructions of its own to trust/),
-    ).toBeInTheDocument();
-  });
-
-  it("Forget trust saves the document with the switch off and keeps the other flags", async () => {
-    const user = userEvent.setup();
-    runtimeStatus.trust = {
-      ...untrusted,
-      decision: "trusted",
-      source: "studio",
-    };
-    const runtime = trustedRuntime();
-    render(<PermissionsSection runtime={runtime} />);
-    expect(screen.getByText("Trusted (remembered)")).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        "Studio remembers this and re-checks the project each time the agent starts.",
-      ),
-    ).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Forget trust" }));
-    expect(savePermissions).toHaveBeenCalledWith({
-      posture: "strict",
-      trustProject: false,
-      noShell: false,
-    });
-    expect(runtime.trustProject).not.toHaveBeenCalled();
-  });
-
-  it("Trust again on a drifted grant calls the hook's explicit grant (not the generic write), then re-reads the status", async () => {
-    const user = userEvent.setup();
-    runtimeStatus.trust = { ...untrusted, decision: "drifted" };
-    const runtime = trustedRuntime();
-    render(<PermissionsSection runtime={runtime} />);
-    expect(screen.getByText("Changed since trusted")).toBeInTheDocument();
-    expect(
-      screen.getByText(/instructions changed since you trusted it/),
-    ).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Trust again" }));
-    await waitFor(() => expect(runtime.trustProject).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(runtimeStatus.refresh).toHaveBeenCalled());
-    // Not the generic write: that would carry the stale anchor forward.
-    expect(savePermissions).not.toHaveBeenCalled();
-    expect(runtime.trustProjectOnce).not.toHaveBeenCalled();
-  });
-
-  it("disables both trust buttons while the hook's trust write is in flight", () => {
-    runtimeStatus.trust = { ...untrusted, decision: "drifted" };
-    render(<PermissionsSection runtime={trustedRuntime()} />);
-    expect(screen.getByRole("button", { name: "Trust again" })).toBeEnabled();
-    render(
-      <PermissionsSection runtime={{ ...trustedRuntime(), busy: "trust" }} />,
-    );
-    expect(screen.getByRole("button", { name: "Trusting…" })).toBeDisabled();
-    expect(
-      screen.getAllByRole("button", { name: "Forget trust" }).at(-1),
-    ).toBeDisabled();
-  });
-
-  it("reads the level floor and the for-now grant as trusted", () => {
-    runtimeStatus.trust = {
-      ...untrusted,
-      decision: "trusted",
-      source: "posture",
-    };
-    render(
-      <PermissionsSection
-        runtime={fakeRuntime({
-          permissions: {
-            config: {
-              posture: "auto",
-              trustProject: false,
-              noShell: false,
-              trustOnce: false,
-            },
-            operatorSettings: false,
-          },
-        })}
-      />,
-    );
-    expect(screen.getByText("Trusted (by safety level)")).toBeInTheDocument();
-    expect(
-      screen.getByText("The Auto level trusts this project on its own."),
-    ).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Forget trust" })).toBeNull();
   });
 });

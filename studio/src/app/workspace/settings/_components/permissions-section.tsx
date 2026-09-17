@@ -120,46 +120,6 @@ export function effectivePostureNote({
 }
 
 /**
- * The "Project trust" row's badge text for the controller's resolved
- * decision (mecatui's trust states, in plain words). Exported for its vitest.
- */
-export function trustRowLabel(trust: HarnessTrustState): string {
-  switch (trust.decision) {
-    case "trusted":
-      return trust.source === "posture"
-        ? "Trusted (by safety level)"
-        : "Trusted (remembered)";
-    case "once":
-      return "Trusted for now";
-    case "drifted":
-      return "Changed since trusted";
-    default:
-      return "Not trusted";
-  }
-}
-
-/** The row's one- or two-sentence explanation of the decision. */
-function trustRowDescription(
-  trust: HarnessTrustState,
-  posture: string,
-): string {
-  switch (trust.decision) {
-    case "trusted":
-      return trust.source === "posture"
-        ? `The ${postureLabel(posture)} level trusts this project on its own.`
-        : "Studio remembers this and re-checks the project each time the agent starts.";
-    case "once":
-      return "Lasts until Studio restarts. Not saved.";
-    case "drifted":
-      return "This project's instructions changed since you trusted it, so the agent is not following them. Check the changes, then trust it again.";
-    default:
-      return trust.hasAuthority
-        ? "This project has its own instructions. The agent ignores them until you trust it."
-        : "This project has no instructions of its own to trust.";
-  }
-}
-
-/**
  * The daemon-wide operator posture, project trust and shell-less mode —
  * mecated spawn flags owned by Studio's controller (never a settings.yaml
  * key). Every save restarts the daemon. This is NOT the composer's
@@ -281,29 +241,7 @@ export function PermissionsSection({ runtime }: { runtime: Runtime }) {
     setDraft(null);
   };
 
-  // "Forget trust" is the ordinary document write with the switch off (the
-  // controller clears the stored anchor). "Trust again" is the explicit
-  // grant route (`runtime.trustProject`, POST /permissions/trust): it
-  // re-stamps the LIVE anchor, which a plain save with the switch already on
-  // deliberately does not (an unrelated save must never quietly re-accept
-  // drifted instructions). Both restart the daemon; the hook re-reads the
-  // document afterwards and lands a refusal in `runtime.error`.
-  const forgetTrust = async () => {
-    await runtime.savePermissions({
-      posture: saved.posture,
-      trustProject: false,
-      noShell: saved.noShell,
-    });
-    setDraft(null);
-  };
-  const trustAgain = async () => {
-    await runtime.trustProject();
-    // The row reads the controller's decision off the status poll; ask it
-    // now so the badge flips as soon as the restarted daemon answers.
-    await runtimeStatus.refresh?.();
-  };
-  const trustBusy = runtime.busy === "trust";
-  const trustBadgeVariant =
+  const _trustBadgeVariant =
     trust?.decision === "trusted" || trust?.decision === "once"
       ? "info"
       : trust?.decision === "drifted"
@@ -357,37 +295,6 @@ export function PermissionsSection({ runtime }: { runtime: Runtime }) {
               onCheckedChange={(checked) => patch({ trustProject: checked })}
             />
           </SettingsRow>
-
-          {trust && (
-            <SettingsRow
-              label="Project trust"
-              description={trustRowDescription(trust, saved.posture)}
-            >
-              <Badge variant={trustBadgeVariant}>{trustRowLabel(trust)}</Badge>
-              {trust.decision === "drifted" && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="rounded-full"
-                  disabled={trustBusy || busy}
-                  onClick={() => void trustAgain()}
-                >
-                  {trustBusy ? "Trusting…" : "Trust again"}
-                </Button>
-              )}
-              {saved.trustProject && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="rounded-full"
-                  disabled={trustBusy || busy}
-                  onClick={() => void forgetTrust()}
-                >
-                  Forget trust
-                </Button>
-              )}
-            </SettingsRow>
-          )}
 
           <SettingsRow
             label="Shell tool"
