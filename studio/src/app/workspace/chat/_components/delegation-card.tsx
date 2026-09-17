@@ -4,6 +4,7 @@ import { AlertCircle, Eye, GitBranch, Pencil, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import type { DelegationGroupInfo, DelegationInfo } from "@/features/agent";
 import { formatTokens } from "@/lib/formatters";
+import { toolDisplayName } from "@/lib/tool-names";
 import { cn } from "@/lib/utils";
 import {
   childHash,
@@ -79,7 +80,7 @@ export function DelegationCard({
   const totalTokens = inputTokens + outputTokens;
   if (totalTokens > 0) counters.push(`${formatTokens(totalTokens)} tok`);
   if (!isTeam && running && delegation.lastTool) {
-    counters.push(delegation.lastTool);
+    counters.push(toolDisplayName(delegation.lastTool));
   }
   if (!isTeam && delegation.stop !== undefined && !failed) {
     const duration = formatChildDuration(delegation.durationMs ?? 0);

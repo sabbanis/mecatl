@@ -7,6 +7,7 @@ import {
   isDebugMcpMutationAsk,
 } from "@/features/agent/approval-queue";
 import { isPlanAsk } from "@/features/agent/plan-ask";
+import { toolDisplayName } from "@/lib/tool-names";
 import { ApprovalVerdictBar } from "./approval-verdict-bar";
 import { askToolName } from "./ask-args";
 import { AskArgsView } from "./ask-args-view";
@@ -54,7 +55,11 @@ export function ApprovalDetailPanel({
     );
   }
   const toolName = askToolName(approval);
-  const destructive = DELETE_WORDS.test(toolName);
+  // The header shows the humanized `Server · Tool` for an MCP tool;
+  // destructiveness is judged on both forms (the inline card does the same).
+  const displayName = toolDisplayName(toolName);
+  const destructive =
+    DELETE_WORDS.test(toolName) || DELETE_WORDS.test(displayName);
   const child = approval.child === true;
   // A debugger MCP call (ADR 0254): approved one call at a time, Always
   // allow never learned by the daemon — withheld here as on the inline card.
@@ -67,7 +72,7 @@ export function ApprovalDetailPanel({
   return (
     <SidePanel
       icon={ShieldAlert}
-      title={`${toolName} — permission ask`}
+      title={`${displayName} — permission ask`}
       closeLabel="Close permission details"
       maximized={maximized}
       onToggleMaximize={onToggleMaximize}

@@ -123,7 +123,9 @@ function SnapshotRows({
               ? "A persona fragment is part of every run's turn-0 context."
               : dropped
                 ? "The workspace persona was found but dropped: the daemon does not trust this project."
-                : "No persona fragment reaches the model."
+                : soul.provenance === "none"
+                  ? "No persona file was found: neither a user soul.md nor a project .mecatl/soul.md."
+                  : "No persona fragment reaches the model."
           }
         >
           <Badge
@@ -140,6 +142,11 @@ function SnapshotRows({
           <Badge data-testid="soul-provenance" variant="secondary">
             {soul.provenance}
           </Badge>
+          {soul.present && soul.provenance === "project" && soul.trusted ? (
+            <Badge data-testid="soul-trust" variant="success">
+              trusted
+            </Badge>
+          ) : null}
           {dropped ? (
             <Badge variant="destructive">
               dropped — untrusted project soul

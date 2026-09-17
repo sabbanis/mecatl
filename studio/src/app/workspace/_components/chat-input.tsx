@@ -112,6 +112,11 @@ import {
   type McpPickerKind,
   useMcpComposerInsert,
 } from "./mcp-composer-insert";
+import {
+  MemoryIndicator,
+  MemorySheetSection,
+  MemoryStateLabel,
+} from "./memory-indicator";
 import { ModelSheetSection, ModelSubmenuContent } from "./model-picker";
 import { ModelPickerOpener } from "./model-picker-opener";
 import {
@@ -679,53 +684,6 @@ export function ModeSelector({
 }
 
 /**
- * Controls whether the agent draws on (and writes to) its long-term memory for
- * this conversation. A pill matching the model selector, opening a small On/Off
- * menu; on by default.
- */
-function MemoryToggle() {
-  const [on, setOn] = useState(true);
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <Button
-          size="sm"
-          className={GHOST_TRIGGER_CLASS}
-          title={`Memory ${on ? "On" : "Off"}`}
-        >
-          Memory
-          <span className="text-muted-foreground @max-md:hidden">
-            {on ? "On" : "Off"}
-          </span>
-          <ChevronDown className="size-3.5 text-muted-foreground" />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent
-        onCloseAutoFocus={(e) => e.preventDefault()}
-        align="start"
-        className="w-40"
-      >
-        {[true, false].map((value) => (
-          <DropdownMenuItem
-            key={String(value)}
-            className="gap-2"
-            onClick={() => setOn(value)}
-          >
-            <Check
-              className={cn(
-                "size-4",
-                on === value ? "text-foreground" : "text-transparent",
-              )}
-            />
-            {value ? "On" : "Off"}
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
-
-/**
  * The mobile composer's left-hand options button: a + that opens a bottom
  * sheet with the composer's secondary actions — Add a file, Model, Memory —
  * replacing the desktop toolbar row (hidden on mobile). Model and Memory
@@ -793,7 +751,6 @@ function MobileComposerMenu({
   // Draft: null = untouched (Studio default applies), "" = auto on purpose.
   const [model, setModel] = useState<string | null>(null);
   const [localEffort, setLocalEffort] = useState<string>(DEFAULT_EFFORT);
-  const [memoryOn, setMemoryOn] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const modelOptions = [autoModel(autoModelLabel), ...(models ?? [])];
   const { defaultModel: studioDefault } = useDefaultModel();
@@ -967,7 +924,7 @@ function MobileComposerMenu({
               <Brain className="size-4 text-muted-foreground" />
               <span className="flex-1 text-left">Memory</span>
               <span className="text-muted-foreground">
-                {memoryOn ? "On" : "Off"}
+                <MemoryStateLabel />
               </span>
               <ChevronRight className="size-4 text-muted-foreground/60" />
             </button>
@@ -1092,19 +1049,7 @@ function MobileComposerMenu({
       >
         <SheetContent side="bottom" className="p-0">
           <SheetTitle className="sr-only">Memory</SheetTitle>
-          <div className="py-2">
-            {[true, false].map((value) => (
-              <SheetOptionRow
-                key={String(value)}
-                label={value ? "On" : "Off"}
-                selected={memoryOn === value}
-                onSelect={() => {
-                  setMemoryOn(value);
-                  setSub(null);
-                }}
-              />
-            ))}
-          </div>
+          <MemorySheetSection onNavigate={() => setSub(null)} />
         </SheetContent>
       </Sheet>
     </>
@@ -2557,7 +2502,7 @@ export function ChatInput({
                 onModelChange?.(id);
               }}
             />
-            <MemoryToggle />
+            <MemoryIndicator className={GHOST_TRIGGER_CLASS} />
           </>
         )}
       </div>

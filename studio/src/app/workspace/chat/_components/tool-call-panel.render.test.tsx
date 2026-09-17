@@ -70,9 +70,9 @@ describe("ToolCallPanel", () => {
     expect(screen.getByText(/"owner": "stacklok"/)).toBeInTheDocument();
   });
 
-  it("titles an MCP tool by server · tool and shows the exact name and result parts", () => {
+  it("titles an MCP tool by Server · Tool and shows the exact name and result parts", () => {
     render(<ToolCallPanel call={mcpCall} {...shared} />);
-    expect(screen.getByText("github · list_issues")).toBeInTheDocument();
+    expect(screen.getByText("GitHub · List issues")).toBeInTheDocument();
     expect(screen.getByText("· mcp__github__list_issues")).toBeInTheDocument();
     expect(screen.getByText("Result parts")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /r\.html/ })).toHaveAttribute(

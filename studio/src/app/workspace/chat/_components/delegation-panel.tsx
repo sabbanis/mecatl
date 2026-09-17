@@ -26,6 +26,7 @@ import {
 } from "@/features/agent";
 import { TranscriptDialog } from "@/features/agent/components/transcript-dialog";
 import { formatTokens } from "@/lib/formatters";
+import { toolDisplayName } from "@/lib/tool-names";
 import { cn } from "@/lib/utils";
 import { contextUtilisation } from "./context-meter";
 import {
@@ -237,7 +238,9 @@ function contentKeys<T>(items: readonly T[], describe: (item: T) => string) {
  * `failed` / `failed (<stop>)` on the bad family.
  */
 function laneStateText(card: DelegationInfo, running: boolean): string {
-  if (running) return card.lastTool || "working…";
+  if (running) {
+    return card.lastTool ? toolDisplayName(card.lastTool) : "working…";
+  }
   const failed = delegationFailed(card);
   const stopLabel =
     card.stop !== undefined ? delegationStopLabel(card.stop) : "";
@@ -507,7 +510,11 @@ function TraceList({ trace }: { trace?: DelegationTraceEntry[] }) {
             )}
           >
             <span aria-hidden="true">{mark} </span>
-            <span className="font-medium">{entry.name}</span>
+            <span className="font-medium" title={entry.name}>
+              {entry.name === undefined
+                ? undefined
+                : toolDisplayName(entry.name)}
+            </span>
             {entry.detail && (
               <span className="text-muted-foreground"> — {entry.detail}</span>
             )}
@@ -744,7 +751,7 @@ function SubagentFocus({
   const running = subagentRunning(card);
   const goal = card.label || "subagent";
   const state = running
-    ? `running${card.lastTool ? ` · ${card.lastTool}` : ""}`
+    ? `running${card.lastTool ? ` · ${toolDisplayName(card.lastTool)}` : ""}`
     : laneStateText(card, false);
   return (
     <>

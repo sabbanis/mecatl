@@ -9,6 +9,7 @@ import {
   isDebugMcpMutationAsk,
 } from "@/features/agent/approval-queue";
 import { isPlanAsk } from "@/features/agent/plan-ask";
+import { toolDisplayName } from "@/lib/tool-names";
 import { cn } from "@/lib/utils";
 import { ApprovalVerdictBar } from "./approval-verdict-bar";
 import { AskArgsView } from "./ask-args-view";
@@ -60,7 +61,12 @@ export function ApprovalPanel({
     approval.toolName ||
     approval.description.replace(/ needs your approval\.?$/i, "").trim() ||
     "Tool";
-  const destructive = DELETE_WORDS.test(toolName);
+  // The badge shows the TUI's humanized `Server · Tool` for an MCP tool
+  // (exact id on hover); destructiveness is judged on BOTH forms, because
+  // `\b` never fires inside `mcp__github__delete_branch`.
+  const displayName = toolDisplayName(toolName);
+  const destructive =
+    DELETE_WORDS.test(toolName) || DELETE_WORDS.test(displayName);
   // A child's ask names who is asking. It offers no "Always allow": a
   // persistent grant learned from a throwaway child would outlive it (the
   // TUI withholds AllowAlways for child asks for the same reason).
@@ -133,8 +139,9 @@ export function ApprovalPanel({
               ? "bg-destructive/15 text-destructive"
               : "bg-warning/15 text-warning",
           )}
+          title={toolName}
         >
-          {toolName}
+          {displayName}
         </Badge>
         {child && (
           <Badge variant="outline" className="text-xs">

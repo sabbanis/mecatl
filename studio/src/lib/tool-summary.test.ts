@@ -109,9 +109,9 @@ describe("summarizeResult", () => {
 });
 
 describe("friendlyToolName", () => {
-  it("splits an MCP tool into server · tool and keeps the raw name", () => {
+  it("titles an MCP tool Server · Tool (the TUI's humanized head) and keeps the raw name", () => {
     expect(friendlyToolName("mcp__github__list_issues")).toEqual({
-      display: "github · list_issues",
+      display: "GitHub · List issues",
       raw: "mcp__github__list_issues",
       mcp: true,
       server: "github",
@@ -119,10 +119,11 @@ describe("friendlyToolName", () => {
     });
   });
 
-  it("keeps underscores inside the tool name", () => {
-    expect(friendlyToolName("mcp__fetch__fetch_url__v2").display).toBe(
-      "fetch · fetch_url__v2",
-    );
+  it("splits on the first double underscore and keeps the rest as the tool", () => {
+    const head = friendlyToolName("mcp__fetch__fetch_url__v2");
+    expect(head.server).toBe("fetch");
+    expect(head.tool).toBe("fetch_url__v2");
+    expect(head.display.startsWith("Fetch · Fetch url")).toBe(true);
   });
 
   it("passes a plain tool name through", () => {

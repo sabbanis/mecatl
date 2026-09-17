@@ -58,12 +58,12 @@ describe("ToolCallList rows", () => {
     );
     const activity = screen.getByRole("button", { name: /Activity: 2 tools/ });
     expect(activity).toHaveAttribute("aria-expanded", "false");
-    expect(activity).toHaveTextContent("github · list_issues · Edit");
+    expect(activity).toHaveTextContent("GitHub · List issues · Edit");
     expect(screen.queryByTestId("tool-args-summary")).toBeNull();
 
     fireEvent.click(activity);
     expect(activity).toHaveAttribute("aria-expanded", "true");
-    const head = screen.getByText("github · list_issues");
+    const head = screen.getByText("GitHub · List issues");
     expect(head).toHaveAttribute("title", "mcp__github__list_issues");
     const summaries = screen.getAllByTestId("tool-args-summary");
     expect(summaries[0]).toHaveTextContent("owner: stacklok · repo: mecatl");
@@ -75,7 +75,7 @@ describe("ToolCallList rows", () => {
     expect(results[1]).toHaveTextContent("edited");
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Open github · list_issues details" }),
+      screen.getByRole("button", { name: "Open GitHub · List issues details" }),
     );
     expect(onSelect).toHaveBeenCalledWith(mcpCall);
   });

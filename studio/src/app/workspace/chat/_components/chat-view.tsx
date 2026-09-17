@@ -97,6 +97,7 @@ import {
   unregisterThreadSession,
   useThreadMap,
 } from "@/lib/thread-map";
+import { toolDisplayName } from "@/lib/tool-names";
 import type { SessionToolProfile } from "@/lib/tool-profile";
 import { type ChangedFile, changedFilesFromMessages } from "@/lib/tool-summary";
 import { cn } from "@/lib/utils";
@@ -2286,9 +2287,9 @@ export function ChatView({
                 : activePanel.kind === "attachment"
                   ? activePanel.attachment.name
                   : activePanel.kind === "toolcall"
-                    ? activePanel.call.name
+                    ? toolDisplayName(activePanel.call.name)
                     : activePanel.kind === "approval"
-                      ? `${activePanel.approval.toolName || "Tool"} — permission ask`
+                      ? `${toolDisplayName(activePanel.approval.toolName || "Tool")} — permission ask`
                       : activePanel.kind === "delegation"
                         ? "Agents"
                         : activePanel.kind === "changed-files"

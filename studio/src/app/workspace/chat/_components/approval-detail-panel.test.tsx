@@ -119,3 +119,39 @@ describe("ApprovalDetailPanel", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });
+
+/**
+ * An MCP ask is titled with the TUI's humanized `Server · Tool`; the
+ * destructive tint is judged on both the raw id and the title, so an MCP
+ * delete tool still paints Allow once red (the inline card does the same).
+ */
+describe("ApprovalDetailPanel MCP tool titles", () => {
+  const mcpAsk = (toolName: string): ApprovalRequest => ({
+    ...shellAsk,
+    toolName,
+    description: `${toolName} needs your approval.`,
+    reason: "",
+    args: JSON.stringify({ owner: "stacklok" }),
+    details: "",
+  });
+
+  it("titles an MCP delete ask Server · Tool and keeps the destructive tint", () => {
+    renderPanel(mcpAsk("mcp__github__delete_branch"));
+    expect(
+      screen.getByText("GitHub · Delete branch — permission ask"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Allow once" })).toHaveClass(
+      "bg-destructive",
+    );
+  });
+
+  it("keeps a non-destructive MCP ask amber", () => {
+    renderPanel(mcpAsk("mcp__github__issue_write"));
+    expect(
+      screen.getByText("GitHub · Issue write — permission ask"),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Allow once" })).toHaveClass(
+      "bg-warning",
+    );
+  });
+});

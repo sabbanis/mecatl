@@ -12,6 +12,7 @@ import type {
   ToolResultPart,
 } from "@/features/agent/types";
 import type { ToolCallFile } from "@/lib/file-meta";
+import { toolDisplayParts } from "@/lib/tool-names";
 
 const ELLIPSIS = "…";
 
@@ -136,32 +137,32 @@ export function summarizeResult(
 }
 
 export interface FriendlyToolName {
-  /** What the card shows: `server · tool` for an MCP tool, else the name. */
+  /** What the card shows: `Server · Tool` for an MCP tool, else the name. */
   display: string;
   /** The exact tool name (the card's hover title). */
   raw: string;
   mcp: boolean;
+  /** The raw `<server>` half of an MCP name. */
   server?: string;
+  /** The raw `<tool>` half of an MCP name. */
   tool?: string;
 }
 
-const MCP_TOOL = /^mcp__([^_].*?)__(.+)$/;
-
 /**
  * The head an inline card shows for a tool: `mcp__github__list_issues`
- * becomes `github · list_issues` (with `mcp: true`, so the row can swap its
- * glyph); any other name passes through unchanged.
+ * becomes the TUI's humanized "GitHub · List issues" (`@/lib/tool-names`,
+ * with `mcp: true` so the row can swap its glyph); any other name passes
+ * through unchanged.
  */
 export function friendlyToolName(name: string): FriendlyToolName {
-  const match = MCP_TOOL.exec(name);
-  if (match) {
-    const [, server, tool] = match;
+  const parts = toolDisplayParts(name);
+  if (parts.mcp) {
     return {
-      display: `${server} · ${tool}`,
+      display: parts.title,
       raw: name,
       mcp: true,
-      server,
-      tool,
+      server: parts.server,
+      tool: parts.tool,
     };
   }
   return { display: name, raw: name, mcp: false };

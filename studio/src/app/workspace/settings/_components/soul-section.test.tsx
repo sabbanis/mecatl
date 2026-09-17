@@ -21,8 +21,10 @@ import {
  * Cancel save nothing, strict and file follow the enabled switch; (3) a
  * DRIFTED user/project soul offers "Accept current persona as baseline"
  * whose confirm calls `approveSoul`, while a driver soul, an undrifted one
- * and a disabled persona do not; (4) a dropped untrusted project soul is
- * named as such; (5) external mode renders the managed note with no
+ * and a disabled persona do not; (4) a loaded project soul is marked trusted
+ * (the TUI's "project (trusted)"), a dropped untrusted one is named as such,
+ * and an empty selection names the files that were not found; (5) external
+ * mode renders the managed note with no
  * control, offline the offline note, and a daemon without the capability
  * says so while the managed controls stay usable so it can be re-enabled.
  */
@@ -177,6 +179,54 @@ describe("SoulSection snapshot", () => {
     expect(
       screen.queryByRole("button", { name: "Show persona" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("marks a loaded project soul as trusted, and a user soul without the badge", async () => {
+    soulFetch.mockResolvedValue(
+      snapshot({ provenance: "project", trusted: true }),
+    );
+    const first = render(<SoulSection />);
+    expect(await screen.findByTestId("soul-provenance")).toHaveTextContent(
+      "project",
+    );
+    expect(screen.getByTestId("soul-trust")).toHaveTextContent("trusted");
+    expect(
+      screen.queryByText("dropped — untrusted project soul"),
+    ).not.toBeInTheDocument();
+    first.unmount();
+
+    // A user soul is always trusted; its provenance hint says so, so no
+    // separate badge (the TUI renders it as plain "user").
+    soulFetch.mockResolvedValue(snapshot());
+    render(<SoulSection />);
+    expect(await screen.findByTestId("soul-provenance")).toHaveTextContent(
+      "user",
+    );
+    expect(screen.queryByTestId("soul-trust")).not.toBeInTheDocument();
+  });
+
+  it("names the files that were not found when the daemon selected no persona", async () => {
+    soulFetch.mockResolvedValue(
+      snapshot({
+        present: false,
+        content: "",
+        sizeBytes: 0,
+        sha256: "",
+        provenance: "none",
+        trusted: false,
+      }),
+    );
+    render(<SoulSection />);
+    expect(await screen.findByTestId("soul-status")).toHaveTextContent(
+      "not loaded",
+    );
+    expect(
+      screen.getByText(
+        "No persona file was found: neither a user soul.md nor a project .mecatl/soul.md.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("soul-trust")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("soul-size")).not.toBeInTheDocument();
   });
 
   it("re-reads the snapshot when the runtime-settings document changes", async () => {

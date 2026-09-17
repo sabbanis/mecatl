@@ -395,6 +395,39 @@ describe("DelegationPanel — subagents", () => {
     ).toBeInTheDocument();
   });
 
+  it("titles an MCP tool Server · Tool on the roster row and its trace chip, exact id on hover", () => {
+    const mcpSubagent = card({
+      childId: "subagent-aaa111bbb",
+      label: "triage",
+      lastTool: "mcp__github__issue_write",
+      toolCount: 1,
+      trace: [
+        {
+          kind: "tool",
+          name: "mcp__github__issue_write",
+          detail: "#12",
+          isError: false,
+        },
+      ],
+    });
+    render(<Harness fleet={fleetOf({ subagents: [mcpSubagent] })} />);
+    expect(
+      screen.getByText(/^triage · #\w+ · GitHub · Issue write · 1 tool$/),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open subagent triage" }),
+    );
+    expect(
+      screen.getByText(/running · GitHub · Issue write/),
+    ).toBeInTheDocument();
+    const trace = screen.getByRole("list", { name: "Activity trace" });
+    const chip = within(trace).getAllByRole("listitem")[0];
+    expect(chip).toHaveTextContent("✓ GitHub · Issue write — #12");
+    expect(
+      within(chip).getByTitle("mcp__github__issue_write"),
+    ).toBeInTheDocument();
+  });
+
   it("steps back to the roster through onFocus(null) — the Esc seam", () => {
     const onFocus = vi.fn();
     render(

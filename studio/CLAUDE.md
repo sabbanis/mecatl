@@ -574,6 +574,20 @@ Each rule is backed by a test; break the rule and its test names you.
   `use-session-mode.test.ts`, `use-agent-chat.profile.test.ts`,
   `tool-profile-picker.test.tsx`, `schedule-form.test.tsx`,
   `use-agent-cron.test.ts`.)
+- The composer's Memory pill is a READ-ONLY indicator, never a switch
+  (`memory-indicator.tsx`): memory is a daemon setting (`--memory-dir`,
+  `--no-user-model`) with no per-session API, so the pill reports the
+  daemon's own `serverCapabilities.memory` (Remember/Recall registered —
+  the TUI's "memory is on" welcome note) and `serverCapabilities.user_model`
+  — "On" when either store is on, "Off" only when both are reported off,
+  "Unknown" against a daemon that reports neither or while unreachable
+  (never a stale On) — and opens a popover listing both stores plus a link
+  to Settings → Memory, whose copy says in external mode that the
+  operator's flags decide and the page cannot change them. The mobile
+  options sheet shows the same read-only rows. It replaced a local On/Off
+  toggle that never reached the daemon; do not bring one back. Hidden
+  outside `RuntimeStatusProvider`. (`memory-indicator.test.tsx`,
+  `chat-input-memory.test.tsx`.)
 
 <!-- BEGIN:nextjs-agent-rules -->
 

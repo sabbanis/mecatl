@@ -275,3 +275,52 @@ describe("ApprovalPanel", () => {
     expect(screen.queryByText("Debugger MCP")).toBeNull();
   });
 });
+
+/**
+ * An MCP ask's badge reads the TUI's humanized `Server · Tool` while the
+ * exact daemon id stays on hover; destructiveness is judged on both forms,
+ * so an MCP delete tool still paints the card red.
+ */
+describe("ApprovalPanel MCP tool titles", () => {
+  const mcpAsk = (toolName: string): ApprovalRequest => ({
+    ...mainAsk,
+    toolName,
+    description: `${toolName} needs your approval.`,
+    details: "",
+  });
+
+  it("names an MCP tool Server · Tool on the badge and keeps the exact id on hover", () => {
+    render(
+      <ApprovalPanel
+        approval={mcpAsk("mcp__github__issue_write")}
+        onRespond={() => {}}
+      />,
+    );
+    const badge = screen.getByText("GitHub · Issue write");
+    expect(badge).toHaveAttribute("title", "mcp__github__issue_write");
+    expect(
+      screen.queryByText("This action modifies or deletes data."),
+    ).toBeNull();
+  });
+
+  it("still classifies an MCP delete tool as destructive", () => {
+    render(
+      <ApprovalPanel
+        approval={mcpAsk("mcp__github__delete_branch")}
+        onRespond={() => {}}
+      />,
+    );
+    expect(screen.getByText("GitHub · Delete branch")).toHaveAttribute(
+      "title",
+      "mcp__github__delete_branch",
+    );
+    expect(
+      screen.getByText("This action modifies or deletes data."),
+    ).toBeInTheDocument();
+  });
+
+  it("leaves a core tool's badge unchanged", () => {
+    render(<ApprovalPanel approval={mainAsk} onRespond={() => {}} />);
+    expect(screen.getByText("Bash")).toHaveAttribute("title", "Bash");
+  });
+});

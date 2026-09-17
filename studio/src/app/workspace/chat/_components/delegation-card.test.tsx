@@ -106,6 +106,21 @@ describe("DelegationCard", () => {
     expect(screen.getByText("parallel: branch 1 · Read")).toBeInTheDocument();
   });
 
+  it("shows a running subagent's current MCP tool as Server · Tool", () => {
+    render(
+      <DelegationCard
+        delegation={card({
+          childId: "subagent-1",
+          label: "triage",
+          lastTool: "mcp__github__issue_write",
+        })}
+      />,
+    );
+    expect(
+      screen.getByText("subagent: triage · GitHub · Issue write"),
+    ).toBeInTheDocument();
+  });
+
   it("stars the winning branch and reads its stop label", () => {
     render(
       <DelegationCard
