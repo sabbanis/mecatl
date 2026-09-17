@@ -25,7 +25,9 @@ const buttonVariants = cva(
         icon: "h-8 w-8",
       },
       variant: {
-        default: "bg-primary text-primary-foreground hover:bg-primary/90",
+        // Primary actions are the brand green (product decision, Sept 2026),
+        // the same --btn-primary tokens the `action` variant uses.
+        default: "bg-btn-primary text-white hover:bg-btn-primary-hover",
         destructive:
           "bg-destructive text-destructive-foreground hover:bg-destructive/90",
         outline:
