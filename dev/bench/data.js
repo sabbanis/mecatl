@@ -244698,6 +244698,45 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789590995979,
         "tool": "customSmallerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jakub@stacklok.com",
+            "name": "Jakub Hrozek",
+            "username": "jhrozek"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e492ab49e44ce66b35384b02f42e46550b541793",
+          "message": "fix(cliconfig): explain stale provider credential IDs (#1665)\n\nCo-authored-by: mecatl <noreply@mecatl.dev>",
+          "timestamp": "2026-09-17T10:30:10+02:00",
+          "tree_id": "4e73c274bd6e71efc4d05bba96716d585c3df850",
+          "url": "https://github.com/stacklok/mecatl/commit/e492ab49e44ce66b35384b02f42e46550b541793"
+        },
+        "date": 1789634462748,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3319,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 113,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1155,
+            "unit": "allocs/op"
+          }
+        ]
       }
     ],
     "mecatl scenarios (smaller-is-better)": [
@@ -320888,6 +320927,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789634459816,
+  "lastUpdate": 1789634464102,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
