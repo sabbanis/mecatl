@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -60,15 +61,22 @@ func main() {
 serve:
 	cfg, err := parseFlags()
 	if err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, "mecabroker: startup or serving failed")
+		reportStartupError(os.Stderr, "configuration", err)
 		os.Exit(1)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	if err := run(ctx, cfg, slogdiag.NewText(os.Stderr)); err != nil {
-		_, _ = fmt.Fprintln(os.Stderr, "mecabroker: startup or serving failed")
+		reportStartupError(os.Stderr, "startup or serving", err)
 		os.Exit(1)
 	}
+}
+
+func reportStartupError(w io.Writer, stage string, err error) {
+	if err == nil {
+		return
+	}
+	_, _ = fmt.Fprintf(w, "mecabroker: %s failed: %s\n", stage, err)
 }
 
 func run(ctx context.Context, cfg fileConfig, diagnostics port.Diagnostics) error {

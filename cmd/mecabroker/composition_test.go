@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -9,6 +10,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"flag"
 	"math/big"
 	"net/http"
@@ -21,6 +23,22 @@ import (
 	"github.com/stacklok/mecatl/internal/adapter/mcpbroker"
 	"github.com/stacklok/mecatl/internal/adapter/mcpbrokerserver"
 )
+
+func TestReportStartupErrorIncludesStageAndCause(t *testing.T) {
+	var output bytes.Buffer
+	reportStartupError(&output, "configuration", errors.New("--config is required"))
+	if got, want := output.String(), "mecabroker: configuration failed: --config is required\n"; got != want {
+		t.Fatalf("startup error = %q, want %q", got, want)
+	}
+}
+
+func TestReportStartupErrorDoesNothingForNil(t *testing.T) {
+	var output bytes.Buffer
+	reportStartupError(&output, "startup", nil)
+	if output.Len() != 0 {
+		t.Fatalf("nil startup error wrote %q", output.String())
+	}
+}
 
 type fakeBrokerLifecycle struct{ starts, closes int }
 
