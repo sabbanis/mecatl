@@ -221058,6 +221058,40 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789590991070,
         "tool": "customBiggerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jakub@stacklok.com",
+            "name": "Jakub Hrozek",
+            "username": "jhrozek"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e492ab49e44ce66b35384b02f42e46550b541793",
+          "message": "fix(cliconfig): explain stale provider credential IDs (#1665)\n\nCo-authored-by: mecatl <noreply@mecatl.dev>",
+          "timestamp": "2026-09-17T10:30:10+02:00",
+          "tree_id": "4e73c274bd6e71efc4d05bba96716d585c3df850",
+          "url": "https://github.com/stacklok/mecatl/commit/e492ab49e44ce66b35384b02f42e46550b541793"
+        },
+        "date": 1789634458295,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
       }
     ],
     "mecatl scenarios (render allocs, advisory)": [
@@ -320854,6 +320888,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789634455194,
+  "lastUpdate": 1789634459816,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
