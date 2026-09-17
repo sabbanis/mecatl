@@ -2,6 +2,7 @@ import {
   Activity,
   Bot,
   Brain,
+  CircleHelp,
   Database,
   FlaskConical,
   GraduationCap,
@@ -108,6 +109,18 @@ export const SETTINGS_GROUPS: Array<{
         href: "/workspace/settings/labs",
         label: "Labs",
         icon: FlaskConical,
+      },
+    ],
+  },
+  {
+    label: "Support",
+    items: [
+      {
+        // Studio's version, docs and source links, the daemon's identity and
+        // the configuration reference — the web analogue of --version/--help.
+        href: "/workspace/settings/help",
+        label: "Help & about",
+        icon: CircleHelp,
       },
     ],
   },

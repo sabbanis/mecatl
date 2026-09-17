@@ -14,17 +14,22 @@ import { useSessionMode } from "./use-session-mode";
  * mode cancels it. The daemon client is mocked at the module boundary.
  */
 
-const { fetchHarnessSessionMode, setHarnessSessionMode, runtime } = vi.hoisted(
-  () => ({
+const { fetchHarnessSessionMode, setHarnessSessionMode, runtime, toastError } =
+  vi.hoisted(() => ({
     fetchHarnessSessionMode: vi.fn(),
     setHarnessSessionMode: vi.fn(),
     runtime: { connected: true },
-  }),
-);
+    toastError: vi.fn(),
+  }));
 
 vi.mock("@/lib/harness/client", () => ({
   fetchHarnessSessionMode,
   setHarnessSessionMode,
+}));
+
+// The refusal notice (the TUI's "mode change refused" line) rides sonner.
+vi.mock("sonner", () => ({
+  toast: { error: toastError },
 }));
 
 vi.mock("../runtime-status", () => ({
@@ -161,7 +166,7 @@ describe("useSessionMode (deferred switch)", () => {
     expect(setHarnessSessionMode).not.toHaveBeenCalled();
   });
 
-  it("still rolls a refused direct change back", async () => {
+  it("still rolls a refused direct change back — and SAYS so", async () => {
     setHarnessSessionMode.mockRejectedValueOnce(new Error("mid-turn"));
     const { result } = mount({ sessionId: "s1", busy: false });
     await waitFor(() => expect(fetchHarnessSessionMode).toHaveBeenCalled());
@@ -169,6 +174,44 @@ describe("useSessionMode (deferred switch)", () => {
     act(() => result.current.changeMode("plan"));
     await waitFor(() => expect(result.current.mode).toBe("default"));
     expect(result.current.pendingMode).toBeNull();
+    // A silent snap-back reads as the click not registering: the refusal
+    // is announced, naming the mode that still stands.
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith(
+        "Permission mode change refused by the daemon — still Manual",
+      ),
+    );
+  });
+
+  it("announces a refused landing of a held switch and clears the hold", async () => {
+    const { result, rerender } = mount({ sessionId: "s1", busy: true });
+    await waitFor(() => expect(fetchHarnessSessionMode).toHaveBeenCalled());
+
+    act(() => result.current.changeMode("acceptEdits"));
+    expect(result.current.pendingMode).toBe("acceptEdits");
+    expect(toastError).not.toHaveBeenCalled();
+
+    // The run ends but the daemon still refuses (e.g. it parked again).
+    setHarnessSessionMode.mockRejectedValueOnce(new Error("refused"));
+    rerender({ sessionId: "s1", busy: false });
+    await waitFor(() =>
+      expect(setHarnessSessionMode).toHaveBeenCalledWith("s1", "acceptEdits"),
+    );
+    await waitFor(() =>
+      expect(toastError).toHaveBeenCalledWith(
+        "Permission mode change refused by the daemon — still Manual",
+      ),
+    );
+    expect(result.current.mode).toBe("default");
+    expect(result.current.pendingMode).toBeNull();
+  });
+
+  it("says nothing when a change is accepted", async () => {
+    const { result } = mount({ sessionId: "s1", busy: false });
+    await waitFor(() => expect(fetchHarnessSessionMode).toHaveBeenCalled());
+    act(() => result.current.changeMode("plan"));
+    await waitFor(() => expect(result.current.mode).toBe("plan"));
+    expect(toastError).not.toHaveBeenCalled();
   });
 
   it("refreshMode re-adopts the daemon's word (a plan run flips the mode at its terminal)", async () => {

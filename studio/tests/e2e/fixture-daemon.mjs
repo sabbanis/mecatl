@@ -38,6 +38,10 @@ const placement = {
 const session = {
   session_id: sessionID,
   title: "Fix the flaky scheduler test",
+  // The kind taxonomy + the activity-state projection the sidebar's kind
+  // tabs read (the latter rides the `session_activity_inventory` feature).
+  kind: "main",
+  activity_state: "active",
   state: "idle",
   mode: "default",
   turns: 2,
@@ -55,6 +59,50 @@ const session = {
     // the fork-shaped model/effort switch). An idle main chat has it.
     fork: true,
     reasons: {},
+  },
+};
+
+// The inspect-only inventory the sidebar's Runs / Scheduled tabs list: a
+// child of the fixture chat and a scheduler fire. Both are stamped
+// `inspect_only_kind` (not a public chat) and offer their transcript.
+const subagentSessionID = "subagent-fixture-stored";
+const subagentSession = {
+  session_id: subagentSessionID,
+  title: "Scan the scheduler tests",
+  kind: "subagent",
+  activity_state: "active",
+  state: "completed",
+  turns: 3,
+  model_id: "fixture-model",
+  placement,
+  relationship: { parent_session_id: sessionID, call_id: "call-fixture-1" },
+  created_at_unix: 1_755_001_000,
+  modified_at_unix: 1_755_002_000,
+  capabilities: {
+    inspect: true,
+    view_transcript: true,
+    copy_id: true,
+    reasons: { public_chat: "inspect_only_kind" },
+  },
+};
+const scheduledSessionID = "sched-fixture-stored";
+const scheduledSession = {
+  session_id: scheduledSessionID,
+  title: "",
+  kind: "scheduled",
+  activity_state: "active",
+  state: "completed",
+  turns: 1,
+  model_id: "fixture-model",
+  placement,
+  relationship: { schedule_name: "nightly-fixture-digest" },
+  created_at_unix: 1_755_000_500,
+  modified_at_unix: 1_755_000_900,
+  capabilities: {
+    inspect: true,
+    view_transcript: true,
+    copy_id: true,
+    reasons: { public_chat: "inspect_only_kind" },
   },
 };
 
@@ -87,6 +135,11 @@ const capabilities = {
   // lets Studio skip the notice on an already-connected chat.
   workspace_enrollment: true,
   mcp_connector_status: true,
+  // "Debug with AI" (ADR 0254): the sidebar row's menu item, its consent
+  // dialog, and the attachable reporting servers the dialog lists from
+  // GET /v1/mcp/sources (the fixture's `fixture-mcp`).
+  session_debug: true,
+  debug_mcp: true,
 };
 
 const snapshot = {
@@ -128,7 +181,13 @@ const snapshot = {
 const routes = {
   "GET /v1/compatibility": {
     api_major: 1,
-    features: ["http_steer", "watch_session_events", "server_info"],
+    features: [
+      "http_steer",
+      "watch_session_events",
+      "server_info",
+      // Rows carry `activity_state`, so the sidebar offers a Drafts tab.
+      "session_activity_inventory",
+    ],
     capabilities,
   },
   "GET /v1/info": {
@@ -317,7 +376,65 @@ const routes = {
       { provider_id: "fixture", state: "ok", hint: "", model_count: 1 },
     ],
   },
-  "GET /v1/sessions": { sessions: [session], next_cursor: "" },
+  "GET /v1/sessions": {
+    sessions: [session, subagentSession, scheduledSession],
+    next_cursor: "",
+  },
+  // The read-only inspect transcripts the Runs / Scheduled tabs open. The
+  // transcript loader (`fetchSessionTranscriptMessages`) takes the SDK's
+  // session handle first — `sessions.get` is the snapshot GET — so each
+  // stored row serves its snapshot too, agreeing with its inventory row.
+  [`GET /v1/sessions/${subagentSessionID}`]: {
+    ...snapshot,
+    session_id: subagentSessionID,
+    kind: "subagent",
+    state: "completed",
+    title_metadata: {
+      title: subagentSession.title,
+      provenance: "first-prompt",
+    },
+    created_at_unix: subagentSession.created_at_unix,
+    turns: subagentSession.turns,
+    tool_calls: 2,
+    token_usage: {},
+    capabilities: subagentSession.capabilities,
+  },
+  [`GET /v1/sessions/${scheduledSessionID}`]: {
+    ...snapshot,
+    session_id: scheduledSessionID,
+    kind: "scheduled",
+    state: "completed",
+    // A scheduler fire has no title: no title_metadata on the wire.
+    title_metadata: undefined,
+    created_at_unix: scheduledSession.created_at_unix,
+    turns: scheduledSession.turns,
+    tool_calls: 0,
+    token_usage: {},
+    capabilities: scheduledSession.capabilities,
+  },
+  [`GET /v1/sessions/${subagentSessionID}/transcript`]: {
+    session_id: subagentSessionID,
+    kind: "subagent",
+    complete: true,
+    messages: [
+      { role: "user", text: "Scan the scheduler tests for flakes." },
+      {
+        role: "assistant",
+        text: "The stored subagent transcript renders: two tests race the claim sentinel.",
+      },
+    ],
+  },
+  [`GET /v1/sessions/${scheduledSessionID}/transcript`]: {
+    session_id: scheduledSessionID,
+    kind: "scheduled",
+    complete: true,
+    messages: [
+      {
+        role: "assistant",
+        text: "The stored scheduled-fire transcript renders: digest sent.",
+      },
+    ],
+  },
   [`GET /v1/sessions/${sessionID}`]: snapshot,
   [`GET /v1/sessions/${sessionID}/transcript`]: {
     session_id: sessionID,

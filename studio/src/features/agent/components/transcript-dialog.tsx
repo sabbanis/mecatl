@@ -3,6 +3,7 @@
 import { Loader2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -24,21 +25,39 @@ interface TranscriptEntry {
  * scheduler-tick fires whose conversation never reached the durable event
  * log). This is the payoff for every place the UI says "each run happens in
  * its own session" — the session is actually openable.
+ *
+ * A failed load keeps the dialog open with a Retry (the TUI viewer's `r`):
+ * the operator never has to close and reopen to try again. `subtitle` names
+ * what the session IS (a subagent of…, a fire of schedule…), and
+ * `onOpenParent` offers the parent chat when the run has one.
  */
 export function TranscriptDialog({
   sessionId,
   label,
+  subtitle,
+  parentSessionId,
+  onOpenParent,
   onClose,
 }: {
   sessionId: string;
   label: string;
+  /** One line describing the session (its relationship), under the label. */
+  subtitle?: string;
+  /** The parent chat a child run belongs to; with `onOpenParent`, a link. */
+  parentSessionId?: string;
+  onOpenParent?: (parentSessionId: string) => void;
   onClose: () => void;
 }) {
   const [entries, setEntries] = useState<TranscriptEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Bumped by Retry: the effect below re-runs the load for the same session.
+  const [attempt, setAttempt] = useState(0);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `attempt` is the Retry trigger — bumping it re-runs this load for the same session
   useEffect(() => {
     const controller = new AbortController();
+    setEntries(null);
+    setError(null);
     void (async () => {
       try {
         const transcript = await fetchSessionTranscriptMessages(
@@ -75,7 +94,7 @@ export function TranscriptDialog({
       }
     })();
     return () => controller.abort();
-  }, [sessionId]);
+  }, [sessionId, attempt]);
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
@@ -83,12 +102,46 @@ export function TranscriptDialog({
         <DialogHeader>
           <DialogTitle className="font-mono text-sm">{label}</DialogTitle>
           <DialogDescription className="break-all font-mono text-xs">
-            {sessionId}
+            {subtitle ? (
+              <>
+                <span className="block font-sans text-muted-foreground">
+                  {subtitle}
+                </span>
+                {sessionId}
+              </>
+            ) : (
+              sessionId
+            )}
           </DialogDescription>
+          {parentSessionId && onOpenParent && (
+            <div>
+              <Button
+                type="button"
+                variant="link"
+                size="sm"
+                className="h-auto px-0 text-xs"
+                onClick={() => onOpenParent(parentSessionId)}
+              >
+                Open parent chat
+              </Button>
+            </div>
+          )}
         </DialogHeader>
         <ScrollArea className="max-h-[60vh] pr-3">
           {error ? (
-            <p className="py-6 text-sm text-destructive">{error}</p>
+            <div className="flex flex-col items-start gap-2 py-6">
+              <p role="alert" className="text-sm text-destructive">
+                {error}
+              </p>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setAttempt((n) => n + 1)}
+              >
+                Retry
+              </Button>
+            </div>
           ) : entries === null ? (
             <div className="flex items-center gap-2 py-6 text-sm text-muted-foreground">
               <Loader2 className="size-4 animate-spin" />

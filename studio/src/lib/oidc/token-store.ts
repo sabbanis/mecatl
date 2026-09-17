@@ -1,9 +1,12 @@
 /**
  * The OIDC token store for Studio's server tier (requirement H3): process
- * memory only — tokens never reach the browser (CLAUDE.md rule 3) and are
- * never written to disk, so a Next server restart deliberately requires a
- * fresh sign-in (v1 defers durable/keyring storage; ADR 0277's encrypted
- * credential store is the eventual model).
+ * memory by default — tokens never reach the browser (CLAUDE.md rule 3). An
+ * optional injected `TokenPersistence` (the encrypted file store in
+ * `file-token-store.ts`, the `--credential-store file` analogue) mirrors
+ * every change so a sign-in can survive a Next server restart; without one a
+ * restart requires a fresh sign-in. Each persisted credential carries the
+ * `binding` (profile hash) it was minted under, so a deployment whose
+ * issuer / client / audience changed can never receive the old refresh token.
  *
  * Refresh discipline mirrors mecatui's `internal/adapter/clientauth`
  * (ADR 0270/0277): refresh only on token DEMAND inside the 30-second
@@ -134,26 +137,72 @@ export type StoreSnapshot =
   | { state: "signed-out" | "expired" }
   | { state: "signed-in"; claims: OidcClaims; expiresAt: number };
 
+/** What a durable store keeps: the credential plus the profile binding it
+ * was minted under (empty for a legacy/unbound credential). */
+export type PersistedTokens = { tokens: StoredTokens; binding: string };
+
+/** The durable mirror, injected so the store stays pure. Implementations
+ * must never throw (the store also guards every call). */
+export type TokenPersistence = {
+  load(): PersistedTokens | null;
+  save(persisted: PersistedTokens): void;
+  clear(): void;
+};
+
 export class OidcTokenStore {
   private tokens: StoredTokens | null = null;
+  private bound = "";
   private reason: SignedOutReason = "signed-out";
   private inflight: Promise<BearerOutcome> | null = null;
 
-  constructor(private readonly now: () => number = Date.now) {}
+  constructor(
+    private readonly now: () => number = Date.now,
+    private readonly persistence?: TokenPersistence,
+  ) {
+    if (!persistence) return;
+    try {
+      const loaded = persistence.load();
+      if (loaded) {
+        this.tokens = loaded.tokens;
+        this.bound = loaded.binding;
+      }
+    } catch {
+      // A broken mirror reads as signed-out; the store still works in memory.
+    }
+  }
 
-  setTokens(tokens: StoredTokens): void {
+  /** Adopt a credential. `binding` names the sign-in profile it belongs to
+   * (see `binding()`); omitted on a refresh, which keeps the prior one. */
+  setTokens(tokens: StoredTokens, binding: string = this.bound): void {
     this.tokens = tokens;
+    this.bound = binding;
     this.reason = "signed-out";
+    try {
+      this.persistence?.save({ tokens, binding });
+    } catch {
+      // The persistence layer reports its own failures.
+    }
   }
 
   /** Drop the credential. `reason` records WHY for the next 401's copy. */
   clear(reason: SignedOutReason = "signed-out"): void {
     this.tokens = null;
+    this.bound = "";
     this.reason = reason;
+    try {
+      this.persistence?.clear();
+    } catch {
+      // See setTokens.
+    }
   }
 
   current(): StoredTokens | null {
     return this.tokens;
+  }
+
+  /** The profile binding of the current credential ("" when unbound). */
+  binding(): string {
+    return this.tokens ? this.bound : "";
   }
 
   snapshot(): StoreSnapshot {

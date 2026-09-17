@@ -1,6 +1,7 @@
 // The direct module, not the `@/lib/protocol` barrel: `protocol/events.ts`
 // imports this file, so the barrel would close a cycle.
 import type { DeliveryNoteInfo } from "@/lib/protocol/delivery-note";
+import type { SessionRelationshipInfo } from "@/lib/protocol/sessions";
 
 // ── Sessions ────────────────────────────────────────────────────────────────
 
@@ -53,6 +54,32 @@ export interface AgentSession {
    * diagnoses. Drives the sidebar's "debug" badge.
    */
   debugTargetSessionId?: string;
+  /**
+   * The daemon's closed kind (main | subagent | parallel_branch | team_member
+   * | scheduled | debug | unknown; "" on an older daemon) — the sidebar's
+   * Chats / Runs / Scheduled / Other tab key (`sessionTabFor`).
+   */
+  kind?: string;
+  /** "draft" | "active" | "" — set only when the daemon advertises the
+   *  `session_activity_inventory` feature; drives the Drafts tab. */
+  activityState?: string;
+  /**
+   * Whether the row is an operator-facing chat (false for the inspect-only
+   * kinds the Runs / Scheduled / Other tabs list). Omitted reads as a chat —
+   * only the inventory decoder ever sets it false.
+   */
+  isChat?: boolean;
+  /** Placement display metadata (ADR 0291): a label and branch, never a path. */
+  placementLabel?: string;
+  placementBranch?: string;
+  /** The validated links for the row's kind (parent, call, team, schedule…). */
+  relationship?: SessionRelationshipInfo;
+  /** Whether the daemon offers the read-only inspect posture / the transcript. */
+  canInspect?: boolean;
+  canViewTranscript?: boolean;
+  /** Why the row is not a public chat / cannot show its transcript ("" = it can). */
+  publicChatReason?: string;
+  viewTranscriptReason?: string;
 }
 
 export interface CreateSessionOpts {
@@ -306,6 +333,15 @@ export interface TeamMemberDispositionInfo {
   reason: DelegationStopReason;
 }
 
+/**
+ * A non-text part of a tool result (an MCP content block the daemon relayed):
+ * an inline image, or a link to a resource the tool produced. Text blocks
+ * are already folded into `output`; other block kinds are not rendered.
+ */
+export type ToolResultPart =
+  | { kind: "image"; mimeType: string; data: string }
+  | { kind: "resource_link"; url: string; name: string; title?: string };
+
 export interface ToolCallInfo {
   callId: string;
   name: string;
@@ -315,7 +351,11 @@ export interface ToolCallInfo {
   rawArgs?: string;
   /** The file this call produced (Write), previewable in the canvas. */
   file?: import("@/lib/file-meta").ToolCallFile;
+  /** The path this call mutated (Edit or Write) — the changed-files list. */
+  changedPath?: string;
   output?: string;
+  /** Image / resource-link blocks the result carried besides its text. */
+  parts?: ToolResultPart[];
   isError?: boolean;
   status: "running" | "completed" | "failed";
 }
@@ -348,12 +388,16 @@ type StreamEventBody =
       /** The verbatim args JSON string, alongside the flattened preview. */
       rawArgs?: string;
       file?: import("@/lib/file-meta").ToolCallFile;
+      /** The path an Edit/Write call mutates (the changed-files list). */
+      changedPath?: string;
     }
   | {
       type: "tool_result";
       callId: string;
       output: string;
       isError?: boolean;
+      /** Image / resource-link blocks the result carried besides its text. */
+      parts?: ToolResultPart[];
     }
   | {
       type: "approval";

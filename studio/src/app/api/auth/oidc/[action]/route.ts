@@ -8,16 +8,25 @@
  *   GET  /api/auth/oidc/status   → sign-in state for the settings card
  *   GET  /api/auth/oidc/start    → 302 to the issuer's authorize URL
  *                                  (opened by the card's Sign in button —
- *                                  never without that user action, H3.3)
+ *                                  never without that user action, H3.3);
+ *                                  `?mode=link` answers the URL as JSON
+ *                                  instead for the card's "Copy sign-in
+ *                                  link" (the `--no-browser` analogue: the
+ *                                  link opens in any browser that can reach
+ *                                  Studio's callback)
  *   GET  /api/auth/oidc/callback → the registered redirect URI; verifies
  *                                  state + PKCE server-side, exchanges the
  *                                  code, renders a close-this-tab page
  *   POST /api/auth/oidc/logout   → local sign-out + best-effort revocation
+ *   POST /api/auth/oidc/confirm-discovery { profileHash }
+ *                                → confirm the RFC 9728-discovered profile
+ *                                  the card showed (default-deny until then)
  */
 import {
   beginOidcLogin,
   type CallbackOutcome,
   completeOidcCallback,
+  confirmDiscoveredProfile,
   oidcLoginStatus,
   oidcSignOut,
 } from "@/lib/oidc-session";
@@ -37,11 +46,17 @@ export async function GET(request: Request, context: Context) {
   if (!requestIsTrusted(request)) return forbidden();
   const { action } = await context.params;
   if (action === "status") {
-    return Response.json(oidcLoginStatus(), { headers: noStore });
+    return Response.json(await oidcLoginStatus(), { headers: noStore });
   }
   if (action === "start") {
     try {
-      const { authorizationUrl } = await beginOidcLogin();
+      const { authorizationUrl, expiresAt } = await beginOidcLogin();
+      if (new URL(request.url).searchParams.get("mode") === "link") {
+        return Response.json(
+          { authorizationUrl, expiresAt: new Date(expiresAt).toISOString() },
+          { headers: noStore },
+        );
+      }
       return new Response(null, {
         status: 302,
         headers: { ...noStore, location: authorizationUrl },
@@ -71,6 +86,16 @@ export async function POST(request: Request, context: Context) {
   const { action } = await context.params;
   if (action === "logout") {
     return Response.json(await oidcSignOut(), { headers: noStore });
+  }
+  if (action === "confirm-discovery") {
+    const body = (await request.json().catch(() => null)) as {
+      profileHash?: unknown;
+    } | null;
+    const outcome = await confirmDiscoveredProfile(body?.profileHash);
+    return Response.json(outcome, {
+      status: outcome.ok ? 200 : 409,
+      headers: noStore,
+    });
   }
   return unknownAction();
 }

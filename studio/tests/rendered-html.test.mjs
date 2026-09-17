@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
+import { mkdirSync, readFileSync } from "node:fs";
 import http from "node:http";
+import https from "node:https";
 import { dirname, resolve } from "node:path";
 import { after, before, test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -25,6 +27,19 @@ let studio;
 let studioBaseURL;
 let offlineStudio;
 let offlineBaseURL;
+// Remote-login parity instances (the `mecatui login` / `connect` knobs as
+// env): one in RFC 9728 discovery mode against a fake issuer, one anonymous
+// — over TLS with a private CA when openssl can mint a certificate here.
+let discoveryStudio;
+let discoveryBaseURL;
+let anonymousStudio;
+let anonymousBaseURL;
+let issuer;
+let issuerBaseURL;
+let upstreamBaseURL;
+let tlsUpstream;
+let tlsAvailable = false;
+const tlsUpstreamRequests = [];
 
 async function listen(server) {
   await new Promise((resolveListen, reject) => {
@@ -56,7 +71,7 @@ async function waitForServer(url, child) {
   throw new Error("Next did not become ready for tests");
 }
 
-function startStudio(port, baseURL, mecatlBaseURL) {
+function startStudio(port, baseURL, mecatlBaseURL, extraEnv = {}) {
   return spawn(nextBin, ["start", "-p", String(port)], {
     cwd: root,
     env: {
@@ -65,13 +80,57 @@ function startStudio(port, baseURL, mecatlBaseURL) {
       MECATL_AUTH_TOKEN: "test-secret",
       MECATL_WORKSPACE: "/workspace/from-deployment",
       MECATL_STUDIO_PUBLIC_ORIGIN: baseURL,
+      // Hermetic: the developer's shell must not leak an operator palette
+      // directory into either instance; each test below sets its own.
+      STUDIO_PALETTE_DIR: "",
+      ...extraEnv,
     },
     stdio: ["ignore", "ignore", "inherit"],
   });
 }
 
+/** A throwaway self-signed localhost certificate for the TLS fake upstream
+ * (openssl is present on the CI runners and developer machines; null when
+ * it is not, and the TLS assertions skip). */
+function makeSelfSignedCert() {
+  const dir = resolve(root, ".scratch/hermetic-tls");
+  const keyPath = resolve(dir, "key.pem");
+  const certPath = resolve(dir, "cert.pem");
+  try {
+    mkdirSync(dir, { recursive: true });
+    execFileSync(
+      "openssl",
+      [
+        "req",
+        "-x509",
+        "-newkey",
+        "rsa:2048",
+        "-nodes",
+        "-keyout",
+        keyPath,
+        "-out",
+        certPath,
+        "-days",
+        "2",
+        "-subj",
+        "/CN=localhost",
+        "-addext",
+        "subjectAltName=DNS:localhost,IP:127.0.0.1",
+      ],
+      { stdio: "ignore" },
+    );
+    return {
+      key: readFileSync(keyPath),
+      cert: readFileSync(certPath),
+      certPath,
+    };
+  } catch {
+    return null;
+  }
+}
+
 before(async () => {
-  upstream = http.createServer((request, response) => {
+  const upstreamHandler = (request, response) => {
     const chunks = [];
     request.on("data", (chunk) => chunks.push(chunk));
     request.on("end", () => {
@@ -81,6 +140,21 @@ before(async () => {
         body: Buffer.concat(chunks).toString() || null,
       });
       response.setHeader("Content-Type", "application/json");
+      // RFC 9728 protected-resource metadata: the profile a discovery-mode
+      // Studio reads instead of MECATL_OIDC_ISSUER / CLIENT_ID (the
+      // deployment names its issuer, client, audience and scopes).
+      if (request.url === "/.well-known/oauth-protected-resource") {
+        response.end(
+          JSON.stringify({
+            resource: upstreamBaseURL,
+            authorization_servers: [issuerBaseURL],
+            "com.stacklok.mecatl.client_id": "studio-discovered-client",
+            "com.stacklok.mecatl.audience": "mecatl-daemon",
+            scopes_supported: ["openid", "profile", "offline_access"],
+          }),
+        );
+        return;
+      }
       // The proxy forwards Content-Disposition (the controller's daemon-log
       // download names its file with it); the fake sets one everywhere so
       // the external-mode test can pin that it survives the hop.
@@ -111,8 +185,77 @@ before(async () => {
         JSON.stringify({ models: [{ id: "test-model", provider_id: "test" }] }),
       );
     });
-  });
+  };
+  upstream = http.createServer(upstreamHandler);
   const upstreamPort = await listen(upstream);
+  upstreamBaseURL = `http://127.0.0.1:${upstreamPort}`;
+
+  // The fake identity provider a discovered profile points at: its OIDC
+  // metadata must echo the issuer the protected resource named, exactly.
+  issuer = http.createServer((request, response) => {
+    response.setHeader("Content-Type", "application/json");
+    if (request.url === "/.well-known/openid-configuration") {
+      response.end(
+        JSON.stringify({
+          issuer: issuerBaseURL,
+          authorization_endpoint: `${issuerBaseURL}/authorize`,
+          token_endpoint: `${issuerBaseURL}/token`,
+          authorization_response_iss_parameter_supported: true,
+        }),
+      );
+      return;
+    }
+    response.statusCode = 404;
+    response.end("{}");
+  });
+  const issuerPort = await listen(issuer);
+  issuerBaseURL = `http://127.0.0.1:${issuerPort}`;
+
+  // The anonymous instance dials the upstream over TLS with a private CA
+  // when a certificate can be minted (proving MECATL_TLS_CA end to end
+  // through Next's fetch patch), else over plain HTTP.
+  const tls = makeSelfSignedCert();
+  tlsAvailable = tls !== null;
+  let anonymousUpstreamURL = upstreamBaseURL;
+  const anonymousEnv = { MECATL_AUTH_ANONYMOUS: "1" };
+  if (tls) {
+    tlsUpstream = https.createServer(
+      { key: tls.key, cert: tls.cert },
+      (request, response) => {
+        tlsUpstreamRequests.push({
+          url: request.url,
+          authorization: request.headers.authorization,
+          encrypted: Boolean(request.socket.encrypted),
+        });
+        upstreamHandler(request, response);
+      },
+    );
+    const tlsPort = await listen(tlsUpstream);
+    anonymousUpstreamURL = `https://127.0.0.1:${tlsPort}`;
+    anonymousEnv.MECATL_TLS_CA = tls.certPath;
+  }
+
+  const discoveryPort = await freePort();
+  discoveryBaseURL = `http://127.0.0.1:${discoveryPort}`;
+  discoveryStudio = startStudio(
+    discoveryPort,
+    discoveryBaseURL,
+    upstreamBaseURL,
+    {
+      MECATL_OIDC_DISCOVERY: "1",
+      // Loopback plain HTTP for both the deployment and the fake issuer.
+      MECATL_OIDC_PRIVATE_ISSUER: "1",
+    },
+  );
+
+  const anonymousPort = await freePort();
+  anonymousBaseURL = `http://127.0.0.1:${anonymousPort}`;
+  anonymousStudio = startStudio(
+    anonymousPort,
+    anonymousBaseURL,
+    anonymousUpstreamURL,
+    anonymousEnv,
+  );
 
   const studioPort = await freePort();
   studioBaseURL = `http://127.0.0.1:${studioPort}`;
@@ -120,6 +263,9 @@ before(async () => {
     studioPort,
     studioBaseURL,
     `http://127.0.0.1:${upstreamPort}`,
+    // The operator palette directory (src/app/api/palettes): one valid
+    // document and one that must be skipped.
+    { STUDIO_PALETTE_DIR: resolve(root, "tests/fixtures/palettes") },
   );
 
   // A second instance whose daemon does not exist: the offline deployment.
@@ -135,13 +281,20 @@ before(async () => {
   await Promise.all([
     waitForServer(studioBaseURL, studio),
     waitForServer(offlineBaseURL, offlineStudio),
+    waitForServer(discoveryBaseURL, discoveryStudio),
+    waitForServer(anonymousBaseURL, anonymousStudio),
   ]);
 });
 
 after(async () => {
   studio?.kill("SIGTERM");
   offlineStudio?.kill("SIGTERM");
+  discoveryStudio?.kill("SIGTERM");
+  anonymousStudio?.kill("SIGTERM");
   await new Promise((resolveClose) => upstream.close(resolveClose));
+  await new Promise((resolveClose) => issuer.close(resolveClose));
+  if (tlsUpstream)
+    await new Promise((resolveClose) => tlsUpstream.close(resolveClose));
 });
 
 test("server-renders Mecatl Studio", async () => {
@@ -174,6 +327,42 @@ test("the About card server-renders Studio's own build stamp", async () => {
   assert.notEqual(stamp, "");
   assert.notEqual(stamp, "unavailable");
   assert.match(stamp, /^[A-Za-z0-9._/+-]+$/);
+});
+
+test("Help & about reports Studio's configuration surface by name only", async () => {
+  // GET /api/studio/about (src/app/api/studio/about/route.ts) answers which
+  // reference names THIS deployment sets, as booleans — the token and the
+  // workspace are set here, so the assertion that their VALUES are absent
+  // from the body is the one that matters.
+  const response = await fetch(`${studioBaseURL}/api/studio/about`);
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("cache-control") ?? "", /no-store/);
+  const text = await response.text();
+  const about = JSON.parse(text);
+  assert.equal(about.mode, "external");
+  assert.equal(about.configured.MECATL_BASE_URL, true);
+  assert.equal(about.configured.MECATL_AUTH_TOKEN, true);
+  assert.equal(about.configured.MECATL_WORKSPACE, true);
+  assert.equal(about.configured.MECATL_OIDC_ISSUER, false);
+  assert.doesNotMatch(text, /test-secret/);
+  assert.doesNotMatch(text, /from-deployment/);
+  // The versions are inlined at `next build`: real, non-empty, never blank.
+  assert.match(about.version, /^\d+\.\d+\.\d+/);
+  assert.match(about.build, /^[A-Za-z0-9._/+-]+$/);
+  // Same-origin only, like the proxies: a foreign browser Origin is refused.
+  const refused = await fetch(`${studioBaseURL}/api/studio/about`, {
+    headers: { Origin: "http://evil.example" },
+  });
+  assert.equal(refused.status, 403);
+  // The page itself server-renders the version rows, the docs link and the
+  // reference table before any request runs.
+  const page = await fetch(`${studioBaseURL}/workspace/settings/help`);
+  assert.equal(page.status, 200);
+  const html = await page.text();
+  assert.match(html, /Studio version/);
+  assert.match(html, /https:\/\/mecatl\.dev\/docs\//);
+  assert.match(html, /MECATL_BASE_URL/);
+  assert.doesNotMatch(html, /test-secret/);
 });
 
 test("external mode injects daemon auth server-side and disables local controls", async () => {
@@ -343,6 +532,38 @@ test("an unreachable daemon is a friendly 503, never demo content", async () => 
   assert.equal(page.status, 200);
 });
 
+test("operator palettes from STUDIO_PALETTE_DIR are served validated, broken files skipped", async () => {
+  // The route reads the directory per request (force-dynamic + no-store), so
+  // a changed STUDIO_PALETTE_DIR is picked up without a rebuild. midnight.json
+  // is well-formed; broken.json carries a url() value and an unknown token
+  // and must never reach the browser — the server logs it, nothing more.
+  const response = await fetch(`${studioBaseURL}/api/palettes`);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  const body = await response.json();
+  assert.deepEqual(
+    body.palettes.map((palette) => palette.name),
+    ["midnight"],
+  );
+  assert.equal(body.palettes[0].label, "Midnight");
+  assert.equal(body.palettes[0].palette.brand, "#4f7cff");
+  assert.equal(body.palettes[0].dark.brand, "#7c9cff");
+  assert.ok(!JSON.stringify(body).includes("url("));
+
+  // Same-origin only, like the proxies: an off-origin browser request is
+  // refused rather than enumerating the deployment's palettes.
+  const csrf = await fetch(`${studioBaseURL}/api/palettes`, {
+    headers: { origin: "https://evil.example" },
+  });
+  assert.equal(csrf.status, 403);
+});
+
+test("no STUDIO_PALETTE_DIR means an empty operator palette list", async () => {
+  const response = await fetch(`${offlineBaseURL}/api/palettes`);
+  assert.equal(response.status, 200);
+  assert.deepEqual(await response.json(), { palettes: [] });
+});
+
 test("a daemon 401 is relayed verbatim — status, code, words and challenge — with the bearer still injected", async () => {
   const rejected = await fetch(
     `${studioBaseURL}/api/mecatl/v1/sessions/rejected-credential`,
@@ -362,6 +583,151 @@ test("a daemon 401 is relayed verbatim — status, code, words and challenge —
     authorization: "Bearer test-secret",
     body: null,
   });
+});
+
+test("MECATL_AUTH_ANONYMOUS=1 sends the daemon no credential, even with a static token set", async () => {
+  const models = await fetch(`${anonymousBaseURL}/api/mecatl/v1/models`);
+  assert.equal(models.status, 200);
+  const recorded = tlsAvailable
+    ? tlsUpstreamRequests.at(-1)
+    : upstreamRequests.at(-1);
+  assert.equal(recorded.url, "/v1/models");
+  // The `--anonymous` analogue: MECATL_AUTH_TOKEN is set on this instance
+  // too, and still no Authorization header reaches the daemon.
+  assert.equal(recorded.authorization, undefined);
+
+  const status = await fetch(`${anonymousBaseURL}/api/auth/oidc/status`).then(
+    (response) => response.json(),
+  );
+  assert.equal(status.authMode, "anonymous");
+  assert.equal(status.state, "not-configured");
+});
+
+test("MECATL_TLS_CA trusts a private CA for the daemon connection (through Next's fetch patch)", async (t) => {
+  if (!tlsAvailable) {
+    t.skip("openssl is not available to mint a test certificate");
+    return;
+  }
+  const models = await fetch(`${anonymousBaseURL}/api/mecatl/v1/models`);
+  assert.equal(models.status, 200);
+  assert.deepEqual(await models.json(), {
+    models: [{ id: "test-model", provider_id: "test" }],
+  });
+  const recorded = tlsUpstreamRequests.at(-1);
+  assert.equal(recorded.url, "/v1/models");
+  // The request really crossed TLS: Node's default trust store would have
+  // refused the self-signed upstream (a 503 from the proxy), so the 200
+  // above IS the `dispatcher` surviving Next's fetch patch.
+  assert.equal(recorded.encrypted, true);
+  const status = await fetch(`${anonymousBaseURL}/api/auth/oidc/status`).then(
+    (response) => response.json(),
+  );
+  assert.deepEqual(status.transport, {
+    tlsCa: true,
+    insecure: false,
+    privateIssuer: false,
+  });
+});
+
+test("RFC 9728 discovery is reviewed and confirmed before any sign-in starts", async () => {
+  const statusURL = `${discoveryBaseURL}/api/auth/oidc/status`;
+  const status = await fetch(statusURL).then((response) => response.json());
+  // The deployment's own metadata named the profile — and it is not yet a
+  // sign-in configuration: default-deny until a human confirms it.
+  assert.equal(status.state, "discovered");
+  assert.equal(status.configured, false);
+  assert.equal(status.source, "discovery");
+  assert.equal(status.issuer, issuerBaseURL);
+  assert.equal(status.clientId, "studio-discovered-client");
+  assert.equal(status.audience, "mecatl-daemon");
+  assert.deepEqual(status.scopes, ["openid", "profile", "offline_access"]);
+  assert.match(status.profileHash, /^[0-9a-f]{64}$/);
+  assert.equal(status.authMode, "oidc");
+  assert.equal(status.transport.privateIssuer, true);
+  // The browser never learns the daemon's address (rule 3): the status
+  // carries the issuer, never MECATL_BASE_URL.
+  assert.equal(JSON.stringify(status).includes(upstreamBaseURL), false);
+
+  // Unconfirmed: the login route refuses (both the popup and link shapes).
+  const refused = await fetch(`${discoveryBaseURL}/api/auth/oidc/start`, {
+    redirect: "manual",
+  });
+  assert.equal(refused.status, 400);
+  assert.match((await refused.json()).error, /Continue with browser login/);
+  const refusedLink = await fetch(
+    `${discoveryBaseURL}/api/auth/oidc/start?mode=link`,
+  );
+  assert.equal(refusedLink.status, 400);
+
+  // The proxy already treats the deployment as OIDC-protected: signed out
+  // means an actionable 401, and the static token is NOT a fallback.
+  const proxied = await fetch(`${discoveryBaseURL}/api/mecatl/v1/models`);
+  assert.equal(proxied.status, 401);
+  assert.equal((await proxied.json()).code, "oidc_login_required");
+
+  // A hash that is not the reviewed profile is refused.
+  const wrong = await fetch(
+    `${discoveryBaseURL}/api/auth/oidc/confirm-discovery`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ profileHash: "0".repeat(64) }),
+    },
+  );
+  assert.equal(wrong.status, 409);
+  assert.equal(
+    (await fetch(statusURL).then((response) => response.json())).state,
+    "discovered",
+  );
+
+  // The reviewed hash confirms; the profile is now a sign-in configuration.
+  const confirmed = await fetch(
+    `${discoveryBaseURL}/api/auth/oidc/confirm-discovery`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ profileHash: status.profileHash }),
+    },
+  );
+  assert.equal(confirmed.status, 200);
+  const after = await fetch(statusURL).then((response) => response.json());
+  assert.equal(after.state, "signed-out");
+  assert.equal(after.configured, true);
+  assert.equal(after.clientId, "studio-discovered-client");
+
+  // The no-browser flow: a JSON authorize URL built from the DISCOVERED
+  // profile against the fake issuer's advertised endpoint.
+  const link = await fetch(`${discoveryBaseURL}/api/auth/oidc/start?mode=link`);
+  assert.equal(link.status, 200);
+  const body = await link.json();
+  const authorize = new URL(body.authorizationUrl);
+  assert.equal(
+    authorize.origin + authorize.pathname,
+    `${issuerBaseURL}/authorize`,
+  );
+  assert.equal(
+    authorize.searchParams.get("client_id"),
+    "studio-discovered-client",
+  );
+  assert.equal(authorize.searchParams.get("audience"), "mecatl-daemon");
+  assert.equal(
+    authorize.searchParams.get("scope"),
+    "openid profile offline_access",
+  );
+  assert.equal(authorize.searchParams.get("code_challenge_method"), "S256");
+  assert.equal(
+    authorize.searchParams.get("redirect_uri"),
+    `${discoveryBaseURL}/api/auth/oidc/callback`,
+  );
+  assert.ok(new Date(body.expiresAt).getTime() > Date.now());
+  // The popup shape still 302s to the same issuer.
+  const redirect = await fetch(`${discoveryBaseURL}/api/auth/oidc/start`, {
+    redirect: "manual",
+  });
+  assert.equal(redirect.status, 302);
+  assert.ok(
+    redirect.headers.get("location").startsWith(`${issuerBaseURL}/authorize?`),
+  );
 });
 
 test("controller policy rejects CSRF and DNS-rebinding requests", () => {

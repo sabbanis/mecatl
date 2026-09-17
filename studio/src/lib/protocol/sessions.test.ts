@@ -224,6 +224,150 @@ describe("sessionInventoryFromResponse", () => {
     expect(scheduled.debugTargetSessionId).toBe("");
     expect(scheduled.isChat).toBe(false);
   });
+
+  it("decodes kind, activity state, relationship, placement, owner and the inspect/reason fields for the inventory tabs", () => {
+    const page = sessionInventoryFromResponse(
+      inventory([
+        {
+          sessionId: "subagent-1",
+          kind: "subagent",
+          activityState: "active",
+          relationship: {
+            parentSessionId: "main-1",
+            callId: "call-7",
+            debugTargetSessionId: "",
+          },
+          placement: {
+            kind: "git-worktree",
+            label: "studio",
+            branch: "feat/tabs",
+            revision: "abc123",
+          },
+          owner: { issuer: "idp", subject: "u1", grantType: "user", name: "J" },
+          capabilities: {
+            inspect: true,
+            viewTranscript: false,
+            reasons: {
+              publicChat: "inspect_only_kind",
+              viewTranscript: "transcript_unavailable",
+            },
+          },
+        },
+        {
+          sessionId: "branch-1",
+          kind: "parallel_branch",
+          relationship: { parentSessionId: "main-1", branchIndex: 2 },
+          capabilities: { reasons: { publicChat: "inspect_only_kind" } },
+        },
+        {
+          sessionId: "member-1",
+          kind: "team_member",
+          relationship: { teamId: "t1", memberName: "reviewer" },
+          capabilities: { reasons: { publicChat: "inspect_only_kind" } },
+        },
+      ]),
+    );
+    expect(page.sessions[0]).toMatchObject({
+      kind: "subagent",
+      activityState: "active",
+      isChat: false,
+      canInspect: true,
+      canViewTranscript: false,
+      publicChatReason: "inspect_only_kind",
+      viewTranscriptReason: "transcript_unavailable",
+      ownerName: "J",
+      placement: {
+        kind: "git-worktree",
+        label: "studio",
+        branch: "feat/tabs",
+        revision: "abc123",
+      },
+      relationship: {
+        parentSessionId: "main-1",
+        callId: "call-7",
+        branchIndex: null,
+        scheduleName: "",
+        originSessionId: "",
+        teamId: "",
+        memberName: "",
+      },
+    });
+    // The branch index is optional on the wire: present → number, absent → null.
+    expect(page.sessions[1].relationship.branchIndex).toBe(2);
+    expect(page.sessions[2].relationship).toMatchObject({
+      teamId: "t1",
+      memberName: "reviewer",
+      branchIndex: null,
+    });
+    // A row with no placement / owner / relationship reads as empty, never
+    // as a fabricated value.
+    const bare = sessionInventoryFromResponse(inventory([{ sessionId: "s" }]))
+      .sessions[0];
+    expect(bare).toMatchObject({
+      kind: "",
+      activityState: "",
+      placement: null,
+      ownerName: "",
+      canInspect: false,
+      publicChatReason: "",
+      viewTranscriptReason: "",
+      titleRevision: null,
+    });
+    expect(bare.relationship.parentSessionId).toBe("");
+  });
+
+  it("prefers the canonical title_metadata over the deprecated title fields and carries the revision", () => {
+    const page = sessionInventoryFromResponse(
+      inventory([
+        {
+          sessionId: "s1",
+          title: "stale copy",
+          titleProvenance: "first-prompt",
+          titleMetadata: {
+            title: "Canonical title",
+            provenance: "operator",
+            revision: BigInt(4),
+          },
+        },
+        // An older daemon fills only the deprecated fields.
+        { sessionId: "s2", title: "Legacy title", titleProvenance: "operator" },
+        // Metadata present but empty falls back to the deprecated copy.
+        {
+          sessionId: "s3",
+          title: "Fallback",
+          titleMetadata: { title: "", provenance: "", revision: BigInt(0) },
+        },
+      ]),
+    );
+    expect(page.sessions[0]).toMatchObject({
+      title: "Canonical title",
+      titleProvenance: "operator",
+      titleRevision: 4,
+    });
+    expect(page.sessions[1]).toMatchObject({
+      title: "Legacy title",
+      titleProvenance: "operator",
+      titleRevision: null,
+    });
+    expect(page.sessions[2]).toMatchObject({
+      title: "Fallback",
+      titleRevision: 0,
+    });
+  });
+
+  it("keeps the activity state verbatim so the Drafts tab can key on it", () => {
+    const page = sessionInventoryFromResponse(
+      inventory([
+        { sessionId: "d1", kind: "main", activityState: "draft" },
+        { sessionId: "a1", kind: "main", activityState: "active" },
+      ]),
+    );
+    expect(page.sessions.map((s) => s.activityState)).toEqual([
+      "draft",
+      "active",
+    ]);
+    expect(page.sessions.every((s) => s.isChat)).toBe(true);
+  });
 });
 
 describe("sessionTranscriptFromSdk", () => {
@@ -283,6 +427,51 @@ describe("sessionTranscriptFromSdk", () => {
 
   it("reports an unproven transcript as incomplete rather than whole", () => {
     expect(sessionTranscriptFromSdk(transcript({})).complete).toBe(false);
+  });
+
+  it("decodes a tool result's image and link blocks into parts, the same way the live stream does", () => {
+    const mapped = sessionTranscriptFromSdk(
+      transcript({
+        complete: true,
+        messages: [
+          {
+            role: "tool",
+            text: "",
+            toolCalls: [],
+            parts: [],
+            toolResult: {
+              callId: "c1",
+              content: "ok",
+              isError: false,
+              structuredContent: "",
+              blocks: [
+                { kind: 1, text: "ok" },
+                {
+                  kind: 2,
+                  mimeType: "image/png",
+                  data: new Uint8Array([137, 80, 78, 71]),
+                },
+                {
+                  kind: 4,
+                  url: "https://example.com/r",
+                  name: "r",
+                  title: "",
+                },
+              ],
+            },
+          } as unknown as SdkSessionTranscript["messages"][number],
+        ],
+      }),
+    );
+    expect(mapped.messages[0].toolResult).toEqual({
+      callId: "c1",
+      content: "ok",
+      isError: false,
+      parts: [
+        { kind: "image", mimeType: "image/png", data: "iVBORw==" },
+        { kind: "resource_link", url: "https://example.com/r", name: "r" },
+      ],
+    });
   });
 });
 

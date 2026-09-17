@@ -24,12 +24,14 @@ import {
   useAgentSessions,
 } from "@/features/agent";
 import { deriveChatPhase } from "@/features/agent/chat-phase";
+import { TranscriptDialog } from "@/features/agent/components/transcript-dialog";
 import type {
   BuiltinGates,
   BuiltinOutcome,
   StudioBuiltinCommand,
 } from "@/features/agent/composer-builtins";
 import type { SessionInventoryWalk } from "@/features/agent/hooks/use-agent-sessions";
+import { useAwayNotice } from "@/features/agent/hooks/use-away-notice";
 import { useDeliveryFollow } from "@/features/agent/hooks/use-delivery-follow";
 import { useHarnessRuntime } from "@/features/agent/hooks/use-harness-runtime";
 import { useSessionMode } from "@/features/agent/hooks/use-session-mode";
@@ -57,7 +59,10 @@ import {
   forkHarnessSessionToSelection,
   ThreadSourceBusyError,
 } from "@/lib/harness/client";
-import { createHarnessDebugSession } from "@/lib/harness/debug";
+import {
+  createHarnessDebugSession,
+  debugOpeningPrompt,
+} from "@/lib/harness/debug";
 import { useDefaultModel, useDisabledModels } from "@/lib/model-preferences";
 import { takePendingDraft } from "@/lib/pending-draft";
 import {
@@ -70,6 +75,14 @@ import {
 } from "@/lib/profile-preferences";
 import type { SessionPermissionMode } from "@/lib/protocol";
 import { effortLabel } from "@/lib/reasoning-effort";
+import {
+  capabilityReasonLabel,
+  describeRelationship,
+  inspectRowTitle,
+  SESSION_TAB_EMPTY,
+  type SessionTab,
+  sessionTabFor,
+} from "@/lib/session-kinds";
 import { useShortcut } from "@/lib/shortcuts/use-shortcuts";
 import { useThreadSessionIds } from "@/lib/thread-map";
 import { cn } from "@/lib/utils";
@@ -87,7 +100,14 @@ import {
 } from "./clear-conversation";
 import { useDebugSessionDialog } from "./debug-session-dialog";
 import { DraftGreeting } from "./draft-greeting";
+import { InspectQueryWatcher } from "./inspect-query-watcher";
+import { InspectSessionGroups, inspectRowDomId } from "./inspect-session-list";
 import { SessionInventoryStatus } from "./session-inventory-status";
+import {
+  SessionKindTabs,
+  StorageMaintenanceLink,
+  useSessionTab,
+} from "./session-kind-tabs";
 import {
   AgentList,
   MockProjectList,
@@ -98,6 +118,7 @@ import {
 import { useBuiltinSlashCommands } from "./use-builtin-slash-commands";
 import { useClearConversation } from "./use-clear-conversation";
 import { useComposerEscape } from "./use-composer-escape";
+import { useDebugOpeningPrompt } from "./use-debug-opening-prompt";
 import { useWorktreeSwitch } from "./use-worktree-switch";
 
 /** Route for a chat, or the base (a new draft) when none is selected. */
@@ -146,6 +167,11 @@ function SidebarContent({
   onSelect,
   actions,
   showMockProjects,
+  kindTabs,
+  inspectGroups,
+  onInspect,
+  emptyLabel,
+  footer,
 }: {
   onNewChat: () => void;
   isLoading: boolean;
@@ -161,6 +187,16 @@ function SidebarContent({
   actions: SessionActions;
   /** Labs mock features: list the demo project-grouped chats. */
   showMockProjects: boolean;
+  /** The kind tabs under the header (Chats / Runs / Scheduled / Drafts / Other). */
+  kindTabs: React.ReactNode;
+  /** Recency groups of the active READ-ONLY tab's rows; empty on a chat tab. */
+  inspectGroups: { label: string; sessions: AgentSession[] }[];
+  /** Opens a run's read-only transcript (never rebinds the live chat). */
+  onInspect: (id: string) => void;
+  /** The active tab's empty-state line. */
+  emptyLabel: string;
+  /** Rendered after the lists (the storage-maintenance link). */
+  footer?: React.ReactNode;
 }) {
   return (
     <>
@@ -200,6 +236,7 @@ function SidebarContent({
           </Tooltip>
         )}
       </div>
+      {kindTabs}
 
       <div className="flex-1 overflow-y-auto py-3">
         <SessionInventoryStatus
@@ -215,6 +252,11 @@ function SidebarContent({
           <SidebarGroup label="Projects">
             <MockProjectList />
           </SidebarGroup>
+        )}
+        {/* A read-only tab (Runs / Scheduled / Other): inspect rows in the
+            same recency groups; a click opens the transcript dialog. */}
+        {!isLoading && inspectGroups.length > 0 && (
+          <InspectSessionGroups groups={inspectGroups} onInspect={onInspect} />
         )}
         {isLoading ? (
           <div className="flex items-center justify-center py-8">
@@ -254,16 +296,19 @@ function SidebarContent({
           // inventory empty; the status line above says what happened.
           !error &&
           !walk.inFlight &&
-          !walk.cancelled && (
+          !walk.cancelled &&
+          inspectGroups.length === 0 && (
             <p className="text-center text-sm text-muted-foreground/50 py-8">
-              No chats yet
+              {emptyLabel}
             </p>
           )
         )}
         {!isLoading && agents.length > 0 && (
           <div
             className={
-              groups.length > 0 || showMockProjects ? "pt-3" : undefined
+              groups.length > 0 || inspectGroups.length > 0 || showMockProjects
+                ? "pt-3"
+                : undefined
             }
           >
             <SidebarGroup label="Agents">
@@ -271,6 +316,7 @@ function SidebarContent({
             </SidebarGroup>
           </div>
         )}
+        {!isLoading && footer}
       </div>
     </>
   );
@@ -433,6 +479,7 @@ function DraftView({
 export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   const {
     sessions,
+    runs,
     isLoading: sessionsLoading,
     error: sessionsError,
     walk: sessionsWalk,
@@ -761,7 +808,12 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
 
   // The daemon's operator-enabled capabilities (A3 caches /v1/compatibility)
   // and the connection state the tab title's Offline/Connecting word reads.
-  const { serverCapabilities, state: connection } = useRuntimeStatus();
+  const {
+    serverCapabilities,
+    features,
+    state: connection,
+    refresh: refreshRuntime,
+  } = useRuntimeStatus();
 
   // The session's effective model + context window: the chat hook's
   // GET-session detail (read on open and re-read on every run terminal), so
@@ -853,14 +905,22 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
         .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0)),
     [sessions, threadSessionIds],
   );
+  // The Drafts tab exists only when the daemon classifies drafts (the
+  // `session_activity_inventory` feature); then a draft chat lists there,
+  // not under Chats — the TUI's split.
+  const draftsSupported = features.has("session_activity_inventory");
   const groups = useMemo(() => {
-    const recency = groupSessionsByRecency(orderedSessions);
+    const recency = groupSessionsByRecency(
+      orderedSessions.filter(
+        (s) => sessionTabFor(s, draftsSupported) === "chats",
+      ),
+    );
     // The Labs mock tour pins atop the list under its own clearly-labeled
     // group — local demo content, never a daemon row.
     return mockFeatures
       ? [{ label: "Mock", sessions: [MOCK_TOUR_SESSION] }, ...recency]
       : recency;
-  }, [orderedSessions, mockFeatures]);
+  }, [orderedSessions, mockFeatures, draftsSupported]);
 
   const selectedSession = useMemo<AgentSession | undefined>(() => {
     if (!selectedId) return undefined;
@@ -904,6 +964,19 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
       connection,
     }),
   );
+
+  // The "while you were away" resume notice — mecatui's resumeNotice: one
+  // toast on tab return (after ≥20 s hidden) naming the phase that was in
+  // flight when the user left and what it did meanwhile. The daemon probe
+  // and the inventory are refreshed FIRST (a hidden tab's timers are
+  // throttled, so both can be a minute stale), then the line is composed
+  // from the same phase fold the tab title reads.
+  useAwayNotice({
+    phase,
+    chatTitle: selectedSession ? selectedSession.title : "New chat",
+    connected: connection === "connected",
+    refresh: () => Promise.all([refreshRuntime(), refreshSessions()]),
+  });
 
   // Scheduled-task delivery notes that land while this chat sits idle (a
   // fire that completed between two inventory polls): pick them up from the
@@ -953,33 +1026,51 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   // configured MCP servers when its debug_mcp capability is on — the TUI's
   // `--debug-mcp NAME`: every call the debugger makes on them still asks for
   // approval one call at a time, and Always allow is never learned.
+  // The debug chat's opening objective (the TUI submits `defaultDebugPrompt`
+  // the moment its debug chat opens; the daemon's create starts no run):
+  // armed on create, sent ONCE by the chat hook once it has re-keyed onto the
+  // new session and reads live + idle — never into a draft or another chat.
+  const { arm: armDebugOpeningPrompt } = useDebugOpeningPrompt({
+    sessionId: hookSessionId,
+    live: harnessLive,
+    status,
+    sendMessage,
+  });
   const createDebugSession = useCallback(
-    async (id: string, mcpServers: string[]) => {
+    async (id: string, mcpServers: string[], runtimeContext: string | null) => {
       try {
         const debugId = await createHarnessDebugSession(id, { mcpServers });
         await refreshSessions();
+        // Arm before selecting: the hook re-keys on the selection and sends
+        // the objective on its first live + idle render there.
+        armDebugOpeningPrompt(
+          debugId,
+          debugOpeningPrompt({ servers: mcpServers, runtimeContext }),
+        );
         handleSelectSession(debugId);
         toast.success(
           mcpServers.length > 0
-            ? `Debug session created with MCP: ${mcpServers.join(", ")}`
-            : "Debug session created",
+            ? `Debug session created with MCP: ${mcpServers.join(", ")} — sending the diagnostic objective`
+            : "Debug session created — sending the diagnostic objective",
         );
       } catch (caught) {
         toast.error(caught instanceof Error ? caught.message : String(caught));
       }
     },
-    [refreshSessions, handleSelectSession],
+    [refreshSessions, handleSelectSession, armDebugOpeningPrompt],
   );
   const { requestDebugSession, debugSessionDialog } = useDebugSessionDialog({
-    onCreate: (id, mcpServers) => void createDebugSession(id, mcpServers),
+    onCreate: (id, request) =>
+      void createDebugSession(id, request.mcpServers, request.runtimeContext),
   });
   const handleDebugSession = useCallback(
     (id: string) => {
       // The Labs mock row is local demo content — never a daemon target.
       if (isMockTourSession(id)) return;
-      requestDebugSession(id);
+      // The title names the target in the consent dialog (with its handle).
+      requestDebugSession(id, sessions.find((s) => s.id === id)?.title ?? "");
     },
-    [requestDebugSession],
+    [requestDebugSession, sessions],
   );
 
   const sessionActions: SessionActions = useMemo(
@@ -1020,14 +1111,135 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     ],
   );
 
-  // Flattened, in-display-order chat ids for keyboard navigation.
+  // The inventory kind tabs (the TUI's /sessions overlay tabs). Chats keeps
+  // today's list; Drafts lists draft chats as openable chat rows; Runs /
+  // Scheduled / Other list the hook's inspect-only `runs` as read-only rows
+  // whose click opens the transcript dialog — never a rebind of the live
+  // chat. Other appears only while an unknown kind is actually stored.
+  const tabbedRows = useMemo(() => {
+    const byTab: Record<SessionTab, AgentSession[]> = {
+      chats: [],
+      runs: [],
+      scheduled: [],
+      drafts: [],
+      other: [],
+    };
+    const byRecency = (a: AgentSession, b: AgentSession) =>
+      (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
+    for (const run of [...runs].sort(byRecency)) {
+      byTab[sessionTabFor(run, draftsSupported)].push(run);
+    }
+    for (const chat of orderedSessions) {
+      if (sessionTabFor(chat, draftsSupported) === "drafts") {
+        byTab.drafts.push(chat);
+      }
+    }
+    return byTab;
+  }, [runs, orderedSessions, draftsSupported]);
+  const { tab: sessionTab, setTab: setSessionTab } = useSessionTab({
+    showDrafts: draftsSupported,
+    showOther: tabbedRows.other.length > 0,
+  });
+  const tabCounts: Record<SessionTab, number> = {
+    chats: groups.reduce((n, g) => n + g.sessions.length, 0),
+    runs: tabbedRows.runs.length,
+    scheduled: tabbedRows.scheduled.length,
+    drafts: tabbedRows.drafts.length,
+    other: tabbedRows.other.length,
+  };
+  // Chat rows (openable) for the Chats / Drafts tabs; inspect rows otherwise.
+  const visibleGroups = useMemo(
+    () =>
+      sessionTab === "chats"
+        ? groups
+        : sessionTab === "drafts"
+          ? groupSessionsByRecency(tabbedRows.drafts)
+          : [],
+    [sessionTab, groups, tabbedRows],
+  );
+  const inspectGroups = useMemo(
+    () =>
+      sessionTab === "chats" || sessionTab === "drafts"
+        ? []
+        : groupSessionsByRecency(tabbedRows[sessionTab]),
+    [sessionTab, tabbedRows],
+  );
+
+  // The read-only transcript dialog (the TUI's Inspect / `v` viewer): a run
+  // whose transcript the daemon withholds toasts the reason instead. A deep
+  // link may name a run the walk has not landed yet — the dialog then loads
+  // by id and shows the daemon's own refusal, with Retry.
+  const [inspecting, setInspecting] = useState<{
+    sessionId: string;
+    label: string;
+    subtitle: string;
+    parentSessionId: string;
+  } | null>(null);
+  const handleInspectSession = useCallback(
+    (id: string) => {
+      const run = runs.find((r) => r.id === id);
+      if (run && run.canViewTranscript === false) {
+        toast.info(
+          capabilityReasonLabel(run.viewTranscriptReason) ||
+            "Transcript unavailable",
+        );
+        return;
+      }
+      setInspecting({
+        sessionId: id,
+        label: run ? inspectRowTitle(run) : id,
+        subtitle: run ? describeRelationship(run.relationship) : "",
+        parentSessionId: run?.relationship?.parentSessionId ?? "",
+      });
+    },
+    [runs],
+  );
+  // From a delegation card in THIS chat: the parent is the open chat, so
+  // the dialog offers no parent link.
+  const handleInspectChild = useCallback(
+    (childId: string, label: string) => {
+      const run = runs.find((r) => r.id === childId);
+      setInspecting({
+        sessionId: childId,
+        label: run?.title || label,
+        subtitle: run ? describeRelationship(run.relationship) : "",
+        parentSessionId: "",
+      });
+    },
+    [runs],
+  );
+
+  // Flattened, in-display-order chat ids for keyboard navigation (the
+  // active tab's rows).
   const navOrder = useMemo(
-    () => groups.flatMap((g) => g.sessions.map((s) => s.id)),
-    [groups],
+    () => visibleGroups.flatMap((g) => g.sessions.map((s) => s.id)),
+    [visibleGroups],
+  );
+  const inspectOrder = useMemo(
+    () => inspectGroups.flatMap((g) => g.sessions.map((s) => s.id)),
+    [inspectGroups],
   );
 
   const navigateBy = useCallback(
     (forward: boolean) => {
+      if (inspectOrder.length > 0) {
+        // A read-only tab: ↑/↓ move focus across the inspect rows (Enter
+        // then opens the one in focus); nothing is selected or opened.
+        const activeId = document.activeElement?.id ?? "";
+        const cur = inspectOrder.findIndex(
+          (id) => inspectRowDomId(id) === activeId,
+        );
+        const idx =
+          cur === -1
+            ? forward
+              ? 0
+              : inspectOrder.length - 1
+            : forward
+              ? Math.min(cur + 1, inspectOrder.length - 1)
+              : Math.max(cur - 1, 0);
+        document.getElementById(inspectRowDomId(inspectOrder[idx]))?.focus();
+        return;
+      }
       if (navOrder.length === 0) return;
       const cur = navOrder.indexOf(selectedId);
       const idx =
@@ -1040,7 +1252,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
             : Math.max(cur - 1, 0);
       handleSelectSession(navOrder[idx]);
     },
-    [navOrder, selectedId, handleSelectSession],
+    [navOrder, inspectOrder, selectedId, handleSelectSession],
   );
 
   useShortcut("chat.new", handleNewChat);
@@ -1049,6 +1261,13 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   useShortcut("chat.next.vim", () => navigateBy(true));
   useShortcut("chat.prev", () => navigateBy(false));
   useShortcut("chat.prev.vim", () => navigateBy(false));
+  // "Debug with AI" for the selected chat (the TUI's F1): the same consent
+  // dialog the row menu opens. Nothing on a draft, the mock tour, a chat
+  // that already IS a debug session, or a daemon without session_debug.
+  useShortcut("debug.open", () => {
+    if (!selectedId || !debugSupported || debugChat || isMockSelected) return;
+    handleDebugSession(selectedId);
+  });
 
   const sidebarContentProps = {
     onNewChat: handleNewChat,
@@ -1057,12 +1276,29 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     walk: sessionsWalk,
     onCancelLoad: cancelSessionsLoad,
     onRetryLoad: retrySessionsLoad,
-    groups,
+    groups: visibleGroups,
     agents,
     selectedId,
     onSelect: handleSelectSession,
     actions: sessionActions,
     showMockProjects: mockFeatures,
+    kindTabs: (
+      <SessionKindTabs
+        value={sessionTab}
+        onChange={setSessionTab}
+        counts={tabCounts}
+        showDrafts={draftsSupported}
+        showOther={tabbedRows.other.length > 0}
+      />
+    ),
+    inspectGroups,
+    onInspect: handleInspectSession,
+    emptyLabel: SESSION_TAB_EMPTY[sessionTab],
+    // The TUI's Maintenance tab lives on the Storage settings page here.
+    footer:
+      serverCapabilities.storage_health === true ? (
+        <StorageMaintenanceLink />
+      ) : undefined,
   };
 
   // Clear conversation (the TUI's /clear handoff): the daemon cancels a
@@ -1145,6 +1381,21 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
       {sessionDetailsDialog}
       {debugSessionDialog}
       {worktreePickerDialog}
+      {inspecting && (
+        <TranscriptDialog
+          sessionId={inspecting.sessionId}
+          label={inspecting.label}
+          subtitle={inspecting.subtitle || undefined}
+          parentSessionId={inspecting.parentSessionId || undefined}
+          onOpenParent={(parentId) => {
+            setInspecting(null);
+            handleSelectSession(parentId);
+          }}
+          onClose={() => setInspecting(null)}
+        />
+      )}
+      {/* The search's run deep link (`?inspect=<id>`) opens the dialog. */}
+      <InspectQueryWatcher onInspect={handleInspectSession} />
     </>
   );
 
@@ -1325,6 +1576,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
           teamsSupported={serverCapabilities.teams === true}
           mediaCapabilities={mediaCapabilities}
           onCancelChild={cancelChild}
+          onInspectChild={handleInspectChild}
           enrollment={enrollment}
           contextInfo={
             resolvedModel
@@ -1364,9 +1616,11 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
           onSidePanelOpenChange={
             isMobile ? undefined : handleSidePanelOpenChange
           }
-          // The pill shows the user's pick while a mid-run switch is held; the
-          // status strip labels it "(pending)" until the daemon confirms.
-          mode={pendingMode ?? mode}
+          // `mode` is the daemon-CONFIRMED mode; a mid-run switch rides
+          // `pendingMode` separately so the pill, the header badge and the
+          // status strip can each show the pick as "pending" until the daemon
+          // confirms it (passing the pick AS `mode` hid the pending state).
+          mode={mode}
           onModeChange={debugChat ? undefined : changeMode}
           pendingMode={pendingMode}
           modeSwitchDeferred

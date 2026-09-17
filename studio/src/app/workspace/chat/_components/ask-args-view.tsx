@@ -13,6 +13,7 @@ import {
   describeAskArgs,
   formatTimeout,
 } from "./ask-args";
+import { computeLineDiff, editSizeNote, writeSizeNote } from "./tool-diff";
 
 /** The heading over the decoded block, per kind. */
 function kindLabel(described: AskArgs): string {
@@ -147,19 +148,29 @@ function DecodedArgs({ described }: { described: AskArgs }) {
       );
     }
     case "edit":
+      // The size note (`-N +N`, plus `replace all`) is the TUI's Edit
+      // header: the reader sees how much changes before scrolling the diff.
       return (
         <>
           <PathLine
             path={described.path}
-            note={described.replaceAll ? "replace all" : undefined}
+            note={editSizeNote(
+              computeLineDiff(described.oldText, described.newText),
+              described.replaceAll,
+            )}
           />
           <ArgsDiff before={described.oldText} after={described.newText} />
         </>
       );
     case "write":
+      // `N lines · overwrites if it exists`: the risk caveat at the gate —
+      // Write replaces whatever is at the path.
       return (
         <>
-          <PathLine path={described.path} />
+          <PathLine
+            path={described.path}
+            note={writeSizeNote(described.content)}
+          />
           <pre className={PRE_CLASS}>
             {clampAskText(described.content) || "(empty file)"}
           </pre>

@@ -819,6 +819,103 @@ describe("translateEvent", () => {
     ]);
   });
 
+  it("stamps the changed path on an Edit/Write call and none on a read", () => {
+    const [edit] = translate(
+      sdkEvent("tool.call", {
+        id: "c2",
+        name: "Edit",
+        args: JSON.stringify({
+          path: "a.ts",
+          old_string: "x",
+          new_string: "y",
+        }),
+      }),
+    );
+    expect(edit).toMatchObject({
+      type: "tool_call",
+      name: "Edit",
+      changedPath: "a.ts",
+      rawArgs: '{"path":"a.ts","old_string":"x","new_string":"y"}',
+    });
+    // Edit names no final content, so it is a changed path but not a file.
+    expect(edit.type === "tool_call" && edit.file).toBeUndefined();
+
+    const [write] = translate(
+      sdkEvent("tool.call", {
+        id: "c3",
+        name: "Write",
+        args: JSON.stringify({ path: "b.ts", content: "hi" }),
+      }),
+    );
+    expect(write).toMatchObject({
+      changedPath: "b.ts",
+      file: { path: "b.ts", name: "b.ts", content: "hi" },
+    });
+
+    const [read] = translate(
+      sdkEvent("tool.call", {
+        id: "c4",
+        name: "Read",
+        args: JSON.stringify({ path: "c.ts" }),
+      }),
+    );
+    expect(read.type === "tool_call" && read.changedPath).toBeUndefined();
+  });
+
+  it("decodes a result's image and resource-link blocks into parts, ignoring text and unknown kinds", () => {
+    const [result] = translate(
+      sdkEvent("tool.result", {
+        callId: "c1",
+        content: "ok",
+        isError: false,
+        structuredContent: "",
+        blocks: [
+          { kind: 1, text: "ok" },
+          {
+            kind: 2,
+            mimeType: "image/png",
+            data: new Uint8Array([137, 80, 78, 71]),
+          },
+          {
+            kind: 4,
+            url: "https://example.com/report.html",
+            name: "report.html",
+            title: "Report",
+          },
+          { kind: 4, url: "", name: "no-url" },
+          { kind: 2, mimeType: "image/png", data: new Uint8Array() },
+          { kind: 5, text: "embedded" },
+        ],
+      }),
+    );
+    expect(result).toEqual({
+      type: "tool_result",
+      callId: "c1",
+      output: "ok",
+      isError: false,
+      parts: [
+        { kind: "image", mimeType: "image/png", data: "iVBORw==" },
+        {
+          kind: "resource_link",
+          url: "https://example.com/report.html",
+          name: "report.html",
+          title: "Report",
+        },
+      ],
+    });
+    // Text-only blocks yield no parts at all (absent, not an empty list).
+    const [plain] = translate(
+      sdkEvent("tool.result", {
+        callId: "c1",
+        content: "ok",
+        isError: false,
+        structuredContent: "",
+        blocks: [{ kind: 1, text: "ok" }],
+      }),
+    );
+    expect(plain.type === "tool_result" && plain.parts).toBeUndefined();
+  });
+
   // ── delegation protocol (parallel.* / team.* / subagent.tool previews) ────
 
   it("carries the child-activity preview on subagent.tool (inner kind, error, detail, text)", () => {

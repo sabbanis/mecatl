@@ -14,8 +14,12 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
+import { useDiagnosticsReport } from "@/features/agent/hooks/use-diagnostics-report";
 import { useRuntimeStatus } from "@/features/agent/runtime-status";
+import { debugOpeningPrompt } from "@/lib/harness/debug";
 import { fetchHarnessMcpServerNames } from "@/lib/harness/mcp-sources";
+import { shortSessionHandle } from "@/lib/protocol/session-handle";
 
 /**
  * The ADR-0254 consent disclosure, word for word: invoking the debugger sends
@@ -40,6 +44,38 @@ export const NO_MCP_SERVER_NOTE =
 /** Shown when the daemon could not list its servers (an older daemon). */
 export const MCP_LIST_UNAVAILABLE_NOTE =
   "Studio could not list this daemon's MCP servers. Enter the configured names; the daemon refuses a name it does not know.";
+
+/** The runtime-context option's label (the TUI appends the same report). */
+export const RUNTIME_CONTEXT_LABEL =
+  "Include a Studio/daemon diagnostics report as runtime context";
+
+/** What the runtime-context report is — and is not. */
+export const RUNTIME_CONTEXT_NOTE =
+  "The same sanitized report /diagnostics sends: client build, daemon identity, mode, posture and endpoint class — nothing from this chat. The debugger is told it is context about this client, never evidence about the target.";
+
+/** Heading over the opening message the debug chat submits on its own. */
+export const OPENING_MESSAGE_HEADING = "Opening message, sent automatically";
+
+/** The consent the operator gives: target, evidence, servers, first turn. */
+export interface DebugSessionChoice {
+  /** The attached reporting-server names ([] = none). */
+  mcpServers: string[];
+  /** Append the Studio/daemon diagnostics report to the opening message. */
+  includeRuntimeContext: boolean;
+}
+
+/** What the workspace receives after the consent: the choice, resolved. */
+export interface DebugSessionRequest {
+  mcpServers: string[];
+  /** The composed diagnostics report, or null when not requested / failed. */
+  runtimeContext: string | null;
+}
+
+/** The chat the consent is about; the title is what the sidebar shows. */
+export interface DebugSessionTarget {
+  id: string;
+  title: string;
+}
 
 /**
  * Splits a typed server list on commas and whitespace, trims, drops empties
@@ -69,8 +105,11 @@ export interface DebugSessionDialogProps {
   /** The daemon's configured MCP servers (GET /v1/mcp/sources): offered as
    *  checkboxes when listed; a text input when the daemon could not list. */
   servers: McpServerListing;
-  /** Confirms the consent with the chosen server names ([] = none). */
-  onConfirm: (mcpServers: string[]) => void;
+  /** The chat being debugged — named in the title with its 12-column handle
+   *  (the same literal mecatui shows), so the consent is unambiguous. */
+  target?: DebugSessionTarget | null;
+  /** Confirms the consent with the chosen servers and the report option. */
+  onConfirm: (choice: DebugSessionChoice) => void;
 }
 
 /**
@@ -86,10 +125,14 @@ export function DebugSessionDialog({
   onOpenChange,
   mcpSupported,
   servers,
+  target,
   onConfirm,
 }: DebugSessionDialogProps) {
   const [selected, setSelected] = useState<string[]>([]);
   const [typed, setTyped] = useState("");
+  // On by default: the TUI always appends its runtime context, and the
+  // report carries nothing from the target — opting OUT is the exception.
+  const [includeRuntimeContext, setIncludeRuntimeContext] = useState(true);
   const baseId = useId();
 
   // A fresh choice per opening: a selection made for one target must not
@@ -98,6 +141,7 @@ export function DebugSessionDialog({
     if (open) {
       setSelected([]);
       setTyped("");
+      setIncludeRuntimeContext(true);
     }
   }, [open]);
 
@@ -176,14 +220,70 @@ export function DebugSessionDialog({
     </fieldset>
   ) : null;
 
+  const targetTitle = target ? target.title.trim() || "Untitled chat" : "";
+  const targetHandle = target ? shortSessionHandle(target.id) : "";
+  const runtimeContextId = `${baseId}-runtime-context`;
+  // The first turn the debug chat submits on its own, spelled here so the
+  // operator reads it BEFORE it leaves (the report is appended at send time
+  // when the switch is on; its shape is the note's business).
+  const openingMessage = debugOpeningPrompt({ servers: chosen });
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Debug with AI</DialogTitle>
+          <DialogTitle>
+            {target ? `Debug with AI: ${targetTitle}` : "Debug with AI"}
+          </DialogTitle>
           <DialogDescription>{DEBUG_SESSION_CONSENT}</DialogDescription>
         </DialogHeader>
+        {target && (
+          <p className="text-xs text-muted-foreground">
+            Target chat handle:{" "}
+            <code className="rounded bg-muted px-1 py-0.5 font-mono text-foreground">
+              {targetHandle}
+            </code>{" "}
+            — the same handle mecatui shows for this chat.
+          </p>
+        )}
         {attachSection}
+        <div className="flex items-start gap-3 rounded-md border border-border p-3">
+          <Switch
+            id={runtimeContextId}
+            checked={includeRuntimeContext}
+            onCheckedChange={(value) =>
+              setIncludeRuntimeContext(value === true)
+            }
+            aria-describedby={`${runtimeContextId}-note`}
+          />
+          <div className="min-w-0 space-y-1">
+            <Label htmlFor={runtimeContextId} className="text-sm font-medium">
+              {RUNTIME_CONTEXT_LABEL}
+            </Label>
+            <p
+              id={`${runtimeContextId}-note`}
+              className="text-xs text-muted-foreground"
+            >
+              {RUNTIME_CONTEXT_NOTE}
+            </p>
+          </div>
+        </div>
+        <div className="space-y-1">
+          <p className="text-xs font-medium text-muted-foreground">
+            {OPENING_MESSAGE_HEADING}
+          </p>
+          <p
+            className="rounded-md bg-muted px-2 py-1.5 text-xs whitespace-pre-wrap"
+            data-testid="debug-opening-message"
+          >
+            {openingMessage}
+            {includeRuntimeContext && (
+              <span className="text-muted-foreground">
+                {"\n\n"}+ the diagnostics report, fenced as runtime context
+              </span>
+            )}
+          </p>
+        </div>
         <DialogFooter>
           <Button
             type="button"
@@ -192,7 +292,12 @@ export function DebugSessionDialog({
           >
             Cancel
           </Button>
-          <Button type="button" onClick={() => onConfirm(chosen)}>
+          <Button
+            type="button"
+            onClick={() =>
+              onConfirm({ mcpServers: chosen, includeRuntimeContext })
+            }
+          >
             Send evidence &amp; debug
           </Button>
         </DialogFooter>
@@ -202,25 +307,29 @@ export function DebugSessionDialog({
 }
 
 /**
- * Owns the dialog for the workspace (the `useConfirm` shape): `request(id)`
- * opens it for one target; a confirm closes it and hands the caller the
- * target with the chosen servers. Reads the daemon's `debug_mcp` capability
- * off the runtime status and lists its configured MCP servers on open — a
- * daemon that cannot list them falls back to typed names.
+ * Owns the dialog for the workspace (the `useConfirm` shape):
+ * `request(id, title)` opens it for one target; a confirm closes it, composes
+ * the diagnostics report when the operator kept that option on (the same
+ * sanitized report `/diagnostics` sends — a probe failure just drops it,
+ * never blocks the debug session), and hands the caller the target with the
+ * resolved request. Reads the daemon's `debug_mcp` capability off the
+ * runtime status and lists its configured MCP servers on open — a daemon
+ * that cannot list them falls back to typed names.
  */
 export function useDebugSessionDialog({
   onCreate,
 }: {
-  onCreate: (targetSessionId: string, mcpServers: string[]) => void;
+  onCreate: (targetSessionId: string, request: DebugSessionRequest) => void;
 }) {
   const { serverCapabilities } = useRuntimeStatus();
+  const { compose } = useDiagnosticsReport();
   const mcpSupported = serverCapabilities.debug_mcp === true;
-  const [targetId, setTargetId] = useState<string | null>(null);
+  const [target, setTarget] = useState<DebugSessionTarget | null>(null);
   const [servers, setServers] = useState<McpServerListing>({
     status: "loading",
   });
 
-  const open = targetId !== null;
+  const open = target !== null;
   useEffect(() => {
     if (!open || !mcpSupported) return;
     const controller = new AbortController();
@@ -235,17 +344,32 @@ export function useDebugSessionDialog({
     return () => controller.abort();
   }, [open, mcpSupported]);
 
-  const requestDebugSession = useCallback((id: string) => setTargetId(id), []);
+  const requestDebugSession = useCallback(
+    (id: string, title = "") => setTarget({ id, title }),
+    [],
+  );
   const handleOpenChange = useCallback((next: boolean) => {
-    if (!next) setTargetId(null);
+    if (!next) setTarget(null);
   }, []);
   const handleConfirm = useCallback(
-    (mcpServers: string[]) => {
-      if (targetId === null) return;
-      setTargetId(null);
-      onCreate(targetId, mcpServers);
+    (choice: DebugSessionChoice) => {
+      if (target === null) return;
+      const targetId = target.id;
+      setTarget(null);
+      const request = (runtimeContext: string | null) =>
+        onCreate(targetId, { mcpServers: choice.mcpServers, runtimeContext });
+      if (!choice.includeRuntimeContext) {
+        request(null);
+        return;
+      }
+      // No session context on purpose: the report describes THIS client and
+      // its daemon, not the target — and the debug session's own model is
+      // unknown until the daemon has created it.
+      void compose()
+        .then((report) => request(report.trim() ? report : null))
+        .catch(() => request(null));
     },
-    [targetId, onCreate],
+    [target, onCreate, compose],
   );
 
   const debugSessionDialog = (
@@ -254,6 +378,7 @@ export function useDebugSessionDialog({
       onOpenChange={handleOpenChange}
       mcpSupported={mcpSupported}
       servers={servers}
+      target={target}
       onConfirm={handleConfirm}
     />
   );

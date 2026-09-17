@@ -17,7 +17,9 @@ const POLL_INTERVAL_MS = 20_000;
 function toAgentSession(summary: SessionSummary): AgentSession {
   return {
     id: summary.sessionId,
-    title: summary.title || "Untitled chat",
+    // A run row keeps an empty title: its list row falls back to what the
+    // run IS (`describeRelationship`), not to a chat's placeholder.
+    title: summary.title || (summary.isChat ? "Untitled chat" : ""),
     projectId: null,
     model: summary.modelId,
     createdAt: summary.createdAt,
@@ -44,7 +46,30 @@ function toAgentSession(summary: SessionSummary): AgentSession {
     forkReason: summary.forkReason,
     titleProvenance: summary.titleProvenance,
     debugTargetSessionId: summary.debugTargetSessionId,
+    kind: summary.kind,
+    activityState: summary.activityState,
+    isChat: summary.isChat,
+    placementLabel: summary.placement?.label ?? "",
+    placementBranch: summary.placement?.branch ?? "",
+    relationship: summary.relationship,
+    canInspect: summary.canInspect,
+    canViewTranscript: summary.canViewTranscript,
+    publicChatReason: summary.publicChatReason,
+    viewTranscriptReason: summary.viewTranscriptReason,
   };
+}
+
+/** Splits one inventory page into chat rows and inspect-only run rows. */
+function splitPage(page: readonly SessionSummary[]): {
+  chats: AgentSession[];
+  runs: AgentSession[];
+} {
+  const chats: AgentSession[] = [];
+  const runs: AgentSession[] = [];
+  for (const summary of page) {
+    (summary.isChat ? chats : runs).push(toAgentSession(summary));
+  }
+  return { chats, runs };
 }
 
 /**
@@ -92,11 +117,13 @@ function mergeRows(
  * The chat list, backed by the daemon's session store — the record of chats.
  *
  * Invariants (from the server-backed-chats design):
- * - Only chats appear: rows whose one not-a-chat reason is
- *   `inspect_only_kind` (subagents, team members, scheduled fires) are
- *   filtered by the decoder.
+ * - `sessions` holds only chats: rows whose one not-a-chat reason is
+ *   `inspect_only_kind` (subagents, parallel branches, team members,
+ *   scheduled fires) land in `runs` instead — the read-only inventory the
+ *   sidebar's Runs / Scheduled / Other tabs list. Nothing the store returned
+ *   is dropped.
  * - A row is removed only when a COMPLETE inventory walk proves it gone; a
- *   partial walk merges and never deletes.
+ *   partial walk merges and never deletes. Both lists obey this.
  * - Action eligibility (rename/delete) comes from the row's capabilities,
  *   never re-derived client-side.
  * - A rename is optimistic but adopts the daemon's clamped title echo, and
@@ -105,6 +132,7 @@ function mergeRows(
 export function useAgentSessions() {
   const { connected } = useRuntimeStatus();
   const [sessions, setSessions] = useState<AgentSession[]>([]);
+  const [runs, setRuns] = useState<AgentSession[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [walk, setWalk] = useState<SessionInventoryWalk>(IDLE_WALK);
@@ -141,15 +169,16 @@ export function useAgentSessions() {
           25,
           (progress) => {
             if (controller.signal.aborted) return;
-            const chats = progress.page
-              .filter((summary) => summary.isChat)
-              .map(toAgentSession);
+            const { chats, runs: pageRuns } = splitPage(progress.page);
             pagesSeen = progress.pages;
             chatRows += chats.length;
             // Each page lands as it arrives (a partial merge never deletes),
             // so rows show from the first page on, not only after the walk.
             if (chats.length > 0) {
               setSessions((previous) => mergeRows(previous, chats));
+            }
+            if (pageRuns.length > 0) {
+              setRuns((previous) => mergeRows(previous, pageRuns));
             }
             if (visible) {
               setWalk((previous) => ({
@@ -163,12 +192,13 @@ export function useAgentSessions() {
           },
         );
         if (parentSignal?.aborted) return;
-        const chats = result.sessions
-          .filter((summary) => summary.isChat)
-          .map(toAgentSession);
+        const { chats, runs: allRuns } = splitPage(result.sessions);
         // Only a COMPLETE walk may drop a row; a bounded walk merges.
         setSessions((previous) =>
           result.complete ? chats : mergeRows(previous, chats),
+        );
+        setRuns((previous) =>
+          result.complete ? allRuns : mergeRows(previous, allRuns),
         );
         setError(null);
         loadedOnce.current = true;
@@ -297,6 +327,7 @@ export function useAgentSessions() {
       }
     }
     setSessions((previous) => previous.filter((s) => s.id !== id));
+    setRuns((previous) => previous.filter((s) => s.id !== id));
   }, []);
 
   // Title-provenance rule (F4): renames HERE are always operator-initiated
@@ -371,6 +402,8 @@ export function useAgentSessions() {
 
   return {
     sessions,
+    /** Every inspect-only row (child runs, scheduled fires, unknown kinds). */
+    runs,
     isLoading: isLoading && !loadedOnce.current,
     error,
     walk,

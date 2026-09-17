@@ -3,17 +3,21 @@ import "server-only";
 /**
  * Remote OIDC login for external mode (requirement H3, #847; the client-side
  * pattern is mecatui's ADR 0277): Authorization Code + PKCE runs ENTIRELY in
- * the Next server tier — this module owns issuer discovery, the pending login
- * attempts, the in-memory token store, refresh, and revocation. Tokens never
- * reach the browser (rule 3) and are never written to disk: a Next server
- * restart requires one fresh sign-in (v1 deliberately defers durable storage;
- * ADR 0277's keyring-wrapped store is the eventual model).
+ * the Next server tier — this module owns the sign-in profile (env-configured
+ * or RFC 9728-discovered), issuer discovery, the pending login attempts, the
+ * token store, refresh, and revocation. Tokens never reach the browser
+ * (rule 3). By default they live in process memory and a Next server restart
+ * requires one fresh sign-in; `MECATL_OIDC_TOKEN_STORE=file` mirrors them
+ * into the encrypted file store (`oidc/file-token-store.ts`, the
+ * `--credential-store file` analogue).
  *
- * Env contract (all three unset → the static MECATL_AUTH_TOKEN path,
- * byte-identical to pre-H3 behavior):
+ * Env contract — the `mecatui login` / `connect` flags as deployment knobs.
+ * Everything unset → the static MECATL_AUTH_TOKEN path, byte-identical to
+ * pre-H3 behavior:
  *
- * - MECATL_OIDC_ISSUER     — HTTPS issuer URL (required to enable)
- * - MECATL_OIDC_CLIENT_ID  — public client id (required to enable)
+ * - MECATL_OIDC_ISSUER     — HTTPS issuer URL (enables the explicit-values
+ *                            shape together with the client id)
+ * - MECATL_OIDC_CLIENT_ID  — public client id
  * - MECATL_OIDC_AUDIENCE   — optional; forwarded as the `audience`
  *                            authorization parameter for providers that mint
  *                            audience-bound access tokens
@@ -23,7 +27,32 @@ import "server-only";
  *                            MECATL_STUDIO_PUBLIC_ORIGIN +
  *                            "/api/auth/oidc/callback" (must be registered
  *                            with the provider)
+ * - MECATL_OIDC_DISCOVERY=1 — with NO issuer / client id set: discover the
+ *                            profile from the deployment's own RFC 9728
+ *                            protected-resource metadata (`mecatui login
+ *                            ADDRESS`). The discovered profile is
+ *                            DEFAULT-DENY: a human reviews issuer / client
+ *                            id / audience / scopes in Settings and confirms
+ *                            (the TUI's "Continue with browser login? [y/N]")
+ *                            before any sign-in starts. The confirmation
+ *                            lives with the sign-in it produced — process
+ *                            memory, or the file store — so a re-confirm is
+ *                            owed after a restart unless the credential
+ *                            itself survived it.
+ * - MECATL_OIDC_PRIVATE_ISSUER=1 — allow plain-HTTP loopback / RFC 1918
+ *                            deployments and issuers (`--private-issuer`)
+ * - MECATL_OIDC_CALLBACK_TIMEOUT — seconds a started sign-in stays valid
+ *                            (default 600; `--callback-timeout`)
+ * - MECATL_OIDC_TOKEN_STORE / _KEY / _PATH — `oidc/file-token-store.ts`
+ * - MECATL_AUTH_PREFER_STATIC=1 / MECATL_AUTH_ANONYMOUS=1 —
+ *                            `oidc/resolve-authorization.ts`
+ * - MECATL_TLS_CA / MECATL_TLS_INSECURE — `server-tls.ts`
  */
+import { resolveTokenStore } from "@/lib/oidc/file-token-store";
+import {
+  callbackTimeoutSeconds,
+  LoginAttempts,
+} from "@/lib/oidc/login-attempts";
 import {
   boundProviderError,
   buildAuthorizationUrl,
@@ -33,6 +62,15 @@ import {
   readCallbackParams,
 } from "@/lib/oidc/pkce";
 import {
+  type DiscoveredProfile,
+  discoverProtectedResource,
+  isPrivateHost,
+  profileHash,
+} from "@/lib/oidc/protected-resource";
+import {
+  type AuthMode,
+  authMode,
+  normalizeStaticToken,
   type ProxyAuthDecision,
   resolveProxyAuthorization,
 } from "@/lib/oidc/resolve-authorization";
@@ -46,8 +84,17 @@ import {
   tokensFromRefreshResponse,
 } from "@/lib/oidc/token-store";
 import { studioAllowedOrigins } from "@/lib/request-trust";
+import {
+  allowPrivateIssuer,
+  type TransportPolicy,
+  upstreamFetchInit,
+  upstreamTransport,
+} from "@/lib/server-tls";
 
-type OidcEnvConfig = {
+type OidcConfig = {
+  /** Where the profile came from: the MECATL_OIDC_* env, or the
+   * deployment's RFC 9728 metadata. */
+  source: "env" | "discovery";
   issuer: string;
   clientId: string;
   audience: string;
@@ -55,29 +102,70 @@ type OidcEnvConfig = {
   redirectUri: string;
 };
 
+const flag = (value: string | undefined) =>
+  ["1", "true", "yes"].includes((value ?? "").trim().toLowerCase());
+
 function defaultRedirectUri(): string {
   const first = [...studioAllowedOrigins()][0] || "http://localhost:3000";
   return `${first}/api/auth/oidc/callback`;
 }
 
-function oidcConfig(): OidcEnvConfig | null {
+function redirectUri(): string {
+  return process.env.MECATL_OIDC_REDIRECT_URI?.trim() || defaultRedirectUri();
+}
+
+/** The explicit-values shape (MECATL_OIDC_ISSUER + MECATL_OIDC_CLIENT_ID). */
+function envConfig(): OidcConfig | null {
   const issuer = process.env.MECATL_OIDC_ISSUER?.trim().replace(/\/+$/, "");
   const clientId = process.env.MECATL_OIDC_CLIENT_ID?.trim();
   if (!issuer || !clientId) return null;
   return {
+    source: "env",
     issuer,
     clientId,
     audience: process.env.MECATL_OIDC_AUDIENCE?.trim() || "",
     scope:
       process.env.MECATL_OIDC_SCOPE?.trim() ||
       "openid profile email offline_access",
-    redirectUri:
-      process.env.MECATL_OIDC_REDIRECT_URI?.trim() || defaultRedirectUri(),
+    redirectUri: redirectUri(),
   };
 }
 
-/** A half-set configuration is surfaced (never silently ignored) — but the
- * proxy stays on the static path so a typo cannot brick every request. */
+/** RFC 9728 discovery is the fallback shape ONLY: explicit env values win,
+ * and there must be a deployment to discover against. */
+function discoveryEnabled(): boolean {
+  return (
+    flag(process.env.MECATL_OIDC_DISCOVERY) &&
+    !process.env.MECATL_OIDC_ISSUER?.trim() &&
+    !process.env.MECATL_OIDC_CLIENT_ID?.trim() &&
+    Boolean(process.env.MECATL_BASE_URL?.trim())
+  );
+}
+
+function discoveredConfig(profile: DiscoveredProfile): OidcConfig {
+  return {
+    source: "discovery",
+    issuer: profile.issuer.replace(/\/+$/, ""),
+    clientId: profile.clientId,
+    audience: profile.audience,
+    scope: profile.scopes.join(" "),
+    redirectUri: redirectUri(),
+  };
+}
+
+/** The effective sign-in profile: env values, else the discovered one
+ * (confirmed or not — `beginOidcLogin` gates on the confirmation). Reads the
+ * cached discovery synchronously; callers `await ensureDiscovery()` first. */
+function oidcConfig(): OidcConfig | null {
+  const env = envConfig();
+  if (env) return env;
+  const state = runtime.resource;
+  return state?.kind === "ok" ? state.config : null;
+}
+
+/** A half-set configuration (or a failed discovery) is surfaced, never
+ * silently ignored — but the proxy stays on the static path so a typo cannot
+ * brick every request. */
 function configProblem(): string {
   const issuer = process.env.MECATL_OIDC_ISSUER?.trim();
   const clientId = process.env.MECATL_OIDC_CLIENT_ID?.trim();
@@ -85,6 +173,9 @@ function configProblem(): string {
     return "MECATL_OIDC_ISSUER is set but MECATL_OIDC_CLIENT_ID is missing.";
   if (clientId && !issuer)
     return "MECATL_OIDC_CLIENT_ID is set but MECATL_OIDC_ISSUER is missing.";
+  const state = runtime.resource;
+  if (discoveryEnabled() && state?.kind === "failed")
+    return `Sign-in profile discovery against the deployment failed: ${state.error}`;
   return "";
 }
 
@@ -96,41 +187,143 @@ type Discovery = {
   issParameterSupported: boolean;
 };
 
-type LoginAttempt = { verifier: string; expires: number };
+/** The RFC 9728 discovery against the deployment (discovery mode only). */
+type ResourceDiscovery =
+  | { kind: "pending"; promise: Promise<void> }
+  | {
+      kind: "ok";
+      profile: DiscoveredProfile;
+      config: OidcConfig;
+      /** The confirmation token (`profileHash`) the card POSTs back. */
+      hash: string;
+      /** DEFAULT-DENY: false until a human confirmed THIS hash (or a
+       * credential bound to it survived a restart). */
+      confirmed: boolean;
+    }
+  | { kind: "failed"; error: string; at: number };
 
 /** Stashed on globalThis so Next dev's module reloads don't sign the
- * operator out mid-session. Process memory only — see the module comment. */
+ * operator out mid-session. */
 type OidcRuntime = {
   store: OidcTokenStore;
-  attempts: Map<string, LoginAttempt>;
+  storeKind: "memory" | "file";
+  storeProblem: string;
+  attempts: LoginAttempts;
   discovery: { issuer: string; doc: Discovery } | null;
+  resource: ResourceDiscovery | null;
 };
 
 const globalStash = globalThis as typeof globalThis & {
   __mecatlOidcRuntime?: OidcRuntime;
 };
 if (!globalStash.__mecatlOidcRuntime) {
+  const selection = resolveTokenStore(process.env, process.cwd());
   globalStash.__mecatlOidcRuntime = {
-    store: new OidcTokenStore(),
-    attempts: new Map(),
+    store: new OidcTokenStore(Date.now, selection.persistence),
+    storeKind: selection.kind,
+    storeProblem: selection.problem ?? "",
+    attempts: new LoginAttempts({
+      // Read per attempt so MECATL_OIDC_CALLBACK_TIMEOUT is honoured live.
+      ttlMs: () =>
+        callbackTimeoutSeconds(process.env.MECATL_OIDC_CALLBACK_TIMEOUT) * 1000,
+    }),
     discovery: null,
+    resource: null,
   };
 }
 const runtime: OidcRuntime = globalStash.__mecatlOidcRuntime;
 
-const ATTEMPT_TTL_MS = 10 * 60_000;
-const MAX_PENDING_ATTEMPTS = 32;
+/** A failed discovery is retried after this long, so a deployment that
+ * comes up after Studio is found without a restart. */
+const DISCOVERY_RETRY_MS = 30_000;
 
-function pruneAttempts(now = Date.now()): void {
-  for (const [state, attempt] of runtime.attempts) {
-    if (attempt.expires < now) runtime.attempts.delete(state);
-  }
-  // Map iteration is insertion-ordered, so overflow drops the oldest.
-  while (runtime.attempts.size >= MAX_PENDING_ATTEMPTS) {
-    const oldest = runtime.attempts.keys().next().value;
-    if (oldest === undefined) break;
-    runtime.attempts.delete(oldest);
-  }
+/** The binding a credential carries and the confirmation token of a
+ * discovered profile are the SAME digest (issuer / client id / audience /
+ * scopes) — one identity, two uses. */
+function configHash(cfg: OidcConfig): string {
+  return profileHash(cfg);
+}
+
+/**
+ * Run RFC 9728 discovery once (single-flight). No-op unless
+ * MECATL_OIDC_DISCOVERY=1 stands in for the env values. A credential the
+ * store already holds for EXACTLY this profile is a prior human
+ * confirmation — the durable enrollment carries it across a restart.
+ */
+async function ensureDiscovery(): Promise<void> {
+  if (!discoveryEnabled()) return;
+  const state = runtime.resource;
+  if (state?.kind === "ok") return;
+  if (state?.kind === "pending") return state.promise;
+  if (state?.kind === "failed" && state.at + DISCOVERY_RETRY_MS > Date.now())
+    return;
+  const promise = discoverProtectedResource(process.env.MECATL_BASE_URL ?? "", {
+    allowPrivateHttp: allowPrivateIssuer(),
+    ...upstreamFetchInit(),
+  }).then(
+    (profile) => {
+      const config = discoveredConfig(profile);
+      const hash = configHash(config);
+      runtime.resource = {
+        kind: "ok",
+        profile,
+        config,
+        hash,
+        confirmed: runtime.store.binding() === hash,
+      };
+    },
+    (error: unknown) => {
+      runtime.resource = {
+        kind: "failed",
+        error: error instanceof Error ? error.message : "unknown error",
+        at: Date.now(),
+      };
+    },
+  );
+  runtime.resource = { kind: "pending", promise };
+  return promise;
+}
+
+function discoveryConfirmed(): boolean {
+  return runtime.resource?.kind === "ok" && runtime.resource.confirmed;
+}
+
+/** Drop a credential minted under a DIFFERENT profile than the current one
+ * — its refresh token must never reach another issuer (token-store binding
+ * contract). An unbound legacy credential is left alone. */
+function reconcileBinding(cfg: OidcConfig): void {
+  const bound = runtime.store.binding();
+  if (bound && bound !== configHash(cfg)) runtime.store.clear("signed-out");
+}
+
+/** Confirm the discovered profile the settings card showed (the TUI's
+ * "Continue with browser login? [y/N]"). The hash pins the REVIEWED values:
+ * a profile that changed in between is refused and must be reviewed again. */
+export async function confirmDiscoveredProfile(
+  hash: unknown,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  await ensureDiscovery();
+  if (envConfig())
+    return {
+      ok: false,
+      error:
+        "The sign-in profile is set by MECATL_OIDC_ISSUER and MECATL_OIDC_CLIENT_ID — there is nothing to confirm.",
+    };
+  const state = runtime.resource;
+  if (state?.kind !== "ok")
+    return {
+      ok: false,
+      error:
+        configProblem() || "There is no discovered sign-in profile to confirm.",
+    };
+  if (typeof hash !== "string" || hash !== state.hash)
+    return {
+      ok: false,
+      error:
+        "The discovered sign-in profile changed since it was reviewed — review it again.",
+    };
+  runtime.resource = { ...state, confirmed: true };
+  return { ok: true };
 }
 
 function requireHttpsEndpoint(value: unknown, label: string): string {
@@ -143,7 +336,13 @@ function requireHttpsEndpoint(value: unknown, label: string): string {
     // Harness-authored message only — never echo the provider's value.
     throw new Error(`OIDC ${label} is not a valid URL`);
   }
-  if (endpoint.protocol !== "https:")
+  // MECATL_OIDC_PRIVATE_ISSUER=1 (the `--private-issuer` analogue) admits a
+  // plain-HTTP issuer ONLY on a loopback / RFC 1918 host.
+  const privateHttp =
+    endpoint.protocol === "http:" &&
+    allowPrivateIssuer() &&
+    isPrivateHost(endpoint.hostname);
+  if (endpoint.protocol !== "https:" && !privateHttp)
     throw new Error(`OIDC ${label} must use HTTPS`);
   return endpoint.toString();
 }
@@ -162,6 +361,7 @@ async function fetchDiscovery(
     cache: "no-store",
     redirect: "manual",
     signal: signal ?? AbortSignal.timeout(8_000),
+    ...upstreamFetchInit(),
   });
   if (!response.ok)
     throw new Error(`OIDC discovery failed (HTTP ${response.status})`);
@@ -192,23 +392,29 @@ async function fetchDiscovery(
 }
 
 /** Begin one Authorization Code + PKCE attempt. Called ONLY from the login
- * route the UI's Sign in button opens — no browser window ever opens without
- * that explicit user action (H3.3). */
-export async function beginOidcLogin(): Promise<{ authorizationUrl: string }> {
+ * route the UI's Sign in / Copy sign-in link actions reach — no browser
+ * window ever opens without that explicit user action (H3.3). A discovered
+ * profile must have been confirmed first (default-deny). */
+export async function beginOidcLogin(): Promise<{
+  authorizationUrl: string;
+  /** Epoch ms after which the callback is refused (the callback timeout). */
+  expiresAt: number;
+}> {
+  await ensureDiscovery();
   const cfg = oidcConfig();
   if (!cfg)
     throw new Error(
       configProblem() ||
-        "OIDC is not configured — set MECATL_OIDC_ISSUER and MECATL_OIDC_CLIENT_ID.",
+        "OIDC is not configured — set MECATL_OIDC_ISSUER and MECATL_OIDC_CLIENT_ID, or MECATL_OIDC_DISCOVERY=1.",
+    );
+  if (cfg.source === "discovery" && !discoveryConfirmed())
+    throw new Error(
+      "Review the discovered sign-in profile in Settings and choose Continue with browser login first.",
     );
   const doc = await fetchDiscovery(cfg.issuer);
   const state = randomUrlSafe(24);
   const verifier = randomUrlSafe(48);
-  pruneAttempts();
-  runtime.attempts.set(state, {
-    verifier,
-    expires: Date.now() + ATTEMPT_TTL_MS,
-  });
+  const attempt = runtime.attempts.begin(state, verifier);
   return {
     authorizationUrl: buildAuthorizationUrl({
       authorizationEndpoint: doc.authorizationEndpoint,
@@ -219,6 +425,7 @@ export async function beginOidcLogin(): Promise<{ authorizationUrl: string }> {
       codeChallenge: pkceChallengeS256(verifier),
       audience: cfg.audience || undefined,
     }),
+    expiresAt: attempt.expires,
   };
 }
 
@@ -227,12 +434,12 @@ export type CallbackOutcome = { ok: true } | { ok: false; error: string };
 export async function completeOidcCallback(
   search: URLSearchParams,
 ): Promise<CallbackOutcome> {
+  await ensureDiscovery();
   const cfg = oidcConfig();
   if (!cfg) return { ok: false, error: "OIDC is not configured." };
   const params = readCallbackParams(search);
-  const attempt = params.state ? runtime.attempts.get(params.state) : undefined;
-  if (params.state) runtime.attempts.delete(params.state);
-  if (!attempt || attempt.expires < Date.now()) {
+  const attempt = params.state ? runtime.attempts.take(params.state) : null;
+  if (!attempt) {
     return {
       ok: false,
       error:
@@ -266,6 +473,7 @@ export async function completeOidcCallback(
       body,
       cache: "no-store",
       signal: AbortSignal.timeout(15_000),
+      ...upstreamFetchInit(),
     });
   } catch {
     return {
@@ -292,21 +500,25 @@ export async function completeOidcCallback(
     };
   }
   const now = Date.now();
-  runtime.store.setTokens({
-    accessToken,
-    refreshToken:
-      typeof result.refresh_token === "string" ? result.refresh_token : "",
-    expiresAt: tokenExpiryMs(result.expires_in, now),
-    claims:
-      (typeof result.id_token === "string" &&
-        claimsFromIdToken(result.id_token)) ||
-      {},
-  });
+  // Bound to the profile it was minted under (see reconcileBinding).
+  runtime.store.setTokens(
+    {
+      accessToken,
+      refreshToken:
+        typeof result.refresh_token === "string" ? result.refresh_token : "",
+      expiresAt: tokenExpiryMs(result.expires_in, now),
+      claims:
+        (typeof result.id_token === "string" &&
+          claimsFromIdToken(result.id_token)) ||
+        {},
+    },
+    configHash(cfg),
+  );
   return { ok: true };
 }
 
 async function refreshExchange(
-  cfg: OidcEnvConfig,
+  cfg: OidcConfig,
   prior: StoredTokens,
 ): Promise<RefreshResult> {
   const doc = await fetchDiscovery(cfg.issuer); // a throw is caught as transient
@@ -325,6 +537,7 @@ async function refreshExchange(
     body,
     cache: "no-store",
     signal: AbortSignal.timeout(10_000),
+    ...upstreamFetchInit(),
   });
   const result = (await response.json().catch(() => ({}))) as Record<
     string,
@@ -339,20 +552,46 @@ async function refreshExchange(
   return tokens ? { kind: "refreshed", tokens } : { kind: "transient" };
 }
 
+/** The two explicit credential-ordering knobs (resolve-authorization.ts). */
+function credentialKnobs(): { preferStatic: boolean; anonymous: boolean } {
+  return {
+    preferStatic: flag(process.env.MECATL_AUTH_PREFER_STATIC),
+    anonymous: flag(process.env.MECATL_AUTH_ANONYMOUS),
+  };
+}
+
 /**
  * The proxy's external-mode Authorization decision (H3.2): the current OIDC
  * access token when OIDC is configured (refreshed on demand inside the
  * 30-second refresh-ahead window), the static MECATL_AUTH_TOKEN when it is
- * not, and an honest 401/502 decision the proxy relays otherwise.
+ * not, and an honest 401/502 decision the proxy relays otherwise — unless
+ * MECATL_AUTH_ANONYMOUS / MECATL_AUTH_PREFER_STATIC reorder that.
  */
 export async function resolveExternalAuthorization(): Promise<ProxyAuthDecision> {
+  await ensureDiscovery();
   const cfg = oidcConfig();
   const staticToken = process.env.MECATL_AUTH_TOKEN;
+  const knobs = credentialKnobs();
   if (!cfg) {
     return resolveProxyAuthorization({
       oidcConfigured: false,
       oidc: null,
       staticToken,
+      ...knobs,
+    });
+  }
+  reconcileBinding(cfg);
+  // When the OIDC outcome cannot decide (anonymous, or a static token that
+  // outranks it) skip the token demand — no refresh round-trip is owed.
+  if (
+    knobs.anonymous ||
+    (knobs.preferStatic && normalizeStaticToken(staticToken))
+  ) {
+    return resolveProxyAuthorization({
+      oidcConfigured: true,
+      oidc: null,
+      staticToken,
+      ...knobs,
     });
   }
   const outcome = await runtime.store.bearer((prior) =>
@@ -362,43 +601,100 @@ export async function resolveExternalAuthorization(): Promise<ProxyAuthDecision>
     oidcConfigured: true,
     oidc: outcome,
     staticToken,
+    ...knobs,
   });
 }
 
 export type OidcLoginStatus = {
+  /** True once a sign-in can start: env values, or a CONFIRMED discovered
+   * profile. A discovered-but-unreviewed profile is not configured yet. */
   configured: boolean;
-  state: "not-configured" | "signed-out" | "signed-in" | "expired";
-  /** Set when the env configuration is half-complete. */
+  state:
+    | "not-configured"
+    | "discovered"
+    | "signed-out"
+    | "signed-in"
+    | "expired";
+  /** Set when the env configuration is half-complete or discovery failed. */
   problem?: string;
+  source?: "env" | "discovery";
   issuer?: string;
+  clientId?: string;
+  audience?: string;
+  scopes?: string[];
+  /** The confirmation token for POST /api/auth/oidc/confirm-discovery
+   * (`discovered` state only). */
+  profileHash?: string;
   subject?: string;
   email?: string;
   /** ISO timestamp of the current access token's expiry (display only). */
   expiresAt?: string;
+  /** Which credential the proxy injects (configuration, never a value). */
+  authMode: AuthMode;
+  store: { kind: "memory" | "file"; problem?: string };
+  transport: TransportPolicy;
+  callbackTimeoutSeconds: number;
 };
 
-/** Status for the settings card. Never includes token material. */
-export function oidcLoginStatus(): OidcLoginStatus {
+/** Status for the settings card. Never includes token material, and never
+ * the deployment's address (the browser sees no daemon URL — rule 3). */
+export async function oidcLoginStatus(): Promise<OidcLoginStatus> {
+  await ensureDiscovery();
   const cfg = oidcConfig();
+  const knobs = credentialKnobs();
+  const common = {
+    authMode: authMode({
+      oidcConfigured: Boolean(cfg),
+      staticToken: process.env.MECATL_AUTH_TOKEN,
+      ...knobs,
+    }),
+    store: {
+      kind: runtime.storeKind,
+      ...(runtime.storeProblem ? { problem: runtime.storeProblem } : {}),
+    },
+    transport: upstreamTransport().policy,
+    callbackTimeoutSeconds: callbackTimeoutSeconds(
+      process.env.MECATL_OIDC_CALLBACK_TIMEOUT,
+    ),
+  };
   if (!cfg) {
     const problem = configProblem();
     return {
       configured: false,
       state: "not-configured",
       ...(problem ? { problem } : {}),
+      ...common,
+    };
+  }
+  reconcileBinding(cfg);
+  const identity = {
+    source: cfg.source,
+    issuer: cfg.issuer,
+    clientId: cfg.clientId,
+    ...(cfg.audience ? { audience: cfg.audience } : {}),
+    scopes: cfg.scope.split(/\s+/).filter(Boolean),
+  };
+  if (cfg.source === "discovery" && !discoveryConfirmed()) {
+    return {
+      configured: false,
+      state: "discovered",
+      ...identity,
+      profileHash: configHash(cfg),
+      ...common,
     };
   }
   const snapshot = runtime.store.snapshot();
   if (snapshot.state !== "signed-in") {
-    return { configured: true, state: snapshot.state, issuer: cfg.issuer };
+    return { configured: true, state: snapshot.state, ...identity, ...common };
   }
   return {
     configured: true,
     state: "signed-in",
-    issuer: cfg.issuer,
+    ...identity,
     subject: snapshot.claims.preferredUsername || snapshot.claims.sub,
     email: snapshot.claims.email,
     expiresAt: new Date(snapshot.expiresAt).toISOString(),
+    ...common,
   };
 }
 
@@ -411,6 +707,7 @@ const REVOCATION_BUDGET_MS = 5_000;
  * state, and repeating logout while signed out succeeds.
  */
 export async function oidcSignOut(): Promise<{ ok: true; revoked: boolean }> {
+  await ensureDiscovery();
   const cfg = oidcConfig();
   const tokens = runtime.store.current();
   runtime.store.clear("signed-out");
@@ -432,6 +729,7 @@ export async function oidcSignOut(): Promise<{ ok: true; revoked: boolean }> {
           }),
           cache: "no-store",
           signal: budget,
+          ...upstreamFetchInit(),
         });
         return response.ok;
       };

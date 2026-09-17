@@ -71,6 +71,45 @@ describe("shortcut registry", () => {
     expect(comboFiresWhileTyping("mod+shift+x")).toBe(true);
   });
 
+  it("binds Debug with AI (the TUI's F1) to a preventable, browser-free chord in the Chats group", () => {
+    const def = SHORTCUTS.find((s) => s.id === "debug.open");
+    // Not bare F1: the browser's help key (and a Mac laptop's brightness key)
+    // — the keymap reserves it. ⌘⇧Y is off every reserved chord.
+    expect(def?.combo).toBe("mod+shift+y");
+    expect(def?.group).toBe("Chats");
+    expect(def?.description).toContain("Debug the selected chat with AI");
+    expect(def?.description).toContain("F1");
+    // Dispatched (the workspace registers a handler), so NOT documentation-only.
+    expect(def?.fixed).toBeUndefined();
+    expect(comboFiresWhileTyping("mod+shift+y")).toBe(true);
+    expect(
+      matchCombo("mod+shift+y", ev("Y", { meta: true, shift: true })),
+    ).toBe(true);
+    expect(
+      matchCombo("mod+shift+y", ev("Y", { ctrl: true, shift: true })),
+    ).toBe(true);
+    expect(matchCombo("mod+shift+y", ev("y", { ctrl: true }))).toBe(false);
+    expect(matchCombo("mod+shift+y", ev("F1"))).toBe(false);
+    expect(keycaps("mod+shift+y")).toEqual(["⌘", "⇧", "Y"]);
+  });
+
+  it("binds Expand/collapse details (the TUI's ctrl+t) to a preventable ⌘⇧ chord that fires while typing", () => {
+    const def = SHORTCUTS.find((s) => s.id === "chat.expandDetails");
+    // ⌘⇧G (find previous — pages may claim it everywhere), NOT ⌘⇧E: Firefox's
+    // Network Monitor owns Ctrl+Shift+E on Windows/Linux and never yields it.
+    expect(def?.combo).toBe("mod+shift+g");
+    expect(def?.group).toBe("Conversation");
+    expect(def?.fixed).toBeUndefined();
+    expect(comboFiresWhileTyping("mod+shift+g")).toBe(true);
+    expect(
+      matchCombo("mod+shift+g", ev("G", { meta: true, shift: true })),
+    ).toBe(true);
+    expect(
+      matchCombo("mod+shift+g", ev("g", { ctrl: true, shift: true })),
+    ).toBe(true);
+    expect(matchCombo("mod+shift+g", ev("g", { ctrl: true }))).toBe(false);
+  });
+
   it("gives every live shortcut a combo of its own", () => {
     const live = SHORTCUTS.filter((s) => !s.fixed);
     const combos = live.map((s) => s.combo);
@@ -158,6 +197,36 @@ describe("shortcut registry", () => {
     for (const id of ["close.esc", "search.open", "transcript.pageUp"]) {
       expect(SHORTCUTS.find((s) => s.id === id)?.fixed).toBeUndefined();
     }
+  });
+
+  it("documents the permission-mode cycle as a fixed ⇧Tab composer row (the TUI's shift+tab)", () => {
+    const def = SHORTCUTS.find((s) => s.id === "composer.mode.cycle");
+    expect(def?.combo).toBe("shift+tab");
+    expect(def?.group).toBe("Composer");
+    expect(def?.description).toBe(
+      "Cycle the permission mode — Manual → Plan → Accept edits (mid-run: held until the turn ends)",
+    );
+    // Fixed, not locked: the composer's own editor keydown owns the chord,
+    // so it fires only with the caret in the composer. The global dispatcher
+    // never claims ⇧Tab — outside the composer it must stay the browser's
+    // reverse-focus key (forms, dialogs, assistive technology).
+    expect(def?.fixed).toBe(true);
+    expect(def?.locked).toBeUndefined();
+    expect(comboFiresWhileTyping("shift+tab")).toBe(false);
+    expect(keycaps("shift+tab")).toEqual(["⇧", "Tab"]);
+    // The chord is ⇧Tab and only ⇧Tab: a bare Tab, ⌘⇧Tab (the browser's tab
+    // switch) and ⌥⇧Tab are different keys.
+    expect(matchCombo("shift+tab", ev("Tab", { shift: true }))).toBe(true);
+    expect(matchCombo("shift+tab", ev("Tab"))).toBe(false);
+    expect(
+      matchCombo("shift+tab", ev("Tab", { shift: true, meta: true })),
+    ).toBe(false);
+    expect(
+      matchCombo("shift+tab", ev("Tab", { shift: true, ctrl: true })),
+    ).toBe(false);
+    expect(matchCombo("shift+tab", ev("Tab", { shift: true, alt: true }))).toBe(
+      false,
+    );
   });
 
   it("documents paste as a fixed ⌘V in the Composer group (the TUI's ctrl+v)", () => {

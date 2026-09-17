@@ -57,6 +57,14 @@ import {
 import { fileKindMeta } from "@/lib/file-meta";
 import { useDefaultModel } from "@/lib/model-preferences";
 import {
+  modeAccentClass,
+  modeComposerRingClass,
+  nextPermissionMode,
+  PERMISSION_MODE_OPTIONS,
+  permissionModeLabel,
+  resolveModeCycleKey,
+} from "@/lib/permission-mode";
+import {
   type EnterSendBehavior,
   useEnterSendBehavior,
 } from "@/lib/profile-preferences";
@@ -137,6 +145,10 @@ interface ChatInputProps {
       the switch until the run ends (the status strip shows it "(pending)"),
       instead of disabling the pill mid-run. */
   modeSwitchDeferred?: boolean;
+  /** A mode switch held until the run ends (the TUI's `mode <target>
+      pending`): the pill shows it "· pending" with its colour cue, and ⇧Tab
+      cycles onward from it. `mode` stays the daemon-confirmed value. */
+  pendingMode?: SessionPermissionMode | null;
   appendText?: string | null;
   onAppendConsumed?: () => void;
   /** Plain-text seed dropped into an empty composer (e.g. a "next step" chip
@@ -542,64 +554,41 @@ export function ModelEffortSelector({
   );
 }
 
-const PERMISSION_MODE_OPTIONS = [
-  {
-    id: "default",
-    label: "Manual",
-    description: "Always ask before making changes",
-  },
-  {
-    id: "acceptEdits",
-    label: "Accept edits",
-    description: "Automatically accept all file edits",
-  },
-  {
-    id: "plan",
-    label: "Plan",
-    description: "Create a plan before making changes",
-  },
-] as const satisfies readonly {
-  id: SessionPermissionMode;
-  label: string;
-  description: string;
-}[];
-
-/** Display label for a session permission mode. */
-function permissionModeLabel(mode: SessionPermissionMode): string {
-  return (
-    PERMISSION_MODE_OPTIONS.find((option) => option.id === mode)?.label ??
-    "Manual"
-  );
-}
-
 /**
- * The session permission-mode selector (Default / Plan / Accept edits), the
+ * The session permission-mode selector (Manual / Plan / Accept edits), the
  * first control in the composer bar. Same pill + container-collapse idiom as
  * the model selector: the current mode wide, the bare word "Mode" narrow,
- * always the full selection on the title. Disabled while a run streams — the
- * daemon's session aggregate refuses a mid-turn mode change, so the control
- * matches that reality instead of round-tripping a guaranteed refusal.
+ * always the full selection on the title. The label carries the mode's
+ * colour cue (plan = info, accept edits = success, Manual plain) so the
+ * posture reads at a glance; ⇧Tab in the editor cycles it. A switch made
+ * mid-run is HELD by the caller until the run ends (the daemon refuses a
+ * mid-turn change) and reads "· pending" until the daemon confirms it; a
+ * caller without that contract disables the pill while streaming instead.
  */
-function ModeSelector({
+export function ModeSelector({
   mode,
   onModeChange,
   disabled,
+  pending = false,
 }: {
   mode: SessionPermissionMode;
   onModeChange: (mode: SessionPermissionMode) => void;
   disabled?: boolean;
+  /** The shown `mode` is a held switch, not yet confirmed by the daemon. */
+  pending?: boolean;
 }) {
   const label = permissionModeLabel(mode);
+  const shown = pending ? `${label} · pending` : label;
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button
           size="sm"
-          className={GHOST_TRIGGER_CLASS}
+          className={cn(GHOST_TRIGGER_CLASS, modeAccentClass(mode))}
           disabled={disabled}
-          title={`Mode: ${label}`}
+          title={`Permission mode: ${label}${pending ? " (pending — applies when the run ends)" : ""} — ⇧Tab cycles`}
         >
-          <span className="max-w-32 truncate @max-md:hidden">{label}</span>
+          <span className="max-w-40 truncate @max-md:hidden">{shown}</span>
           <span className="hidden @max-md:inline">Mode</span>
           <ChevronDown className="size-3.5 text-muted-foreground" />
         </Button>
@@ -696,6 +685,7 @@ function MobileComposerMenu({
   mode,
   onModeChange,
   modeDisabled,
+  modePending = false,
   models,
   autoModelLabel,
   effort,
@@ -717,6 +707,8 @@ function MobileComposerMenu({
   mode?: SessionPermissionMode;
   onModeChange?: (mode: SessionPermissionMode) => void;
   modeDisabled?: boolean;
+  /** The shown `mode` is a held switch awaiting the run's end ("· pending"). */
+  modePending?: boolean;
   models?: ComposerModelOption[];
   autoModelLabel?: string;
   /** Draft: the pending reasoning-effort WIRE value ("" = auto). */
@@ -818,8 +810,14 @@ function MobileComposerMenu({
               >
                 <Shield className="size-4 text-muted-foreground" />
                 <span className="flex-1 text-left">Mode</span>
-                <span className="text-muted-foreground">
+                <span
+                  className={cn(
+                    "text-muted-foreground",
+                    modeAccentClass(mode ?? "default"),
+                  )}
+                >
                   {permissionModeLabel(mode ?? "default")}
+                  {modePending ? " · pending" : ""}
                 </span>
                 {!modeDisabled && (
                   <ChevronRight className="size-4 text-muted-foreground/60" />
@@ -1433,6 +1431,7 @@ export function ChatInput({
   disabled = false,
   isStreaming = false,
   modeSwitchDeferred = false,
+  pendingMode = null,
   appendText,
   onAppendConsumed,
   initialText,
@@ -1835,6 +1834,17 @@ export function ChatInput({
 
   const handleSend = useCallback(() => actOnEnter(false), [actOnEnter]);
 
+  // The permission mode as SHOWN: a held mid-run switch (`pendingMode`) over
+  // the daemon-confirmed `mode`. ⇧Tab cycles onward from what is shown and
+  // the pill/box tint follow it. The cycle key and the pill share ONE
+  // enablement, so the key is never live where the pill is greyed out.
+  const shownMode: SessionPermissionMode = pendingMode ?? mode ?? "default";
+  const modePending =
+    pendingMode != null && pendingMode !== (mode ?? "default");
+  const canChangeMode =
+    !!onModeChange && !disabled && (!isStreaming || modeSwitchDeferred);
+  const modeRing = onModeChange ? modeComposerRingClass(shownMode) : "";
+
   // Menu nav + Enter-to-send are wired with a native capture-phase keydown
   // listener on the editor DOM, re-subscribed each render with fresh closures
   // over `menu`/`actOnEnter`. Capture phase runs before ProseMirror's own
@@ -1845,6 +1855,27 @@ export function ChatInput({
     const dom = editor?.view.dom;
     if (!dom) return;
     const onKeyDown = (event: KeyboardEvent) => {
+      // ⇧Tab cycles the permission mode (the TUI's shift+tab) — from the
+      // editor only, and never over an open `/` or `@` menu, where Tab picks
+      // the highlighted row (`resolveModeCycleKey` owns the table). A held
+      // mid-run switch is the caller's; a surface that can't change the mode
+      // leaves the key to the browser's reverse-focus.
+      if (
+        resolveModeCycleKey({
+          key: event.key,
+          shiftKey: event.shiftKey,
+          metaKey: event.metaKey,
+          ctrlKey: event.ctrlKey,
+          altKey: event.altKey,
+          menuOpen: menu != null,
+          canChangeMode,
+        })
+      ) {
+        event.preventDefault();
+        event.stopPropagation();
+        onModeChange?.(nextPermissionMode(shownMode));
+        return;
+      }
       if (menu) {
         if (handleMenuNavKey(event, menu, setMenu)) {
           event.preventDefault();
@@ -1907,6 +1938,9 @@ export function ChatInput({
     onResumeQueue,
     onEditAllQueued,
     onClearQueue,
+    canChangeMode,
+    shownMode,
+    onModeChange,
   ]);
 
   // Paste (the TUI's ctrl+v). Clipboard files with no text (a screenshot)
@@ -2079,7 +2113,9 @@ export function ChatInput({
               ? "border-brand/50 ring-1 ring-brand/10"
               : isStreaming && hasText
                 ? "border-warning shadow-warning/10"
-                : "border-zinc-300 dark:border-zinc-700",
+                : // Plan / Accept edits tint the box (the TUI recolours its
+                  // input by mode); Manual keeps the plain border.
+                  modeRing || "border-zinc-300 dark:border-zinc-700",
         )}
       >
         {voice.isListening && (
@@ -2137,9 +2173,10 @@ export function ChatInput({
               currentEffort={currentEffort}
               currentModelReasoning={currentModelReasoning}
               effortSupported={effortSupported}
-              mode={mode}
+              mode={shownMode}
               onModeChange={onModeChange}
               modeDisabled={disabled || (isStreaming && !modeSwitchDeferred)}
+              modePending={modePending}
             />
           </div>
           {/* TipTap composer: resolved @agent / /skill mentions are atomic
@@ -2237,9 +2274,10 @@ export function ChatInput({
           <>
             {onModeChange && (
               <ModeSelector
-                mode={mode ?? "default"}
+                mode={shownMode}
                 onModeChange={onModeChange}
                 disabled={disabled || (isStreaming && !modeSwitchDeferred)}
+                pending={modePending}
               />
             )}
             <ModelEffortSelector

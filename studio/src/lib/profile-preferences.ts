@@ -261,6 +261,43 @@ export function useShowToolCalls() {
   return { showToolCalls, setShowToolCalls };
 }
 
+const EXPAND_DETAILS_KEY = "mecatl-studio.expand-details";
+
+const expandDetailsListeners = new Set<() => void>();
+
+function subscribeExpandDetails(callback: () => void): () => void {
+  expandDetailsListeners.add(callback);
+  return () => expandDetailsListeners.delete(callback);
+}
+
+function readExpandDetails(): boolean {
+  return readLocalStorage(EXPAND_DETAILS_KEY) === "1";
+}
+
+/**
+ * Whether transcript details start EXPANDED (the TUI's ctrl+t "expand /
+ * collapse details"): each turn's tool-call rows with their inline
+ * summaries and Edit/Write diffs, the reasoning summary, and a failed
+ * turn's raw payload. A GLOBAL browser-local preference flipped from the
+ * chat menu and the `chat.expandDetails` shortcut; every open disclosure
+ * follows a flip (the shared-store pattern of `useShowToolCalls`). Default
+ * OFF (collapsed summaries); the key stores "1" only while on.
+ */
+export function useExpandDetails() {
+  const expandDetails = useSyncExternalStore(
+    subscribeExpandDetails,
+    readExpandDetails,
+    () => false,
+  );
+
+  const setExpandDetails = useCallback((next: boolean) => {
+    writeLocalStorage(EXPAND_DETAILS_KEY, next ? "1" : null);
+    for (const fn of expandDetailsListeners) fn();
+  }, []);
+
+  return { expandDetails, setExpandDetails };
+}
+
 export type EnterSendBehavior = "queue" | "steer";
 
 const ENTER_SEND_BEHAVIOR_KEY = "mecatl-studio.enter-send-behavior";

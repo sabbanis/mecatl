@@ -7,6 +7,7 @@ import {
   Ellipsis,
   FileText,
   FoldVertical,
+  ListTree,
   Loader2,
   MessageCircle,
   MessageSquareText,
@@ -73,6 +74,7 @@ import {
 import {
   type SessionListSide,
   useEnterSendBehavior,
+  useExpandDetails,
   useShowToolCalls,
 } from "@/lib/profile-preferences";
 import type { SessionPermissionMode } from "@/lib/protocol";
@@ -89,6 +91,7 @@ import {
   unregisterThreadSession,
   useThreadMap,
 } from "@/lib/thread-map";
+import { type ChangedFile, changedFilesFromMessages } from "@/lib/tool-summary";
 import { cn } from "@/lib/utils";
 import {
   ChatInput,
@@ -97,6 +100,7 @@ import {
 import { ApprovalDetailPanel } from "./approval-detail-panel";
 import { ApprovalPanel } from "./approval-panel";
 import { AuthorizationPanel } from "./authorization-panel";
+import { ChangedFilesPanel } from "./changed-files-panel";
 import { ChatStatusStrip, type ModelResolution } from "./chat-status-strip";
 import {
   type AwaitingPhase,
@@ -123,6 +127,7 @@ import { HelpMenuItem, HelpSheetItem } from "./help-menu-item";
 import { MarkdownCanvasPanel } from "./markdown-canvas-panel";
 import { MessageBubble } from "./message-bubble";
 import { MockProviderNotice } from "./mock-provider-notice";
+import { PermissionModeBadge } from "./permission-mode-badge";
 import { QueuedMessageStrip } from "./queued-message-strip";
 import { PAGE_FRACTION, scrollPositionPercent } from "./scroll-position";
 import { ScrollToBottomPill } from "./scroll-to-bottom-pill";
@@ -160,6 +165,9 @@ type ActivePanel =
   | { kind: "toolcall"; call: ToolCallInfo }
   // The full-height view of the pending ask (the TUI's ctrl+t args view).
   | { kind: "approval"; approval: ApprovalRequest }
+  // Every path this conversation's Edit/Write calls touched (the TUI's
+  // "N files changed" appendix); the list is derived live from `messages`.
+  | { kind: "changed-files" }
   // The Agents panel reads the live `fleet` prop; it keeps only its tab and
   // the child/group/view it is drilled into (Esc steps a focus back first).
   | { kind: "delegation"; tab: DelegationTab; focus: DelegationFocus | null };
@@ -272,6 +280,8 @@ type ComposerSeed = { text: string; files?: File[] };
 function MobileChatMenu({
   showActivity,
   onToggleActivity,
+  expandDetails = false,
+  onToggleExpandDetails,
   onRename,
   onDelete,
   onOpenDetails,
@@ -285,6 +295,9 @@ function MobileChatMenu({
 }: {
   showActivity: boolean;
   onToggleActivity: () => void;
+  /** The global Expand details preference and its flip (the TUI's ctrl+t). */
+  expandDetails?: boolean;
+  onToggleExpandDetails?: () => void;
   onRename?: () => void;
   onDelete?: () => void;
   /** Opens the session details dialog (the `/session` built-in's). */
@@ -332,6 +345,19 @@ function MobileChatMenu({
               <Wrench className="size-4 text-muted-foreground" />
               {showActivity ? "Hide Tools" : "Show Tools"}
             </button>
+            {onToggleExpandDetails && (
+              <button
+                type="button"
+                onClick={() => {
+                  onToggleExpandDetails();
+                  setOpen(false);
+                }}
+                className="flex w-full items-center gap-3 px-4 py-3 text-sm hover:bg-muted/50 transition-colors"
+              >
+                <ListTree className="size-4 text-muted-foreground" />
+                {expandDetails ? "Collapse details" : "Expand details"}
+              </button>
+            )}
             {onCompact && (
               <button
                 type="button"
@@ -1008,6 +1034,7 @@ export function ChatView({
   fleet,
   teamsSupported,
   onCancelChild,
+  onInspectChild,
   enrollment = null,
 }: {
   session: AgentSession;
@@ -1175,6 +1202,9 @@ export function ChatView({
   /** Cancels one live delegated child by its session id (the inline cards'
       and the Agents panel's cancel controls; absent = no controls). */
   onCancelChild?: (childId: string) => void | Promise<void>;
+  /** Opens one delegated child's stored transcript read-only (the inline
+      cards' Inspect control; absent = no control). */
+  onInspectChild?: (childId: string, label: string) => void;
   /** The chat's workspace-services enrollment (the TUI's /tools-connect
       notice + actions); null on the mock tour. The notice renders itself
       only while the daemon's capability applies and the enrollment is
@@ -1198,6 +1228,15 @@ export function ChatView({
   const [scrollPercent, setScrollPercent] = useState(100);
   // The global Show Tools preference (persisted; shared with thread panels).
   const { showToolCalls: showActivity, setShowToolCalls } = useShowToolCalls();
+  // The global Expand details preference (the TUI's ctrl+t): whether tool
+  // rows, reasoning summaries and raw error payloads start expanded.
+  const { expandDetails, setExpandDetails } = useExpandDetails();
+  // Every path this conversation's Edit/Write calls touched, first-seen
+  // order — the header's "N files" indicator and the changed-files panel.
+  const changedFiles = useMemo(
+    () => changedFilesFromMessages(messages),
+    [messages],
+  );
   // The single right-hand panel — a discriminated union makes "one panel at a
   // time" structural rather than something to coordinate by hand.
   const [panel, setPanel] = useState<ActivePanel | null>(null);
@@ -1304,6 +1343,17 @@ export function ChatView({
     [],
   );
 
+  // A Write in the changed-files list opens its content in the file preview
+  // (the same canvas the per-turn produced-file chips open).
+  const handleOpenChangedFile = useCallback(
+    (file: { name: string; content?: string }) =>
+      setPanel({
+        kind: "attachment",
+        attachment: { name: file.name, type: "", content: file.content },
+      }),
+    [],
+  );
+
   // The Agents panel (the TUI's f6 overlay): opened from the header button,
   // the agents.toggle shortcut, or an inline delegation card, which lands on
   // the child/group/member it names. The default tab is context-sensitive
@@ -1342,6 +1392,9 @@ export function ChatView({
     }
     openDelegationPanel();
   });
+  // Expand / collapse details across the whole transcript (the TUI's
+  // ctrl+t): flips the global preference every open disclosure follows.
+  useShortcut("chat.expandDetails", () => setExpandDetails(!expandDetails));
   // The header's Agents button appears once any child has run in this chat;
   // its badge counts the children still running (team members working).
   const delegationCounts = useMemo(() => {
@@ -1559,6 +1612,13 @@ export function ChatView({
           >
             {session.title || "Untitled"}
           </h2>
+          {/* mecatui's header `mode <x>`: silent on Manual, coloured for
+              Plan / Accept edits, "· pending" while a mid-run switch is held. */}
+          <PermissionModeBadge
+            mode={mode ?? "default"}
+            pendingMode={pendingMode}
+            enabled={!!onModeChange}
+          />
           {sidebarSide === "right" && sidebarToggle}
           {delegationCounts && (
             <Tooltip>
@@ -1597,6 +1657,35 @@ export function ChatView({
               </TooltipContent>
             </Tooltip>
           )}
+          {changedFiles.length > 0 && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-8 shrink-0 gap-1 px-2 text-muted-foreground tabular-nums"
+                  aria-label={`${changedFiles.length} file${changedFiles.length === 1 ? "" : "s"} changed — open the list`}
+                  aria-pressed={panel?.kind === "changed-files"}
+                  onClick={() => {
+                    if (panel?.kind === "changed-files") {
+                      closeSidePanel();
+                      return;
+                    }
+                    setPanel({ kind: "changed-files" });
+                  }}
+                >
+                  <Pencil className="size-3.5" aria-hidden="true" />
+                  <span className="text-xs">
+                    {changedFiles.length}{" "}
+                    {changedFiles.length === 1 ? "file" : "files"}
+                  </span>
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                Files changed in this conversation
+              </TooltipContent>
+            </Tooltip>
+          )}
           {!isMobile && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -1618,6 +1707,12 @@ export function ChatView({
                 >
                   <Wrench className="size-4 mr-2 text-muted-foreground" />
                   {showActivity ? "Hide Tools" : "Show Tools"}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => setExpandDetails(!expandDetails)}
+                >
+                  <ListTree className="size-4 mr-2 text-muted-foreground" />
+                  {expandDetails ? "Collapse details" : "Expand details"}
                 </DropdownMenuItem>
                 {onCompact && (
                   <DropdownMenuItem disabled={isStreaming} onClick={onCompact}>
@@ -1662,6 +1757,8 @@ export function ChatView({
             <MobileChatMenu
               showActivity={showActivity}
               onToggleActivity={() => setShowToolCalls(!showActivity)}
+              expandDetails={expandDetails}
+              onToggleExpandDetails={() => setExpandDetails(!expandDetails)}
               onRename={onRename}
               onDelete={onDelete}
               onOpenDetails={onOpenDetails}
@@ -1758,6 +1855,7 @@ export function ChatView({
                   onOpenToolCall={handleOpenToolCall}
                   onOpenDelegation={handleOpenDelegation}
                   onCancelDelegation={onCancelChild}
+                  onInspectDelegation={onInspectChild}
                   onStartThread={handleStartThread}
                   threadSummary={threadMap[threadKeyForMessage(msg)]}
                   botName={botName}
@@ -1899,6 +1997,7 @@ export function ChatView({
                   onModeChange={onModeChange}
                   isStreaming={isStreaming}
                   modeSwitchDeferred={modeSwitchDeferred}
+                  pendingMode={pendingMode}
                   disabled={!!pendingApproval || readOnlyPlaceholder != null}
                   appendText={appendText}
                   onAppendConsumed={handleAppendConsumed}
@@ -1946,6 +2045,8 @@ export function ChatView({
           onDelegationFocus={handleDelegationFocus}
           onRespondApproval={onRespondApproval}
           debugSession={Boolean(session.debugTargetSessionId)}
+          changedFiles={changedFiles}
+          onOpenChangedFile={handleOpenChangedFile}
         />
       )}
       {/* On mobile the same panels render as a full-height bottom sheet: the
@@ -1970,7 +2071,9 @@ export function ChatView({
                       ? `${activePanel.approval.toolName || "Tool"} — permission ask`
                       : activePanel.kind === "delegation"
                         ? "Agents"
-                        : activePanel.artifact.name}
+                        : activePanel.kind === "changed-files"
+                          ? "Changed files"
+                          : activePanel.artifact.name}
             </SheetTitle>
             <div className="flex min-h-0 flex-1 flex-col">
               <SidePanelForKind
@@ -1989,6 +2092,8 @@ export function ChatView({
                 onDelegationFocus={handleDelegationFocus}
                 onRespondApproval={onRespondApproval}
                 debugSession={Boolean(session.debugTargetSessionId)}
+                changedFiles={changedFiles}
+                onOpenChangedFile={handleOpenChangedFile}
               />
             </div>
           </SheetContent>
@@ -2015,6 +2120,8 @@ function SidePanelForKind({
   onDelegationFocus,
   onRespondApproval,
   debugSession = false,
+  changedFiles = [],
+  onOpenChangedFile,
 }: {
   panel: ActivePanel;
   parentSessionId: string;
@@ -2033,9 +2140,21 @@ function SidePanelForKind({
   onRespondApproval?: (choice: ApprovalChoice) => void;
   /** True on an AI-debug chat: a debugger MCP ask offers no Always allow. */
   debugSession?: boolean;
+  /** The conversation's changed files (first-seen order) for that panel. */
+  changedFiles?: ChangedFile[];
+  /** Opens a Write's content from the changed-files list in the preview. */
+  onOpenChangedFile?: (file: { name: string; content?: string }) => void;
 }) {
   const shared = { onClose, maximized, onToggleMaximize, windowControls };
   switch (panel.kind) {
+    case "changed-files":
+      return (
+        <ChangedFilesPanel
+          files={changedFiles}
+          onOpenFile={onOpenChangedFile}
+          {...shared}
+        />
+      );
     case "delegation":
       return (
         <DelegationPanel

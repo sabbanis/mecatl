@@ -17,6 +17,16 @@ const config: KnipConfig = {
     // Feature modules: internal exports consumed within the feature
     "src/features/**",
   ],
+  ignoreBinaries: [
+    // The controller's daemon lifetime pipe and the ToolHive CLI it probes
+    // (scripts/local-controller.mjs).
+    "mkfifo",
+    "thv",
+    // The hermetic suite mints a throwaway TLS certificate for its fake
+    // upstream (tests/rendered-html.test.mjs) and skips those assertions
+    // when the binary is missing.
+    "openssl",
+  ],
   ignoreDependencies: [
     // Tailwind v4 is imported via CSS (@import "tailwindcss"), not JS
     "tailwindcss",

@@ -9,7 +9,9 @@ export const metadata: Metadata = { title: "Keyboard shortcuts — Workspace" };
  * registry (so it can't drift from the live bindings), Studio's `/help`
  * command, the features the connected daemon enables, and the token legend.
  * Reached by pressing `?` (outside a text field), ⌘/ (anywhere, also while
- * typing), typing `/help` in the composer, and from the chat ··· menu.
+ * typing), typing `/help` in the composer, from the chat ··· menu, from the
+ * ⌘K search's Pages group, and from Settings → Keyboard and Settings → Help &
+ * about (`src/lib/workspace-pages.ts` lists the visible entry points).
  */
 export default function KeyboardShortcutsPage() {
   return (

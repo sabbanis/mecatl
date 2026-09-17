@@ -20,7 +20,54 @@
  */
 
 import { SessionMode } from "@stacklok-oss/mecatl-sdk";
+import { wrapAsDebuggerRuntimeContext } from "./diagnostics-report";
 import { getHarnessClient, harness } from "./sdk";
+
+/**
+ * The diagnostic objective mecatui submits the moment a debug session opens
+ * (`cmd/mecatui/main.go` `defaultDebugPrompt`), byte for byte: the daemon's
+ * create path starts no run, so the opening objective is CLIENT-side in both
+ * clients, and a debug chat opened from Studio must read like one opened
+ * from the TUI.
+ */
+export const DEFAULT_DEBUG_PROMPT =
+  "Diagnose the bound target session and explain the most likely cause of its reported behavior.";
+
+/**
+ * The opening message Studio submits into a freshly created debug session
+ * (the TUI's `initialPromptForConfig` for `debug TARGET`):
+ *
+ * - the default objective;
+ * - when reporting servers were attached (`debug_mcp_servers`), the TUI's
+ *   exact suffix naming them — and its reminder that their availability
+ *   authorizes NO publication or sending (every debugger MCP call still asks
+ *   for approval);
+ * - when a Studio/daemon diagnostics report is supplied, that report fenced as
+ *   `CURRENT_DEBUGGER_RUNTIME_CONTEXT` after a blank line, so the model reads
+ *   it as context about THIS client, never as evidence about the target.
+ *
+ * Pure: the caller decides what to attach; this only spells the message.
+ */
+export function debugOpeningPrompt({
+  servers = [],
+  runtimeContext,
+}: {
+  /** The attached reporting-server names, in the order they were chosen. */
+  servers?: readonly string[];
+  /** A sanitized diagnostics report (`buildDiagnosticsReport`), or nothing. */
+  runtimeContext?: string | null;
+} = {}): string {
+  let prompt = DEFAULT_DEBUG_PROMPT;
+  if (servers.length > 0) {
+    prompt +=
+      ` Selected reporting servers are available: ${servers.join(", ")}.` +
+      " Their availability does not authorize publication or sending.";
+  }
+  if (runtimeContext) {
+    prompt += `\n\n${wrapAsDebuggerRuntimeContext(runtimeContext)}`;
+  }
+  return prompt;
+}
 
 /** Creates a debug session bound to `targetSessionId`; returns the new id. */
 export async function createHarnessDebugSession(

@@ -32,6 +32,17 @@ inlined at `next build` by `next.config.ts` (`NEXT_PUBLIC_STUDIO_BUILD` =
 `next start` reports the stamp of the build it serves, not the running
 checkout — a bug report wants the build.
 
+Settings → Help & about (`settings/help/page.tsx`) is the web
+`--version`/`--help`: Studio's plain version and the SDK version (inlined
+the same way as `NEXT_PUBLIC_STUDIO_VERSION`/`NEXT_PUBLIC_SDK_VERSION`,
+`src/lib/studio-version.ts`), the docs and repository links, the About card,
+and the configuration reference — `src/lib/studio-config-reference.ts` is the
+DATA (every env var the server tier, the controller or the build reads; its
+test scans the source for `process.env.X` reads, so a new knob must get a
+row), and `GET /api/studio/about` (same-origin, `requestIsTrusted`) answers
+which names are set as booleans — never a value. The ⌘K search lists the
+help pages (`src/lib/workspace-pages.ts`) under a Pages group.
+
 ## Module shape
 
 - `@stacklok-oss/mecatl-sdk` (source `../sdk/typescript`, a `file:` dependency

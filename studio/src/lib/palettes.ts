@@ -32,6 +32,16 @@ export const PALETTE_STORAGE_KEY = "mecatl-studio.palette";
 export const DEFAULT_PALETTE_ID = "default";
 /** The grammar a palette id (and the `BRAND_PALETTE` env value) must match. */
 export const PALETTE_ID = /^[a-z][a-z0-9-]{0,31}$/;
+/**
+ * The id of a custom palette (`lib/custom-palettes.ts`): the `custom:`
+ * prefix keeps user/operator names apart from the built-in catalogue, so a
+ * custom "aztec" never shadows the shipped one.
+ */
+export const CUSTOM_PALETTE_ID = /^custom:[a-z][a-z0-9-]{0,31}$/;
+
+export function isCustomPaletteId(id: string | null | undefined): id is string {
+  return typeof id === "string" && CUSTOM_PALETTE_ID.test(id);
+}
 
 export interface PaletteDef {
   id: string;
@@ -40,7 +50,8 @@ export interface PaletteDef {
   description: string;
   /** The swatch the picker shows: the palette's light-block `--brand`. */
   swatch: string;
-  source: "built-in";
+  /** Built-in (globals.css), or a custom palette the user or operator added. */
+  source: "built-in" | "user" | "operator";
 }
 
 /**
@@ -165,6 +176,13 @@ export function writeStoredPalette(id: string | null) {
  * program: every interpolation is `JSON.stringify` of catalogue ids or the
  * validated default, never user input. An unknown stored id resolves to the
  * default here exactly as `resolvePaletteId` does in React.
+ *
+ * A stored CUSTOM id (`custom:<name>`, the grammar checked in-script) is kept
+ * as well: its stylesheet arrives with hydration (user palettes from
+ * localStorage, operator palettes from `/api/palettes`), so until then the
+ * attribute matches no rule and the `:root` tokens stand — but the page
+ * never flashes the deployment default first, and PaletteProvider resolves
+ * a removed palette back to the default once the catalogue is known.
  */
 export function buildPaletteBootScript(
   defaultPalette: string,
@@ -177,11 +195,12 @@ export function buildPaletteBootScript(
   const key = JSON.stringify(PALETTE_STORAGE_KEY);
   const attribute = JSON.stringify(PALETTE_ATTRIBUTE);
   const none = JSON.stringify(DEFAULT_PALETTE_ID);
+  const custom = JSON.stringify(CUSTOM_PALETTE_ID.source);
   return (
     "(function(){try{" +
     `var d=document.documentElement,i=${ids},f=${fallback},s=null;` +
     `try{s=localStorage.getItem(${key})}catch(e){}` +
-    "var v=s&&i.indexOf(s)>=0?s:f;" +
+    `var v=s&&(i.indexOf(s)>=0||new RegExp(${custom}).test(s))?s:f;` +
     `if(v===${none})d.removeAttribute(${attribute});else d.setAttribute(${attribute},v)` +
     "}catch(e){}})();"
   );

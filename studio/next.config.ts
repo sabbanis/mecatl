@@ -44,6 +44,28 @@ function studioBuildId(): string {
 }
 
 /**
+ * The first readable `version` among candidate package.json paths, or "".
+ * Settings → Help & about shows Studio's own version and the TypeScript
+ * SDK's (`src/lib/studio-version.ts`); the SDK is read from the INSTALLED
+ * package first (the `file:` link in the monorepo, a real copy elsewhere)
+ * and from the monorepo source as the fallback, so a build tree without
+ * `../sdk` still names the SDK it compiled against.
+ */
+function packageVersion(...candidates: string[]): string {
+  for (const candidate of candidates) {
+    try {
+      const pkg = JSON.parse(readFileSync(candidate, "utf8")) as {
+        version?: string;
+      };
+      if (pkg.version) return pkg.version;
+    } catch {
+      // try the next candidate
+    }
+  }
+  return "";
+}
+
+/**
  * Content Security Policy header.
  * Every daemon/controller call happens server-side through the /api/mecatl*
  * proxy routes, so the browser CSP only needs 'self'.
@@ -86,8 +108,21 @@ const allowedDevOrigins = (process.env.MECATL_STUDIO_PUBLIC_ORIGIN || "")
 const nextConfig: NextConfig = {
   reactCompiler: true,
   poweredByHeader: false,
-  // Inlined into both bundles at build time; read via `studioBuild()`.
-  env: { NEXT_PUBLIC_STUDIO_BUILD: studioBuildId() },
+  // Inlined into both bundles at build time; read via `studioBuild()`,
+  // `studioVersion()` and `sdkVersion()` (Settings → Help & about).
+  env: {
+    NEXT_PUBLIC_STUDIO_BUILD: studioBuildId(),
+    NEXT_PUBLIC_STUDIO_VERSION: packageVersion(
+      resolve(import.meta.dirname, "package.json"),
+    ),
+    NEXT_PUBLIC_SDK_VERSION: packageVersion(
+      resolve(
+        import.meta.dirname,
+        "node_modules/@stacklok-oss/mecatl-sdk/package.json",
+      ),
+      resolve(import.meta.dirname, "../sdk/typescript/package.json"),
+    ),
+  },
   // The TypeScript SDK is a `file:../sdk/typescript` dependency — npm links it
   // as a symlink pointing OUTSIDE studio/. Turbopack resolves modules only
   // under its root, so the root is the monorepo checkout, not studio/.

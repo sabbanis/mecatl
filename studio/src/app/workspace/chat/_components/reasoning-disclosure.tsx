@@ -1,8 +1,9 @@
 "use client";
 
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { useId, useState } from "react";
+import { useId } from "react";
 import { sanitizeLine } from "@/features/agent/stop-reason";
+import { useDetailsOpen } from "./use-details-open";
 
 /**
  * The caveat over the expanded text: the daemon relays whatever reasoning
@@ -48,10 +49,11 @@ export function ReasoningDisclosure({
   reasoning: string;
   /** The trailing turn is still streaming with nothing else to show yet. */
   live?: boolean;
-  /** Start expanded (the collapsed header is the default). */
+  /** Start expanded (the collapsed header is the default, unless the
+   *  global Expand details preference is on). */
   defaultOpen?: boolean;
 }) {
-  const [open, setOpen] = useState(defaultOpen);
+  const [open, toggleOpen] = useDetailsOpen(defaultOpen);
   const bodyId = useId();
   const lines = reasoningLines(reasoning);
   if (lines.length === 0) return null;
@@ -83,7 +85,7 @@ export function ReasoningDisclosure({
         type="button"
         aria-expanded={open}
         aria-controls={bodyId}
-        onClick={() => setOpen((current) => !current)}
+        onClick={toggleOpen}
         className="inline-flex items-center gap-1 rounded text-xs text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         {open ? (

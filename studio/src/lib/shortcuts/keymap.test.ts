@@ -385,13 +385,14 @@ describe("useShortcutBindings", () => {
     const { result } = renderHook(() => useShortcutBindings());
     act(() => {
       result.current.setBinding("chat.new", "mod+shift+k");
-      // ⌘⇧Y: free — ⌘⇧D is "bookmark all tabs" and reserved.
-      result.current.setBinding("chat.details", "mod+shift+y");
+      // ⌘⇧U: free — ⌘⇧D is "bookmark all tabs" and reserved, and ⌘⇧Y is
+      // the Debug with AI default (a collision is refused).
+      result.current.setBinding("chat.details", "mod+shift+u");
     });
     expect(Object.keys(stored())).toHaveLength(2);
 
     act(() => result.current.resetBinding("chat.new"));
-    expect(stored()).toEqual({ "chat.details": "mod+shift+y" });
+    expect(stored()).toEqual({ "chat.details": "mod+shift+u" });
     expect(
       result.current.bindings.find((b) => b.id === "chat.new")?.custom,
     ).toBe(false);

@@ -2,12 +2,51 @@ import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { memoryStorage } from "@/test/memory-storage";
 import {
+  useExpandDetails,
   useShowStarterPrompts,
   useShowToolCalls,
   useWelcomeDismissed,
 } from "./profile-preferences";
 
 const KEY = "mecatl-studio.show-tool-calls";
+const EXPAND_KEY = "mecatl-studio.expand-details";
+
+/**
+ * The Expand details preference (the TUI's ctrl+t): GLOBAL and persisted
+ * like Show Tools — default off, "1" only while on, two mounted instances
+ * (the chat menu and every disclosure) in sync through the shared store.
+ */
+describe("useExpandDetails", () => {
+  beforeEach(() => {
+    vi.stubGlobal("localStorage", memoryStorage());
+  });
+
+  it("defaults to collapsed details and stores nothing", () => {
+    const { result } = renderHook(() => useExpandDetails());
+    expect(result.current.expandDetails).toBe(false);
+    expect(window.localStorage.getItem(EXPAND_KEY)).toBeNull();
+  });
+
+  it('persists an on choice as "1" and clears the key when turned off', () => {
+    const first = renderHook(() => useExpandDetails());
+    act(() => first.result.current.setExpandDetails(true));
+    expect(window.localStorage.getItem(EXPAND_KEY)).toBe("1");
+    const second = renderHook(() => useExpandDetails());
+    expect(second.result.current.expandDetails).toBe(true);
+    act(() => second.result.current.setExpandDetails(false));
+    expect(window.localStorage.getItem(EXPAND_KEY)).toBeNull();
+    expect(first.result.current.expandDetails).toBe(false);
+  });
+
+  it("keeps two mounted instances in sync", () => {
+    const menu = renderHook(() => useExpandDetails());
+    const row = renderHook(() => useExpandDetails());
+    act(() => menu.result.current.setExpandDetails(true));
+    expect(row.result.current.expandDetails).toBe(true);
+    act(() => row.result.current.setExpandDetails(false));
+    expect(menu.result.current.expandDetails).toBe(false);
+  });
+});
 
 /**
  * The Show Tools preference is GLOBAL and persisted: it must round-trip

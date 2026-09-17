@@ -16,13 +16,13 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useTheme } from "next-themes";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import { usePalette } from "@/components/palette-provider";
 import { paletteSwatch } from "@/components/palette-swatch";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
-import { BUILT_IN_PALETTES, findPalette } from "@/lib/palettes";
+import { findPalette, type PaletteDef } from "@/lib/palettes";
 import {
   type EnterSendBehavior,
   UI_SCALE_MAX,
@@ -33,6 +33,7 @@ import {
   useUiScale,
   useWelcomeDismissed,
 } from "@/lib/profile-preferences";
+import { CustomPalettesSection } from "../_components/custom-palettes-section";
 import { OptionField } from "../_components/option-field";
 import { SettingsCard, SettingsRow } from "../_components/settings-card";
 
@@ -43,14 +44,21 @@ const THEME_OPTIONS = [
 ] as const;
 
 // The palette catalogue IS the "list themes" surface (mecatui --list-themes):
-// one option per built-in, its swatch in the palette's accent. Built once so
-// the swatch component identities stay stable across renders.
-const PALETTE_OPTIONS = BUILT_IN_PALETTES.map((palette) => ({
-  value: palette.id,
-  label: palette.label,
-  description: palette.description,
-  icon: paletteSwatch(palette.swatch),
-}));
+// one option per built-in AND per custom palette (user-added or from
+// STUDIO_PALETTE_DIR, suffixed so the source is visible), its swatch in the
+// palette's accent. Memoised on the catalogue so the swatch component
+// identities stay stable across renders.
+function paletteOptions(catalogue: readonly PaletteDef[]) {
+  return catalogue.map((palette) => ({
+    value: palette.id,
+    label:
+      palette.source === "built-in"
+        ? palette.label
+        : `${palette.label} · ${palette.source === "user" ? "custom" : "operator"}`,
+    description: palette.description,
+    icon: paletteSwatch(palette.swatch),
+  }));
+}
 
 const SIDE_OPTIONS = [
   { value: "left", label: "Left", icon: PanelLeft },
@@ -62,9 +70,13 @@ const ENTER_BEHAVIOR_OPTIONS = [
   { value: "steer", label: "Steer the agent", icon: CornerDownRight },
 ] as const;
 
-export default function AppearanceSettingsPage() {
+function PersonalizeCard() {
   const { theme: activeTheme, setTheme } = useTheme();
-  const { palette, setPalette, defaultPalette } = usePalette();
+  const { palette, setPalette, defaultPalette, catalogue } = usePalette();
+  const paletteOptionList = useMemo(
+    () => paletteOptions(catalogue),
+    [catalogue],
+  );
   const { side, setSide } = useSessionListSide();
   const { scale, setScale } = useUiScale();
   const { behavior, setBehavior } = useEnterSendBehavior();
@@ -147,7 +159,7 @@ export default function AppearanceSettingsPage() {
           <OptionField
             label="Palette"
             value={palette}
-            options={PALETTE_OPTIONS}
+            options={paletteOptionList}
             onChange={setPalette}
           />
         </SettingsRow>
@@ -287,5 +299,17 @@ export default function AppearanceSettingsPage() {
         )}
       </div>
     </SettingsCard>
+  );
+}
+
+export default function AppearanceSettingsPage() {
+  return (
+    <>
+      <PersonalizeCard />
+      {/* mecatui's custom {name, palette} JSON themes: user-added palettes
+          (this browser) and the operator's STUDIO_PALETTE_DIR, both listed in
+          the Palette picker above. */}
+      <CustomPalettesSection />
+    </>
   );
 }

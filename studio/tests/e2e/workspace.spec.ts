@@ -371,6 +371,60 @@ test("Switch worktree… lists the fixture worktrees and moves to the picked one
   ).toBeVisible();
 });
 
+test("Debug with AI in the row menu opens the consent dialog naming the chat, its reporting servers and the opening message", async ({
+  page,
+}) => {
+  await page.goto("/workspace/chat");
+  // The row menu's item is gated on the fixture's `session_debug`; its
+  // options button reveals on hover (≥500px), so hover the row first.
+  const row = page.getByRole("button", {
+    name: /^Open chat: Fix the flaky scheduler test/,
+  });
+  await row.hover();
+  await page
+    .getByRole("button", {
+      name: "Options for chat: Fix the flaky scheduler test",
+    })
+    .click();
+  await page
+    .getByRole("menuitem", { name: "Debug with AI", exact: true })
+    .click();
+  // The consent names the target chat; the attach section lists the daemon's
+  // configured server (GET /v1/mcp/sources, gated on `debug_mcp`), unpicked.
+  const dialog = page.getByRole("dialog", {
+    name: "Debug with AI: Fix the flaky scheduler test",
+  });
+  await expect(dialog).toBeVisible();
+  await expect(
+    dialog.getByText("will be sent to the model as debugging evidence", {
+      exact: false,
+    }),
+  ).toBeVisible();
+  const server = dialog.getByRole("checkbox", { name: "fixture-mcp" });
+  await expect(server).toBeVisible();
+  await expect(server).not.toBeChecked();
+  // The runtime-context report is on by default, and the opening message the
+  // debug chat will submit on its own is shown before it leaves.
+  await expect(
+    dialog.getByRole("switch", {
+      name: "Include a Studio/daemon diagnostics report as runtime context",
+    }),
+  ).toBeChecked();
+  await expect(
+    dialog.getByText("Diagnose the bound target session", { exact: false }),
+  ).toBeVisible();
+  // Picking the server re-spells the message with the TUI's suffix.
+  await server.check();
+  await expect(
+    dialog.getByText("Selected reporting servers are available: fixture-mcp.", {
+      exact: false,
+    }),
+  ).toBeVisible();
+  // Nothing was created: Cancel closes without a daemon call.
+  await dialog.getByRole("button", { name: "Cancel" }).click();
+  await expect(dialog).toBeHidden();
+});
+
 test("a scheduled task's delivery note renders as an attributed card", async ({
   page,
 }) => {
@@ -576,4 +630,86 @@ test("the Permissions page reads the daemon-reported posture in external mode an
   await expect(
     page.getByRole("button", { name: "Operator posture" }),
   ).toHaveCount(0);
+});
+
+test("the Runs tab lists the fixture subagent and opens its read-only transcript", async ({
+  page,
+}) => {
+  await page.goto("/workspace/chat");
+  // The fixture inventory holds one chat, one subagent and one scheduled
+  // fire: the Chats tab shows only the chat, and the fixture advertises
+  // `session_activity_inventory`, so a Drafts tab is offered too.
+  const tablist = page.getByRole("tablist", { name: "Session kinds" });
+  await expect(tablist.getByRole("tab", { name: /Chats/ })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(tablist.getByRole("tab", { name: /Drafts/ })).toBeVisible();
+  await expect(page.getByText("Scan the scheduler tests")).toHaveCount(0);
+
+  await tablist.getByRole("tab", { name: /Runs/ }).click();
+  const row = page.getByRole("button", {
+    name: "Inspect run: Scan the scheduler tests",
+  });
+  await expect(row).toBeVisible();
+  // The row is read-only inventory: the chat did not change.
+  await expect(page).toHaveTitle(/^New chat — Mecatl Studio$/);
+  await row.click();
+  const dialog = page.getByRole("dialog");
+  await expect(
+    dialog.getByText("two tests race the claim sentinel", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    dialog.getByText("Subagent of session-fixture-1 · call call-fixture-1"),
+  ).toBeVisible();
+  // The parent link opens the parent chat as a live conversation.
+  await dialog.getByRole("button", { name: "Open parent chat" }).click();
+  await expect(
+    page.getByText("the test races the claim sentinel", { exact: false }),
+  ).toBeVisible();
+
+  // The Scheduled tab lists the fire by what it is (it has no title).
+  await tablist.getByRole("tab", { name: /Scheduled/ }).click();
+  await page
+    .getByRole("button", {
+      name: "Inspect run: Fire of schedule nightly-fixture-digest",
+    })
+    .click();
+  await expect(
+    page.getByRole("dialog").getByText("digest sent", { exact: false }),
+  ).toBeVisible();
+});
+
+test("Settings → Help & about shows Studio's version, the docs link and the configuration reference", async ({
+  page,
+}) => {
+  await page.goto("/workspace/settings/help");
+  // The web `--version`: Studio's own version and the SDK's, inlined at
+  // `next build`, so they are real values before any daemon call.
+  await expect(page.getByTestId("about-studio-version")).toHaveText(
+    /^\d+\.\d+\.\d+/,
+  );
+  await expect(page.getByTestId("about-sdk-version")).not.toHaveText("unknown");
+  await expect(
+    page.getByRole("link", { name: "Documentation" }),
+  ).toHaveAttribute("href", "https://mecatl.dev/docs/");
+  await expect(
+    page.getByRole("link", { name: "Keyboard shortcuts" }),
+  ).toHaveAttribute("href", "/workspace/shortcuts");
+  // The daemon's identity card shares the page (the fixture answers /v1/info).
+  await expect(page.getByTestId("about-server-build")).toHaveText("fixture");
+  // The configuration reference names what THIS deployment set — the e2e
+  // stack sets MECATL_BASE_URL and MECATL_STUDIO_PUBLIC_ORIGIN — and never a
+  // value: the fixture's base URL does not appear anywhere on the page.
+  const table = page.getByRole("table", {
+    name: "Studio configuration reference",
+  });
+  await expect(table).toBeVisible();
+  await expect(page.getByTestId("config-status-MECATL_BASE_URL")).toHaveText(
+    "Set",
+  );
+  await expect(
+    page.getByTestId("config-status-MECATL_STUDIO_PUBLIC_ORIGIN"),
+  ).toHaveText("Set");
+  await expect(page.getByText("127.0.0.1:8099")).toHaveCount(0);
 });

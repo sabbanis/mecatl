@@ -42,6 +42,20 @@ Studio talks to the daemon through the [TypeScript SDK](../../reference/typescri
 (`@stacklok-oss/mecatl-sdk`) over a same-origin proxy that holds the bearer
 token on the server; the browser never sees a daemon address or credential.
 
+For an OIDC-protected deployment, set `MECATL_OIDC_ISSUER` and
+`MECATL_OIDC_CLIENT_ID` (or `MECATL_OIDC_DISCOVERY=1` to read them from the
+deployment's own RFC 9728 metadata) and sign in from Settings → Model
+provider → **Remote sign-in**. A discovered profile is listed — identity
+provider, client ID, audience, scopes — and nothing signs in until you choose
+**Continue with browser login**, the same review step as `mecatui login`.
+**Copy sign-in link** is the no-browser flow: open the link in any browser that
+can reach Studio. The card also names which credential the proxy sends
+(sign-in token, static token, or none), where the sign-in tokens live (server
+memory, or the encrypted file store that survives a restart), and the
+transport knobs in effect (private CA bundle, disabled verification, private
+issuer). The variables below are the `mecatui login` / `connect` flags as
+deployment environment; `studio/.env.example` documents each.
+
 ## What each surface does
 
 - **Chats** — the daemon's session store, live. The sidebar is the session
@@ -102,12 +116,22 @@ token on the server; the browser never sees a daemon address or credential.
 | --- | --- |
 | `MECATL_BASE_URL` | External daemon base URL; presence selects external mode |
 | `MECATL_AUTH_TOKEN` | Bearer for the external daemon (server-side only) |
+| `MECATL_AUTH_PREFER_STATIC` | `1` makes a non-empty `MECATL_AUTH_TOKEN` outrank an OIDC sign-in (mecatui's ordering); by default a configured sign-in decides |
+| `MECATL_AUTH_ANONYMOUS` | `1` sends the daemon no credential at all (`--anonymous`) |
+| `MECATL_OIDC_ISSUER`, `MECATL_OIDC_CLIENT_ID`, `MECATL_OIDC_AUDIENCE`, `MECATL_OIDC_SCOPE`, `MECATL_OIDC_REDIRECT_URI` | Remote OIDC sign-in to an OIDC-protected external daemon (explicit values) |
+| `MECATL_OIDC_DISCOVERY` | `1` discovers issuer, client ID, audience and scopes from the deployment's RFC 9728 metadata instead; the profile must be reviewed and confirmed in Settings before the first sign-in |
+| `MECATL_OIDC_PRIVATE_ISSUER` | `1` allows a plain-HTTP deployment or issuer on loopback / RFC 1918 addresses (`--private-issuer`) |
+| `MECATL_OIDC_CALLBACK_TIMEOUT` | Seconds a started sign-in stays valid (default 600; `--callback-timeout`) |
+| `MECATL_OIDC_TOKEN_STORE`, `MECATL_OIDC_TOKEN_STORE_KEY`, `MECATL_OIDC_TOKEN_STORE_PATH` | `file` + a 32-byte base64 key keep the sign-in tokens AES-256-GCM encrypted on disk so they survive a Studio restart (`--credential-store file`); default `memory` |
+| `MECATL_TLS_CA` | PEM bundle (path or inline) trusted for the daemon and identity-provider connections (`--tls-ca`) |
+| `MECATL_TLS_INSECURE` | `1` disables certificate verification for those connections (`--insecure`); warned once and shown in Settings |
 | `MECATL_WORKSPACE` | Display-only label of the deployment's workspace in external mode; the daemon assigns session placement itself |
 | `MECATL_STUDIO_PUBLIC_ORIGIN` | Comma-separated origins Studio is served from (CSRF gate) |
 | `MECATL_STUDIO_ORIGINS` | Controller's Origin allowlist (managed mode) |
 | `MECATL_STUDIO_PROVIDER` | Managed provider: `mock`, `toolhive`, or any provider named in `auth.yaml`; when set it overrides the provider remembered from Settings |
 | `MECATL_ALLOW_INSECURE_LOOPBACK_MCP` | `1` permits a loopback-HTTP MCP gateway |
 | `BRAND_PALETTE` | Default colour palette (`default`, `aztec`, `mono`, or `solar`) for browsers that have not chosen one under Settings → Personalize → Palette; light and dark still follow the Theme setting |
+| `STUDIO_PALETTE_DIR` | Directory of custom palette files (`*.json`, each a `{"name", "label", "palette": {token: colour}, "dark": {token: colour}}` document, at most 32 files of 8 KiB) listed read-only in the Palette picker as "· operator"; only allowlisted token names and `#hex` / `rgb()` / `hsl()` / `oklch()` / `oklab()` / `color()` values are accepted, a broken file is skipped with a server log line, and the directory is re-read on every request. Users add their own palettes under Settings → Personalize → Custom palettes (stored per browser) |
 
 ## Limits worth knowing
 

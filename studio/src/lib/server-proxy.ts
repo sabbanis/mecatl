@@ -2,6 +2,7 @@ import "server-only";
 
 import { resolveExternalAuthorization } from "@/lib/oidc-session";
 import { requestIsTrusted } from "@/lib/request-trust";
+import { upstreamFetchInit } from "@/lib/server-tls";
 
 const controllerBaseURL = "http://127.0.0.1:8788";
 const forwardedRequestHeaders = [
@@ -48,7 +49,14 @@ function copyResponse(upstream: Response) {
   return new Response(upstream.body, { status: upstream.status, headers });
 }
 
-async function forward(request: Request, target: URL, headers: Headers) {
+async function forward(
+  request: Request,
+  target: URL,
+  headers: Headers,
+  // The external daemon's TLS policy (MECATL_TLS_CA / MECATL_TLS_INSECURE,
+  // `src/lib/server-tls.ts`); the loopback controller never needs one.
+  transport: ReturnType<typeof upstreamFetchInit> = {},
+) {
   const hasBody = request.method !== "GET" && request.method !== "HEAD";
   try {
     const upstream = await fetch(target, {
@@ -57,6 +65,7 @@ async function forward(request: Request, target: URL, headers: Headers) {
       body: hasBody ? await request.arrayBuffer() : undefined,
       cache: "no-store",
       redirect: "manual",
+      ...transport,
     });
     return copyResponse(upstream);
   } catch {
@@ -102,9 +111,9 @@ export async function proxyMecatl(request: Request, path: string[]) {
       );
     if (auth.kind === "bearer")
       headers.set("authorization", `Bearer ${auth.token}`);
-  } else {
-    headers.set("x-mecatl-studio-request", "1");
+    return forward(request, target, headers, upstreamFetchInit());
   }
+  headers.set("x-mecatl-studio-request", "1");
 
   return forward(request, target, headers);
 }

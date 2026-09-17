@@ -1,10 +1,15 @@
 "use client";
 
-import { Plug } from "lucide-react";
+import { Plug, Server } from "lucide-react";
+import { useState } from "react";
+import { Button } from "@/components/ui/button";
 import type { ToolCallInfo } from "@/features/agent";
+import { friendlyToolName, toolRawArgs } from "@/lib/tool-summary";
 import { cn } from "@/lib/utils";
 import { SidePanel } from "./side-panel";
 import { statusDotClass } from "./tool-call-list";
+import { parseDiffArgs, ToolDiff } from "./tool-diff";
+import { ToolResultParts } from "./tool-result-parts";
 
 /**
  * Pretty-prints a call's input for the panel: objects as indented JSON, a
@@ -48,9 +53,11 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
 
 /**
  * The full, untruncated detail of one tool call in the right-hand side
- * panel: name in the header, status, the pretty-printed input JSON, and the
- * raw output. The inline activity list keeps its truncated previews — this
- * is the drill-down.
+ * panel: name in the header (`server · tool` for an MCP tool, the raw name
+ * beneath), status, the input — an Edit/Write as its diff with a Raw toggle
+ * back to the pretty-printed JSON, anything else as that JSON — the raw
+ * output, and the result's link/image parts. The inline activity list keeps
+ * its one-line summaries — this is the drill-down.
  */
 export function ToolCallPanel({
   call,
@@ -65,11 +72,16 @@ export function ToolCallPanel({
   onToggleMaximize: () => void;
   windowControls?: boolean;
 }) {
+  const [showRaw, setShowRaw] = useState(false);
   const input = toolPanelInput(call);
+  const head = friendlyToolName(call.name);
+  const rawArgs = toolRawArgs(call);
+  const diffable = parseDiffArgs(call.name, rawArgs) !== null;
+  const showDiff = diffable && !showRaw;
   return (
     <SidePanel
-      icon={Plug}
-      title={call.name}
+      icon={head.mcp ? Server : Plug}
+      title={head.display}
       closeLabel="Close tool call"
       maximized={maximized}
       onToggleMaximize={onToggleMaximize}
@@ -83,11 +95,34 @@ export function ToolCallPanel({
             className={cn("size-1.5 rounded-full", statusDotClass(call.status))}
           />
           {call.status}
+          {head.mcp && (
+            <span className="truncate font-mono" title="Exact tool name">
+              · {head.raw}
+            </span>
+          )}
         </div>
-        <SectionLabel>Input</SectionLabel>
-        <pre className="whitespace-pre-wrap break-words rounded-lg border border-border bg-muted/30 p-3 font-mono text-xs text-foreground/80">
-          {input || "(no input)"}
-        </pre>
+        <div className="flex items-end justify-between gap-2">
+          <SectionLabel>{showDiff ? "Input — diff" : "Input"}</SectionLabel>
+          {diffable && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              aria-pressed={showRaw}
+              onClick={() => setShowRaw((value) => !value)}
+              className="mb-1 h-6 px-2 text-xs text-muted-foreground hover:text-foreground"
+            >
+              {showRaw ? "Diff" : "Raw"}
+            </Button>
+          )}
+        </div>
+        {showDiff ? (
+          <ToolDiff name={call.name} rawArgs={rawArgs} />
+        ) : (
+          <pre className="whitespace-pre-wrap break-words rounded-lg border border-border bg-muted/30 p-3 font-mono text-xs text-foreground/80">
+            {input || "(no input)"}
+          </pre>
+        )}
         <SectionLabel>Output</SectionLabel>
         <pre
           className={cn(
@@ -100,6 +135,12 @@ export function ToolCallPanel({
           {call.output ||
             (call.status === "running" ? "(still running)" : "(no output)")}
         </pre>
+        {call.parts && call.parts.length > 0 && (
+          <>
+            <SectionLabel>Result parts</SectionLabel>
+            <ToolResultParts parts={call.parts} size="lg" />
+          </>
+        )}
       </div>
     </SidePanel>
   );

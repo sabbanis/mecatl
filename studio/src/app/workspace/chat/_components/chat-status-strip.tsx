@@ -4,6 +4,7 @@ import type { ComposerModelOption } from "@/app/workspace/_components/chat-input
 import { useRuntimeStatus } from "@/features/agent/runtime-status";
 import type { AgentSession } from "@/features/agent/types";
 import { copyToClipboard } from "@/lib/clipboard";
+import { permissionModeLabel } from "@/lib/permission-mode";
 import { postureSummary, postureTone } from "@/lib/posture";
 import type { SessionPermissionMode } from "@/lib/protocol";
 import { shortSessionHandle } from "@/lib/protocol/session-handle";
@@ -89,21 +90,6 @@ export function debugServersNotice(servers: readonly string[]): string {
 /** The debugger MCP tools mounted from those servers — every call asks. */
 export function debugToolsNotice(tools: readonly string[]): string {
   return `Debugger MCP tools (each call asks for approval; Always allow is not learned): ${tools.join(", ")}.`;
-}
-
-/**
- * The composer's own Mode labels (`chat-input.tsx` PERMISSION_MODE_OPTIONS),
- * kept local so the strip does not load the composer module: the two must
- * read the same words, which chat-status-strip.test.tsx pins.
- */
-const MODE_LABELS: Record<SessionPermissionMode, string> = {
-  default: "Manual",
-  acceptEdits: "Accept edits",
-  plan: "Plan",
-};
-
-function permissionModeLabel(mode: SessionPermissionMode): string {
-  return MODE_LABELS[mode] ?? MODE_LABELS.default;
 }
 
 const SEGMENT_CLASS = "min-w-0 truncate";

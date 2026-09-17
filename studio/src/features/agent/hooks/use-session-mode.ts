@@ -1,10 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 import {
   fetchHarnessSessionMode,
   setHarnessSessionMode,
 } from "@/lib/harness/client";
+import { permissionModeLabel } from "@/lib/permission-mode";
 import type { SessionPermissionMode } from "@/lib/protocol";
 import { useRuntimeStatus } from "../runtime-status";
 
@@ -59,8 +61,13 @@ export function useSessionMode(
         setMode(echoed);
       } catch {
         // The daemon refused (mid-turn, or the session vanished): the
-        // selector snaps back rather than lying about the posture.
+        // selector snaps back rather than lying about the posture, and the
+        // refusal is SAID (the TUI shows a notice) — a silent snap-back
+        // reads as the click not registering.
         setMode(previous);
+        toast.error(
+          `Permission mode change refused by the daemon — still ${permissionModeLabel(previous)}`,
+        );
       }
     })();
   }, []);

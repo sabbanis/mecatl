@@ -52,4 +52,5 @@ export type {
   TeamMemberDispositionInfo,
   TeamTaskInfo,
   ToolCallInfo,
+  ToolResultPart,
 } from "./types";

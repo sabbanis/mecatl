@@ -4,8 +4,10 @@ import {
   applyPaletteAttribute,
   BUILT_IN_PALETTES,
   buildPaletteBootScript,
+  CUSTOM_PALETTE_ID,
   DEFAULT_PALETTE_ID,
   findPalette,
+  isCustomPaletteId,
   isKnownPalette,
   PALETTE_ATTRIBUTE,
   PALETTE_ID,
@@ -188,6 +190,37 @@ describe("buildPaletteBootScript", () => {
     expect(() => run("mono")).not.toThrow();
     expect(document.documentElement.getAttribute(PALETTE_ATTRIBUTE)).toBe(
       "mono",
+    );
+  });
+
+  // A custom palette's CSS arrives with hydration, but the ATTRIBUTE can and
+  // should land before first paint: otherwise a browser pinned to `aztec`
+  // would flash aztec before its own palette. The grammar is checked
+  // in-script; a malformed custom id gets the fallback like any unknown id.
+  it("keeps a well-formed stored custom id and rejects a malformed one", () => {
+    window.localStorage.setItem(PALETTE_STORAGE_KEY, "custom:midnight");
+    expect(run("aztec")).toBe("custom:midnight");
+    window.localStorage.setItem(PALETTE_STORAGE_KEY, "custom:Bad Name");
+    expect(run("aztec")).toBe("aztec");
+    window.localStorage.setItem(PALETTE_STORAGE_KEY, 'custom:x"]{}');
+    expect(run("default")).toBeNull();
+  });
+});
+
+describe("isCustomPaletteId", () => {
+  it("matches only custom:<palette-name>", () => {
+    expect(isCustomPaletteId("custom:midnight")).toBe(true);
+    expect(isCustomPaletteId("custom:a1-b2")).toBe(true);
+    expect(isCustomPaletteId("midnight")).toBe(false);
+    expect(isCustomPaletteId("custom:")).toBe(false);
+    expect(isCustomPaletteId("custom:Midnight")).toBe(false);
+    expect(isCustomPaletteId("custom:1abc")).toBe(false);
+    expect(isCustomPaletteId(`custom:${"a".repeat(33)}`)).toBe(false);
+    expect(isCustomPaletteId(null)).toBe(false);
+    expect(isCustomPaletteId(undefined)).toBe(false);
+    // The two grammars agree on the name half.
+    expect(CUSTOM_PALETTE_ID.source).toBe(
+      `^custom:${PALETTE_ID.source.slice(1)}`,
     );
   });
 });

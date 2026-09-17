@@ -1,6 +1,11 @@
 import { act, render, renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  loadOperatorPalettes,
+  resetCustomPalettesForTests,
+  useCustomPalettes,
+} from "@/lib/custom-palettes";
 import { PALETTE_ATTRIBUTE, PALETTE_STORAGE_KEY } from "@/lib/palettes";
 import { memoryStorage } from "@/test/memory-storage";
 import { PaletteProvider, usePalette } from "./palette-provider";
@@ -133,5 +138,96 @@ describe("usePalette under a PaletteProvider default pin", () => {
     window.localStorage.setItem(KEY, "solar");
     render(<PaletteProvider defaultPalette="mono">{null}</PaletteProvider>);
     expect(attr()).toBe("solar");
+  });
+});
+
+/**
+ * Custom palettes (user-added, or the operator's STUDIO_PALETTE_DIR) join
+ * the catalogue `usePalette` resolves against: a stored `custom:<name>` is
+ * honoured once its palette exists, resolves to the default once it is
+ * removed, and — while the operator list is still loading — is KEPT rather
+ * than flashed to the default (the boot script already put it on <html>).
+ */
+describe("usePalette with custom palettes", () => {
+  const EMBER =
+    '{"name":"ember","label":"Ember","palette":{"brand":"#ff6600"}}';
+
+  function stubFetch(body: unknown) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(JSON.stringify(body), {
+            headers: { "content-type": "application/json" },
+          }),
+      ),
+    );
+  }
+
+  beforeEach(() => {
+    vi.stubGlobal("localStorage", memoryStorage());
+    resetCustomPalettesForTests();
+    stubFetch({ palettes: [] });
+  });
+  afterEach(() => {
+    resetCustomPalettesForTests();
+    document.documentElement.removeAttribute(PALETTE_ATTRIBUTE);
+  });
+
+  it("resolves a stored custom id once its palette exists, and back when removed", async () => {
+    window.localStorage.setItem(KEY, "custom:ember");
+    const custom = renderHook(() => useCustomPalettes());
+    await act(async () => {
+      await loadOperatorPalettes();
+    });
+    const { result } = renderHook(() => usePalette());
+    // Settled, and no such palette: an unknown id, like any other.
+    expect(result.current.palette).toBe("default");
+
+    act(() => {
+      custom.result.current.addUserPalette(EMBER);
+    });
+    expect(result.current.palette).toBe("custom:ember");
+    expect(result.current.catalogue.map((p) => p.id)).toContain("custom:ember");
+    expect(
+      result.current.catalogue.find((p) => p.id === "custom:ember"),
+    ).toMatchObject({ label: "Ember", source: "user", swatch: "#ff6600" });
+
+    act(() => custom.result.current.removeUserPalette("ember"));
+    expect(result.current.palette).toBe("default");
+  });
+
+  it("keeps a well-formed custom id while the operator list is still loading", () => {
+    window.localStorage.setItem(KEY, "custom:midnight");
+    // Nothing has started the operator fetch: state idle → pending.
+    const { result } = renderHook(() => usePalette());
+    expect(result.current.palette).toBe("custom:midnight");
+    // A malformed id gets no such grace.
+    window.localStorage.setItem(KEY, "custom:Bad Name");
+    const other = renderHook(() => usePalette());
+    expect(other.result.current.palette).toBe("default");
+  });
+
+  it("lists an operator palette and lets setPalette pick it", async () => {
+    stubFetch({
+      palettes: [
+        { name: "midnight", label: "Midnight", palette: { brand: "#4f7cff" } },
+      ],
+    });
+    renderHook(() => useCustomPalettes());
+    await act(async () => {
+      await loadOperatorPalettes();
+    });
+    const { result } = renderHook(() => usePalette());
+    expect(
+      result.current.catalogue.find((p) => p.id === "custom:midnight"),
+    ).toMatchObject({ label: "Midnight", source: "operator" });
+    act(() => result.current.setPalette("custom:midnight"));
+    expect(result.current.palette).toBe("custom:midnight");
+    expect(window.localStorage.getItem(KEY)).toBe("custom:midnight");
+    expect(attr()).toBe("custom:midnight");
+    // A custom id no palette backs is refused like an unknown built-in.
+    act(() => result.current.setPalette("custom:nope"));
+    expect(result.current.palette).toBe("default");
   });
 });

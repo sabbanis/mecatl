@@ -6,6 +6,7 @@ import { useCallback, useMemo, useState } from "react";
 import {
   ATRIUM_SEARCH_GROUPS,
   buildAtriumSearchEntries,
+  WORKSPACE_PAGE_ENTRIES,
 } from "@/components/shell/atrium-search-data";
 import { createStaticSearchProvider } from "@/components/shell/search-static";
 import type { SearchEntry } from "@/components/shell/search-types";
@@ -45,7 +46,7 @@ export function GlobalSearch() {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
 
-  const { sessions } = useAgentSessions();
+  const { sessions, runs } = useAgentSessions();
   const { jobs } = useAgentCron();
   const { skills } = useAgentSkills();
   const { entries: memories } = useAgentMemory();
@@ -55,15 +56,18 @@ export function GlobalSearch() {
 
   const provider = useMemo(
     () =>
-      createStaticSearchProvider(
-        buildAtriumSearchEntries({
+      createStaticSearchProvider([
+        ...buildAtriumSearchEntries({
           sessions: sessions.filter((s) => !threadSessionIds.has(s.id)),
+          runs,
           jobs,
           skills,
           memories,
         }),
-      ),
-    [sessions, jobs, skills, memories, threadSessionIds],
+        // The static help pages (Help & about, the shortcuts reference).
+        ...WORKSPACE_PAGE_ENTRIES,
+      ]),
+    [sessions, runs, jobs, skills, memories, threadSessionIds],
   );
 
   // App-wide shortcuts, wired through the central dispatcher (this component

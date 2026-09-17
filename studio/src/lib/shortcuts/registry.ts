@@ -139,6 +139,20 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     description: "Clear conversation — a fresh chat with the same settings",
     group: "Chats",
   },
+  // "Debug with AI" (the TUI's F1, ADR 0254): the consent dialog for a
+  // separate no-filesystem diagnostic chat bound to the selected chat. NOT a
+  // bare F1: the browser answers it itself (help) and a Mac laptop's F1 is
+  // brightness without fn, so the keymap reserves it. ⌘⇧Y / Ctrl+Shift+Y is
+  // unbound in Chrome and Safari; Firefox's Downloads and Edge's Collections
+  // both yield to a page handler that prevents it. A ⌘ chord, so it fires
+  // from the composer too.
+  {
+    id: "debug.open",
+    combo: "mod+shift+y",
+    description:
+      "Debug the selected chat with AI — a separate diagnostic chat (the TUI's F1)",
+    group: "Chats",
+  },
 
   // Conversation — keyboard scrolling of the transcript (the TUI's
   // PgUp/PgDn/Home/End). PgUp/PgDn never insert text, so these also fire
@@ -169,6 +183,21 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     id: "transcript.bottom",
     combo: "shift+pagedown",
     description: "Jump to the bottom and resume auto-follow",
+    group: "Conversation",
+  },
+  // Expand / collapse details (the TUI's ctrl+t ExpandTools): every turn's
+  // tool rows with their arg/result summaries and inline Edit/Write diffs,
+  // the reasoning summary, and a failed turn's raw payload. ⌘⇧G is
+  // preventable in Chrome, Edge, Firefox and Safari (it is only find
+  // previous, which pages may claim); ⌘⇧E was ruled out because Firefox's
+  // Network Monitor owns Ctrl+Shift+E on Windows/Linux and, like its Web
+  // Console chord, never reaches the page. A ⌘ chord, so it fires from the
+  // composer too.
+  {
+    id: "chat.expandDetails",
+    combo: "mod+shift+g",
+    description:
+      "Expand or collapse details — tool rows, Edit/Write diffs, reasoning, raw errors",
     group: "Conversation",
   },
   // Transcript-scoped select-all (the TUI's ctrl+g). Handled by the
@@ -209,6 +238,24 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     combo: "shift+enter",
     description:
       "Insert a new line — while the agent is replying: the opposite of your Enter preference",
+    group: "Composer",
+    fixed: true,
+  },
+  // Cycle the permission mode (the TUI's shift+tab / `ModeSwitch`): Manual →
+  // Plan → Accept edits → Manual. Owned by the composer's own editor keydown
+  // (`resolveModeCycleKey`), so it fires ONLY while the caret is in the
+  // composer — with the `/` or `@` menu open, Tab and ⇧Tab pick the
+  // highlighted row instead. Everywhere else ⇧Tab keeps its native
+  // reverse-focus meaning (forms, dialogs, screen readers), which is also why
+  // the keymap reserves the chord and this row is fixed rather than
+  // rebindable; the dispatcher never claims it (`comboFiresWhileTyping` stays
+  // false for it, by design). Mid-run the switch is held and lands when the
+  // run ends (the pill and header read "· pending").
+  {
+    id: "composer.mode.cycle",
+    combo: "shift+tab",
+    description:
+      "Cycle the permission mode — Manual → Plan → Accept edits (mid-run: held until the turn ends)",
     group: "Composer",
     fixed: true,
   },
@@ -338,8 +385,19 @@ const KEY_ALIAS: Record<string, string> = {
   space: " ",
 };
 
+/**
+ * The five fields `matchCombo` reads off a key event. Structural so a caller
+ * that has already reduced a DOM/React keydown to its chord (the composer's
+ * `resolveModeCycleKey`) can match without a cast; every real `KeyboardEvent`
+ * satisfies it.
+ */
+export type ComboKeyEvent = Pick<
+  KeyboardEvent,
+  "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey"
+>;
+
 /** True when a live key event matches a combo. `mod` = ⌘ or Ctrl. */
-export function matchCombo(combo: string, e: KeyboardEvent): boolean {
+export function matchCombo(combo: string, e: ComboKeyEvent): boolean {
   const parts = combo.split("+");
   const key = parts[parts.length - 1];
   const wantMod = parts.includes("mod");

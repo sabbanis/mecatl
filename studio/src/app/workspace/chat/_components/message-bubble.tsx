@@ -373,6 +373,7 @@ export function MessageBubble({
   streaming = false,
   onOpenDelegation,
   onCancelDelegation,
+  onInspectDelegation,
 }: {
   message: AgentMessage;
   onOpenArtifact?: (artifact: Artifact) => void;
@@ -393,6 +394,8 @@ export function MessageBubble({
   ) => void;
   /** Cancels one live delegated child by its session id. */
   onCancelDelegation?: (childId: string) => void;
+  /** Opens one delegated child's stored transcript read-only. */
+  onInspectDelegation?: (childId: string, label: string) => void;
 }) {
   const isUser = message.role === "user";
   const { name: userName } = useUserDisplayName();
@@ -563,6 +566,7 @@ export function MessageBubble({
             groups={message.delegationGroups}
             onOpen={onOpenDelegation}
             onCancel={onCancelDelegation}
+            onInspect={onInspectDelegation}
           />
         )}
         {message.delivery && (

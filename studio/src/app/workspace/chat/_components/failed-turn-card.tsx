@@ -1,7 +1,8 @@
 "use client";
 
 import { AlertCircle, ChevronDown, ChevronRight } from "lucide-react";
-import { useId, useState } from "react";
+import { useId } from "react";
+import { useDetailsOpen } from "./use-details-open";
 
 /** The failed bubble's one-line summary is capped here (the TUI's 120 runes). */
 const FAILURE_SUMMARY_MAX = 120;
@@ -57,7 +58,8 @@ export function FailedTurnCard({
   detail?: string;
   permanent?: boolean;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  // Collapsed by default; follows the global Expand details preference.
+  const [expanded, toggleExpanded] = useDetailsOpen();
   const detailsId = useId();
   const summary = summarizeFailure(detail, permanent);
   const hasDetails = Boolean(detail?.trim()) && detail !== summary;
@@ -78,7 +80,7 @@ export function FailedTurnCard({
               type="button"
               aria-expanded={expanded}
               aria-controls={detailsId}
-              onClick={() => setExpanded((open) => !open)}
+              onClick={toggleExpanded}
               className="mt-1 inline-flex items-center gap-1 rounded text-xs text-destructive/80 hover:text-destructive focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               {expanded ? (

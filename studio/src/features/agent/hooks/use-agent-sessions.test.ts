@@ -76,6 +76,23 @@ const row = (id: string, isChat = true): SessionSummary => ({
   deleteReason: "",
   copyIdReason: "",
   forkReason: "",
+  kind: isChat ? "main" : "subagent",
+  activityState: "",
+  relationship: {
+    parentSessionId: isChat ? "" : "a",
+    callId: "",
+    branchIndex: null,
+    scheduleName: "",
+    originSessionId: "",
+    teamId: "",
+    memberName: "",
+  },
+  placement: { kind: "local", label: "studio", branch: "main", revision: "" },
+  ownerName: "",
+  titleRevision: null,
+  canInspect: !isChat,
+  publicChatReason: isChat ? "" : "inspect_only_kind",
+  viewTranscriptReason: "",
 });
 
 const ids = (sessions: { id: string }[]) => sessions.map((s) => s.id);
@@ -99,7 +116,8 @@ describe("useAgentSessions inventory walk", () => {
     expect(result.current.isLoading).toBe(true);
     expect(calls[0].maxPages).toBe(25);
 
-    // Page one: two rows, one of them an inspect-only kind the list omits.
+    // Page one: two rows, one of them an inspect-only kind the chat list
+    // omits — it lands in `runs` instead of being dropped.
     act(() => {
       calls[0].onProgress?.({
         pages: 1,
@@ -113,6 +131,7 @@ describe("useAgentSessions inventory walk", () => {
       rows: 1,
     });
     expect(ids(result.current.sessions)).toEqual(["a"]);
+    expect(ids(result.current.runs)).toEqual(["child"]);
     expect(result.current.isLoading).toBe(false);
 
     await act(async () => {
@@ -215,6 +234,99 @@ describe("useAgentSessions inventory walk", () => {
     );
     // A bounded walk merges; it never drops a row it did not see.
     expect(ids(result.current.sessions)).toEqual(["a", "b"]);
+  });
+
+  it("lists every inspect-only row in `runs` with its kind, relationship and placement, never in `sessions`", async () => {
+    const calls = controllableWalks();
+    const { result } = renderHook(() => useAgentSessions());
+    await waitFor(() => expect(calls).toHaveLength(1));
+
+    const scheduled: SessionSummary = {
+      ...row("fire-1", false),
+      title: "",
+      kind: "scheduled",
+      relationship: {
+        ...row("fire-1", false).relationship,
+        parentSessionId: "",
+        scheduleName: "nightly",
+      },
+      canViewTranscript: false,
+      viewTranscriptReason: "transcript_unavailable",
+    };
+    await act(async () => {
+      calls[0].resolve({
+        sessions: [row("a"), row("child", false), scheduled],
+        complete: true,
+      });
+    });
+    await waitFor(() => expect(result.current.walk.complete).toBe(true));
+
+    expect(ids(result.current.sessions)).toEqual(["a"]);
+    expect(ids(result.current.runs)).toEqual(["child", "fire-1"]);
+    expect(result.current.runs[0]).toMatchObject({
+      kind: "subagent",
+      isChat: false,
+      canInspect: true,
+      publicChatReason: "inspect_only_kind",
+      placementLabel: "studio",
+      placementBranch: "main",
+      relationship: { parentSessionId: "a" },
+    });
+    // A run keeps an empty title (its row names the relationship instead of
+    // a chat's placeholder) and carries the transcript refusal reason.
+    expect(result.current.runs[1]).toMatchObject({
+      title: "",
+      kind: "scheduled",
+      canViewTranscript: false,
+      viewTranscriptReason: "transcript_unavailable",
+      relationship: { scheduleName: "nightly" },
+    });
+    expect(result.current.sessions[0]).toMatchObject({
+      kind: "main",
+      isChat: true,
+      canViewTranscript: true,
+    });
+  });
+
+  it("merges runs on a partial walk and removes them only on a complete one, like chats", async () => {
+    const calls = controllableWalks();
+    const { result } = renderHook(() => useAgentSessions());
+    await waitFor(() => expect(calls).toHaveLength(1));
+    await act(async () => {
+      calls[0].resolve({
+        sessions: [row("a"), row("r1", false), row("r2", false)],
+        complete: true,
+      });
+    });
+    await waitFor(() => expect(ids(result.current.runs)).toEqual(["r1", "r2"]));
+
+    // A bounded refresh that saw only r1 keeps r2.
+    act(() => {
+      void result.current.refreshSessions();
+    });
+    await waitFor(() => expect(calls).toHaveLength(2));
+    await act(async () => {
+      calls[1].resolve({
+        sessions: [row("a"), row("r1", false)],
+        complete: false,
+      });
+    });
+    await waitFor(() => expect(result.current.walk.complete).toBe(false));
+    expect(ids(result.current.runs)).toEqual(["r1", "r2"]);
+
+    // A complete refresh that saw only r1 drops r2.
+    act(() => {
+      void result.current.refreshSessions();
+    });
+    await waitFor(() => expect(calls).toHaveLength(3));
+    await act(async () => {
+      calls[2].resolve({
+        sessions: [row("a"), row("r1", false)],
+        complete: true,
+      });
+    });
+    await waitFor(() => expect(ids(result.current.runs)).toEqual(["r1"]));
+    expect(ids(result.current.sessions)).toEqual(["a"]);
   });
 
   it("unmount aborts the in-flight walk and reports nothing", async () => {

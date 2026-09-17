@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  authMode,
   normalizeStaticToken,
   resolveProxyAuthorization,
 } from "./resolve-authorization";
@@ -84,5 +85,91 @@ describe("resolveProxyAuthorization ordering", () => {
       // identity-provider outage from a daemon outage (both are 5xx).
       code: "oidc_idp_unavailable",
     });
+  });
+});
+
+describe("resolveProxyAuthorization knobs (mecatui's credential ordering)", () => {
+  it("preferStatic: a non-empty static token outranks a signed-in OIDC enrolment", () => {
+    expect(
+      resolveProxyAuthorization({
+        oidcConfigured: true,
+        oidc: { kind: "bearer", token: "oidc-1" },
+        staticToken: "Bearer static-1",
+        preferStatic: true,
+      }),
+    ).toEqual({ kind: "bearer", token: "static-1" });
+    // ...and over a signed-out one (no 401 — the static credential decides).
+    expect(
+      resolveProxyAuthorization({
+        oidcConfigured: true,
+        oidc: { kind: "login-required", reason: "signed-out" },
+        staticToken: "static-1",
+        preferStatic: true,
+      }),
+    ).toEqual({ kind: "bearer", token: "static-1" });
+  });
+
+  it("preferStatic with an empty static token falls through to the OIDC decision", () => {
+    expect(
+      resolveProxyAuthorization({
+        oidcConfigured: true,
+        oidc: { kind: "login-required", reason: "signed-out" },
+        staticToken: "   ",
+        preferStatic: true,
+      }),
+    ).toMatchObject({ kind: "unauthorized", code: "oidc_login_required" });
+  });
+
+  it("anonymous: never injects a bearer, even with OIDC configured or a static token", () => {
+    expect(
+      resolveProxyAuthorization({
+        oidcConfigured: true,
+        oidc: { kind: "bearer", token: "oidc-1" },
+        staticToken: "static-1",
+        anonymous: true,
+      }),
+    ).toEqual({ kind: "none" });
+    expect(
+      resolveProxyAuthorization({
+        oidcConfigured: false,
+        oidc: null,
+        staticToken: "static-1",
+        anonymous: true,
+        preferStatic: true,
+      }),
+    ).toEqual({ kind: "none" });
+  });
+
+  it("defaults (both knobs unset) keep the H3 ordering byte-identical", () => {
+    expect(
+      resolveProxyAuthorization({
+        oidcConfigured: true,
+        oidc: { kind: "login-required", reason: "signed-out" },
+        staticToken: "static-1",
+        preferStatic: false,
+        anonymous: false,
+      }),
+    ).toMatchObject({ kind: "unauthorized", code: "oidc_login_required" });
+  });
+});
+
+describe("authMode", () => {
+  it("names the credential the proxy injects from configuration alone", () => {
+    expect(authMode({ oidcConfigured: true, staticToken: "s" })).toBe("oidc");
+    expect(
+      authMode({ oidcConfigured: true, staticToken: "s", preferStatic: true }),
+    ).toBe("static");
+    expect(
+      authMode({ oidcConfigured: true, staticToken: "", preferStatic: true }),
+    ).toBe("oidc");
+    expect(authMode({ oidcConfigured: false, staticToken: "Bearer s" })).toBe(
+      "static",
+    );
+    expect(authMode({ oidcConfigured: false, staticToken: undefined })).toBe(
+      "anonymous",
+    );
+    expect(
+      authMode({ oidcConfigured: true, staticToken: "s", anonymous: true }),
+    ).toBe("anonymous");
   });
 });

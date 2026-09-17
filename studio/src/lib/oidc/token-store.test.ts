@@ -1,12 +1,14 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   type BearerOutcome,
   claimsFromIdToken,
   isInvalidGrantResponse,
   OidcTokenStore,
+  type PersistedTokens,
   REFRESH_AHEAD_MS,
   type RefreshResult,
   type StoredTokens,
+  type TokenPersistence,
   tokenDecision,
   tokenExpiryMs,
   tokensFromRefreshResponse,
@@ -221,5 +223,85 @@ describe("OidcTokenStore.bearer", () => {
       await unrefreshable.bearer(async () => ({ kind: "transient" })),
     ).toEqual({ kind: "login-required", reason: "expired" });
     expect(unrefreshable.snapshot()).toEqual({ state: "expired" });
+  });
+});
+
+describe("OidcTokenStore persistence + binding", () => {
+  const memoryPersistence = (initial: PersistedTokens | null = null) => {
+    let saved = initial;
+    const persistence: TokenPersistence = {
+      load: vi.fn(() => saved),
+      save: vi.fn((next: PersistedTokens) => {
+        saved = next;
+      }),
+      clear: vi.fn(() => {
+        saved = null;
+      }),
+    };
+    return { persistence, current: () => saved };
+  };
+
+  it("adopts the mirrored credential and its binding at construction", () => {
+    const { persistence } = memoryPersistence({
+      tokens: tokens(),
+      binding: "p1",
+    });
+    const s = new OidcTokenStore(() => NOW, persistence);
+    expect(s.current()).toEqual(tokens());
+    expect(s.binding()).toBe("p1");
+    expect(persistence.load).toHaveBeenCalledTimes(1);
+  });
+
+  it("mirrors every set (keeping the binding on a refresh) and clear", async () => {
+    const { persistence, current } = memoryPersistence();
+    const s = new OidcTokenStore(() => NOW, persistence);
+    s.setTokens(tokens({ expiresAt: NOW + 10_000 }), "p1");
+    expect(current()).toEqual({
+      tokens: tokens({ expiresAt: NOW + 10_000 }),
+      binding: "p1",
+    });
+
+    // A refresh re-sets the tokens WITHOUT naming the binding: it survives.
+    await s.bearer(async (prior) => ({
+      kind: "refreshed",
+      tokens: { ...prior, accessToken: "access-2" },
+    }));
+    expect(current()?.binding).toBe("p1");
+    expect(current()?.tokens.accessToken).toBe("access-2");
+
+    s.clear("expired");
+    expect(current()).toBeNull();
+    expect(s.binding()).toBe("");
+    expect(persistence.clear).toHaveBeenCalledTimes(1);
+  });
+
+  it("is unbound ('') without a binding and never reports one while signed out", () => {
+    const s = new OidcTokenStore(() => NOW);
+    expect(s.binding()).toBe("");
+    s.setTokens(tokens());
+    expect(s.binding()).toBe("");
+    s.setTokens(tokens(), "p2");
+    expect(s.binding()).toBe("p2");
+    s.clear();
+    expect(s.binding()).toBe("");
+  });
+
+  it("survives a throwing persistence layer", () => {
+    const broken: TokenPersistence = {
+      load: () => {
+        throw new Error("disk");
+      },
+      save: () => {
+        throw new Error("disk");
+      },
+      clear: () => {
+        throw new Error("disk");
+      },
+    };
+    const s = new OidcTokenStore(() => NOW, broken);
+    expect(() => s.setTokens(tokens(), "p")).not.toThrow();
+    expect(s.current()).toEqual(tokens());
+    expect(() => s.clear()).not.toThrow();
+    expect(s.current()).toBeNull();
   });
 });

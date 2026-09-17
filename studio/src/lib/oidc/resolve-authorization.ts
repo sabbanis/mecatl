@@ -7,8 +7,36 @@
  * - OIDC configured → the OIDC outcome DECIDES; the static token is never a
  *   fallback (a static token cannot satisfy an OIDC-protected daemon, and
  *   silently downgrading would mask an expired session).
+ *
+ * Two explicit deployment knobs, both default-off so the above stays
+ * byte-identical (the `mecatui connect` credential ordering):
+ *
+ * - `preferStatic` (MECATL_AUTH_PREFER_STATIC=1) — a non-empty static token
+ *   OUTRANKS the OIDC enrolment, mecatui's "static bearer is the
+ *   highest-priority credential source"; an empty one falls through to OIDC.
+ * - `anonymous` (MECATL_AUTH_ANONYMOUS=1) — no bearer is ever injected, even
+ *   with OIDC configured or a static token set (`--anonymous`). The daemon's
+ *   own 401 then reaches the client verbatim.
  */
 import type { BearerOutcome } from "./token-store";
+
+export type AuthMode = "oidc" | "static" | "anonymous";
+
+/** Which credential the proxy is injecting for the settings card's
+ * "Authentication" row — computed from configuration alone, never from a
+ * token value. */
+export function authMode(options: {
+  oidcConfigured: boolean;
+  staticToken: string | undefined;
+  preferStatic?: boolean;
+  anonymous?: boolean;
+}): AuthMode {
+  if (options.anonymous) return "anonymous";
+  const token = normalizeStaticToken(options.staticToken);
+  if (options.preferStatic && token) return "static";
+  if (options.oidcConfigured) return "oidc";
+  return token ? "static" : "anonymous";
+}
 
 export type ProxyAuthDecision =
   | { kind: "none" }
@@ -38,10 +66,17 @@ export function resolveProxyAuthorization(options: {
   /** The token store's outcome; only read when oidcConfigured. */
   oidc: BearerOutcome | null;
   staticToken: string | undefined;
+  /** MECATL_AUTH_PREFER_STATIC=1 — see the module comment. */
+  preferStatic?: boolean;
+  /** MECATL_AUTH_ANONYMOUS=1 — see the module comment. */
+  anonymous?: boolean;
 }): ProxyAuthDecision {
-  if (!options.oidcConfigured) {
-    const token = normalizeStaticToken(options.staticToken);
-    return token ? { kind: "bearer", token } : { kind: "none" };
+  if (options.anonymous) return { kind: "none" };
+  const staticToken = normalizeStaticToken(options.staticToken);
+  if (!options.oidcConfigured || (options.preferStatic && staticToken)) {
+    return staticToken
+      ? { kind: "bearer", token: staticToken }
+      : { kind: "none" };
   }
   const outcome = options.oidc;
   if (outcome?.kind === "bearer") {

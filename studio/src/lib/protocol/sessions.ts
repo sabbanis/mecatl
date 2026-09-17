@@ -15,6 +15,34 @@ import {
   SessionMode,
 } from "@stacklok-oss/mecatl-sdk";
 import type { ListSessionsResponse } from "@stacklok-oss/mecatl-sdk/gen";
+import type { ToolResultPart } from "@/features/agent/types";
+import { decodeResultParts } from "./events";
+
+/**
+ * The links the daemon validated for a row's kind (proto SessionRelationship):
+ * a subagent carries its parent + call, a parallel branch its parent + index,
+ * a team member its team + roster name, a scheduler fire its schedule, a
+ * carryover its origin. Every field is "" (index null) when absent; the
+ * debug binding rides `SessionSummary.debugTargetSessionId` instead.
+ */
+export type SessionRelationshipInfo = {
+  parentSessionId: string;
+  callId: string;
+  branchIndex: number | null;
+  scheduleName: string;
+  originSessionId: string;
+  teamId: string;
+  memberName: string;
+};
+
+/** Bounded display metadata for where a session runs (ADR 0291) — a label,
+ *  never a path. */
+type SessionPlacementInfo = {
+  kind: string;
+  label: string;
+  branch: string;
+  revision: string;
+};
 
 export type SessionSummary = {
   sessionId: string;
@@ -68,6 +96,32 @@ export type SessionSummary = {
   deleteReason: string;
   copyIdReason: string;
   forkReason: string;
+  /**
+   * The daemon's closed kind (engine/session/kind.go): main | subagent |
+   * parallel_branch | team_member | scheduled | debug | unknown. "" on a
+   * daemon that predates the taxonomy — the UI treats it as unknown.
+   */
+  kind: string;
+  /**
+   * Content-free history classification: "draft" (no exchange recorded yet)
+   * or "active". Present only when the daemon advertises the
+   * `session_activity_inventory` feature; "" otherwise.
+   */
+  activityState: string;
+  relationship: SessionRelationshipInfo;
+  /** Placement display metadata; null when the row carried none. */
+  placement: SessionPlacementInfo | null;
+  /** The owning principal's display name ("" when ownerless / unnamed). */
+  ownerName: string;
+  /** The title lifecycle revision (0 = legacy); null when the row carried
+   *  no title metadata. */
+  titleRevision: number | null;
+  /** Whether the daemon offers the read-only inspect posture for this row. */
+  canInspect: boolean;
+  /** Why the row is not a public chat ("" when it is one). */
+  publicChatReason: string;
+  /** Why the transcript cannot be viewed ("" when it can). */
+  viewTranscriptReason: string;
 };
 
 export type SessionInventoryPage = {
@@ -163,11 +217,17 @@ export function sessionInventoryFromResponse(
     if (!row.sessionId) continue;
     const capabilities = row.capabilities;
     const reasons = capabilities?.reasons;
-    const debugTargetSessionId = row.relationship?.debugTargetSessionId ?? "";
+    const rel = row.relationship;
+    const debugTargetSessionId = rel?.debugTargetSessionId ?? "";
+    // `title_metadata` is the canonical title lifecycle projection; the bare
+    // `title` / `title_provenance` fields are the deprecated compatibility
+    // copies an older daemon still fills, so they are the fallback only.
+    const titleMetadata = row.titleMetadata;
+    const placement = row.placement;
     sessions.push({
       sessionId: row.sessionId,
-      title: row.title ?? "",
-      titleProvenance: row.titleProvenance ?? "",
+      title: titleMetadata?.title || row.title || "",
+      titleProvenance: titleMetadata?.provenance || row.titleProvenance || "",
       debugTargetSessionId,
       state: row.state ?? "",
       modelId: row.modelId ?? "",
@@ -191,6 +251,35 @@ export function sessionInventoryFromResponse(
       deleteReason: reasons?.delete ?? "",
       copyIdReason: reasons?.copyId ?? "",
       forkReason: reasons?.fork ?? "",
+      kind: row.kind ?? "",
+      activityState: row.activityState ?? "",
+      relationship: {
+        parentSessionId: rel?.parentSessionId ?? "",
+        callId: rel?.callId ?? "",
+        branchIndex:
+          typeof rel?.branchIndex === "number" ? rel.branchIndex : null,
+        scheduleName: rel?.scheduleName ?? "",
+        originSessionId: rel?.originSessionId ?? "",
+        teamId: rel?.teamId ?? "",
+        memberName: rel?.memberName ?? "",
+      },
+      placement: placement
+        ? {
+            kind: placement.kind ?? "",
+            label: placement.label ?? "",
+            branch: placement.branch ?? "",
+            revision: placement.revision ?? "",
+          }
+        : null,
+      ownerName: row.owner?.name ?? "",
+      // uint64 crosses the SDK as bigint; the UI keeps a plain number.
+      titleRevision:
+        titleMetadata?.revision === undefined
+          ? null
+          : Number(titleMetadata.revision),
+      canInspect: capabilities?.inspect === true,
+      publicChatReason: reasons?.publicChat ?? "",
+      viewTranscriptReason: reasons?.viewTranscript ?? "",
     });
   }
   return { sessions, nextCursor: response.nextCursor ?? "" };
@@ -201,7 +290,13 @@ type TranscriptMessage = {
   role: string;
   text: string;
   toolCalls: Array<{ id: string; name: string; args: string }>;
-  toolResult?: { callId: string; content: string; isError: boolean };
+  toolResult?: {
+    callId: string;
+    content: string;
+    isError: boolean;
+    /** Image / resource-link blocks the result carried besides its text. */
+    parts?: ToolResultPart[];
+  };
 };
 
 export type SessionTranscript = {
@@ -236,6 +331,7 @@ export function sessionTranscriptFromSdk(
             callId: message.toolResult.callId,
             content: message.toolResult.content,
             isError: message.toolResult.isError === true,
+            parts: decodeResultParts(message.toolResult.blocks),
           }
         : undefined,
     })),

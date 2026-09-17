@@ -29,6 +29,7 @@ import {
 } from "@/features/agent/mock-projects";
 import { isMockTourSession } from "@/features/agent/mock-tour";
 import { formatRelativeTime } from "@/lib/formatters";
+import { capabilityReasonLabel } from "@/lib/session-kinds";
 import { cn } from "@/lib/utils";
 import { sessionActivity } from "./session-activity";
 import {
@@ -369,6 +370,18 @@ function SessionRow({
             >
               Debug
             </Badge>
+          )}
+          {/* A chat the daemon will not hand to this client right now (parked
+              on an approval, driven by another client) says why, in the
+              daemon's own reason — the TUI's per-row continue/inspect hint.
+              A debug chat's inspect-only stamp is its kind, not a refusal. */}
+          {session.publicChatReason && !session.debugTargetSessionId && (
+            <span
+              className="shrink-0 truncate text-[10px] text-muted-foreground/70"
+              title={capabilityReasonLabel(session.publicChatReason)}
+            >
+              {capabilityReasonLabel(session.publicChatReason)}
+            </span>
           )}
         </span>
       </button>

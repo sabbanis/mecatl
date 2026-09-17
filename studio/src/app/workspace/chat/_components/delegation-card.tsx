@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertCircle, GitBranch, Pencil, X } from "lucide-react";
+import { AlertCircle, Eye, GitBranch, Pencil, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import type { DelegationGroupInfo, DelegationInfo } from "@/features/agent";
 import { formatTokens } from "@/lib/formatters";
@@ -25,6 +25,9 @@ export type OpenDelegation = (
 /** Cancels one live child by its session id. */
 export type CancelDelegation = (childId: string) => void;
 
+/** Opens one child's stored transcript read-only, by its session id. */
+export type InspectDelegation = (childId: string, label: string) => void;
+
 const BADGE_CLASS =
   "max-w-full gap-1 border-transparent text-xs font-normal text-muted-foreground";
 
@@ -39,18 +42,22 @@ const BADGE_CLASS =
  *
  * With `onOpen` the badge is a button (click/keyboard) that hands the card and
  * its group to the caller; with `onCancel` a live child gets a small cancel
- * control beside it. All text is plain metadata the daemon already bounded.
+ * control beside it; with `onInspect` a child that has a session id gets an
+ * Inspect control that opens its stored transcript read-only (the TUI's
+ * Child-runs Inspect). All text is plain metadata the daemon already bounded.
  */
 export function DelegationCard({
   delegation,
   group,
   onOpen,
   onCancel,
+  onInspect,
 }: {
   delegation: DelegationInfo;
   group?: DelegationGroupInfo;
   onOpen?: OpenDelegation;
   onCancel?: CancelDelegation;
+  onInspect?: InspectDelegation;
 }) {
   const isTeam = delegation.kind === "team";
   const running = delegationRunning(delegation, group);
@@ -153,6 +160,7 @@ export function DelegationCard({
     running &&
     Boolean(delegation.childId) &&
     !delegation.cancelling;
+  const inspectable = onInspect !== undefined && Boolean(delegation.childId);
 
   return (
     <div className="flex min-w-0 flex-col">
@@ -196,6 +204,22 @@ export function DelegationCard({
             <X className="size-3" aria-hidden="true" />
           </button>
         )}
+        {inspectable && delegation.childId && (
+          <button
+            type="button"
+            aria-label={`Inspect ${delegation.kind} ${delegation.label}`}
+            title="Open this child's transcript (read-only)"
+            className="inline-flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-secondary hover:text-foreground focus:outline-none focus:ring-2 focus:ring-ring"
+            onClick={() =>
+              onInspect(
+                delegation.childId ?? "",
+                `${delegation.kind}: ${delegation.label}`,
+              )
+            }
+          >
+            <Eye className="size-3" aria-hidden="true" />
+          </button>
+        )}
       </div>
       {failed && delegation.cause && (
         <p
@@ -221,11 +245,13 @@ export function DelegationCardRow({
   groups,
   onOpen,
   onCancel,
+  onInspect,
 }: {
   delegations: readonly DelegationInfo[];
   groups?: Record<string, DelegationGroupInfo>;
   onOpen?: OpenDelegation;
   onCancel?: CancelDelegation;
+  onInspect?: InspectDelegation;
 }) {
   // Cards can repeat verbatim within a turn, so React keys are positional
   // (by identity, so the exact message card reaches `onOpen` — never a copy).
@@ -264,6 +290,7 @@ export function DelegationCardRow({
                   group={section.group}
                   onOpen={onOpen}
                   onCancel={onCancel}
+                  onInspect={onInspect}
                 />
               ))}
               {hidden > 0 &&

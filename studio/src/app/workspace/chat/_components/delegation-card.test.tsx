@@ -365,4 +365,27 @@ describe("MessageBubble delegation row", () => {
     fireEvent.click(screen.getByRole("button", { name: "Open parallel only" }));
     expect(onOpen).toHaveBeenCalledWith(branch, group);
   });
+
+  it("offers Inspect on a card with a child session id and threads it from the bubble", () => {
+    const onInspect = vi.fn();
+    render(
+      <MessageBubble
+        message={assistant({
+          delegations: [
+            card({ childId: "subagent-1", stop: "end_turn" }),
+            // A branch before its branch_end has no session yet: no Inspect.
+            card({ kind: "parallel", label: "pending", branchIndex: 0 }),
+          ],
+        })}
+        onInspectDelegation={onInspect}
+      />,
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Inspect subagent explore" }),
+    );
+    expect(onInspect).toHaveBeenCalledWith("subagent-1", "subagent: explore");
+    expect(
+      screen.queryByRole("button", { name: "Inspect parallel pending" }),
+    ).toBeNull();
+  });
 });

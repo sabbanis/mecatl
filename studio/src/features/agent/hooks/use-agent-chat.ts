@@ -37,6 +37,7 @@ import {
   type SessionPermissionMode,
   type SessionTranscript,
 } from "@/lib/protocol";
+import { changedFileFromToolCall } from "@/lib/tool-summary";
 import {
   enqueueAsk,
   formatVerdictNotice,
@@ -325,7 +326,9 @@ function messagesFromTranscript(transcript: SessionTranscript): AgentMessage[] {
               callId: call.id,
               name: call.name,
               input: call.args,
+              rawArgs: call.args || undefined,
               file: fileFromToolCall(call.name, call.args),
+              changedPath: changedFileFromToolCall(call.name, call.args),
               status: "completed" as const,
             }))
           : undefined,
@@ -342,6 +345,7 @@ function messagesFromTranscript(transcript: SessionTranscript): AgentMessage[] {
       );
       if (call) {
         call.output = result.content;
+        call.parts = result.parts;
         call.isError = result.isError;
         call.status = result.isError ? "failed" : "completed";
         break;
@@ -475,6 +479,7 @@ export function reduceWatchEvent(
             input: event.input,
             rawArgs: event.rawArgs,
             file: event.file,
+            changedPath: event.changedPath,
             status: "running" as const,
           },
         ],
@@ -493,6 +498,7 @@ export function reduceWatchEvent(
               ? {
                   ...call,
                   output: event.output,
+                  parts: event.parts,
                   isError: event.isError,
                   status: event.isError
                     ? ("failed" as const)
@@ -1455,6 +1461,7 @@ export function useAgentChat(
               input: event.input,
               rawArgs: event.rawArgs,
               file: event.file,
+              changedPath: event.changedPath,
               status: "running",
             };
             patch((message) => ({
@@ -1471,6 +1478,7 @@ export function useAgentChat(
                   ? {
                       ...call,
                       output: event.output,
+                      parts: event.parts,
                       isError: event.isError,
                       status: event.isError ? "failed" : "completed",
                     }

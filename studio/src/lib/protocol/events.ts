@@ -7,6 +7,7 @@
 
 import type {
   EventContent,
+  EventContentBlock,
   EventUsage,
   ParallelEventPayload,
   Event as SdkEvent,
@@ -26,8 +27,10 @@ import type {
   TeamFindingInfo,
   TeamMemberDispositionInfo,
   TeamTaskInfo,
+  ToolResultPart,
 } from "@/features/agent/types";
 import { fileFromToolCall } from "@/lib/file-meta";
+import { changedFileFromToolCall } from "@/lib/tool-summary";
 
 /** Renders a tool's JSON args as a compact `key: value · key: value` line. */
 function prettyArgs(raw?: string): string {
@@ -115,6 +118,46 @@ function decodeSteerParts(
     });
   }
   return decoded.length > 0 ? decoded : undefined;
+}
+
+// Tool-result content blocks (proto ContentBlock.Kind): IMAGE=2 and
+// RESOURCE_LINK=4 render as artifact parts on the card; TEXT=1 is already
+// folded into `content`, and every other kind (audio, embedded resource,
+// unspecified) is not rendered.
+const BLOCK_KIND_IMAGE = 2;
+const BLOCK_KIND_RESOURCE_LINK = 4;
+
+/**
+ * Decodes a tool result's non-text blocks into the card's `parts`: an image
+ * block's bytes as base64 (the renderer builds the data: URL, gated on a
+ * raster MIME type) and a resource link's url/name/title. Shared by the live
+ * `tool.result` translation and the transcript projection so history and
+ * the stream agree. Undefined when nothing renderable is carried.
+ */
+export function decodeResultParts(
+  blocks: readonly EventContentBlock[] | undefined,
+): ToolResultPart[] | undefined {
+  if (!blocks?.length) return undefined;
+  const parts: ToolResultPart[] = [];
+  for (const block of blocks) {
+    if (block.kind === BLOCK_KIND_IMAGE) {
+      if (!block.data?.length) continue;
+      parts.push({
+        kind: "image",
+        mimeType: block.mimeType ?? "",
+        data: bytesToBase64(block.data),
+      });
+    } else if (block.kind === BLOCK_KIND_RESOURCE_LINK) {
+      if (!block.url) continue;
+      parts.push({
+        kind: "resource_link",
+        url: block.url,
+        name: block.name ?? "",
+        title: block.title || undefined,
+      });
+    }
+  }
+  return parts.length > 0 ? parts : undefined;
 }
 
 const routingDetail = (
@@ -280,6 +323,10 @@ function translateEventBody(event: SdkEvent, sessionId: string): StreamEvent[] {
           // drill-down panel can pretty-print it during a live run.
           rawArgs: call.args || undefined,
           file: fileFromToolCall(call.name, call.args || undefined),
+          changedPath: changedFileFromToolCall(
+            call.name,
+            call.args || undefined,
+          ),
         },
       ];
     }
@@ -291,6 +338,7 @@ function translateEventBody(event: SdkEvent, sessionId: string): StreamEvent[] {
           callId: result.callId,
           output: result.content,
           isError: result.isError,
+          parts: decodeResultParts(result.blocks),
         },
       ];
     }
