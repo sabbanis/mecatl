@@ -224666,6 +224666,40 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789652696787,
         "tool": "customBiggerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "4377202+samuv@users.noreply.github.com",
+            "name": "Samuele V",
+            "username": "samuv"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0bf37d08bfe0934ab5fa3caa1dd121624ca323b0",
+          "message": "feat(sdk): add run-ID-addressed controls (#1642)\n\nSigned-off-by: Samuele Verzi <samu@stacklok.com>\nCo-authored-by: OpenAI Codex <codex@openai.com>",
+          "timestamp": "2026-09-17T16:44:46+02:00",
+          "tree_id": "0d9a02ab80c68cd20abb9bc9a36f385bfaa7b426",
+          "url": "https://github.com/stacklok/mecatl/commit/0bf37d08bfe0934ab5fa3caa1dd121624ca323b0"
+        },
+        "date": 1789656972107,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
       }
     ],
     "mecatl scenarios (render allocs, advisory)": [
@@ -326145,6 +326179,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789656969212,
+  "lastUpdate": 1789656973335,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
