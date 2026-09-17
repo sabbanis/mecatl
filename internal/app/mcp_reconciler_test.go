@@ -248,7 +248,7 @@ func TestMCPSourceReconciliation_Scenario1_ProductionTriggerMatrix(t *testing.T)
 	})
 }
 
-func TestADR_0345_ReconciliationBoundsConsentAndShutdown(t *testing.T) {
+func TestADR_0346_ReconciliationBoundsConsentAndShutdown(t *testing.T) {
 	if maxMCPReconcileSources <= 0 || maxMCPReconcileServers <= 0 || maxMCPActiveListEntries <= 0 || maxMCPCandidatePages <= 0 || maxMCPCandidateBytes <= 0 || maxMCPRetainedRuntimes <= 0 || maxMCPReconcileCycleDuration <= 0 {
 		t.Fatal("every reconciliation dimension must have an independent finite bound")
 	}

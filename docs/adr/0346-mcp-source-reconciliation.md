@@ -1,4 +1,4 @@
-# ADR 0345 — Reconcile stale direct MCP source snapshots
+# ADR 0346 — Reconcile stale direct MCP source snapshots
 
 - Status: Proposed
 - Date: 2026-09-16
