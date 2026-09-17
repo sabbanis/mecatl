@@ -37,9 +37,15 @@ const EMPTY_FOOTPRINT: MemoryStoreFootprint = {
  * A daemon running with `--no-user-model` answers the index read with an
  * error; that is a distinct DISABLED state, rendered as such — never as
  * placeholder content.
+ *
+ * `isLoading` stays true while the runtime is still CONNECTING: the index
+ * read cannot start before the probe settles, and an empty `entries` in that
+ * window is "not read yet", never "the store is empty" — the detail page
+ * declared a fact missing (and 404ed) on exactly that first render. Only an
+ * OFFLINE runtime reports not-loading, because nothing is in flight.
  */
 export function useAgentMemory() {
-  const { connected } = useRuntimeStatus();
+  const { connected, state } = useRuntimeStatus();
   const [entries, setEntries] = useState<MemoryEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [disabledReason, setDisabledReason] = useState<string | null>(null);
@@ -90,7 +96,7 @@ export function useAgentMemory() {
 
   return {
     entries,
-    isLoading: isLoading && connected,
+    isLoading: isLoading && state !== "offline",
     refresh,
     isSupported: disabledReason === null,
     /** Why the user model is unavailable (e.g. --no-user-model), when it is. */

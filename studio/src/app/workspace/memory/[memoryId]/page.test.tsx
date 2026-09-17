@@ -1,4 +1,4 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resetHarnessClient } from "@/lib/harness/sdk";
 import {
@@ -16,18 +16,19 @@ import MemoryDetailPage from "./page";
  * unavailable from this store/driver. It stays read-only (memory rule 8).
  */
 
-const { params } = vi.hoisted(() => ({
+const { params, runtime, routerPush } = vi.hoisted(() => ({
   params: { memoryId: "prefers-tabs" },
+  /** The runtime probe's state; tests flip it to cover the connecting
+   *  window and an unreachable daemon. Reset to connected after each. */
+  runtime: {
+    state: "connected" as "connecting" | "connected" | "offline",
+  },
+  routerPush: vi.fn(),
 }));
 
 vi.mock("next/navigation", () => ({
   useParams: () => params,
-  useRouter: () => ({ push: vi.fn() }),
-  notFound: vi.fn(() => {
-    throw Object.assign(new Error("NEXT_NOT_FOUND"), {
-      digest: "NEXT_NOT_FOUND",
-    });
-  }),
+  useRouter: () => ({ push: routerPush }),
 }));
 
 // The real memory hooks over the stubbed SDK path; only the runtime status
@@ -42,13 +43,16 @@ vi.mock("@/features/agent", async () => {
 
 vi.mock("@/features/agent/runtime-status", () => ({
   useRuntimeStatus: () => ({
-    connected: true,
+    state: runtime.state,
+    connected: runtime.state === "connected",
     features: new Set<string>(),
     serverCapabilities: {},
   }),
 }));
 
 afterEach(async () => {
+  runtime.state = "connected";
+  routerPush.mockReset();
   vi.unstubAllGlobals();
   await resetHarnessClient();
 });
@@ -209,5 +213,41 @@ describe("memory detail page", () => {
       ),
     ).toBeInTheDocument();
     expect(screen.queryByRole("textbox")).toBeNull();
+  });
+
+  it("treats the connecting window as loading, never as a missing fact", () => {
+    // The runtime probe has not settled, so no index read has gone out and
+    // an empty index means "not read yet". This first render used to reach
+    // Next's terminal notFound() and 404 the route on every fresh load.
+    runtime.state = "connecting";
+    const stub = stubDaemon(DETAIL);
+    render(<MemoryDetailPage />);
+    expect(screen.getByText("Loading…")).toBeInTheDocument();
+    expect(screen.queryByText("Memory not found")).toBeNull();
+    expect(stub.requests).toHaveLength(0);
+  });
+
+  it("reports a fact the settled index lacks as missing, in-page and recoverable", async () => {
+    stubHarnessFetch(() => ({ ...INDEX, entries: [] }));
+    render(<MemoryDetailPage />);
+    expect(await screen.findByText("Memory not found")).toBeInTheDocument();
+    expect(
+      screen.getByText(/the agent may have forgotten or renamed it\./),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Back to Memory" }));
+    expect(routerPush).toHaveBeenCalledWith("/workspace/settings/memory");
+  });
+
+  it("names an unreachable daemon instead of claiming the fact is gone", () => {
+    runtime.state = "offline";
+    const stub = stubDaemon(DETAIL);
+    render(<MemoryDetailPage />);
+    expect(screen.getByText("Memory not found")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Studio can't reach the daemon, so this fact can't be looked up right now.",
+      ),
+    ).toBeInTheDocument();
+    expect(stub.requests).toHaveLength(0);
   });
 });

@@ -15,15 +15,25 @@ import { useAgentMemory, useMemoryEntryDetail } from "./use-agent-memory";
  * the key no longer matches, and the typed --no-user-model refusal.
  */
 
+const { runtime } = vi.hoisted(() => ({
+  /** The runtime probe's state; tests flip it to cover the connecting
+   *  window and an unreachable daemon. Reset to connected after each. */
+  runtime: {
+    state: "connected" as "connecting" | "connected" | "offline",
+  },
+}));
+
 vi.mock("../runtime-status", () => ({
   useRuntimeStatus: () => ({
-    connected: true,
+    state: runtime.state,
+    connected: runtime.state === "connected",
     features: new Set<string>(),
     serverCapabilities: {},
   }),
 }));
 
 afterEach(async () => {
+  runtime.state = "connected";
   vi.unstubAllGlobals();
   await resetHarnessClient();
 });
@@ -96,6 +106,28 @@ describe("useAgentMemory store footprint", () => {
       sizeBytes: 0,
       sha256: "",
     });
+  });
+
+  it("reports loading while the runtime is still connecting, before any read", () => {
+    // The index read waits for the probe to settle; an empty `entries` in
+    // that window is "not read yet", not "the store is empty" — a detail
+    // page that treated it as empty 404ed on every fresh load.
+    runtime.state = "connecting";
+    const stub = stubHarnessFetch(() => INDEX);
+    const { result } = renderHook(() => useAgentMemory());
+    expect(result.current.isLoading).toBe(true);
+    expect(result.current.harnessLive).toBe(false);
+    expect(result.current.entries).toEqual([]);
+    expect(stub.requests).toHaveLength(0);
+  });
+
+  it("reports not-loading offline: nothing is in flight", () => {
+    runtime.state = "offline";
+    const stub = stubHarnessFetch(() => INDEX);
+    const { result } = renderHook(() => useAgentMemory());
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.isSupported).toBe(true);
+    expect(stub.requests).toHaveLength(0);
   });
 });
 
