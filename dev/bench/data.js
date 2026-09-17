@@ -221386,6 +221386,40 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789634458295,
         "tool": "customBiggerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jakub@stacklok.com",
+            "name": "Jakub Hrozek",
+            "username": "jhrozek"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5a47fdf098af7810761125185cb18873a946f49d",
+          "message": "fix(app): give custom-provider context-window failures an actionable message (#1646)\n\nCo-authored-by: mecatl <noreply@mecatl.dev>",
+          "timestamp": "2026-09-17T10:31:13+02:00",
+          "tree_id": "f25b6a4eb1f046f29f74ad03f0ea61f1dbdf64e4",
+          "url": "https://github.com/stacklok/mecatl/commit/5a47fdf098af7810761125185cb18873a946f49d"
+        },
+        "date": 1789635114039,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
       }
     ],
     "mecatl scenarios (render allocs, advisory)": [
@@ -321335,6 +321369,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789635111565,
+  "lastUpdate": 1789635115395,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
