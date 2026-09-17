@@ -223354,6 +223354,40 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789645551131,
         "tool": "customBiggerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "danbarr@users.noreply.github.com",
+            "name": "Dan Barr",
+            "username": "danbarr"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "853ed2b06fa05462aa51992c902a69973fad2bcf",
+          "message": "fix(mecatui): clarify trust and memory copy (#1656)\n\nCo-authored-by: Dan Barr <6922515+danbarr@users.noreply.github.com>\nCo-authored-by: mecatl <noreply@mecatl.dev>\nCo-authored-by: Jakub Hrozek <jakub.hrozek@posteo.se>",
+          "timestamp": "2026-09-17T08:52:30-04:00",
+          "tree_id": "1a4b6fd31ef1ff152166a382d5450a60691d3a6b",
+          "url": "https://github.com/stacklok/mecatl/commit/853ed2b06fa05462aa51992c902a69973fad2bcf"
+        },
+        "date": 1789650238634,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
       }
     ],
     "mecatl scenarios (render allocs, advisory)": [
@@ -324221,6 +324255,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789650235654,
+  "lastUpdate": 1789650239573,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
