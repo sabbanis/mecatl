@@ -227290,6 +227290,40 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789744119565,
         "tool": "customBiggerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jakub@stacklok.com",
+            "name": "Jakub Hrozek",
+            "username": "jhrozek"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d2200abcefcf8924ff66f5191048a60d9e9ac2a5",
+          "message": "feat(mecated): streamline direct MCP OAuth onboarding (#1689)\n\nCo-authored-by: mecatl <noreply@mecatl.dev>",
+          "timestamp": "2026-09-18T17:15:46+02:00",
+          "tree_id": "025c0f7880c0b55a0e9f8f40735ccb8a5b7db48c",
+          "url": "https://github.com/stacklok/mecatl/commit/d2200abcefcf8924ff66f5191048a60d9e9ac2a5"
+        },
+        "date": 1789745229224,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
       }
     ],
     "mecatl scenarios (render allocs, advisory)": [
@@ -329993,6 +330027,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789745226524,
+  "lastUpdate": 1789745229840,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
