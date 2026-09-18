@@ -226634,6 +226634,40 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789722378408,
         "tool": "customBiggerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "4377202+samuv@users.noreply.github.com",
+            "name": "Samuele V",
+            "username": "samuv"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "23adf32da9d843c310a5e93b93ad8a15b70abc74",
+          "message": "fix(site): restore mobile navigation drawer (#1704)\n\nSigned-off-by: Samuele Verzi <samu@stacklok.com>",
+          "timestamp": "2026-09-18T15:27:56+02:00",
+          "tree_id": "bee344ae9bceb9e03db17b59a6a32907d2db45d4",
+          "url": "https://github.com/stacklok/mecatl/commit/23adf32da9d843c310a5e93b93ad8a15b70abc74"
+        },
+        "date": 1789738698334,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
       }
     ],
     "mecatl scenarios (render allocs, advisory)": [
@@ -329031,6 +329065,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789738695789,
+  "lastUpdate": 1789738698925,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
