@@ -251671,6 +251671,45 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789744123413,
         "tool": "customSmallerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jakub@stacklok.com",
+            "name": "Jakub Hrozek",
+            "username": "jhrozek"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d2200abcefcf8924ff66f5191048a60d9e9ac2a5",
+          "message": "feat(mecated): streamline direct MCP OAuth onboarding (#1689)\n\nCo-authored-by: mecatl <noreply@mecatl.dev>",
+          "timestamp": "2026-09-18T17:15:46+02:00",
+          "tree_id": "025c0f7880c0b55a0e9f8f40735ccb8a5b7db48c",
+          "url": "https://github.com/stacklok/mecatl/commit/d2200abcefcf8924ff66f5191048a60d9e9ac2a5"
+        },
+        "date": 1789745232662,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3316.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 111.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1155,
+            "unit": "allocs/op"
+          }
+        ]
       }
     ],
     "mecatl scenarios (smaller-is-better)": [
@@ -330027,6 +330066,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789745229840,
+  "lastUpdate": 1789745233393,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
