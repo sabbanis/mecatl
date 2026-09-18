@@ -250937,6 +250937,45 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789722381757,
         "tool": "customSmallerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "4377202+samuv@users.noreply.github.com",
+            "name": "Samuele V",
+            "username": "samuv"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "23adf32da9d843c310a5e93b93ad8a15b70abc74",
+          "message": "fix(site): restore mobile navigation drawer (#1704)\n\nSigned-off-by: Samuele Verzi <samu@stacklok.com>",
+          "timestamp": "2026-09-18T15:27:56+02:00",
+          "tree_id": "bee344ae9bceb9e03db17b59a6a32907d2db45d4",
+          "url": "https://github.com/stacklok/mecatl/commit/23adf32da9d843c310a5e93b93ad8a15b70abc74"
+        },
+        "date": 1789738701645,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3303,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 95,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1155,
+            "unit": "allocs/op"
+          }
+        ]
       }
     ],
     "mecatl scenarios (smaller-is-better)": [
@@ -329065,6 +329104,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789738698925,
+  "lastUpdate": 1789738702277,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
