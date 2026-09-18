@@ -225978,6 +225978,40 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789717287095,
         "tool": "customBiggerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "4377202+samuv@users.noreply.github.com",
+            "name": "Samuele V",
+            "username": "samuv"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4c31f11e0b33ea276463df59a535bbeadc3ffda0",
+          "message": "feat(sdk): expose MCP workspace enrollment (#1690)\n\nSigned-off-by: Samuele Verzi <samu@stacklok.com>\nCo-authored-by: Codex <codex@openai.com>",
+          "timestamp": "2026-09-18T10:20:16+02:00",
+          "tree_id": "934b5d8fae45afed040eb1dfbb3eaec2a7972fec",
+          "url": "https://github.com/stacklok/mecatl/commit/4c31f11e0b33ea276463df59a535bbeadc3ffda0"
+        },
+        "date": 1789720301937,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
       }
     ],
     "mecatl scenarios (render allocs, advisory)": [
@@ -328069,6 +328103,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789720299027,
+  "lastUpdate": 1789720302688,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
