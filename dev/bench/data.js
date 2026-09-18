@@ -252038,6 +252038,45 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789745232662,
         "tool": "customSmallerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "4377202+samuv@users.noreply.github.com",
+            "name": "Samuele V",
+            "username": "samuv"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "ad1cfe3c89a640905b88fb69f9905df498ba5c9c",
+          "message": "plan: TypeScript SDK MCP authorization lifecycle (#1687)\n\nSigned-off-by: Samuele Verzi <samu@stacklok.com>",
+          "timestamp": "2026-09-18T17:26:35+02:00",
+          "tree_id": "4a2b2402e505e69401ea6007f4343010a940ac8f",
+          "url": "https://github.com/stacklok/mecatl/commit/ad1cfe3c89a640905b88fb69f9905df498ba5c9c"
+        },
+        "date": 1789745916117,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3290.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 73,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1154,
+            "unit": "allocs/op"
+          }
+        ]
       }
     ],
     "mecatl scenarios (smaller-is-better)": [
@@ -330508,6 +330547,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789745913522,
+  "lastUpdate": 1789745916741,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
