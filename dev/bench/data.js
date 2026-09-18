@@ -226306,6 +226306,40 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789720301937,
         "tool": "customBiggerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "4377202+samuv@users.noreply.github.com",
+            "name": "Samuele V",
+            "username": "samuv"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d1b659c1fe99bb9d5b5d8486c04b00d8edfe7b5a",
+          "message": "fix(sdk): decode daemon HTTP timestamp and duration objects (#1686)\n\nSigned-off-by: Samuele Verzi <samu@stacklok.com>",
+          "timestamp": "2026-09-18T10:54:49+02:00",
+          "tree_id": "b56bc8a311e3582605c9870a7bd49eb20929e973",
+          "url": "https://github.com/stacklok/mecatl/commit/d1b659c1fe99bb9d5b5d8486c04b00d8edfe7b5a"
+        },
+        "date": 1789722378408,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
       }
     ],
     "mecatl scenarios (render allocs, advisory)": [
@@ -328550,6 +328584,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789722375535,
+  "lastUpdate": 1789722379132,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
