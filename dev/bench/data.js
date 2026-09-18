@@ -250570,6 +250570,45 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789720305635,
         "tool": "customSmallerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "4377202+samuv@users.noreply.github.com",
+            "name": "Samuele V",
+            "username": "samuv"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d1b659c1fe99bb9d5b5d8486c04b00d8edfe7b5a",
+          "message": "fix(sdk): decode daemon HTTP timestamp and duration objects (#1686)\n\nSigned-off-by: Samuele Verzi <samu@stacklok.com>",
+          "timestamp": "2026-09-18T10:54:49+02:00",
+          "tree_id": "b56bc8a311e3582605c9870a7bd49eb20929e973",
+          "url": "https://github.com/stacklok/mecatl/commit/d1b659c1fe99bb9d5b5d8486c04b00d8edfe7b5a"
+        },
+        "date": 1789722381757,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3317,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 110.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1155,
+            "unit": "allocs/op"
+          }
+        ]
       }
     ],
     "mecatl scenarios (smaller-is-better)": [
@@ -328584,6 +328623,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789722379132,
+  "lastUpdate": 1789722382511,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
