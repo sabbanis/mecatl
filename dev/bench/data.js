@@ -227618,6 +227618,40 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789745229224,
         "tool": "customBiggerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "4377202+samuv@users.noreply.github.com",
+            "name": "Samuele V",
+            "username": "samuv"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": false,
+          "id": "ad1cfe3c89a640905b88fb69f9905df498ba5c9c",
+          "message": "plan: TypeScript SDK MCP authorization lifecycle (#1687)\n\nSigned-off-by: Samuele Verzi <samu@stacklok.com>",
+          "timestamp": "2026-09-18T17:26:35+02:00",
+          "tree_id": "4a2b2402e505e69401ea6007f4343010a940ac8f",
+          "url": "https://github.com/stacklok/mecatl/commit/ad1cfe3c89a640905b88fb69f9905df498ba5c9c"
+        },
+        "date": 1789745912775,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
       }
     ],
     "mecatl scenarios (render allocs, advisory)": [
@@ -330474,6 +330508,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789745910184,
+  "lastUpdate": 1789745913522,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
