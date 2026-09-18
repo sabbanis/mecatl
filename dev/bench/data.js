@@ -226962,6 +226962,40 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789738698334,
         "tool": "customBiggerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "eb501d4640efb7870ac86a9970fcdcfce5dd8246",
+          "message": "chore(ci): bump the actions-minor-patch group across 1 directory with 5 updates (#1705)\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-09-18T16:57:25+02:00",
+          "tree_id": "d072839d070bc1260282d5014d0ee01aa28a1d8e",
+          "url": "https://github.com/stacklok/mecatl/commit/eb501d4640efb7870ac86a9970fcdcfce5dd8246"
+        },
+        "date": 1789744119565,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
       }
     ],
     "mecatl scenarios (render allocs, advisory)": [
@@ -329512,6 +329546,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789744116792,
+  "lastUpdate": 1789744120764,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
