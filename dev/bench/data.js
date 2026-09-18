@@ -225650,6 +225650,40 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789672878339,
         "tool": "customBiggerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "aponcedeleonch@stacklok.com",
+            "name": "Alejandro Ponce de Leon",
+            "username": "aponcedeleonch"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2eba2cc2737a0362588520ab06a51c6da16c2544",
+          "message": "feat(provider): ask for the prompt cache through the protocol, not the vendor (ADR 0346) (#1573)\n\nCo-authored-by: Claude Opus 5 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-09-18T10:29:50+03:00",
+          "tree_id": "3a4265299e77f2b00a77b2e19278bd18c46435b5",
+          "url": "https://github.com/stacklok/mecatl/commit/2eba2cc2737a0362588520ab06a51c6da16c2544"
+        },
+        "date": 1789717287095,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
       }
     ],
     "mecatl scenarios (render allocs, advisory)": [
@@ -327588,6 +327622,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1789717282761,
+  "lastUpdate": 1789717288414,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
