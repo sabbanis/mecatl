@@ -1220,6 +1220,15 @@ export function useAgentChat(
     // Likewise a browser authorization seen in replay that nothing resolved:
     // the run is parked on it, so the takeover card shows at the boundary.
     let parkedAuthorization: AuthorizationRequest | null = null;
+    // Whether the most recent run named in the replay has reached its
+    // terminal `run_result` yet. `watchable` (the inventory's running/
+    // awaiting) is a poll snapshot, not a durable fact — this tab's OWN
+    // prompt stream can complete a run and settle to idle before that poll
+    // catches up, so a stale "running" row still re-attaches this watch (its
+    // guard only checks the instantaneous `drivingRef`, already cleared by
+    // then). The replay is authoritative: if it already contains that run's
+    // `run_result`, the run is genuinely over, whatever the inventory says.
+    let runInProgress = false;
     const surfaceAuthorization = (request: AuthorizationRequest) => {
       // The continuation renders into the parked turn's bubble when the
       // rebuild has one; otherwise the recheck opens a fresh bubble.
@@ -1279,12 +1288,22 @@ export function useAgentChat(
             flush();
             if (parkedAsks.length) showParkedAsks();
             if (parkedAuthorization) surfaceAuthorization(parkedAuthorization);
+            if (!parkedAsks.length && !parkedAuthorization && !runInProgress) {
+              // Nothing pending and the replay's own last run already
+              // reached its terminal: the mount-time "streaming" guess was
+              // stale (see `runInProgress`). Correct it now — no further
+              // live frame will ever arrive to do it for us.
+              setStatus("idle");
+            }
           }
           return;
         }
         // The LATEST run-bearing event names the current run (a replay spans
         // every earlier run of the session too).
-        if (event.runId) runIdRef.current = event.runId;
+        if (event.runId) {
+          runIdRef.current = event.runId;
+          runInProgress = true;
+        }
         switch (event.type) {
           case "approval":
             // A known askId is a re-surface, not a second ask; a new one
@@ -1406,6 +1425,8 @@ export function useAgentChat(
             break;
           case "run_result":
             rebuilt = reduceWatchEvent(rebuilt, event, nextId);
+            // Terminal whether replayed or live: that run is over.
+            runInProgress = false;
             if (live) {
               // The terminal result ends the watch; the normal
               // completed-state flow takes over from here.
