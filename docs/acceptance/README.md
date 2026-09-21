@@ -172,6 +172,10 @@ PR after verification. There is no cleanup or status-only PR.
   model-facing view of the existing resolved inventory, presenting exact
   `(provider_id, model_id)` selection handles without redesigning provider identity.
   Status: draft.
+- [Jev delegated-model router](jev-model-router.md) — proposes an explicitly selected,
+  bounded Jev decision backend behind the existing delegated-routing callback while
+  preserving taxonomy mapping, same-provider child construction, fallback, and usage flow.
+  Status: draft.
 - [Scalable reflection evidence](scalable-reflection-evidence.md) — one versioned,
   deterministic bounded-evidence materializer for automatic and explicit reflection,
   replacing raw retained-size rejection while preserving coordinator and promotion safety.
