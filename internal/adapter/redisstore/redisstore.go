@@ -36,6 +36,8 @@ package redisstore
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -111,11 +113,13 @@ var (
 // ToolCallRecorder. Every operation leases one replaceable client generation;
 // the manager lock is held only for acquisition/publication, never Redis I/O.
 type Store struct {
-	clients     *clientGenerations
-	reload      *reloadLifecycle
-	diagnostics port.Diagnostics
-	closeGrace  time.Duration
-	closeOnce   sync.Once
+	clients       *clientGenerations
+	followClients *clientGenerations
+	followers     *followerRegistry
+	reload        *reloadLifecycle
+	diagnostics   port.Diagnostics
+	closeGrace    time.Duration
+	closeOnce     sync.Once
 
 	metadataWorkObserver        func(metadataWorkKind)
 	migrationInspectionObserver func()
@@ -144,7 +148,13 @@ type Config struct {
 	// takes precedence when both are set.
 	TLS            bool
 	AllowPlaintext bool
-	Diagnostics    port.Diagnostics
+	// FollowPoolSize bounds the dedicated Redis connection pool used only for
+	// blocking event followers. Zero selects the production default of 32.
+	FollowPoolSize int
+	// MaxFollowers bounds concurrently admitted local event followers. Zero
+	// selects the production default of 32.
+	MaxFollowers int
+	Diagnostics  port.Diagnostics
 }
 
 // New connects to a plaintext, unauthenticated Redis broker. It is retained for
@@ -170,6 +180,10 @@ func newWithConfig(cfg Config, deps storeDependencies) (*Store, error) {
 	if err := validateAddr(cfg.Addr); err != nil {
 		return nil, err
 	}
+	followPoolSize, maxFollowers, err := effectiveFollowLimits(cfg)
+	if err != nil {
+		return nil, err
+	}
 	conn, err := connectionConfigWithReader(cfg, deps.readFile)
 	if err != nil {
 		return nil, err
@@ -186,27 +200,44 @@ func newWithConfig(cfg Config, deps storeDependencies) (*Store, error) {
 		// URL-shaped value that could carry a credential in its userinfo.
 		return nil, fmt.Errorf("redisstore: connect %q: %w", cfg.Addr, err)
 	}
+	followClient := client
+	if deps.dedicatedFollow {
+		followClient, err = newFollowClient(context.Background(), &conn, followPoolSize)
+		if err != nil {
+			_ = client.Close()
+			return nil, fmt.Errorf("redisstore: connect follow client %q: %w", cfg.Addr, err)
+		}
+	}
 	diagnostics := cfg.Diagnostics
 	if diagnostics == nil {
 		diagnostics = port.NopDiagnostics{}
 	}
 	st := &Store{
-		clients: newClientGenerations(client), diagnostics: diagnostics,
+		clients: newClientGenerations(client), followClients: newClientGenerations(followClient), followers: newFollowerRegistry(maxFollowers), diagnostics: diagnostics,
 		closeGrace: deps.closeGrace,
 	}
 	initClient, release, err := st.clients.acquire()
 	if err != nil {
 		_ = client.Close()
+		if followClient != client {
+			_ = followClient.Close()
+		}
 		return nil, err
 	}
 	if err := initializeMetadataIndex(context.Background(), initClient); err != nil {
 		release()
 		st.clients.close(deps.closeGrace)
+		if followClient != client {
+			_ = followClient.Close()
+		}
 		return nil, err
 	}
 	if err := initializeLineageIndex(context.Background(), initClient); err != nil {
 		release()
 		st.clients.close(deps.closeGrace)
+		if followClient != client {
+			_ = followClient.Close()
+		}
 		return nil, err
 	}
 	release()
@@ -256,7 +287,52 @@ func NewClient(cfg Config) (redis.UniversalClient, error) {
 	return client, nil
 }
 
-// validateAddr enforces host:port on EVERY path, secure and plaintext alike.
+const defaultFollowPoolSize = 32
+const defaultMaxFollowers = 32
+
+func effectiveFollowLimits(cfg Config) (int, int, error) {
+	poolSize, maxFollowers := cfg.FollowPoolSize, cfg.MaxFollowers
+	if poolSize == 0 {
+		poolSize = defaultFollowPoolSize
+	}
+	if maxFollowers == 0 {
+		maxFollowers = defaultMaxFollowers
+	}
+	if poolSize < 1 || maxFollowers < 1 || maxFollowers > poolSize {
+		return 0, 0, errors.New("redisstore: invalid follow capacity")
+	}
+	return poolSize, maxFollowers, nil
+}
+
+func newFollowClient(ctx context.Context, cfg *tcredis.Config, poolSize int) (redis.UniversalClient, error) {
+	opts := &redis.UniversalOptions{
+		Addrs: []string{cfg.Addr}, Username: cfg.Username, Password: cfg.Password, DB: cfg.DB,
+		DialTimeout: cfg.DialTimeout, ReadTimeout: cfg.ReadTimeout, WriteTimeout: cfg.WriteTimeout,
+		PoolSize: poolSize, MaxActiveConns: poolSize, IsClusterMode: cfg.ClusterMode,
+	}
+	if cfg.SentinelConfig != nil {
+		opts.Addrs = append([]string(nil), cfg.SentinelConfig.SentinelAddrs...)
+		opts.MasterName = cfg.SentinelConfig.MasterName
+	}
+	if cfg.TLS != nil {
+		tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12}
+		if len(cfg.TLS.CACert) != 0 {
+			roots := x509.NewCertPool()
+			if !roots.AppendCertsFromPEM(cfg.TLS.CACert) {
+				return nil, errors.New("redisstore: invalid Redis CA bundle")
+			}
+			tlsConfig.RootCAs = roots
+		}
+		opts.TLSConfig = tlsConfig
+	}
+	client := redis.NewUniversalClient(opts)
+	if err := client.Ping(ctx).Err(); err != nil {
+		_ = client.Close()
+		return nil, err
+	}
+	return client, nil
+}
+
 // Its errors never echo addr: an operator who passes a redis:// URL can embed a
 // password in the userinfo, and this error reaches the diagnostics log.
 func validateAddr(addr string) error {
@@ -723,12 +799,30 @@ func (st *Store) Ping(ctx context.Context) error {
 func (st *Store) Close() error {
 	st.closeOnce.Do(func() {
 		st.clients.rejectNew()
+		if st.followClients != nil {
+			st.followClients.rejectNew()
+		}
+		var followersDone <-chan struct{}
+		if st.followers != nil {
+			followersDone = st.followers.close()
+		} else {
+			done := make(chan struct{})
+			close(done)
+			followersDone = done
+		}
 		if st.reload != nil {
 			st.reload.Close()
 		}
 		if pending := st.clients.close(st.closeGrace); pending > 0 {
 			st.diagnostics.Log(context.Background(), port.LevelWarn, "redis store shutdown",
 				"component", "redis", "outcome", "timed_out", "reason", "active_operations", "count", pending)
+		}
+		select {
+		case <-followersDone:
+		case <-time.After(st.closeGrace):
+		}
+		if st.followClients != nil {
+			_ = st.followClients.close(st.closeGrace)
 		}
 	})
 	return nil

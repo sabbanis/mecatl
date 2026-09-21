@@ -569,14 +569,14 @@ tasks:
 
   deploy:check:
     desc: |
-      Validate the deploy/helm/mecak8s and deploy/helm/mecabroker charts WITHOUT a
-      cluster: `helm lint` the production fixtures, schema-check the rendered
-      manifests (mecak8s default + oidc.enabled=true; mecabroker production), and
-      assert the mecak8s caller-identity boundaries (ADR 0204). Needs helm +
-      kubeconform; needs NO cluster, so it runs in CI and on a laptop.
+      Validate the single deploy/helm/mecak8s chart WITHOUT a cluster: lint its
+      production fixtures, schema-check every rendered fixture, and assert the
+      mecak8s caller-identity boundaries. The chart always includes the singleton
+      broker, so secure renders supply both signed image digests and its TLS/CA
+      Secret names. Needs helm + kubeconform; needs NO cluster.
     vars:
-      PROD_SET: image.digest=sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef,redis.endpoint=redis.example.internal:6379,redis.credentialsSecret=redis-credentials,security.allowUnsafeRealProvider=true
-      SAFE_SET: image.digest=sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef,redis.endpoint=redis.example.internal:6379,redis.credentialsSecret=redis-credentials,tls.enabled=true,tls.secretName=mecak8s-tls,oidc.enabled=true,oidc.issuer=https://idp.example.com,oidc.audience=mecatl
+      PROD_SET: image.digest=sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef,broker.image.digest=sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210,broker.tls.secretName=mecabroker-tls,broker.clientCA.secretName=mecabroker-ca,redis.endpoint=redis.example.internal:6379,redis.credentialsSecret=redis-credentials,security.allowUnsafeRealProvider=true
+      SAFE_SET: image.digest=sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef,broker.image.digest=sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210,broker.tls.secretName=mecabroker-tls,broker.clientCA.secretName=mecabroker-ca,redis.endpoint=redis.example.internal:6379,redis.credentialsSecret=redis-credentials,tls.enabled=true,tls.secretName=mecak8s-tls,oidc.enabled=true,oidc.issuer=https://idp.example.com,oidc.audience=mecatl
     preconditions:
       - sh: command -v helm >/dev/null 2>&1
         msg: "helm is not installed (https://helm.sh/docs/intro/install/)"
@@ -586,55 +586,30 @@ tasks:
       - cmd: |
           set -eu
           helm lint deploy/helm/mecak8s --set '{{.PROD_SET}}'
-          helm lint deploy/helm/mecabroker -f deploy/helm/mecabroker/ci/production-values.yaml
-          helm dependency build deploy/helm/mecatl
-          helm lint deploy/helm/mecatl -f deploy/helm/mecatl/ci/managed-mcp-values.yaml
-          render_and_validate() {
-            name="$1"
-            shift
-            output=".scratch/deploy-${name}.yaml"
-            helm template "$name" deploy/helm/mecatl "$@" >"$output"
-            kubeconform -strict -summary - <"$output"
-          }
-          render_and_validate managed -f deploy/helm/mecatl/ci/managed-mcp-values.yaml
-          render_and_validate external -f deploy/helm/mecatl/ci/external-values.yaml
-        silent: true
-      # Render each fixture to a file before kubeconform: Helm failures must stop
-      # the task rather than being masked by a successful validator process. This
-      # covers template execution failures that `helm lint` can report only as INFO.
-      - cmd: |
-          set -eu
           for f in deploy/helm/mecak8s/ci/*-values.yaml; do
-            output=".scratch/deploy-component-$(basename "$f" .yaml).yaml"
-            helm template deploy/helm/mecak8s -f "$f" >"$output"
+            output=".scratch/deploy-$(basename "$f" .yaml).yaml"
+            helm template fixture deploy/helm/mecak8s -f "$f" >"$output"
             kubeconform -strict -summary - <"$output"
           done
-          output=.scratch/deploy-mecabroker-production.yaml
-          helm template production deploy/helm/mecabroker -f deploy/helm/mecabroker/ci/production-values.yaml >"$output"
-          kubeconform -strict -summary - <"$output"
         silent: true
       # Schema validation is kubeconform, NOT `kubectl apply --dry-run=client`:
       # kubectl maps kinds against the API server even with --validate=false, so
       # it needs a reachable cluster and cannot run here.
       - cmd: |
           set -eu
-          output=.scratch/deploy-mecak8s-production.yaml
-          helm template production deploy/helm/mecak8s --set '{{.PROD_SET}}' >"$output"
-          kubeconform -strict -summary - <"$output"
-          output=.scratch/deploy-mecak8s-safe.yaml
-          helm template production deploy/helm/mecak8s --set '{{.SAFE_SET}}' >"$output"
-          kubeconform -strict -summary - <"$output"
+          for profile in production safe; do
+            output=".scratch/deploy-mecak8s-${profile}.yaml"
+            sets='{{.PROD_SET}}'
+            [ "$profile" != safe ] || sets='{{.SAFE_SET}}'
+            helm template "$profile" deploy/helm/mecak8s --set "$sets" >"$output"
+            kubeconform -strict -summary - <"$output"
+          done
         silent: true
-      # The oidc-enabled render must carry every base arg alongside the oidc
-      # args: Helm composes ONE args: list template-side rather than
-      # JSON6902-patching an existing one, so the specific "did the patch drop
-      # args" failure mode is structurally less likely here — kept anyway, it's
-      # cheap and still guards a future refactor of the args block.
       - cmd: |
           set -eu
-          missing=""
           rendered=$(helm template production deploy/helm/mecak8s --set '{{.SAFE_SET}}')
-          for arg in --grpc-addr --http-addr --redis-url --session-lease-k8s-namespace --headless --posture --oidc-issuer --oidc-audience --oidc-max-jwks-staleness=1h; do
+          missing=""
+          for arg in --grpc-addr --http-addr --redis-url --redis-follow-pool-size --redis-max-followers --session-lease-k8s-namespace --headless --posture --oidc-issuer --oidc-audience --oidc-max-jwks-staleness=1h; do
             echo "$rendered" | grep -q -- "$arg" || missing="$missing $arg"
           done
           if [ -n "$missing" ]; then

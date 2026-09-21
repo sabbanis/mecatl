@@ -171,8 +171,8 @@ type closeIdleRoundTripper struct {
 	closed *bool
 }
 
-func (r closeIdleRoundTripper) RoundTrip(*http.Request) (*http.Response, error) { return nil, nil }
-func (r closeIdleRoundTripper) CloseIdleConnections()                           { *r.closed = true }
+func (closeIdleRoundTripper) RoundTrip(*http.Request) (*http.Response, error) { return nil, nil }
+func (r closeIdleRoundTripper) CloseIdleConnections()                         { *r.closed = true }
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 

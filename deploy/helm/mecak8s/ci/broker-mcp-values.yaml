@@ -1,14 +1,20 @@
-image:
-  digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-listener:
+mockProvider: true
+redis:
+  local:
+    enabled: true
+oidc:
+  enabled: true
+  issuer: https://identity.example.invalid
+  audience: mecak8s
+broker:
+  image:
+    digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
   tls:
     secretName: mecabroker-tls
-workloadJWT:
-  issuer: https://identity.example.invalid
-  jwksURI: https://identity.example.invalid/keys
-  subject: system:serviceaccount:mecatl:mecak8s
-callbackURL: https://broker.invalid/callback
-profiles: []
+  clientCA:
+    secretName: mecabroker-ca
+    key: ca.pem
+    serverName: production-mecak8s-broker
 mcp:
   broker:
     callbackURL: https://broker.example.invalid/oauth/complete
@@ -31,6 +37,3 @@ mcp:
           scopes: [repo]
           requestRefreshToken: true
           network: {additionalOrigins: [], privateOrigins: [], maxRedirects: 0}
-networkPolicy:
-  publicFrom: []
-  operatorEgress: []

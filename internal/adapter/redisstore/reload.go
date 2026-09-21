@@ -44,14 +44,15 @@ func readCredentialFile(file *os.File, maxBytes int64) ([]byte, error) {
 }
 
 type storeDependencies struct {
-	initialClient clientFactory
-	candidate     clientFactory
-	watcher       watcherFactory
-	backoff       func(int) time.Duration
-	jitter        func(time.Duration) time.Duration
-	readFile      credentialFileReader
-	closeGrace    time.Duration
-	joinGrace     time.Duration
+	initialClient   clientFactory
+	candidate       clientFactory
+	dedicatedFollow bool
+	watcher         watcherFactory
+	backoff         func(int) time.Duration
+	jitter          func(time.Duration) time.Duration
+	readFile        credentialFileReader
+	closeGrace      time.Duration
+	joinGrace       time.Duration
 }
 
 func defaultStoreDependencies() storeDependencies {
@@ -59,9 +60,9 @@ func defaultStoreDependencies() storeDependencies {
 		return tcredis.NewClient(ctx, cfg)
 	}
 	return storeDependencies{
-		initialClient: newClient,
-		candidate:     newClient,
-		watcher:       filewatch.New,
+		candidate:       newClient,
+		dedicatedFollow: true,
+		watcher:         filewatch.New,
 		jitter: func(delay time.Duration) time.Duration {
 			spread := delay / 4
 			if spread == 0 {
@@ -242,6 +243,11 @@ func reloadCandidate(ctx context.Context, st *Store, cfg Config, deps storeDepen
 	probeCtx, cancel := context.WithTimeout(ctx, reloadProbeTimeout)
 	defer cancel()
 	factory := deps.candidate
+	if factory == nil {
+		factory = func(ctx context.Context, conn *tcredis.Config) (redis.UniversalClient, error) {
+			return tcredis.NewClient(ctx, conn)
+		}
+	}
 	candidate, err := factory(probeCtx, &conn)
 	if err != nil {
 		return err
@@ -250,8 +256,37 @@ func reloadCandidate(ctx context.Context, st *Store, cfg Config, deps storeDepen
 		_ = candidate.Close()
 		return err
 	}
+	followCandidate := candidate
+	if deps.dedicatedFollow {
+		followPoolSize, _, err := effectiveFollowLimits(cfg)
+		if err != nil {
+			_ = candidate.Close()
+			return err
+		}
+		followCandidate, err = newFollowClient(probeCtx, &conn, followPoolSize)
+		if err != nil {
+			_ = candidate.Close()
+			return err
+		}
+		if err := probeCtx.Err(); err != nil {
+			_ = followCandidate.Close()
+			_ = candidate.Close()
+			return err
+		}
+	}
 	if err := st.clients.swap(candidate); err != nil {
+		if followCandidate != candidate {
+			_ = followCandidate.Close()
+		}
 		_ = candidate.Close()
+		return err
+	}
+	if err := st.followClients.swap(followCandidate); err != nil {
+		// The primary client is already live; close the replacement follow client
+		// rather than interrupting ordinary Redis operations.
+		if followCandidate != candidate {
+			_ = followCandidate.Close()
+		}
 		return err
 	}
 	return nil

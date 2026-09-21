@@ -32,32 +32,20 @@ retains the exact private EnvironmentRef needed for reattachment. Schedule fires
 that stored placement, and delegation cannot upgrade no-FS. A future remote filesystem
 provider can implement the same private Bind/Reattach contract without changing clients.
 
-## Umbrella installation (Phase 0)
+## One Helm release
 
-For a single release that owns the workloads, install the OCI-publishable `mecatl`
-umbrella chart. Its default `mode: managed` renders separate `mecak8s` and singleton
-`mecabroker` Deployments; the broker remains `Recreate` with one replica and the
-mecak8s ingress/network policy is unchanged. Set `mode: external` to render only
-mecak8s when the broker is operated by another release:
+`deploy/helm/mecak8s/` is the only Mecatl Helm chart. One release always creates the scalable `mecak8s` agent Deployment and one separate `mecabroker` Deployment. The broker is deliberately a singleton (`replicas: 1`, `Recreate`); it is present even with no OAuth route, where it is securely idle. There is no umbrella, external-broker mode, `remoteBroker`, or separately installable broker chart.
 
-```sh
-helm install mecatl oci://ghcr.io/stacklok/mecatl/charts/mecatl \
-  --set mode=external
-```
+The canonical MCP inputs are top-level `mcp.servers` and
+`mcp.broker.callbackURL`. Direct `none` and `staticBearer` servers run in the
+agent. If any server uses `auth.mode: oauth`, all configured routes are owned by
+the broker and the agent connects only to its in-release Service. Do not repeat
+routes in another values subtree.
 
-The parent owns the MCP input at `mcp.broker.callbackURL` and `mcp.servers` under
-`global.mecatl` (the values file is the chart's single input path). OAuth entries
-are rendered only into the managed broker; `none` and `staticBearer` entries stay
-with mecak8s. Secret references are passed through, never materialized as Helm
-values. Do not repeat MCP entries under either child chart. External mode rejects
-brokered OAuth and callback configuration because this Phase-0 chart does not
-adopt another release or transfer live OAuth state. Switching releases/modes is an
-operator migration: existing grants and in-flight authorizations remain owned by
-their original broker process.
-
-The `mecak8s` and `mecabroker` charts remain supported as standalone installation
-APIs. Pin image digests and provide the existing TLS/JWT and operator egress values
-for production; the umbrella does not weaken those validations.
+The operator must create the broker serving-key Secret (`broker.tls`, default
+`mecabroker-tls`) and the PEM CA Secret used by the agent (`broker.clientCA`,
+default `mecabroker-ca`) before every install, including an idle broker. The
+chart does not create a Certificate, Issuer, or cert-manager dependency.
 
 
 The chart runs a plaintext, Pod-only drain listener on port 8082. Kubernetes calls
@@ -281,9 +269,11 @@ The `redisstore` adapter reuses `sessnap.Marshal`/`Unmarshal` — the same snaps
 It creates no Redis StatefulSet.
 Set an external Redis endpoint.
 Set a credentials Secret reference when a configured key needs reading.
-The image defaults to `v<chart-version>`.
-This default keeps ranged Helm upgrades aligned with released images.
-Secure production profiles require a lowercase `sha256:` image digest; the explicit unsafe development posture may use a tag, except that any configured `remoteBroker` still requires a digest.
+Both `image` and `broker.image` independently accept a tag or a lowercase
+`sha256:` digest; leaving both selectors empty uses `v<chart-version>`.
+Published release chart artifacts pin both images by digest. Pin digests for
+reproducible production deployments; this is a recommendation, not a universal
+chart requirement.
 A real-provider deployment (`mockProvider: false`) has three explicit postures.
 In-pod TLS with OIDC.
 Edge-terminated TLS with `security.tlsTerminatedUpstream=true`, OIDC, and `tls.enabled=false` for a `ClusterIP` plaintext h2c backend.
@@ -297,8 +287,8 @@ Any workload that can reach the Service ClusterIP can read that token and replay
 The chart renders a default-deny ingress policy. Configure `networkPolicy.publicFrom`
 for gateway/workload peers. Egress restriction is deployment/platform-owned (CNI,
 service mesh, or egress gateway), not inferred or enforced by this chart.
-The explicit unsafe posture is still a development/trusted-mesh exception, not
-a bypass of digest enforcement when `remoteBroker` is configured.
+The explicit unsafe posture is still a development/trusted-mesh exception; image
+selection does not replace caller authentication or transport security.
 The upstream value is an attestation, not chart enforcement: nothing in the chart verifies gateway TLS, reachability, or token forwarding.
 The gateway must forward the original bearer token rather than use forwarded-identity authentication, and publish a `GRPCRoute` only—never public-route `/drain`, `/healthz`, or `/readyz`.
 The chart creates no Gateway, Route, or Certificate either; use an operator-owned `BackendTLSPolicy` or in-pod TLS for gateway-to-pod re-encryption.
@@ -406,10 +396,12 @@ Server cert/key and file-backed Redis CA/ACL Secret rotations are transactional 
 the last valid generation if projection is partial or validation fails. Keep old and new
 CAs together for an overlap period, then remove the old one after leaves have rotated.
 The server client-CA trust pool remains static and changing it requires a rolling restart.
-When broker mode is also configured, its embedded OAuth authorization server opens its
-own separate Redis connection using the same credential files but does not watch or
-reload them — a rotation requires restarting the pod for that connection to pick up the
-new credentials, even though readiness (driven by the main session store) stays healthy.
+These reload guarantees apply to the agent's server TLS and Redis session-store
+connection, not the standalone broker. The legacy embedded broker construction
+had a separate Redis connection for ToolHive's inner authorization/pending state;
+it did not reload those credentials. The current `cmd/mecabroker` singleton wires
+no Redis connection and keeps both inner and outer broker state in memory.
+Agent sessions and their event log remain Redis-backed.
 
 The Redis Secret is mounted read-only with `defaultMode: 0440` and projects exactly the configured CA and ACL keys; unrelated Secret keys are not exposed. A password key alone uses Redis's default ACL user, while a username key requires a password key. `caKey` is optional: leaving it empty selects system-trust TLS, so an install against a publicly-rooted managed Redis with no ACL renders `--redis-tls` and no Secret volume at all. `credentialsSecret` is required exactly when some key needs reading. TLS-without-ACL external deployments are valid. The rendered command receives paths only, never Secret values. `values-kind.yaml` is deliberately the only profile that permits `ko.local` and plaintext Redis, and it passes `--redis-allow-plaintext` explicitly. It is not a production configuration.
 
@@ -442,60 +434,72 @@ mcp:
           secretKeyRef: {name: mecak8s-mcp, key: github-token}
 ```
 
-When `remoteBroker` is configured, `mcp.servers` must contain only brokered OAuth entries. Direct
-`auth.mode: none` entries are rejected at Helm render time rather than being emitted as
-`--mcp-server` flags alongside generated `mcp.mode: broker`; remove the direct entry or omit
-`remoteBroker`. There is no combined authority mode, and direct entries are never silently dropped.
-OAuth route metadata in `mcp.servers` is consumed by the standalone broker release and is not
-rendered into the mecak8s operator profile. The chart does not mount OAuth client secrets or
-start an embedded OAuth authority. The remote transport derives brokered OAuth tools through the
-broker, so do not copy those OAuth routes into mecak8s's generated `settings.yaml`. The chart's
-typed `remoteBroker` values require `address`, `caSecret`, `caKey`, `serverName`, and
-`workloadJWT.audience`/`lifetimeSeconds` together. They render the equivalent of
-`--mcp-broker-address`, `--mcp-broker-token-file`, `--mcp-broker-tls-ca`, and
-`--mcp-broker-server-name`; there is no broker `extraEnv` escape hatch.
+OAuth routes use the in-release broker. Set `mcp.broker.callbackURL` to the public
+final browser callback and route that URL plus the fixed `/v1/mcp/broker/` prefix
+to the **broker** HTTPS Service—not the agent HTTP Service. The agent's internal
+broker target is derived from the broker Service; the TLS server name defaults to
+that Service's cluster DNS name and must match the broker certificate SAN. Its
+projected workload JWT has the configured `broker.workloadJWT.audience` and is
+separate from the ServiceAccount credential used for Kubernetes leases.
 
-The credential used from mecak8s to the broker is a **workload JWT**: a projected,
-read-only Kubernetes ServiceAccount token at `/var/run/secrets/mecatl-broker/token`,
-with the configured audience and lifetime. It is separate from the standard
-ServiceAccount credential used by mecak8s for the Kubernetes Lease API. The token file
-is reread for every broker RPC, so projected-token rotation does not require a pod
-restart. This terminology does not rename or replace inbound caller OIDC: the mecak8s
-`oidc.*` values still describe OIDC validation of clients calling mecak8s.
+OAuth supports issuer discovery, explicit OAuth2 authorization/token endpoints,
+DCR, and CIMD. CIMD requires an HTTPS document URL and may use issuer discovery or
+an explicit OAuth2 endpoint pair; DCR requires explicit OAuth2 endpoints. The broker
+applies the same protected-URL validation to the CIMD document as to other OAuth
+endpoints. The legacy OAuth `network` controls remain unsupported except for the
+explicit empty policy (`additionalOrigins: []`, `privateOrigins: []`,
+`maxRedirects: 0`); enforce non-default egress/origin policy in the platform.
 
-For a GitHub OAuth App's browser consent flow, use `auth.mode: oauth` with
-`upstream: {mode: oauth2, oauth2: {authorizationEndpoint, tokenEndpoint}}` instead of
-`issuer`—GitHub has no OIDC discovery endpoint—and optionally a static `tools` catalogue.
-OAuth selects the session MCP broker instead of global routing. One enrollment can cover
-multiple protected upstreams: ToolHive drives their sequential browser flow, owns callback
-state and refresh, and injects each upstream token only into its configured backend.
-Mecatl exposes one opaque enrollment, not per-backend controls or OAuth material.
+The broker remains a one-replica `Recreate` workload. Treat upgrades and changes
+to OAuth client Secrets as maintenance, explicitly restarting the broker after
+Secret projection. Browser callbacks, in-flight authorizations, and outer broker
+attachment state are not migrated; users must re-enroll after replacement.
+The standalone singleton currently keeps both ToolHive's inner authorization,
+pending, and token storage and the outer broker state in memory. Unlike the legacy
+embedded construction, it does not wire ToolHive's Redis storage. A broker restart
+is therefore a reauthorization boundary, even though agent sessions and their event
+log remain Redis-backed. Restoring inner Redis support in the standalone broker is
+an outstanding runtime limitation; migration compatibility is not complete.
+Rollback the Helm release only after restoring compatible image digests and
+Secrets; it still cannot revive a callback or enrollment owned by the replaced
+broker.
 
-Configure `mcp.broker.callbackURL`, the fixed `/v1/mcp/broker/` callback prefix, OAuth
-profiles, and singleton lifecycle on the standalone `mecabroker` chart. One
-operator-owned public TLS/HTTP2 endpoint must route gRPC, `/v1/mcp/broker/`, and the
-final callback URL to the broker Service; do not route those browser paths to the
-mecak8s HTTP listener. mecak8s holds only opaque enrollment references and authenticates
-to the broker with its projected workload JWT. The standalone broker is one `Recreate`
-replica with no HA or zero-downtime rollout.
+#### Rotate broker TLS and its client CA
 
-The names have different meanings: the broker certificate **SAN** must match the TLS
-`serverName` used by mecak8s; `remoteBroker.address` is the Kubernetes Service endpoint
-for outbound gRPC; `mcp.broker.callbackURL` has the public callback host used by the
-browser; and the broker's `listener.publicAddress` is only its local bind address. None
-of these values is inferred from another. See the [standalone MCP broker deployment
-guide](/building/deployment/mecabroker.md) for the typed broker chart configuration.
+Broker serving certificates and the agent's broker CA trust pool do **not** hot
+reload. Updating externally managed Secrets does not automatically roll either
+Deployment: the chart does not checksum their contents. The operator must order
+the Secret updates and explicit rollouts as follows (also when the broker is idle):
+
+1. Update the Secret referenced by `broker.clientCA` to contain both old and new
+   CA roots. Keep the broker serving its old certificate. Wait for the updated
+   bundle to be projected before proceeding.
+2. Explicitly roll the **agent** Deployment and wait for every replacement to be
+   ready with the overlapping trust bundle. Coordinate active agent runs: with
+   OAuth configured the agent Deployment also uses `Recreate`, so this is not a
+   zero-downtime step.
+3. During a maintenance window, drain active work and stop starting new
+   enrollments. Update the certificate/key Secret referenced by `broker.tls`
+   with the new matching pair, retaining a SAN matching `broker.clientCA.serverName`
+   (or its derived Service DNS default). After projection, explicitly restart the
+   **broker** Deployment and wait for readiness. Its singleton replacement
+   interrupts attachments and browser flows; restart enrollment afterward. A
+   lost response may represent a completed upstream mutation—reconcile via a
+   safe read/status operation instead of automatically retrying it.
+4. Verify agent-to-broker TLS and gateway backend trust with the new certificate.
+   Only then remove the old CA root from `broker.clientCA`, wait for projection,
+   and explicitly roll the **agents again** to retire the old trust. Update any
+   operator-owned gateway backend CA bundle in the same overlap-first order.
+
+For a leaf-only renewal under the same CA, the overlap/agent trust updates are
+unnecessary, but the broker Secret update and controlled broker restart are still
+required. Keep the old root during a rollback window; reverting only the Helm
+revision cannot restore externally managed Secret contents or old broker state.
 
 Keep MCP and OAuth endpoints on HTTPS and enforce their egress through the
-platform (CNI, mesh, or egress gateway). The chart's NetworkPolicy supplies
-only ingress isolation; it cannot enforce the broker HTTP callback path, TLS
-identity, OAuth identity, or a hostname.
-
-A broker TLS, workload-JWT CA, or upstream OAuth Secret rotation is deliberately
-operator-controlled: update `rollout.restartToken` in the mecabroker release to trigger
-its singleton restart. Keep old and new credentials valid during the cutover where the
-upstream permits it. Changes to mecak8s Secret-backed environment variables likewise
-require a Deployment rollout.
+platform (CNI, mesh, or egress gateway). The chart's NetworkPolicy supplies only
+ingress isolation; it cannot enforce callback paths, TLS identity, OAuth identity,
+or a hostname.
 
 ### Mount trusted skills, agents, and rules
 

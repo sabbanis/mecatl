@@ -65,9 +65,12 @@ type ExecutionMetadata struct {
 // OutboundCredentialKind is the closed credential-custody vocabulary.
 type OutboundCredentialKind string
 
+// Outbound credential kinds are diagnostic-only labels, not credentials.
 const (
-	OutboundCredentialNone        OutboundCredentialKind = "none"
-	OutboundCredentialRouteOAuth  OutboundCredentialKind = "route_oauth"
+	OutboundCredentialNone OutboundCredentialKind = "none"
+	//nolint:gosec // Diagnostic label, not a hardcoded credential.
+	OutboundCredentialRouteOAuth OutboundCredentialKind = "route_oauth"
+	//nolint:gosec // Diagnostic label, not a hardcoded credential.
 	OutboundCredentialBrokerOAuth OutboundCredentialKind = "broker_oauth"
 )
 

@@ -259,6 +259,20 @@ func TestNewToolHiveProcessFallsBackToMemoryStorageWhenUnconfigured(t *testing.T
 	t.Cleanup(func() { _ = process.Close() })
 }
 
+func TestIdleToolHiveProcessIsReadyWithoutProfilesOrCallbackAuthority(t *testing.T) {
+	process, err := NewToolHiveProcess(t.Context(), ToolHiveConfig{})
+	if err != nil {
+		t.Fatalf("NewToolHiveProcess: %v", err)
+	}
+	t.Cleanup(func() { _ = process.Close() })
+	if err := process.Ready(t.Context()); err != nil {
+		t.Fatalf("idle ToolHive process readiness: %v", err)
+	}
+	if !process.Handlers.Empty() || process.CallbackPath != "" {
+		t.Fatalf("idle ToolHive HTTP authority = handlers:%+v callback:%q, want none", process.Handlers, process.CallbackPath)
+	}
+}
+
 func TestAnonymousOnlyProcessPublishesNoVMCPRoute(t *testing.T) {
 	var requests atomic.Int32
 	anonymous := toolHiveDiscoveryServer(t, "get_status", &requests)

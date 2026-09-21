@@ -155,12 +155,15 @@ mecatl callback URL. Route the complete `/v1/mcp/broker/` prefix and the final c
 the same listener. See the [Kubernetes deployment guide](/building/deployment/mecak8s.md) for
 Helm configuration.
 
-Broker session attachments and outer callback correlation remain process-local. ToolHive's
-configured Redis storage can preserve its inner upstream authorization/token records, but a
-mecatl restart cannot correlate a persisted pending aggregate back to that inner operation: it
-discards the old pending correlation and starts a fresh enrollment rather than recovering it.
-The mode is not safe behind the default multi-replica `mecak8s` Service until affinity or durable
-outer broker routing is available.
+Broker session attachments and outer callback correlation remain process-local.
+The legacy embedded construction supported Redis for ToolHive's inner upstream
+authorization/pending/token records, but could not recover outer enrollment
+correlation from them. The current standalone `mecabroker` singleton does not wire
+that Redis storage: both inner and outer broker state are in memory. Broker
+replacement is a reauthorization boundary, not recovery of a prior enrollment.
+Agent sessions and their event log remain Redis-backed. The chart's agent replicas
+share one singleton broker; broker HA and standalone inner Redis support remain
+outstanding limitations.
 
 The legacy bearer path is simpler for a server that does not need OAuth:
 

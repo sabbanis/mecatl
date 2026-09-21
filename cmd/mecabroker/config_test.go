@@ -14,7 +14,7 @@ import (
 )
 
 func TestManagedMCPRenderedBrokerConfigAdmitsStrictParser(t *testing.T) {
-	cmd := exec.Command("helm", "template", "production", "../../deploy/helm/mecabroker", "-f", "../../deploy/helm/mecabroker/ci/managed-mcp-values.yaml")
+	cmd := exec.Command("helm", "template", "production", "../../deploy/helm/mecak8s", "-f", "../../deploy/helm/mecak8s/ci/broker-mcp-values.yaml")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("helm template: %v\n%s", err, output)
@@ -70,6 +70,41 @@ func validBrokerConfig() fileConfig {
 	return cfg
 }
 
+func TestIdleBrokerConfigPermitsEmptyProfilesWithoutCallbackAuthority(t *testing.T) {
+	cfg := validBrokerConfig()
+	cfg.CallbackURL = ""
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("idle broker configuration rejected: %v", err)
+	}
+	if toolHive := cfg.toolHive(); len(toolHive.Profiles) != 0 || toolHive.CallbackURL != "" {
+		t.Fatalf("idle ToolHive configuration = %+v, want no profiles or callback authority", toolHive)
+	}
+
+	cfg.CallbackURL = "https://broker.example/callback"
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("idle broker with optional callback rejected: %v", err)
+	}
+	if callbackURL := cfg.toolHive().CallbackURL; callbackURL != "" {
+		t.Fatalf("idle ToolHive callback authority = %q, want none", callbackURL)
+	}
+}
+
+func TestBrokerOAuthProfileRequiresCallback(t *testing.T) {
+	cfg := validBrokerConfig()
+	cfg.CallbackURL = ""
+	secret := t.TempDir() + "/client-secret"
+	if err := os.WriteFile(secret, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg.Profiles = []fileProfile{{
+		Name: "private", URL: "https://mcp.example/mcp", Auth: "oauth",
+		OAuth: &fileOAuth{Issuer: "https://issuer.example", ClientMode: "preregistered", ClientID: "client", ClientSecretFile: secret},
+	}}
+	if err := cfg.validate(); err == nil || !strings.Contains(err.Error(), "callback is required") {
+		t.Fatalf("OAuth profile without callback validation error = %v", err)
+	}
+}
+
 func TestParseFlagsWithLoggingAcceptsInvalidLevelWithWarning(t *testing.T) {
 	original := os.Args
 	t.Cleanup(func() { os.Args = original })
@@ -102,15 +137,40 @@ func TestKubernetesWorkloadJWTBootstrapConfiguration(t *testing.T) {
 	}
 }
 
-func TestToolHiveRejectsCIMDConfiguration(t *testing.T) {
+func TestToolHiveAdmitsCIMDConfiguration(t *testing.T) {
 	const cimd = "https://client.example/metadata.json"
-	cfg := validBrokerConfig()
-	cfg.Profiles = []fileProfile{{
-		Name: "private", URL: "https://mcp.example/mcp", Auth: "oauth",
-		OAuth: &fileOAuth{Issuer: "https://issuer.example", ClientMode: "cimd", CIMDDocumentURL: cimd},
-	}}
-	if err := cfg.validate(); err == nil || err.Error() != unsupportedCIMDError {
-		t.Fatalf("CIMD validation error = %v, want %q", err, unsupportedCIMDError)
+	for _, tc := range []struct {
+		name       string
+		oauth      fileOAuth
+		wantIssuer string
+		wantAuth   string
+		wantToken  string
+	}{
+		{
+			name:       "issuer discovery",
+			oauth:      fileOAuth{Issuer: "https://issuer.example", ClientMode: "cimd", CIMDDocumentURL: cimd},
+			wantIssuer: "https://issuer.example",
+		},
+		{
+			name:      "explicit OAuth2 endpoints",
+			oauth:     fileOAuth{ClientMode: "cimd", CIMDDocumentURL: cimd, AuthorizationEndpoint: "https://issuer.example/authorize", TokenEndpoint: "https://issuer.example/token"},
+			wantAuth:  "https://issuer.example/authorize",
+			wantToken: "https://issuer.example/token",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validBrokerConfig()
+			cfg.Profiles = []fileProfile{{
+				Name: "private", URL: "https://mcp.example/mcp", Auth: "oauth", OAuth: &tc.oauth,
+			}}
+			if err := cfg.validate(); err != nil {
+				t.Fatalf("CIMD configuration rejected: %v", err)
+			}
+			oauth := cfg.toolHive().Profiles[0].OAuth
+			if oauth.ClientID != cimd || oauth.ClientSecretFile != "" || oauth.Issuer != tc.wantIssuer || oauth.AuthorizationEndpoint != tc.wantAuth || oauth.TokenEndpoint != tc.wantToken {
+				t.Fatalf("CIMD ToolHive mapping = %#v", oauth)
+			}
+		})
 	}
 }
 
@@ -146,8 +206,8 @@ func TestBrokerOAuthClientModeUnionIsStrict(t *testing.T) {
 		{"missing mode", fileOAuth{ClientID: "id", ClientSecretFile: "/missing"}, "client_mode"},
 		{"preregistered missing secret", fileOAuth{ClientMode: "preregistered", ClientID: "id"}, "requires client_id and client_secret_file"},
 		{"preregistered with dcr", fileOAuth{ClientMode: "preregistered", ClientID: "id", ClientSecretFile: "/secret", DCRDiscoveryURL: "https://issuer.example/dcr"}, "cannot include CIMD or DCR"},
-		{"cimd missing url", fileOAuth{ClientMode: "cimd"}, "CIMD OAuth client_mode is unsupported by mecabroker; use preregistered or dcr"},
-		{"cimd with secret", fileOAuth{ClientMode: "cimd", CIMDDocumentURL: "https://client.example/meta", ClientSecretFile: "/secret"}, "CIMD OAuth client_mode is unsupported by mecabroker; use preregistered or dcr"},
+		{"cimd missing url", fileOAuth{ClientMode: "cimd"}, "requires cimd_document_url"},
+		{"cimd with secret", fileOAuth{ClientMode: "cimd", CIMDDocumentURL: "https://client.example/meta", ClientSecretFile: "/secret", AuthorizationEndpoint: "https://issuer.example/authorize", TokenEndpoint: "https://issuer.example/token"}, "cannot include client credentials"},
 		{"dcr missing url", fileOAuth{ClientMode: "dcr"}, "requires dcr_discovery_url"},
 		{"dcr missing endpoints", fileOAuth{ClientMode: "dcr", DCRDiscoveryURL: "https://issuer.example/dcr", Issuer: "https://issuer.example"}, "requires explicit authorization_endpoint and token_endpoint"},
 		{"dcr with client", fileOAuth{ClientMode: "dcr", DCRDiscoveryURL: "https://issuer.example/dcr", ClientID: "id", AuthorizationEndpoint: "https://issuer.example/authorize", TokenEndpoint: "https://issuer.example/token"}, "cannot include client credentials"},

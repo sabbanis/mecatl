@@ -22,10 +22,9 @@ import (
 )
 
 const (
-	brokerAPIVersion     = "mecabroker.mecatl.dev/v1"
-	maxConfigBytes       = 1 << 20
-	maxJWKSStaleness     = 24 * time.Hour
-	unsupportedCIMDError = "CIMD OAuth client_mode is unsupported by mecabroker; use preregistered or dcr"
+	brokerAPIVersion = "mecabroker.mecatl.dev/v1"
+	maxConfigBytes   = 1 << 20
+	maxJWKSStaleness = 24 * time.Hour
 )
 
 type duration time.Duration
@@ -124,8 +123,6 @@ type fileStatic struct {
 	ReadOnly    bool            `json:"read_only,omitempty"`
 }
 
-func parseFlags() (fileConfig, error) { return parseConfigFlag(flag.CommandLine) }
-
 func parseFlagsWithLogging() (fileConfig, slog.Level, string, error) {
 	flags := flag.NewFlagSet("mecabroker", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
@@ -217,7 +214,7 @@ func (cfg fileConfig) validate() error {
 		return errors.New("complete workload-JWT configuration is required")
 	}
 	if bootstrap != nil && (cfg.WorkloadJWT.Issuer != "" || cfg.WorkloadJWT.JWKSURI != "" || bootstrap.DiscoveryURL == "" || bootstrap.JWKSURI == "" || bootstrap.TokenFile == "") {
-		return errors.New("Kubernetes workload-JWT bootstrap configuration is incomplete or conflicts with explicit issuer/JWKS")
+		return errors.New("kubernetes workload-JWT bootstrap configuration is incomplete or conflicts with explicit issuer/JWKS")
 	}
 	if bootstrap == nil {
 		if err := mcpbroker.ValidateProtectedURL(cfg.WorkloadJWT.Issuer, "workload-JWT issuer"); err != nil {
@@ -237,11 +234,10 @@ func (cfg fileConfig) validate() error {
 	if cfg.WorkloadJWT.MaxJWKSStaleness.value() <= 0 || cfg.WorkloadJWT.MaxJWKSStaleness.value() > maxJWKSStaleness {
 		return errors.New("workload-JWT JWKS staleness is invalid")
 	}
-	if err := mcpbroker.ValidateProtectedURL(cfg.CallbackURL, "broker callback"); err != nil {
-		return err
-	}
-	if len(cfg.Profiles) == 0 {
-		return errors.New("broker profiles are required")
+	if cfg.CallbackURL != "" {
+		if err := mcpbroker.ValidateProtectedURL(cfg.CallbackURL, "broker callback"); err != nil {
+			return err
+		}
 	}
 	for _, d := range []duration{cfg.Drain.PropagationDelay, cfg.Drain.Timeout, cfg.Drain.ListenerShutdownTimeout, cfg.Transport.RPCDeadline, cfg.Transport.ExecuteDeadline, cfg.Transport.HandleIdleTimeout, cfg.Transport.SweepInterval, cfg.Transport.CleanupTimeout, cfg.Runtime.LogicalRetention} {
 		if d.value() <= 0 {
@@ -254,6 +250,7 @@ func (cfg fileConfig) validate() error {
 		}
 	}
 	seenProfiles := make(map[string]struct{}, len(cfg.Profiles))
+	hasOAuthProfile := false
 	for _, profile := range cfg.Profiles {
 		profileKey := strings.ToLower(profile.Name)
 		if _, exists := seenProfiles[profileKey]; exists {
@@ -269,6 +266,7 @@ func (cfg fileConfig) validate() error {
 				return errors.New("anonymous profile contains protected configuration")
 			}
 		case "oauth":
+			hasOAuthProfile = true
 			if profile.OAuth == nil {
 				return errors.New("protected profile OAuth configuration is required")
 			}
@@ -279,9 +277,6 @@ func (cfg fileConfig) validate() error {
 				return errors.New("protected profile OAuth client_mode must be preregistered, cimd, or dcr")
 			}
 			mode := profile.OAuth.ClientMode
-			if mode == "cimd" {
-				return errors.New(unsupportedCIMDError)
-			}
 			switch mode {
 			case "preregistered":
 				if profile.OAuth.ClientID == "" || profile.OAuth.ClientSecretFile == "" {
@@ -289,6 +284,13 @@ func (cfg fileConfig) validate() error {
 				}
 				if profile.OAuth.CIMDDocumentURL != "" || profile.OAuth.DCRDiscoveryURL != "" {
 					return errors.New("preregistered OAuth client_mode cannot include CIMD or DCR configuration")
+				}
+			case "cimd":
+				if profile.OAuth.CIMDDocumentURL == "" {
+					return errors.New("cimd OAuth client_mode requires cimd_document_url")
+				}
+				if profile.OAuth.ClientID != "" || profile.OAuth.ClientSecretFile != "" || profile.OAuth.DCRDiscoveryURL != "" {
+					return errors.New("cimd OAuth client_mode cannot include client credentials or DCR configuration")
 				}
 			case "dcr":
 				if profile.OAuth.DCRDiscoveryURL == "" {
@@ -342,6 +344,9 @@ func (cfg fileConfig) validate() error {
 		default:
 			return errors.New("profile auth mode is invalid")
 		}
+	}
+	if hasOAuthProfile && cfg.CallbackURL == "" {
+		return errors.New("broker callback is required when OAuth profiles are configured")
 	}
 	return nil
 }
@@ -438,5 +443,9 @@ func (cfg fileConfig) toolHive() mcpbroker.ToolHiveConfig {
 		}
 		profiles[i] = converted
 	}
-	return mcpbroker.ToolHiveConfig{CallbackURL: cfg.CallbackURL, Profiles: profiles}
+	callbackURL := ""
+	if len(profiles) != 0 {
+		callbackURL = cfg.CallbackURL
+	}
+	return mcpbroker.ToolHiveConfig{CallbackURL: callbackURL, Profiles: profiles}
 }

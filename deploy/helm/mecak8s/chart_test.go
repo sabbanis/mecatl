@@ -96,6 +96,9 @@ func deploymentFromRender(t *testing.T, rendered string) *appsv1.Deployment {
 		if err := yaml.Unmarshal([]byte(document), &deployment); err != nil {
 			t.Fatal(err)
 		}
+		if deployment.Spec.Template.Labels["app.kubernetes.io/component"] != "agent" {
+			continue
+		}
 		return &deployment
 	}
 	t.Fatal("rendered chart has no Deployment")
@@ -205,47 +208,42 @@ func pdbFromRender(t *testing.T, rendered string) *policyv1.PodDisruptionBudget 
 	return nil
 }
 
-func TestSingletonBrokerRemediation_Scenario4_Mecak8sRemoteBrokerProjection(t *testing.T) {
-	rendered, err := helm(t, "template", "production", ".", "-f", "ci/production-values.yaml", "--set", "remoteBroker.address=mecabroker.mecatl.svc:8443,remoteBroker.caSecret=mecabroker-ca,remoteBroker.caKey=ca.pem,remoteBroker.serverName=mecabroker.mecatl.svc,remoteBroker.workloadJWT.audience=mecabroker,remoteBroker.workloadJWT.lifetimeSeconds=600")
+func TestMecak8sChart_OAuthRendersInternalSingletonBroker(t *testing.T) {
+	rendered, err := helm(t, "template", "production", ".", "-f", "ci/broker-mcp-values.yaml")
 	if err != nil {
 		t.Fatal(err, rendered)
 	}
-	d := deploymentFromRender(t, rendered)
-	if d.Spec.Template.Spec.AutomountServiceAccountToken == nil || !*d.Spec.Template.Spec.AutomountServiceAccountToken {
-		t.Fatal("remote broker must retain the dedicated Kubernetes API service-account credential for SessionLease")
-	}
-	args := d.Spec.Template.Spec.Containers[0].Args
-	for _, want := range []string{"--mcp-broker-address=mecabroker.mecatl.svc:8443", "--mcp-broker-token-file=/var/run/secrets/mecatl-broker/token", "--mcp-broker-tls-ca=/var/run/secrets/mecatl-broker/ca.pem", "--mcp-broker-server-name=mecabroker.mecatl.svc"} {
-		if !slices.Contains(args, want) {
-			t.Fatalf("remote broker args missing %q: %q", want, args)
+	for _, want := range []string{
+		"name: production-mecak8s-broker",
+		"--mcp-broker-address=production-mecak8s-broker:8443",
+		"--mcp-broker-token-file=/var/run/secrets/mecatl-broker/token",
+		"--mcp-broker-tls-ca=/var/run/secrets/mecatl-broker/ca.pem",
+		"system:serviceaccount:default:production-mecak8s",
+		"type: Recreate",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("OAuth singleton render missing %q", want)
 		}
 	}
-	var projected bool
-	for _, v := range d.Spec.Template.Spec.Volumes {
-		if v.Name == "mecatl-broker" && v.Projected != nil {
-			for _, source := range v.Projected.Sources {
-				if source.ServiceAccountToken != nil {
-					token := source.ServiceAccountToken
-					projected = token.Path == "token" && token.Audience == "mecabroker" && token.ExpirationSeconds != nil && *token.ExpirationSeconds == 600
-				}
-			}
-		}
-	}
-	if !projected {
-		t.Fatal("remote broker workload token was not projected with the configured audience and lifetime")
+	if strings.Count(rendered, "kind: ServiceAccount") < 2 {
+		t.Fatalf("OAuth singleton render did not include separate agent and broker service accounts")
 	}
 }
 
-func TestSingletonBrokerRemediation_Scenario4_DigestRequired(t *testing.T) {
+func TestMecak8sHelmChart_ProductionDigestValidation(t *testing.T) {
 	rendered, err := helm(t, "template", "production", ".", "-f", "ci/production-values.yaml")
 	if err != nil {
 		t.Fatal(err, rendered)
 	}
-	image := deploymentFromRender(t, rendered).Spec.Template.Spec.Containers[0].Image
-	if !regexp.MustCompile(`@sha256:[0-9a-f]{64}$`).MatchString(image) {
-		t.Fatalf("production image = %q", image)
+	for name, image := range map[string]string{
+		"agent":  deploymentFromRender(t, rendered).Spec.Template.Spec.Containers[0].Image,
+		"broker": brokerDeploymentFromRender(t, rendered).Spec.Template.Spec.Containers[0].Image,
+	} {
+		if !regexp.MustCompile(`@sha256:[0-9a-f]{64}$`).MatchString(image) {
+			t.Fatalf("production fixture %s image = %q, want digest-pinned", name, image)
+		}
 	}
-	for _, set := range []string{"image.digest=", "image.digest=sha256:ABC", "image.digest=sha256:deadbeef", "image.tag=v1"} {
+	for _, set := range []string{"image.digest=sha256:ABC", "image.digest=sha256:deadbeef", "image.tag=v1", "broker.image.digest=sha256:ABC", "broker.image.digest=sha256:deadbeef", "broker.image.tag=v1"} {
 		if _, err := helm(t, "template", "production", ".", "-f", "ci/production-values.yaml", "--set", set); err == nil {
 			t.Fatalf("accepted invalid production image override %q", set)
 		}
@@ -291,7 +289,7 @@ func networkPolicyFromRender(t *testing.T, rendered string) *networkingv1.Networ
 		if err := yaml.Unmarshal([]byte(document), &policy); err != nil {
 			t.Fatal(err)
 		}
-		if policy.Name == "" || strings.HasSuffix(policy.Name, "-raw-driver") {
+		if policy.Name == "" || strings.HasSuffix(policy.Name, "-raw-driver") || strings.HasSuffix(policy.Name, "-broker") {
 			continue
 		}
 		return &policy
@@ -301,7 +299,7 @@ func networkPolicyFromRender(t *testing.T, rendered string) *networkingv1.Networ
 }
 
 func TestMecak8sHelmChart_NetworkPolicyIsIngressOnly(t *testing.T) {
-	rendered, err := helm(t, productionArgs()...)
+	rendered, err := helm(t, append(productionArgs(), "--set", "networkPolicy.enabled=true")...)
 	if err != nil {
 		t.Fatal(err, rendered)
 	}
@@ -346,13 +344,15 @@ func TestMecak8sHelmChart_RedisFilesystemFlagsAndWorkspaceExclusion(t *testing.T
 	}
 }
 
-// brokerOAuthArgs layers replicaCount=1 on top of secureProductionArgs, which
-// schema-validation now requires whenever mcp.broker.callbackURL is set (I-4:
-// broker session/grant/authorization state is process-local, so it cannot be
-// shared across replicas). This is the sole entry point every broker-OAuth
-// test renders through — see renderOAuthMCPValues.
+// brokerOAuthArgs supplies the operator-provided broker certificates and client
+// identity required by every OAuth chart render. The agent remains scalable; only
+// the broker deployment is the Recreate singleton.
 func brokerOAuthArgs() []string {
-	return append(secureProductionArgs(), "--set", "replicaCount=1")
+	return append(secureProductionArgs(),
+		"--set", "broker.image.digest=sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		"--set", "broker.tls.secretName=mecabroker-tls",
+		"--set", "broker.clientCA.secretName=mecabroker-ca",
+		"--set", "broker.clientCA.serverName=production-mecak8s-broker")
 }
 
 // kindVMCPArgs renders the Kind profile with the mecak8s-vmcp fixture's own
@@ -417,7 +417,7 @@ func TestMecak8sHelmChart_KindProfileAloneHasNoSecretDependency(t *testing.T) {
 		t.Fatalf("render Kind profile: %v", err)
 	}
 	for _, forbidden := range []string{"--oidc-issuer", "--tls-cert", "--tls-key", "mecak8s-tls", "fixture-ca", "secretName:", "type: NodePort", "nodePort:"} {
-		if strings.Contains(rendered, forbidden) {
+		if strings.Contains(agentDeploymentYAML(t, rendered), forbidden) {
 			t.Fatalf("bare Kind render (no fixture overlay) unexpectedly contains %q — e2e/k8s's suite creates no matching Secret and would hang", forbidden)
 		}
 	}
@@ -859,6 +859,8 @@ func TestMecak8sHelmChart_DeployCheckProductionFixtureRuntimeAndSpread(t *testin
 		"--http-addr=0.0.0.0:8081",
 		"--drain-addr=0.0.0.0:8082",
 		"--redis-url=redis.example.internal:6379",
+		"--redis-follow-pool-size=32",
+		"--redis-max-followers=32",
 		"--session-lease-k8s-namespace=default",
 		"--headless=true",
 		"--posture=auto",
@@ -1181,7 +1183,7 @@ func TestMecak8sHelmChart_SecureRedisModes(t *testing.T) {
 		t.Fatalf("render system-trust TLS without Secret: %v", err)
 	}
 	for _, forbidden := range []string{"redis-credentials", "/var/run/secrets/redis", "secretName:"} {
-		if strings.Contains(rendered, forbidden) {
+		if strings.Contains(agentDeploymentYAML(t, rendered), forbidden) {
 			t.Fatalf("system-trust TLS without ACL unexpectedly references %q", forbidden)
 		}
 	}
@@ -1296,8 +1298,8 @@ func TestMecak8sHelmChart_ReplicaCountControlsDisruptionBudget(t *testing.T) {
 			if pdb == nil {
 				return
 			}
-			if pdb.Spec.MinAvailable == nil || pdb.Spec.MinAvailable.IntVal != tc.wantMinAvail {
-				t.Fatalf("PDB minAvailable = %v, want %d", pdb.Spec.MinAvailable, tc.wantMinAvail)
+			if pdb.Spec.MaxUnavailable == nil || pdb.Spec.MaxUnavailable.IntVal != tc.wantMinAvail {
+				t.Fatalf("PDB maxUnavailable = %v, want %d", pdb.Spec.MaxUnavailable, tc.wantMinAvail)
 			}
 			if !reflect.DeepEqual(pdb.Spec.Selector, deployment.Spec.Selector) {
 				t.Fatalf("PDB selector = %#v, Deployment selector = %#v", pdb.Spec.Selector, deployment.Spec.Selector)
@@ -1336,7 +1338,7 @@ func TestInvariant_mecak8s_storage_free_restricted_workload(t *testing.T) {
 }
 
 func TestMecak8sHelmChart_Scenario1_LeastPrivilegeLease(t *testing.T) {
-	rendered, err := helm(t, productionArgs()...)
+	rendered, err := helm(t, append(productionArgs(), "--show-only", "templates/rbac.yaml")...)
 	if err != nil {
 		t.Fatalf("render production values: %v", err)
 	}
@@ -1524,7 +1526,7 @@ func TestMecak8sHelmChart_ServerTLS(t *testing.T) {
 		t.Fatal("tls.enabled=false changed the default production render")
 	}
 	for _, forbidden := range []string{"--tls-cert", "--tls-key", "/var/run/secrets/tls", "name: tls", "scheme: HTTPS"} {
-		if strings.Contains(defaultRender, forbidden) {
+		if strings.Contains(agentDeploymentYAML(t, defaultRender), forbidden) {
 			t.Fatalf("default production render unexpectedly contains %q", forbidden)
 		}
 	}
@@ -1962,6 +1964,13 @@ func renderMCPValuesWithArgs(t *testing.T, args []string, values string) (string
 	if err := os.WriteFile(path, []byte(values), 0o600); err != nil {
 		t.Fatalf("write MCP values: %v", err)
 	}
+	if strings.Contains(values, "mode: oauth") && !slices.Contains(args, "broker.tls.secretName=mecabroker-tls") {
+		args = append(args,
+			"--set", "broker.image.digest=sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+			"--set", "broker.tls.secretName=mecabroker-tls",
+			"--set", "broker.clientCA.secretName=mecabroker-ca",
+			"--set", "broker.clientCA.serverName=production-mecak8s-broker")
+	}
 	return helm(t, append(args, "-f", path)...)
 }
 
@@ -2174,22 +2183,6 @@ mcp:
 	}
 }
 
-func runtimeMCPAuthorityValidationError(t *testing.T, profile string) error {
-	t.Helper()
-	if err := permconfig.ValidateYAML([]byte(profile)); err != nil {
-		return err
-	}
-	path := filepath.Join(t.TempDir(), "settings.yaml")
-	if err := os.WriteFile(path, []byte(profile), 0o600); err != nil {
-		t.Fatalf("write generated MCP profile: %v", err)
-	}
-	operator := permconfig.New(permconfig.Options{ExplicitFiles: []string{path}}).OperatorMCP()
-	_, err := cliconfig.ResolveMCPAuthority(cliconfig.MCPAuthorityOptions{
-		Operator: operator, DefaultMode: mcpauthority.Broker, BrokerSupported: true,
-	})
-	return err
-}
-
 func runtimeMCPAuthorityFromConfigMap(t *testing.T, profile string) *mcpauthority.Result {
 	t.Helper()
 	if err := permconfig.ValidateYAML([]byte(profile)); err != nil {
@@ -2273,34 +2266,35 @@ mcp:
 	if !slices.Contains(container.Args, "--permission-config=/etc/mecatl-mcp/settings.yaml") {
 		t.Fatal("OAuth render missing chart-managed --permission-config")
 	}
-	if !slices.ContainsFunc(container.Args, func(arg string) bool { return arg == "--mcp-server=public=https://public.example/mcp" }) {
-		t.Fatalf("direct route must remain a local legacy MCP flag: %#v", container.Args)
+	if slices.ContainsFunc(container.Args, func(arg string) bool { return strings.HasPrefix(arg, "--mcp-server=") }) {
+		t.Fatalf("mixed OAuth+none routes must all be brokered: %#v", container.Args)
 	}
 	if env := workloadEnv(container); len(env) != 0 {
 		t.Fatalf("OAuth client secret must not be injected as an environment variable: %#v", env)
 	}
-	const secretPath = "/var/run/secrets/mecatl-mcp/oauth/1/client-secret"
-	if !slices.ContainsFunc(container.VolumeMounts, func(mount corev1.VolumeMount) bool {
-		return mount.Name == "mcp-oauth-client-secret-1" && mount.MountPath == "/var/run/secrets/mecatl-mcp/oauth/1" && mount.ReadOnly
+	if slices.ContainsFunc(container.VolumeMounts, func(mount corev1.VolumeMount) bool {
+		return mount.Name == "mcp-oauth-client-secret-1"
 	}) {
-		t.Fatalf("OAuth client secret volume mount = %#v, want read-only %q", container.VolumeMounts, secretPath)
+		t.Fatalf("OAuth client secret must be mounted only by the broker: %#v", container.VolumeMounts)
 	}
-	if !slices.ContainsFunc(deployment.Spec.Template.Spec.Volumes, func(volume corev1.Volume) bool {
-		return volume.Name == "mcp-oauth-client-secret-1" && volume.Secret != nil && volume.Secret.SecretName == "oauth-registered" &&
-			volume.Secret.DefaultMode != nil && *volume.Secret.DefaultMode == 0o440 &&
-			len(volume.Secret.Items) == 1 && volume.Secret.Items[0].Key == "client-secret" && volume.Secret.Items[0].Path == "client-secret"
-	}) {
-		t.Fatalf("OAuth client secret volume does not project exactly the configured key: %#v", deployment.Spec.Template.Spec.Volumes)
+	if !strings.Contains(rendered, "/var/run/mecabroker/mcp-oauth/1/client-secret") {
+		t.Fatal("broker did not receive the OAuth client secret file")
 	}
 	cm := configMapFromRender(t, rendered, "production-mecak8s-mcp")
 	profile := cm.Data["settings.yaml"]
-	if !strings.Contains(profile, `secret_file: "/var/run/secrets/mecatl-mcp/oauth/1/client-secret"`) || strings.Contains(profile, "secret_env:") {
-		t.Fatalf("OAuth profile must use the mounted client-secret file:\n%s", profile)
+	if strings.Contains(profile, "secret_file") || strings.Contains(profile, "callback_url") || strings.Contains(profile, "servers:") {
+		t.Fatalf("agent must select remote authority without duplicating broker-owned profiles:\n%s", profile)
 	}
-	authority := runtimeMCPAuthorityFromConfigMap(t, profile)
-	broker, ok := authority.Broker()
-	if authority.Mode() != mcpauthority.Broker || !ok || broker.CallbackURL != "https://agent.example/mcp/authorization/callback" || len(broker.Routes) != 2 || broker.Routes[0].Name != "public" || broker.Routes[1].Name != "oauth_registered" {
-		t.Fatalf("runtime broker authority = %#v, want callback and both broker routes", authority)
+	if !strings.Contains(profile, "mode: broker") {
+		t.Fatalf("agent did not select broker authority: %s", profile)
+	}
+	broker := brokerConfigFromRender(t, rendered)
+	if broker.CallbackURL != "https://agent.example/mcp/authorization/callback" || len(broker.Profiles) != 2 || broker.Profiles[0].Name != "public" || broker.Profiles[0].Auth != "none" || broker.Profiles[1].Name != "oauth_registered" {
+		t.Fatalf("broker configuration lost mixed OAuth+none routes: %#v", broker)
+	}
+	oauth := broker.Profiles[1].OAuth
+	if oauth.ClientSecretFile != "/var/run/mecabroker/mcp-oauth/1/client-secret" || oauth.ClientID != "mecak8s" || !oauth.RequestRefreshToken || !slices.Equal(oauth.Scopes, []string{"mcp.read", "mcp.write"}) {
+		t.Fatalf("broker OAuth fields = %#v", oauth)
 	}
 	for _, forbidden := range []string{"credential-record", "credentials:", "profile:", "principal:"} {
 		if strings.Contains(profile, forbidden) {
@@ -2339,16 +2333,20 @@ mcp:
 	if err != nil {
 		t.Fatalf("render DCR MCP values: %v", err)
 	}
-	profile := configMapFromRender(t, rendered, "production-mecak8s-mcp").Data["settings.yaml"]
-	for _, want := range []string{"mode: dcr", "discovery_url: \"https://auth.example/.well-known/oauth-authorization-server\"", "mode: oauth2"} {
-		if !strings.Contains(profile, want) {
-			t.Fatalf("DCR profile missing %q:\n%s", want, profile)
-		}
+	cfg := brokerConfigFromRender(t, rendered)
+	if len(cfg.Profiles) != 1 {
+		t.Fatalf("DCR profiles = %#v", cfg.Profiles)
+	}
+	oauth := cfg.Profiles[0].OAuth
+	if oauth.ClientMode != "dcr" || oauth.DCRDiscoveryURL != "https://auth.example/.well-known/oauth-authorization-server" || oauth.AuthorizationEndpoint != "https://auth.example/authorize" || oauth.TokenEndpoint != "https://auth.example/token" || oauth.ClientSecretFile != "" {
+		t.Fatalf("DCR configuration = %#v", oauth)
 	}
 	if strings.Contains(rendered, "MECATL_MCP_DCR_UPSTREAM_CLIENT_SECRET") {
 		t.Fatalf("DCR must not render a client secret environment variable:\n%s", rendered)
 	}
-	_ = runtimeMCPAuthorityFromConfigMap(t, profile)
+	if err := brokerURLValidationError(brokerConfigFromRender(t, rendered)); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestMecak8sHelmChart_MCPOAuthDCRClientRejectsInvalidValues(t *testing.T) {
@@ -2417,23 +2415,16 @@ mcp:
 	if err != nil {
 		t.Fatalf("render oauth2-upstream MCP values: %v", err)
 	}
-	profile := configMapFromRender(t, rendered, "production-mecak8s-mcp").Data["settings.yaml"]
-	if strings.Contains(profile, "issuer:") {
-		t.Fatalf("oauth2-upstream render must omit issuer:\n%s", profile)
+	cfg := brokerConfigFromRender(t, rendered)
+	if len(cfg.Profiles) != 1 || cfg.Profiles[0].Name != "github" {
+		t.Fatalf("OAuth2 profiles = %#v", cfg.Profiles)
 	}
-	for _, want := range []string{
-		"mode: oauth2",
-		"authorization_endpoint: \"https://github.com/login/oauth/authorize\"",
-		"token_endpoint: \"https://github.com/login/oauth/access_token\"",
-	} {
-		if !strings.Contains(profile, want) {
-			t.Fatalf("oauth2-upstream render missing %q:\n%s", want, profile)
-		}
+	oauth := cfg.Profiles[0].OAuth
+	if oauth.Issuer != "" || oauth.AuthorizationEndpoint != "https://github.com/login/oauth/authorize" || oauth.TokenEndpoint != "https://github.com/login/oauth/access_token" {
+		t.Fatalf("OAuth2 upstream = %#v", oauth)
 	}
-	authority := runtimeMCPAuthorityFromConfigMap(t, profile)
-	broker, ok := authority.Broker()
-	if authority.Mode() != mcpauthority.Broker || !ok || len(broker.Routes) != 1 || broker.Routes[0].Name != "github" {
-		t.Fatalf("runtime broker authority = %#v, want a single github route", authority)
+	if err := brokerURLValidationError(cfg); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -2460,14 +2451,13 @@ mcp:
 	if err != nil {
 		t.Fatalf("render default-upstream MCP values: %v", err)
 	}
-	profile := configMapFromRender(t, rendered, "production-mecak8s-mcp").Data["settings.yaml"]
-	if !strings.Contains(profile, "issuer: \"https://issuer.example\"") {
-		t.Fatalf("default (no upstream) render must keep issuer:\n%s", profile)
+	cfg := brokerConfigFromRender(t, rendered)
+	if len(cfg.Profiles) != 1 || cfg.Profiles[0].OAuth.Issuer != "https://issuer.example" || cfg.Profiles[0].OAuth.AuthorizationEndpoint != "" || cfg.Profiles[0].OAuth.TokenEndpoint != "" {
+		t.Fatalf("default upstream must preserve issuer discovery: %#v", cfg.Profiles)
 	}
-	if strings.Contains(profile, "upstream:") {
-		t.Fatalf("default (no upstream) render must not emit an upstream block:\n%s", profile)
+	if err := brokerURLValidationError(brokerConfigFromRender(t, rendered)); err != nil {
+		t.Fatal(err)
 	}
-	_ = runtimeMCPAuthorityFromConfigMap(t, profile)
 }
 
 func TestMecak8sHelmChart_MCPOAuthUpstreamModeIsSchemaValidated(t *testing.T) {
@@ -2538,16 +2528,13 @@ mcp:
 	if err != nil {
 		t.Fatalf("render MCP values with static tools: %v", err)
 	}
-	profile := configMapFromRender(t, rendered, "production-mecak8s-mcp").Data["settings.yaml"]
-	for _, want := range []string{"tools:", "name: \"get_me\"", "description: \"Get the authenticated user\"", "read_only: true"} {
-		if !strings.Contains(profile, want) {
-			t.Fatalf("static-tools render missing %q:\n%s", want, profile)
-		}
+	cfg := brokerConfigFromRender(t, rendered)
+	if len(cfg.Profiles) != 1 || len(cfg.Profiles[0].Tools) != 1 {
+		t.Fatalf("static tools = %#v", cfg.Profiles)
 	}
-	authority := runtimeMCPAuthorityFromConfigMap(t, profile)
-	broker, ok := authority.Broker()
-	if authority.Mode() != mcpauthority.Broker || !ok || len(broker.Routes) != 1 {
-		t.Fatalf("runtime broker authority = %#v, want the single static-tools route", authority)
+	tool := cfg.Profiles[0].Tools[0]
+	if tool.Name != "get_me" || tool.Description != "Get the authenticated user" || !tool.ReadOnly || tool.Schema["type"] != "object" {
+		t.Fatalf("tool = %#v", tool)
 	}
 }
 
@@ -2562,7 +2549,7 @@ mcp:
         mode: oauth
         oauth:
           issuer: https://issuer.example
-          client: {mode: cimd, cimd: {documentURL: https://issuer.example/client.json}}
+          client: {mode: preregistered, preregistered: {id: client, secretKeyRef: {name: oauth-client, key: secret}}}
           scopes: [mcp.read]
           network: {additionalOrigins: [], privateOrigins: [], maxRedirects: 0}
 `
@@ -2574,9 +2561,8 @@ mcp:
 	if err != nil {
 		t.Fatalf("chart rejected structurally valid callback before runtime validation: %v", err)
 	}
-	profile := configMapFromRender(t, rendered, "production-mecak8s-mcp").Data["settings.yaml"]
-	if err := runtimeMCPAuthorityValidationError(t, profile); err == nil {
-		t.Fatalf("runtime authority resolver accepted invalid callback URL:\n%s", profile)
+	if err := brokerURLValidationError(brokerConfigFromRender(t, rendered)); err == nil {
+		t.Fatal("broker accepted invalid callback URL")
 	}
 }
 
@@ -2591,7 +2577,7 @@ mcp:
         mode: oauth
         oauth:
           issuer: https://issuer.example
-          client: {mode: cimd, cimd: {documentURL: https://issuer.example/client.json}}
+          client: {mode: preregistered, preregistered: {id: client, secretKeyRef: {name: oauth-client, key: secret}}}
           scopes: [mcp.read]
           network: {additionalOrigins: [], privateOrigins: [], maxRedirects: 0}
 `
@@ -2615,7 +2601,7 @@ mcp:
         mode: oauth
         oauth:
           issuer: https://second-issuer.example
-          client: {mode: cimd, cimd: {documentURL: https://second-issuer.example/client.json}}
+          client: {mode: preregistered, preregistered: {id: second, secretKeyRef: {name: second-client, key: secret}}}
           scopes: [calendar.read]
           network: {additionalOrigins: [], privateOrigins: [], maxRedirects: 0}
 `
@@ -2623,20 +2609,13 @@ mcp:
 	if err != nil {
 		t.Fatalf("render two OAuth broker routes: %v", err)
 	}
-	profile := configMapFromRender(t, rendered, "production-mecak8s-mcp").Data["settings.yaml"]
-	authority := runtimeMCPAuthorityFromConfigMap(t, profile)
-	broker, ok := authority.Broker()
-	if !ok || len(broker.Routes) != 2 || broker.Routes[0].Name != "oauth" || broker.Routes[1].Name != "second" {
-		t.Fatalf("runtime broker routes = %#v, selected %t", broker.Routes, ok)
+	cfg := brokerConfigFromRender(t, rendered)
+	if len(cfg.Profiles) != 2 || cfg.Profiles[0].Name != "oauth" || cfg.Profiles[1].Name != "second" {
+		t.Fatalf("broker routes = %#v", cfg.Profiles)
 	}
 }
 
-// TestMecak8sHelmChart_MCPBrokerRequiresSingleReplica pins I-4: broker session,
-// grant, and authorization-transaction state is process-local, so the chart
-// must refuse any replicaCount other than 1 whenever mcp.broker.callbackURL is
-// set — including the chart's own default of 2, which is the actual scenario
-// a caller hits by simply enabling broker mode without also thinking to touch
-// replicaCount.
+// Agent scaling must not scale the process-local broker authority.
 func TestMecak8sHelmChart_MCPBrokerRequiresSingleReplica(t *testing.T) {
 	oauth := `
 mcp:
@@ -2648,39 +2627,23 @@ mcp:
         mode: oauth
         oauth:
           issuer: https://issuer.example
-          client: {mode: cimd, cimd: {documentURL: https://issuer.example/client.json}}
+          client: {mode: preregistered, preregistered: {id: client, secretKeyRef: {name: oauth-client, key: secret}}}
           scopes: [mcp.read]
           network: {additionalOrigins: [], privateOrigins: [], maxRedirects: 0}
 `
-	for _, tc := range []struct {
-		name    string
-		args    []string
-		wantErr bool
-	}{
-		{name: "default replicaCount rejected", args: secureProductionArgs(), wantErr: true},
-		{name: "two replicas rejected", args: append(secureProductionArgs(), "--set", "replicaCount=2"), wantErr: true},
-		{name: "three replicas rejected", args: append(secureProductionArgs(), "--set", "replicaCount=3"), wantErr: true},
-		{name: "single replica accepted", args: append(secureProductionArgs(), "--set", "replicaCount=1"), wantErr: false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			rendered, err := renderMCPValuesWithArgs(t, tc.args, oauth)
-			if tc.wantErr {
-				if err == nil {
-					t.Fatal("render accepted a non-1 replicaCount in broker mode")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("render rejected replicaCount=1 in broker mode: %v", err)
-			}
-			deployment := deploymentFromRender(t, rendered)
-			if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != 1 {
-				t.Fatalf("Spec.Replicas = %v, want 1", deployment.Spec.Replicas)
-			}
-			if pdb := pdbFromRender(t, rendered); pdb != nil {
-				t.Fatalf("a PDB was rendered at replicaCount=1: %#v", pdb)
-			}
-		})
+	for _, replicas := range []string{"1", "2", "3"} {
+		rendered, err := renderMCPValuesWithArgs(t, append(secureProductionArgs(), "--set", "replicaCount="+replicas), oauth)
+		if err != nil {
+			t.Fatal(err)
+		}
+		broker := brokerDeploymentFromRender(t, rendered)
+		if broker.Spec.Replicas == nil || *broker.Spec.Replicas != 1 || broker.Spec.Strategy.Type != appsv1.RecreateDeploymentStrategyType {
+			t.Fatalf("singleton strategy = %#v", broker.Spec)
+		}
+		agent := deploymentFromRender(t, rendered)
+		if agent.Spec.Replicas == nil || fmt.Sprint(*agent.Spec.Replicas) != replicas {
+			t.Fatalf("agent replicas = %v", agent.Spec.Replicas)
+		}
 	}
 }
 
@@ -2700,7 +2663,7 @@ mcp:
         mode: oauth
         oauth:
           issuer: https://issuer.example
-          client: {mode: cimd, cimd: {documentURL: https://issuer.example/client.json}}
+          client: {mode: preregistered, preregistered: {id: client, secretKeyRef: {name: oauth-client, key: secret}}}
           scopes: [mcp.read]
           network: {additionalOrigins: [], privateOrigins: [], maxRedirects: 0}
 `
@@ -2762,7 +2725,7 @@ func TestMecak8sHelmChart_MCPMixedAuthRejectedInEitherOrder(t *testing.T) {
         mode: oauth
         oauth:
           issuer: https://issuer.example
-          client: {mode: cimd, cimd: {documentURL: https://issuer.example/client.json}}
+          client: {mode: preregistered, preregistered: {id: client, secretKeyRef: {name: oauth-client, key: secret}}}
           scopes: [mcp.read]
           network: {additionalOrigins: [], privateOrigins: [], maxRedirects: 0}
     - name: legacy
@@ -2790,7 +2753,7 @@ func TestMecak8sHelmChart_MCPMixedAuthRejectedInEitherOrder(t *testing.T) {
         mode: oauth
         oauth:
           issuer: https://issuer.example
-          client: {mode: cimd, cimd: {documentURL: https://issuer.example/client.json}}
+          client: {mode: preregistered, preregistered: {id: client, secretKeyRef: {name: oauth-client, key: secret}}}
           scopes: [mcp.read]
           network: {additionalOrigins: [], privateOrigins: [], maxRedirects: 0}
 `,
@@ -2831,11 +2794,11 @@ mcp:
         oauth:
           issuer: https://issuer.example
           client:
-            mode: cimd
-            cimd: {documentURL: https://client.example/mecatl.json}
+            mode: preregistered
+            preregistered: {id: client, secretKeyRef: {name: oauth-client, key: secret}}
           scopes: [mcp.read]
           network:
-            additionalOrigins: [https://client.example]
+            additionalOrigins: []
             privateOrigins: []
             maxRedirects: 0
 `
@@ -2891,11 +2854,11 @@ mcp:
         oauth:
           issuer: https://issuer.example
           client:
-            mode: cimd
-            cimd: {documentURL: https://client.example/mecatl.json}
+            mode: preregistered
+            preregistered: {id: client, secretKeyRef: {name: oauth-client, key: secret}}
           scopes: [mcp.read]
           network:
-            additionalOrigins: [https://client.example]
+            additionalOrigins: []
             privateOrigins: []
             maxRedirects: 0
 `
@@ -2907,8 +2870,6 @@ mcp:
 		"issuer port out of range":     strings.Replace(valid, "https://issuer.example", "https://issuer.example:65536", 1),
 		"expanded IPv6 issuer":         strings.Replace(valid, "https://issuer.example", "https://[0:0:0:0:0:0:0:1]", 1),
 		"padded IPv6 issuer":           strings.Replace(valid, "https://issuer.example", "https://[2001:0db8::1]", 1),
-		"CIMD origin not allowed":      strings.Replace(valid, "additionalOrigins: [https://client.example]", "additionalOrigins: []", 1),
-		"private origin not allowed":   strings.Replace(valid, "privateOrigins: []", "privateOrigins: [https://private.example]", 1),
 	}
 	for name, values := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -2916,9 +2877,8 @@ mcp:
 			if err != nil {
 				t.Fatalf("chart rejected structurally valid OAuth values before runtime validation: %v", err)
 			}
-			profile := configMapFromRender(t, rendered, "production-mecak8s-mcp").Data["settings.yaml"]
-			if err := runtimeMCPAuthorityValidationError(t, profile); err == nil {
-				t.Fatalf("runtime settings parser accepted semantically invalid OAuth profile:\n%s", profile)
+			if err := brokerURLValidationError(brokerConfigFromRender(t, rendered)); err == nil {
+				t.Fatal("broker accepted semantically invalid OAuth profile")
 			}
 		})
 	}
@@ -2937,8 +2897,8 @@ mcp:
         oauth:
           issuer: https://issuer.example
           client:
-            mode: cimd
-            cimd: {documentURL: https://issuer.example/client.json}
+            mode: preregistered
+            preregistered: {id: client, secretKeyRef: {name: oauth-client, key: secret}}
           scopes: [mcp.read]
           network: {additionalOrigins: [], privateOrigins: [], maxRedirects: 0}
 `
@@ -2950,8 +2910,8 @@ mcp:
 	if err != nil {
 		t.Fatalf("render changed OAuth profile: %v", err)
 	}
-	firstSum := deploymentFromRender(t, first).Spec.Template.Annotations["checksum/mcp-profile"]
-	secondSum := deploymentFromRender(t, second).Spec.Template.Annotations["checksum/mcp-profile"]
+	firstSum := brokerDeploymentFromRender(t, first).Spec.Template.Annotations["checksum/broker-config"]
+	secondSum := brokerDeploymentFromRender(t, second).Spec.Template.Annotations["checksum/broker-config"]
 	if firstSum == "" || secondSum == "" || firstSum == secondSum {
 		t.Fatalf("OAuth profile checksums = %q and %q; profile change must roll pods", firstSum, secondSum)
 	}

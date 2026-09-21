@@ -4,7 +4,6 @@
   "additionalProperties": false,
   "required": ["image", "redis", "learning"],
   "properties": {
-    "global": {"type": "object"},
     "image": {
       "type": "object",
       "additionalProperties": false,
@@ -19,12 +18,13 @@
     "redis": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["endpoint", "credentialsSecret", "passwordKey", "caKey", "usernameKey", "filesystem", "readLedger", "local"],
+      "required": ["endpoint", "credentialsSecret", "passwordKey", "caKey", "usernameKey", "follow", "filesystem", "readLedger", "local"],
       "properties": {
         "endpoint": {"type": "string"},
         "credentialsSecret": {"type": "string"},
         "passwordKey": {"type": "string"},
         "caKey": {"type": "string"},
+        "follow": {"type": "object", "additionalProperties": false, "required": ["poolSize", "maxFollowers"], "properties": {"poolSize": {"type": "integer", "minimum": 1}, "maxFollowers": {"type": "integer", "minimum": 1}}},
         "usernameKey": {"type": "string"},
         "filesystem": {"type": "object", "additionalProperties": false, "required": ["enabled"], "properties": {"enabled": {"type": "boolean"}}},
         "readLedger": {"type": "object", "additionalProperties": false, "required": ["enabled"], "properties": {"enabled": {"type": "boolean"}}},
@@ -69,6 +69,7 @@
         "tlsTerminatedUpstream": {"type": "boolean"}
       }
     },
+    "podDisruptionBudget": {"type": "object", "additionalProperties": false, "required": ["enabled", "maxUnavailable"], "properties": {"enabled": {"type": "boolean"}, "maxUnavailable": {"oneOf": [{"type": "integer", "minimum": 0}, {"type": "string", "pattern": "^(100|[1-9]?[0-9])%$"}]}}},
     "replicaCount": {"type": "integer", "minimum": 1},
     "mockProvider": {"type": "boolean"},
     "defaultProvider": {"type": "string", "enum": ["", "openai", "openai-codex", "openrouter", "anthropic", "opencode", "toolhive"]},
@@ -92,7 +93,7 @@
         }
       }
     },
-    "terminationGracePeriodSeconds": {"type": "integer", "minimum": 1},
+    "terminationGracePeriodSeconds": {"type": "integer", "minimum": 44},
     "workspace": {"type": "string"},
     "imagePullSecrets": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["name"], "properties": {"name": {"type": "string", "minLength": 1}}}},
     "mcp": {
@@ -219,20 +220,15 @@
         }
       }
     },
-    "remoteBroker": {
+    "broker": {
       "type": "object", "additionalProperties": false,
-      "required": ["address", "caSecret", "caKey", "serverName", "workloadJWT"],
+      "required": ["image", "tls", "clientCA", "workloadJWT", "resources"],
       "properties": {
-        "address": {"type": "string"}, "caSecret": {"type": "string"}, "caKey": {"type": "string"},
-        "serverName": {"type": "string"},
-        "workloadJWT": {
-          "type": "object", "additionalProperties": false,
-          "required": ["audience", "lifetimeSeconds"],
-          "properties": {
-            "audience": {"type": "string"},
-            "lifetimeSeconds": {"type": "integer", "minimum": 1, "maximum": 3600}
-          }
-        }
+        "image": {"type": "object", "additionalProperties": false, "required": ["repository", "digest", "tag", "pullPolicy"], "properties": {"repository": {"type": "string", "minLength": 1}, "digest": {"type": "string", "pattern": "^(|sha256:[0-9a-f]{64})$"}, "tag": {"type": "string"}, "pullPolicy": {"type": "string", "enum": ["Always", "IfNotPresent", "Never"]}}},
+        "tls": {"type": "object", "additionalProperties": false, "required": ["secretName", "certKey", "keyKey"], "properties": {"secretName": {"type": "string"}, "certKey": {"type": "string", "pattern": "^[A-Za-z0-9_-][A-Za-z0-9._-]*$"}, "keyKey": {"type": "string", "pattern": "^[A-Za-z0-9_-][A-Za-z0-9._-]*$"}}},
+        "clientCA": {"type": "object", "additionalProperties": false, "required": ["secretName", "key", "serverName"], "properties": {"secretName": {"type": "string"}, "key": {"type": "string", "pattern": "^[A-Za-z0-9_-][A-Za-z0-9._-]*$"}, "serverName": {"type": "string"}}},
+        "workloadJWT": {"type": "object", "additionalProperties": false, "required": ["audience", "lifetimeSeconds"], "properties": {"audience": {"type": "string", "minLength": 1}, "lifetimeSeconds": {"type": "integer", "minimum": 600, "maximum": 3600}}},
+        "resources": {"type": "object"}
       }
     },
     "learning": {
@@ -484,26 +480,6 @@
     {
       "if": {"properties": {"oidc": {"properties": {"enabled": {"const": true}}}, "learning": {"properties": {"store": {"properties": {"endpoint": {"minLength": 1}}}}}}},
       "then": false
-    },
-    {
-      "if": {
-        "required": ["mcp"],
-        "properties": {
-          "mcp": {
-            "required": ["broker"],
-            "properties": {
-              "broker": {
-                "required": ["callbackURL"],
-                "properties": {"callbackURL": {"minLength": 1}}
-              }
-            }
-          }
-        }
-      },
-      "then": {
-        "required": ["replicaCount"],
-        "properties": {"replicaCount": {"const": 1}}
-      }
     }
   ],
   "definitions": {

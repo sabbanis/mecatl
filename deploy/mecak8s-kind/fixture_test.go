@@ -473,13 +473,19 @@ func TestMecak8sKindFixture_Scenario3_LoginDocumentation(t *testing.T) {
 }
 
 // TestMecak8sKindFixture_Scenario3_KeycloakIsOptIn pins the identity layer's
-// independent lifecycle: the base cannot transitively install identity assets,
-// while the opt-in setup applies them only after the base is ready.
+// independent lifecycle: the base provisions broker TLS but cannot transitively
+// install optional caller-identity assets; opt-in setup applies those afterward.
 func TestMecak8sKindFixture_Scenario3_KeycloakIsOptIn(t *testing.T) {
 	base := fixtureTaskClosure(t, "kind-setup")
-	for _, forbidden := range []string{"cert-manager", "certificate-apply", "keycloak", "oidc", "tls", "values-kind-keycloak.yaml"} {
+	for _, forbidden := range []string{"cert-manager", "certificate-apply", "keycloak", "oidc", "fixture-tls.yaml", "create secret tls mecak8s-tls", "tls.enabled=true", "values-kind-keycloak.yaml"} {
 		if strings.Contains(strings.ToLower(base), forbidden) {
 			t.Fatalf("base setup transitively depends on optional identity asset %q", forbidden)
+		}
+	}
+
+	for _, want := range []string{"task: broker-tls-apply", "broker-tls-apply:", "create secret tls mecabroker-tls", "create secret generic mecabroker-ca"} {
+		if !strings.Contains(base, want) {
+			t.Fatalf("base setup missing mandatory broker TLS provisioning %q", want)
 		}
 	}
 

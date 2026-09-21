@@ -619,9 +619,6 @@ func (p *Process) ready(context.Context) error {
 	if p.closed || p.Runtime == nil || p.cancel == nil {
 		return errors.New("mcpbroker: ToolHive process is unavailable")
 	}
-	if len(p.construction.anonymous)+len(p.construction.upstreams) == 0 {
-		return errors.New("mcpbroker: no ToolHive profiles are configured")
-	}
 	if len(p.construction.upstreams) != 0 {
 		if p.Handlers.VMCP == nil || p.protectedTarget == nil || p.Handlers.Authorization == nil || p.Handlers.Token == nil ||
 			p.Handlers.UpstreamCallback == nil || p.Handlers.Discovery == nil || p.Handlers.JWKS == nil ||

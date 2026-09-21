@@ -5854,13 +5854,18 @@ authorization state; owner deletion calls `DeleteSession`.
 The local mecatl attachment/session boundary remains process-local. After restart, the
 pre-prompt server seam may replace a stale binding with the new incarnation,
 discard the old pending correlation, and begin a fresh enrollment. It does not
-recover or continue the prior outer enrollment. ToolHive's configured Redis storage can
-retain its inner upstream authorization/token records, but a local mecatl process's outer
-callback correlation and broker ownership are not durable and cannot rediscover
-those records. Likewise, local replicas do not share or route that outer correlation;
-that topology requires affinity or a durable-broker decision. `mecak8s` avoids this local
-broker topology by using the remote broker service; its client retains only remote attachment
-handles and follows the remote adapter's fail-closed incarnation semantics. Guards include
+recover or continue the prior outer enrollment. The legacy embedded construction in
+`internal/app/mcp_broker_toolhive.go` supported Redis for ToolHive's inner upstream
+authorization/pending/token records, without making outer callback correlation or
+broker ownership durable. The standalone construction in `cmd/mecabroker/config.go`
+(`toolHive`) supplies only callback URL and profiles; with no auth storage/client,
+`internal/adapter/mcpbroker/toolhive_process.go` selects in-memory protected storage.
+Both inner and outer standalone broker state are therefore currently in memory.
+Standalone inner Redis wiring remains outstanding, and broker replacement requires
+fresh authorization; this is not complete migration compatibility. `mecak8s` agent
+sessions and their event log remain Redis-backed. The agents use the singleton remote
+broker service, retain only remote attachment handles, and follow the remote adapter's
+fail-closed incarnation semantics. Guards include
 `internal/adapter/server/mcp_broker_multi_upstream_e2e_test.go`,
 `internal/adapter/mcpbroker/workspace_catalogue_test.go`, and
 `internal/adapter/mcpbroker/toolhive_process_test.go`.

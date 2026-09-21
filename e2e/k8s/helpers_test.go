@@ -24,9 +24,15 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"os"
@@ -126,7 +132,10 @@ func kindDeleteCluster() {
 // deterministic tag to that SAME image — deploy/mecak8s-vmcp/Taskfile.yml's
 // image-build-load task uses the identical pattern, so there is no ref to parse
 // out of ko's output.
-const e2eImageRef = "ko.local/mecak8s:e2e"
+const (
+	e2eImageRef       = "ko.local/mecak8s:e2e"
+	e2eBrokerImageRef = "ko.local/mecabroker:e2e"
+)
 
 // koBuildMecak8sImage builds the mecak8s image with ko into the local container
 // daemon under e2eImageRef. Unlike the old one-shot kustomize-era `ko resolve`
@@ -145,6 +154,16 @@ func koBuildMecak8sImage() {
 		"ko build --local --bare --tags=e2e ./cmd/mecak8s failed\n--- output ---\n%s", out)
 }
 
+func koBuildMecabrokerImage() {
+	ginkgo.GinkgoHelper()
+	ctx := ginkgoSuiteCtx()
+	build := exec.CommandContext(ctx, "ko", "build", "--local", "--bare", "--tags=e2e", "./cmd/mecabroker")
+	build.Dir = repoRoot()
+	build.Env = append(build.Environ(), "KO_DOCKER_REPO=ko.local/mecabroker")
+	out, err := build.CombinedOutput()
+	gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(),
+		"ko build --local --bare --tags=e2e ./cmd/mecabroker failed\n--- output ---\n%s", out)
+}
 func koBuildLearningDriverImage() {
 	ginkgo.GinkgoHelper()
 	ctx := ginkgoSuiteCtx()
@@ -202,6 +221,35 @@ func saveAndLoadImage(imageRef string) {
 		"kind load image-archive %s failed\n--- output ---\n%s", tmpPath, loadOut)
 }
 
+// provisionBrokerTLS creates only disposable Kind fixture credentials. Production
+// operators provide the serving keypair and client CA out of band; the chart never
+// weakens TLS or creates them. One self-signed leaf is sufficient here because the
+// agent trusts the explicitly projected PEM as its broker CA.
+func provisionBrokerTLS() {
+	ginkgo.GinkgoHelper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(), "generate broker fixture key")
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(), "generate broker fixture serial")
+	name := "mecak8s-agent-broker." + k8sNamespace + ".svc"
+	der, err := x509.CreateCertificate(rand.Reader, &x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: name},
+		DNSNames:              []string{name},
+		NotBefore:             time.Now().Add(-time.Minute),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageKeyEncipherment | x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}, nil, &key.PublicKey, key)
+	gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(), "create broker fixture certificate")
+	cert := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	applyOpaqueSecret(ginkgoSuiteCtx(), "mecabroker-tls", map[string][]byte{"tls.crt": cert, "tls.key": keyPEM})
+	applyOpaqueSecret(ginkgoSuiteCtx(), "mecabroker-ca", map[string][]byte{"ca.pem": cert})
+}
+
 // helmInstallMecak8sChart creates + labels the mecatl namespace (PSS restricted,
 // mirroring deploy/mecak8s-vmcp/Taskfile.yml's chart-apply task) and installs the
 // deploy/helm/mecak8s chart with the disposable Kind values profile
@@ -232,12 +280,18 @@ func helmInstallMecak8sChart() {
 		"pod-security.kubernetes.io/warn=restricted",
 		"--overwrite")
 
+	provisionBrokerTLS()
+
 	installOut, err := boundedCommandOutput(ctx, 1<<20, "helm", "upgrade", "--install", "mecak8s", chartDir,
 		"--namespace", k8sNamespace,
 		"--values", filepath.Join(chartDir, "values-kind.yaml"),
 		"--set", "image.repository=ko.local/mecak8s",
 		"--set", "image.tag=e2e",
-		"--set", "fullnameOverride=mecak8s-agent",
+		"--set", "broker.image.repository=ko.local/mecabroker",
+		"--set", "broker.image.tag=e2e",
+		"--set", "broker.tls.secretName=mecabroker-tls",
+		"--set", "broker.clientCA.secretName=mecabroker-ca",
+		"--set", "broker.clientCA.serverName=mecak8s-agent-broker."+k8sNamespace+".svc",
 		"--wait", "--timeout=4m")
 	gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(),
 		"helm upgrade --install mecak8s failed\n--- output ---\n%s", installOut)

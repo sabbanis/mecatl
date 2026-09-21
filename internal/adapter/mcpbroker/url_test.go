@@ -9,6 +9,11 @@ func TestSingletonBrokerRemediation_Scenario3_ProtectedURLsAndOIDCDiscoveryFailC
 		"https://idp.internal.example/issuer?x=1",
 		"https://idp.internal.example/issuer#fragment",
 		"https://idp.internal.example/issuer%2Fpart",
+		"https://idp_internal.example/issuer",
+		"https://idp.internal.example:0/issuer",
+		"https://idp.internal.example:65536/issuer",
+		"https://[2001:0db8:0:0:0:0:0:1]/issuer",
+		"https://[2001:db8::01]/issuer",
 	} {
 		if err := ValidateProtectedURL(raw, "endpoint"); err == nil {
 			t.Errorf("ValidateProtectedURL(%q) accepted unsafe URL", raw)

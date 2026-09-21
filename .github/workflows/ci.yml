@@ -712,8 +712,6 @@ jobs:
         run: task deploy:check
       - name: Run mecak8s semantic chart tests
         run: go test ./deploy/helm/mecak8s -count=1
-      - name: Run mecabroker semantic chart tests
-        run: go test ./deploy/helm/mecabroker -count=1
 
   test-non-race-draft:
     name: Test (non-race draft coverage)

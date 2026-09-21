@@ -180,7 +180,7 @@ func (*traceAttachment) Tools() []tool.Tool { return []tool.Tool{traceTool{}} }
 
 type traceService struct{ countingService }
 
-func (s *traceService) AttachSession(context.Context, session.SessionID) (contract.SessionHandle, contract.AttachOutcome, error) {
+func (*traceService) AttachSession(context.Context, session.SessionID) (contract.SessionHandle, contract.AttachOutcome, error) {
 	return &traceAttachment{}, contract.AttachCreated, nil
 }
 

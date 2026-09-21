@@ -66,6 +66,7 @@ func TestRedisWatchDiagnosticsUseReasonCodesOnly(t *testing.T) {
 	deps.initialClient = func(context.Context, *tcredis.Config) (redis.UniversalClient, error) {
 		return redis.NewClient(&redis.Options{Addr: server.Addr()}), nil
 	}
+	deps.dedicatedFollow = false
 	deps.watcher = func(_ []string, _ time.Duration, _ time.Duration, _ func(), onError func(error)) (*filewatch.Watcher, error) {
 		onError(fmt.Errorf("%s at %s", secret, caFile))
 		return nil, errors.New("stop after diagnostic")
@@ -99,6 +100,7 @@ func TestPasswordRotationPublishesOnlyVerifiedCandidate(t *testing.T) {
 	diagnostics := &capturedDiagnostics{}
 	cfg := Config{Addr: server.Addr(), CAFile: caFile, PasswordFile: passwordFile, Diagnostics: diagnostics}
 	deps := defaultStoreDependencies()
+	deps.dedicatedFollow = false
 	deps.candidate = passwordCandidateFactory("new-secret-value", "old", nil)
 	store, err := newWithConfig(cfg, deps)
 	if err != nil {
@@ -154,6 +156,7 @@ func TestProductionCandidateRotatesCAAndPasswordTransactionally(t *testing.T) {
 	}
 	defer store.Close()
 	old := store.testClient()
+	oldFollow := store.testFollowClient()
 
 	reloadWrite(t, dir, "ca.pem", caTwo)
 	awaitDiagnostic(t, diagnostics, "retrying")
@@ -167,6 +170,9 @@ func TestProductionCandidateRotatesCAAndPasswordTransactionally(t *testing.T) {
 	proxy.Switch(backendTwo.Addr())
 	reloadWrite(t, dir, "password", "password-two")
 	awaitClientChange(t, store, old)
+	if store.testFollowClient() == oldFollow {
+		t.Fatal("rotated production configuration left the follow client on the old generation")
+	}
 	if err := store.Ping(context.Background()); err != nil {
 		t.Fatalf("rotated production client failed: %v", err)
 	}
@@ -244,6 +250,7 @@ func TestReloadRetriesUntilRedisAcceptsCredential(t *testing.T) {
 	var redisReady atomic.Bool
 	cfg := Config{Addr: server.Addr(), CAFile: reloadWrite(t, dir, "ca.pem", ca), PasswordFile: passwordFile, Diagnostics: diagnostics}
 	deps := defaultStoreDependencies()
+	deps.dedicatedFollow = false
 	deps.candidate = passwordCandidateFactory("eventual", "old", &redisReady)
 	store, err := newWithConfig(cfg, deps)
 	if err != nil {
@@ -360,6 +367,7 @@ func TestReloadLifecycleCloseIsBoundedByJoinGrace(t *testing.T) {
 		<-continueRead
 		return readCredentialFile(file, maxBytes)
 	}
+	deps.dedicatedFollow = false
 	deps.candidate = func(context.Context, *tcredis.Config) (redis.UniversalClient, error) {
 		candidate = &closeTrackingClient{UniversalClient: redis.NewClient(&redis.Options{Addr: server.Addr()})}
 		return candidate, nil
@@ -477,6 +485,7 @@ func TestProjectedPasswordSymlinkSwapReloads(t *testing.T) {
 	server.RequireAuth("old")
 	cfg := Config{Addr: server.Addr(), CAFile: reloadWrite(t, root, "ca.pem", ca), PasswordFile: filepath.Join(root, "password")}
 	deps := defaultStoreDependencies()
+	deps.dedicatedFollow = false
 	deps.candidate = passwordCandidateFactory("new", "old", nil)
 	store, err := newWithConfig(cfg, deps)
 	if err != nil {
@@ -510,6 +519,7 @@ func TestRejectedCandidateIsClosed(t *testing.T) {
 	var tracked *closeTrackingClient
 	cfg := Config{Addr: server.Addr(), AllowPlaintext: true}
 	deps := defaultStoreDependencies()
+	deps.dedicatedFollow = false
 	deps.candidate = func(ctx context.Context, cfg *tcredis.Config) (redis.UniversalClient, error) {
 		client, err := tcredis.NewClient(ctx, cfg)
 		if err != nil {
@@ -534,6 +544,7 @@ func TestReloadExhaustionWaitsForNewFileEvent(t *testing.T) {
 	deps := defaultStoreDependencies()
 	deps.backoff = func(int) time.Duration { return 0 }
 	deps.jitter = nil
+	deps.dedicatedFollow = false
 	deps.candidate = func(ctx context.Context, _ *tcredis.Config) (redis.UniversalClient, error) {
 		attempt := attempts.Add(1)
 		if attempt <= reloadMaxAttempts {
@@ -577,6 +588,7 @@ func TestReloadEventDuringAttemptRestartsAtAttemptOne(t *testing.T) {
 	var calls atomic.Int32
 	started := make(chan struct{})
 	deps := defaultStoreDependencies()
+	deps.dedicatedFollow = false
 	deps.candidate = func(ctx context.Context, _ *tcredis.Config) (redis.UniversalClient, error) {
 		if calls.Add(1) == 1 {
 			close(started)
@@ -608,6 +620,7 @@ func TestReloadEventDuringBackoffRestartsAtAttemptOne(t *testing.T) {
 	deps := defaultStoreDependencies()
 	deps.backoff = func(int) time.Duration { return time.Hour }
 	deps.jitter = nil
+	deps.dedicatedFollow = false
 	deps.candidate = func(context.Context, *tcredis.Config) (redis.UniversalClient, error) {
 		if calls.Add(1) == 1 {
 			return nil, errors.New("candidate rejected")
@@ -675,6 +688,7 @@ func TestReloadEventsStaySingleFlightAndShutdownCancelsCandidate(t *testing.T) {
 	started := make(chan struct{}, 1)
 	cfg := Config{Addr: "127.0.0.1:1", CAFile: reloadWrite(t, dir, "ca.pem", ca)}
 	deps := defaultStoreDependencies()
+	deps.dedicatedFollow = false
 	deps.candidate = func(ctx context.Context, _ *tcredis.Config) (redis.UniversalClient, error) {
 		current := active.Add(1)
 		defer active.Add(-1)

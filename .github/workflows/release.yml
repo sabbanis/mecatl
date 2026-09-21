@@ -351,6 +351,7 @@ jobs:
     name: Build, publish, sign, attest mecak8s
     needs: validate-release-tag
     outputs:
+      image_ref: ${{ steps.build.outputs.digest }}
       image_digest: ${{ steps.build.outputs.image_digest }}
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -687,7 +688,7 @@ jobs:
   # Publish the chart only after its default image tag exists.
   publish-helm-chart:
     name: Package, publish, sign Helm chart
-    needs: [validate-release-tag, publish-mecak8s]
+    needs: [validate-release-tag, publish-mecak8s, publish-mecabroker]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -698,9 +699,11 @@ jobs:
       # Sibling OCI path for release charts.
       OCI_REGISTRY: ghcr.io/${{ github.repository }}/charts
       CHART_PATH: deploy/helm/mecak8s
-      # On workflow_dispatch github.ref_name is the default branch, so prefer
-      # the explicit input; on a tag push github.ref_name is the tag.
       VERSION: ${{ needs.validate-release-tag.outputs.tag }}
+      AGENT_IMAGE_REF: ${{ needs.publish-mecak8s.outputs.image_ref }}
+      AGENT_IMAGE_DIGEST: ${{ needs.publish-mecak8s.outputs.image_digest }}
+      BROKER_IMAGE_REF: ${{ needs.publish-mecabroker.outputs.image_ref }}
+      BROKER_IMAGE_DIGEST: ${{ needs.publish-mecabroker.outputs.image_digest }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -730,14 +733,22 @@ jobs:
       # overrides plus the immutable digest produced by the image job; release
       # chart validation must never exercise the chart's tag fallback.
       - name: helm lint
-        run: helm lint "${CHART_PATH}" --set image.digest=${{ needs.publish-mecak8s.outputs.image_digest }},redis.endpoint=redis.example.internal:6379,redis.credentialsSecret=redis-credentials,tls.enabled=true,tls.secretName=mecak8s-tls,oidc.enabled=true,oidc.issuer=https://idp.example.com,oidc.audience=mecatl
+        run: helm lint "${CHART_PATH}" --set image.digest=${{ needs.publish-mecak8s.outputs.image_digest }},broker.image.digest=${{ needs.publish-mecabroker.outputs.image_digest }},broker.tls.secretName=mecabroker-tls,broker.clientCA.secretName=mecabroker-ca,redis.endpoint=redis.example.internal:6379,redis.credentialsSecret=redis-credentials,tls.enabled=true,tls.secretName=mecak8s-tls,oidc.enabled=true,oidc.issuer=https://idp.example.com,oidc.audience=mecatl
 
       - name: helm package
         env:
           CHART_VERSION: ${{ steps.version.outputs.chart_version }}
         run: |
+          printf '%s\n' "${AGENT_IMAGE_REF}" | grep -Eq '^ghcr\.io/.+@sha256:[0-9a-f]{64}$'
+          printf '%s\n' "${BROKER_IMAGE_REF}" | grep -Eq '^ghcr\.io/.+@sha256:[0-9a-f]{64}$'
+          printf '%s\n' "${AGENT_IMAGE_DIGEST}" | grep -Eq '^sha256:[0-9a-f]{64}$'
+          printf '%s\n' "${BROKER_IMAGE_DIGEST}" | grep -Eq '^sha256:[0-9a-f]{64}$'
           mkdir -p dist
-          helm package "${CHART_PATH}" --version "${CHART_VERSION}" --destination dist
+          rm -rf dist/mecak8s
+          cp -R "${CHART_PATH}" dist/mecak8s
+          sed -i "s|^  digest: .*|  digest: ${AGENT_IMAGE_DIGEST}|" dist/mecak8s/values.yaml
+          sed -i "0,/^    digest: .*/s||    digest: ${BROKER_IMAGE_DIGEST}|" dist/mecak8s/values.yaml
+          helm package dist/mecak8s --version "${CHART_VERSION}" --app-version "${VERSION}" --destination dist
           ls -la dist/
           test -f "dist/mecak8s-${CHART_VERSION}.tgz"
 
@@ -833,81 +844,6 @@ jobs:
   # create the release again and fails; recover with
   #   gh release delete <tag> --cleanup-tag=false --yes
   # before re-dispatching. See .claude/skills/cut-release.
-  publish-mecabroker-helm-chart:
-    name: Package, publish, sign mecabroker Helm chart
-    needs: [validate-release-tag, publish-mecabroker]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    permissions:
-      contents: read
-      packages: write
-      id-token: write
-    env:
-      OCI_REGISTRY: ghcr.io/${{ github.repository }}/charts
-      CHART_PATH: deploy/helm/mecabroker
-      VERSION: ${{ needs.validate-release-tag.outputs.tag }}
-      IMAGE_REF: ${{ needs.publish-mecabroker.outputs.image_ref }}
-      IMAGE_DIGEST: ${{ needs.publish-mecabroker.outputs.image_digest }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-          fetch-depth: 1
-          ref: ${{ env.VERSION }}
-      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
-        with:
-          version: v3.18.4
-      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
-      - name: Resolve chart version from tag
-        id: version
-        run: echo "chart_version=${VERSION#v}" >> "$GITHUB_OUTPUT"
-      - name: helm lint
-        run: helm lint "${CHART_PATH}" -f "${CHART_PATH}/ci/production-values.yaml"
-      - name: helm package
-        env:
-          CHART_VERSION: ${{ steps.version.outputs.chart_version }}
-        run: |
-          set -euo pipefail
-          printf '%s\n' "${IMAGE_REF}" | grep -Eq '^ghcr\.io/.+@sha256:[0-9a-f]{64}$'
-          printf '%s\n' "${IMAGE_DIGEST}" | grep -Eq '^sha256:[0-9a-f]{64}$'
-          mkdir -p dist
-          rm -rf dist/mecabroker
-          cp -R "${CHART_PATH}" dist/mecabroker
-          sed -i "s|^  digest: .*|  digest: ${IMAGE_DIGEST}|" dist/mecabroker/values.yaml
-          grep -Fx "  digest: ${IMAGE_DIGEST}" dist/mecabroker/values.yaml
-          mkdir -p dist
-          helm package dist/mecabroker --version "${CHART_VERSION}" --app-version "${VERSION}" --destination dist
-          test -f "dist/mecabroker-${CHART_VERSION}.tgz"
-      - name: helm registry login
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: printf '%s' "$GITHUB_TOKEN" | helm registry login ghcr.io -u "${{ github.actor }}" --password-stdin
-      - name: Log in to ghcr for cosign
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ env.GITHUB_TOKEN }}
-      - name: helm push
-        id: push
-        env:
-          CHART_VERSION: ${{ steps.version.outputs.chart_version }}
-        run: |
-          set -euo pipefail
-          OUTPUT=$(helm push "dist/mecabroker-${CHART_VERSION}.tgz" "oci://${OCI_REGISTRY}" 2>&1)
-          echo "$OUTPUT"
-          DIGEST=$(echo "$OUTPUT" | awk '/^Digest:/ {print $2}')
-          printf '%s\n' "$DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$'
-          echo "digest=$DIGEST" >> "$GITHUB_OUTPUT"
-      - name: cosign sign chart
-        env:
-          DIGEST: ${{ steps.push.outputs.digest }}
-        run: |
-          printf '%s\n' "$DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$'
-          cosign sign -y "${OCI_REGISTRY}/mecabroker@${DIGEST}"
-
   publish-cli:
     name: Build, publish, sign, attest CLI archives + Homebrew formula
     needs: validate-release-tag

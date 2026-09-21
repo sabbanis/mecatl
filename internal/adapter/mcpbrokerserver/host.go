@@ -203,20 +203,18 @@ func (h *brokerHost) traceRPC(ctx context.Context, req any, info *grpc.UnaryServ
 			fields = append(fields, "logical_session", boundedDiagnosticName(trace.LogicalSession), "binding", boundedDiagnosticName(trace.Binding))
 		}
 	}
-	switch r := req.(type) {
-	case interface {
+	if r, ok := req.(interface {
 		GetHandle() string
 		GetName() string
 		GetArgs() []byte
-	}:
+	}); ok {
 		if trace, ok := h.rpc.TraceExecution(r.GetHandle(), r.GetName(), r.GetArgs()); ok {
 			if trace.Backend != "" {
 				fields = append(fields, "backend", boundedDiagnosticName(trace.Backend), "outbound_credential_kind", trace.OutboundCredentialKind)
 			}
 		}
 	}
-	switch r := req.(type) {
-	case interface{ GetName() string }:
+	if r, ok := req.(interface{ GetName() string }); ok {
 		fields = append(fields, "tool", boundedDiagnosticName(r.GetName()))
 	}
 	if attached, ok := response.(*brokerv1.AttachResponse); ok {

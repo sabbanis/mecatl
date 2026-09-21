@@ -4,21 +4,15 @@
 {{- include "mecak8s.validateTLS" . -}}
 {{- include "mecak8s.validateLearningStore" . -}}
 {{- include "mecak8s.validateProviderSecurity" . -}}
-{{- include "mecak8s.validateRemoteBroker" . -}}
-{{- $remoteAddress := include "mecak8s.remoteBrokerAddress" . -}}
-{{- $remoteCASecret := include "mecak8s.remoteBrokerCASecret" . -}}
-{{- $remoteCAKey := include "mecak8s.remoteBrokerCAKey" . -}}
-{{- $remoteServerName := include "mecak8s.remoteBrokerServerName" . -}}
-{{- $remoteAudience := include "mecak8s.remoteBrokerAudience" . -}}
-{{- $remoteLifetime := include "mecak8s.remoteBrokerLifetime" . -}}
+{{- $mcpOAuth := false -}}
+{{- range .Values.mcp.servers }}{{- if eq .auth.mode "oauth" }}{{- $mcpOAuth = true }}{{- end }}{{- end -}}
+{{- if $mcpOAuth }}{{- include "mecak8s.validateBroker" . }}{{- end -}}
 {{- $learningStoreEnabled := ne .Values.learning.store.endpoint "" -}}
 {{- $learningStoreTokenConfigured := and .Values.learning.store.tokenSecret .Values.learning.store.tokenKey -}}
 
 
 {{- include "mecak8s.validateMCP" . -}}
-{{- $mcpOAuth := false -}}
-{{- range (default .Values.mcp.servers (dig "mecatl" "mcp" "servers" nil (default dict .Values.global))) -}}{{- if eq .auth.mode "oauth" -}}{{- $mcpOAuth = true -}}{{- end -}}{{- end -}}
-{{- $mcpSettings := or $mcpOAuth (not (default .Values.mcp.servers (dig "mecatl" "mcp" "servers" nil (default dict .Values.global)))) -}}
+{{- $mcpSettings := or $mcpOAuth (not .Values.mcp.servers) -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -28,12 +22,7 @@ spec:
   replicas: {{ .Values.replicaCount }}
   strategy:
     {{- if $mcpOAuth }}
-    # Broker mode: session/grant/authorization state is process-local. A surge
-    # rollout (the RollingUpdate default) would briefly run a second, empty
-    # broker incarnation alongside the old one before it drains, which can
-    # receive traffic bound to the old pod's in-flight state. Recreate retires
-    # the old pod completely before starting the new one — a real downtime
-    # window, but the only correct choice until broker state is shared.
+    # Retire any old embedded broker before bringing up remote-broker agents.
     type: Recreate
     {{- else }}
     type: RollingUpdate
@@ -110,6 +99,8 @@ spec:
             - --http-addr=0.0.0.0:8081
             - --drain-addr=0.0.0.0:8082
             - {{ printf "--redis-url=%s" .Values.redis.endpoint | quote }}
+            - {{ printf "--redis-follow-pool-size=%d" (int64 .Values.redis.follow.poolSize) | quote }}
+            - {{ printf "--redis-max-followers=%d" (int64 .Values.redis.follow.maxFollowers) | quote }}
             {{- if .Values.redis.filesystem.enabled }}
             - --redis-filesystem
             {{- end }}
@@ -134,11 +125,11 @@ spec:
             {{- if ne .Values.maxTeamTokens nil }}
             - {{ printf "--max-team-tokens=%v" .Values.maxTeamTokens | quote }}
             {{- end }}
-            {{- if $remoteAddress }}
-            - {{ printf "--mcp-broker-address=%s" $remoteAddress | quote }}
+            {{- if $mcpOAuth }}
+            - {{ printf "--mcp-broker-address=%s:8443" (include "mecak8s.brokerFullname" .) | quote }}
             - --mcp-broker-token-file=/var/run/secrets/mecatl-broker/token
-            - {{ printf "--mcp-broker-tls-ca=/var/run/secrets/mecatl-broker/%s" $remoteCAKey | quote }}
-            - {{ printf "--mcp-broker-server-name=%s" $remoteServerName | quote }}
+            - {{ printf "--mcp-broker-tls-ca=/var/run/secrets/mecatl-broker/%s" .Values.broker.clientCA.key | quote }}
+            - {{ printf "--mcp-broker-server-name=%s" (include "mecak8s.brokerServerName" .) | quote }}
             {{- end }}
             {{- if .Values.workspace }}
             - {{ printf "--workspace=%s" .Values.workspace | quote }}
@@ -202,8 +193,8 @@ spec:
             {{- if .Values.skills.autoDiscover }}
             - --skills-conventional=true
             {{- end }}
-            {{- range $server := (default .Values.mcp.servers (dig "mecatl" "mcp" "servers" nil (default dict .Values.global))) }}
-            {{- if ne $server.auth.mode "oauth" }}
+            {{- range $server := .Values.mcp.servers }}
+            {{- if not $mcpOAuth }}
             - {{ printf "--mcp-server=%s=%s" $server.name $server.url | quote }}
             {{- if $server.insecureHTTP }}
             - {{ printf "--mcp-server-insecure-http=%s" $server.name | quote }}
@@ -229,7 +220,7 @@ spec:
                   name: {{ .Values.learning.store.tokenSecret | quote }}
                   key: {{ .Values.learning.store.tokenKey | quote }}
             {{- end }}
-            {{- range $server := (default .Values.mcp.servers (dig "mecatl" "mcp" "servers" nil (default dict .Values.global))) }}
+            {{- range $server := .Values.mcp.servers }}
             {{- if eq $server.auth.mode "staticBearer" }}
             - name: {{ printf "MCP_%s_TOKEN" (upper $server.name) }}
               valueFrom:
@@ -276,7 +267,7 @@ spec:
                 port: drain
           resources: {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
-            {{- if $remoteAddress }}
+            {{- if $mcpOAuth }}
             - {name: mecatl-broker, mountPath: /var/run/secrets/mecatl-broker, readOnly: true}
             {{- end }}
             - {name: tmp, mountPath: /tmp}
@@ -298,30 +289,23 @@ spec:
             {{- if $mcpSettings }}
             - {name: mcp-profile, mountPath: /etc/mecatl-mcp, readOnly: true}
             {{- end }}
-            {{- range $index, $server := (default .Values.mcp.servers (dig "mecatl" "mcp" "servers" nil (default dict .Values.global))) }}
-            {{- if and (eq $server.auth.mode "oauth") (eq $server.auth.oauth.client.mode "preregistered") }}
-{{- if and $mcpOAuth (not $remoteAddress) }}
-            - {name: mcp-oauth-client-secret-{{ $index }}, mountPath: /var/run/secrets/mecatl-mcp/oauth/{{ $index }}, readOnly: true}
-{{- end }}
-            {{- end }}
-            {{- end }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
       volumes:
-        {{- if $remoteAddress }}
+        {{- if $mcpOAuth }}
         - name: mecatl-broker
           projected:
             defaultMode: 0440
             sources:
               - serviceAccountToken:
                   path: token
-                  audience: {{ $remoteAudience | quote }}
-                  expirationSeconds: {{ $remoteLifetime }}
+                  audience: {{ .Values.broker.workloadJWT.audience | quote }}
+                  expirationSeconds: {{ .Values.broker.workloadJWT.lifetimeSeconds }}
               - secret:
-                  name: {{ $remoteCASecret | quote }}
+                  name: {{ .Values.broker.clientCA.secretName | quote }}
                   items:
-                    - {key: {{ $remoteCAKey | quote }}, path: {{ $remoteCAKey | quote }}}
+                    - {key: {{ .Values.broker.clientCA.key | quote }}, path: {{ .Values.broker.clientCA.key | quote }} }
         {{- end }}
         - name: tmp
           emptyDir: {sizeLimit: 256Mi}
@@ -382,16 +366,6 @@ spec:
             defaultMode: 0444
             items:
               - {key: settings.yaml, path: settings.yaml}
-        {{- end }}
-        {{- range $index, $server := (default .Values.mcp.servers (dig "mecatl" "mcp" "servers" nil (default dict .Values.global))) }}
-        {{- if and (eq $server.auth.mode "oauth") (eq $server.auth.oauth.client.mode "preregistered") (not $remoteAddress) }}
-        - name: mcp-oauth-client-secret-{{ $index }}
-          secret:
-            secretName: {{ $server.auth.oauth.client.preregistered.secretKeyRef.name | quote }}
-            defaultMode: 0440
-            items:
-              - {key: {{ $server.auth.oauth.client.preregistered.secretKeyRef.key | quote }}, path: client-secret}
-        {{- end }}
         {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}

@@ -189,10 +189,18 @@ This runtime retains a process-local mecatl session/attachment boundary. For the
 pre-prompt workspace seam only, a persisted binding from a prior process is replaced and its old
 pending correlation discarded so a fresh enrollment can begin; the old enrollment is not
 recovered. Live protected-call authorization controls never rebind and fail closed instead of
-silently creating replacement authority. ToolHive's configured Redis storage may preserve its
-inner authorization/token state, but mecatl cannot correlate a restarted outer enrollment to it.
-Durable/remote outer broker ownership and multi-replica routing remain later-stage concerns.
-Remote OAuth broker mode is served only by the dedicated singleton `mecabroker` deployment. `mecak8s` remains horizontally scalable for agent traffic because it never owns ToolHive callback state; its remote broker client holds only a CA-verified connection and an audience-bound workload token.
+silently creating replacement authority. The legacy embedded construction supported
+Redis for ToolHive's inner authorization/pending/token storage, but that did not make
+outer enrollment correlation durable. The standalone `cmd/mecabroker` construction
+supplies only callback URL and profiles to ToolHive: its protected storage falls back
+to memory, as does its outer broker state. Restoring inner Redis wiring is outstanding;
+a broker restart requires fresh authorization. Agent sessions and their event log
+remain Redis-backed. Durable outer broker ownership and multi-replica broker routing
+remain later-stage concerns.
+Remote OAuth broker mode is served only by the singleton `mecabroker` workload in
+the same `deploy/helm/mecak8s` release. `mecak8s` remains horizontally scalable
+for agent traffic because it never owns ToolHive callback state; its remote broker
+client holds only a CA-verified connection and an audience-bound workload token.
 
 The owner-scoped broker connector inventory is available to authenticated mecatui
 sessions through `/mcp` when the server advertises its broker-status capability. The
@@ -230,8 +238,14 @@ boundary, not replica interchangeability, restart durability, callback failover,
 exactly-once effects, or HA ([ADR 0326](adr/0326-process-bound-remote-mcp-broker.md),
 [ADR 0328](adr/0328-bounded-singleton-mcp-broker-correctness.md)).
 
-The production `cmd/mecabroker` image and dedicated Helm chart preserve that boundary:
-exactly one replica, `Recreate`, no PDB, no autoscaling, and no outer-broker Redis. The public Service exposes one TLS listener that multiplexes gRPC and browser callback routes by HTTP/2 gRPC content type. A loopback-only admin
+The production `cmd/mecabroker` image is deployed by the single `mecak8s` Helm
+chart alongside the agent. It remains exactly one replica with `Recreate`, no
+PDB or autoscaling. Both ToolHive's inner authorization/pending/token storage and
+outer broker attachments, callbacks, and enrollment correlation are currently
+in-memory and nonmigratable across broker replacement. The agent's Redis session
+store does not persist them. The public Service exposes one
+TLS listener that multiplexes gRPC and browser callback routes by HTTP/2 gRPC
+content type. A loopback-only admin
 listener serves bounded health/readiness/drain through fixed self-probe subcommands; it is
 not a Service or NetworkPolicy port. One process-local coordinator gates both public
 route classes: `GET /drain` atomically rejects new work and makes readiness false, then

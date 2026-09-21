@@ -15,6 +15,30 @@ import (
 	"github.com/stacklok/mecatl/internal/adapter/mcpbroker"
 )
 
+func TestProductionLifecycleIsReadyWithAnIdleToolHiveRuntime(t *testing.T) {
+	issuer := newIdentityFixture(t)
+	lifecycle, err := NewProduction(t.Context(), ProductionConfig{
+		PublicAddress: "127.0.0.1:0", AdminAddress: "127.0.0.1:0",
+		TLSConfig:       &tls.Config{Certificates: issuer.server.TLS.Certificates, MinVersion: tls.VersionTLS12},
+		WorkloadJWT:     productionOIDC(issuer, time.Minute),
+		ToolHive:        mcpbroker.ToolHiveConfig{},
+		PropagationWait: time.Millisecond, DrainTimeout: time.Second,
+		RuntimeLimits: mcpbroker.Limits{MaxLogicalSessions: 1, LogicalRetention: time.Hour, SweepInterval: time.Minute, MaxPendingStates: 1},
+	})
+	if err != nil {
+		t.Fatalf("NewProduction: %v", err)
+	}
+	lifecycle.Start()
+	if !lifecycle.Ready(t.Context()) {
+		t.Fatal("idle production lifecycle never became ready")
+	}
+	closeCtx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	if err := lifecycle.Close(closeCtx); err != nil {
+		t.Fatalf("idle production lifecycle Close: %v", err)
+	}
+}
+
 func TestSingletonBrokerRemediation_Scenario5_ProductionLifecycleUsesSharedFactory(t *testing.T) {
 	issuer := newIdentityFixture(t)
 	t.Setenv("../mcpbroker/testdata/client-secret", "offline-secret")

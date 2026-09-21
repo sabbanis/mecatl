@@ -89,7 +89,7 @@ func validateKubernetesEndpointOrigin(discoveryURL, jwksURL string) error {
 	if err != nil {
 		return fmt.Errorf("JWKS URL: %v", err)
 	}
-	if strings.ToLower(discovery.Hostname()) != strings.ToLower(jwks.Hostname()) || effectivePort(discovery) != effectivePort(jwks) {
+	if !strings.EqualFold(discovery.Hostname(), jwks.Hostname()) || effectivePort(discovery) != effectivePort(jwks) {
 		return errors.New("discovery and JWKS URLs must use the same HTTPS origin")
 	}
 	return nil
@@ -161,7 +161,7 @@ func isCompactJWT(token string) bool {
 		return false
 	}
 	for _, r := range token {
-		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_' || r == '.') {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '-' && r != '_' && r != '.' {
 			return false
 		}
 	}
@@ -200,11 +200,11 @@ func (t kubernetesBearerTransport) CloseIdleConnections() {
 
 func (t kubernetesBearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req == nil || req.Method != http.MethodGet || !isApprovedKubernetesEndpoint(req.URL, t.endpoints) {
-		return nil, errors.New("Kubernetes credential request is not an approved GET endpoint")
+		return nil, errors.New("kubernetes credential request is not an approved GET endpoint")
 	}
 	token, err := readKubernetesToken(t.source)
 	if err != nil {
-		return nil, errors.New("Kubernetes credential unavailable")
+		return nil, errors.New("kubernetes credential unavailable")
 	}
 	clone := req.Clone(req.Context())
 	clone.Header = req.Header.Clone()

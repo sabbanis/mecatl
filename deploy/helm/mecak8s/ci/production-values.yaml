@@ -4,6 +4,10 @@
 image:
   digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
   tag: ""
+broker:
+  image:
+    digest: sha256:fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210
+    tag: ""
 mockProvider: false
 defaultProvider: openrouter
 model: anthropic/claude-sonnet-4-6

@@ -24,9 +24,9 @@ func TestSingletonBrokerRemediation_Scenario5_ProductionArtifacts(t *testing.T) 
 		t.Fatalf("built mecabroker is not executable: %v, %#o", err, info.Mode())
 	}
 
-	deploy := exec.CommandContext(ctx, "task", "deploy:check")
-	deploy.Dir = root
-	if output, err := deploy.CombinedOutput(); err != nil {
-		t.Fatalf("task deploy:check: %v\n%s", err, output)
+	chart := exec.CommandContext(ctx, "helm", "lint", "deploy/helm/mecak8s", "-f", "deploy/helm/mecak8s/ci/broker-mcp-values.yaml")
+	chart.Dir = root
+	if output, err := chart.CombinedOutput(); err != nil {
+		t.Fatalf("helm lint mecak8s: %v\n%s", err, output)
 	}
 }

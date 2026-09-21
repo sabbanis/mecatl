@@ -7,3 +7,9 @@ func (st *Store) testClient() redis.UniversalClient {
 	defer st.clients.mu.Unlock()
 	return st.clients.current.client
 }
+
+func (st *Store) testFollowClient() redis.UniversalClient {
+	st.followClients.mu.Lock()
+	defer st.followClients.mu.Unlock()
+	return st.followClients.current.client
+}
