@@ -252772,6 +252772,45 @@ window.BENCHMARK_DATA = {
         },
         "date": 1789980144691,
         "tool": "customSmallerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "804718852cd5357d4f0b80a9b0f60743d907eb64",
+          "message": "chore(deps): bump github.com/stacklok/toolhive-core from 0.0.46 to 0.0.47 in the go-minor-patch group (#1712)\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>\nCo-authored-by: Jakub Hrozek <jakub.hrozek@posteo.se>\nCo-authored-by: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-21T17:23:54+02:00",
+          "tree_id": "e144f5347ea7b8d6610bff8f2e1644fd91ae8e6f",
+          "url": "https://github.com/stacklok/mecatl/commit/804718852cd5357d4f0b80a9b0f60743d907eb64"
+        },
+        "date": 1790005551434,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3316.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 110,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1155,
+            "unit": "allocs/op"
+          }
+        ]
       }
     ],
     "mecatl scenarios (smaller-is-better)": [
@@ -331470,6 +331509,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1790005548501,
+  "lastUpdate": 1790005552540,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
