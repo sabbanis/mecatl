@@ -253139,6 +253139,45 @@ window.BENCHMARK_DATA = {
         },
         "date": 1790005551434,
         "tool": "customSmallerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "danbarr@users.noreply.github.com",
+            "name": "Dan Barr",
+            "username": "danbarr"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "686b5e58e323aa449e8be52b077aaa364c75c52e",
+          "message": "docs: add diagrams to README (#1731)\n\nSigned-off-by: Dan Barr <6922515+danbarr@users.noreply.github.com>\nCo-authored-by: Dan Barr <6922515+danbarr@users.noreply.github.com>",
+          "timestamp": "2026-09-21T12:27:20-04:00",
+          "tree_id": "ca490a45be71543593ed21cb72bd1b482ac80f9c",
+          "url": "https://github.com/stacklok/mecatl/commit/686b5e58e323aa449e8be52b077aaa364c75c52e"
+        },
+        "date": 1790008741111,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3316,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 108,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1155,
+            "unit": "allocs/op"
+          }
+        ]
       }
     ],
     "mecatl scenarios (smaller-is-better)": [
@@ -331951,6 +331990,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1790008738013,
+  "lastUpdate": 1790008742063,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
