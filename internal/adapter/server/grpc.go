@@ -1843,7 +1843,7 @@ func (h *HarnessServer) relayMCPAuthorizationControl(ctx context.Context, id ses
 			// event is what "stranded without its control stream" looks like here.
 			// A plan-originated ask has a separate durable approval workflow.
 			parkedOnOrdinaryAsk = ev.Type == session.EvPermissionAsk &&
-				ev.Ask != nil && ev.Ask.Origin() != session.AskOriginPlan
+				ev.Ask != nil && ev.Ask.Origin == session.ApprovalOriginPermission
 			strand()
 			if sendErr != nil {
 				recorder.Observe(ev)

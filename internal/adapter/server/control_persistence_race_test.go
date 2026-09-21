@@ -56,6 +56,20 @@ func completedControlRun(t *testing.T) *agent.Run {
 	return run
 }
 
+func awaitingControlSession(t *testing.T, id session.SessionID) *session.Session {
+	t.Helper()
+	ref := session.EnvironmentRef{Kind: session.EnvKindNoFS, ID: "none", Revision: "in-tree-v1"}
+	sess := session.New(id, session.ModeDefault, ref, session.Limits{}, time.Unix(0, 0))
+	sess.BeginRun("run-old")
+	if err := sess.BeginTurn(); err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.PauseForApproval(session.PendingAsk{AskID: "ask-1", Tool: "Write", Origin: session.ApprovalOriginPermission}); err != nil {
+		t.Fatal(err)
+	}
+	return sess
+}
+
 type controlAskTool struct{}
 
 func (controlAskTool) Spec() tool.ToolSpec { return tool.ToolSpec{Name: "Write"} }

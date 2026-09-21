@@ -62,7 +62,7 @@ func makePlanControlSession(t *testing.T, id session.SessionID) *session.Session
 		t.Fatal(err)
 	}
 	if err := sess.PauseForApproval(session.PendingAsk{
-		AskID: "plan-ask", Tool: "PresentPlan", Call: call.ID, PlanOriginated: true,
+		AskID: "plan-ask", Tool: "PresentPlan", Call: call.ID, Origin: session.ApprovalOriginPlan,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func makePersistedControlSession(t *testing.T, id session.SessionID) (*session.S
 	if err := sess.RecordAssistant(session.NewAssistantMessage("", "", []session.ToolCall{call})); err != nil {
 		t.Fatal(err)
 	}
-	ask := session.PendingAsk{AskID: "durable-ask", Tool: "Write", Call: call.ID}
+	ask := session.PendingAsk{AskID: "durable-ask", Tool: "Write", Call: call.ID, Origin: session.ApprovalOriginPermission}
 	if err := sess.PauseForApproval(ask); err != nil {
 		t.Fatal(err)
 	}
@@ -147,7 +147,7 @@ func TestSDKRunControls_PersistedPlanAskRefusesWithoutRehydration(t *testing.T) 
 		t.Fatal(err)
 	}
 	pending, ok := got.PendingAsk()
-	if got.State != session.StateAwaiting || got.Mode != session.ModePlan || !ok || pending.AskID != "plan-ask" || pending.Origin() != session.AskOriginPlan {
+	if got.State != session.StateAwaiting || got.Mode != session.ModePlan || !ok || pending.AskID != "plan-ask" || pending.Origin != session.ApprovalOriginPlan {
 		t.Fatalf("persisted plan mutated: state=%q mode=%q pending=%+v ok=%t", got.State, got.Mode, pending, ok)
 	}
 }

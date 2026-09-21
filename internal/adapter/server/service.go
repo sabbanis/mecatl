@@ -4822,7 +4822,7 @@ func (s *Service) validatePersistedRunAsk(sess *session.Session, expectedRunID, 
 	if !ok || pending.AskID != askID {
 		return ErrAskNotPending
 	}
-	if pending.Origin() == session.AskOriginPlan {
+	if pending.Origin != session.ApprovalOriginPermission {
 		return ErrPlanResolutionRequired
 	}
 	return s.validatePersistedWorkspace(sess)

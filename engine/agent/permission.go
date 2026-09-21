@@ -63,8 +63,8 @@ func (r *askRegistry) resolve(askID string, v session.ApprovalVerdict) {
 	r.resolveWith(askID, approval{verdict: v})
 }
 
-// resolveOrdinary atomically classifies and resolves askID. A plan-originated
-// ask is deliberately left in the registry for the dedicated plan control.
+// resolveOrdinary atomically classifies and resolves askID. Any non-permission
+// ask is deliberately left in the registry for its purpose-specific control.
 func (r *askRegistry) resolveOrdinary(askID string, v session.ApprovalVerdict) AskResolution {
 	r.mu.Lock()
 	ch, ok := r.pending[askID]
@@ -73,7 +73,7 @@ func (r *askRegistry) resolveOrdinary(askID string, v session.ApprovalVerdict) A
 		r.mu.Unlock()
 		return AskResolutionNotPending
 	}
-	if ask.Origin == session.ApprovalOriginPlan {
+	if ask.Origin != session.ApprovalOriginPermission {
 		r.mu.Unlock()
 		return AskResolutionPlanOriginated
 	}

@@ -221,7 +221,7 @@ func TestCrossProcessLeaseExpiryTakeover(t *testing.T) {
 	cfg2.providerConstructor = func(_ Config, _, _, _ string) port.LLMProvider {
 		return mockllm.New(mockllm.TextTurn("replica two"))
 	}
-	built2, err := Build(ctx, cfg2)
+	built2, err := buildIsolated(t, ctx, cfg2)
 	if err != nil {
 		t.Fatalf("Build #2: %v", err)
 	}
@@ -238,17 +238,6 @@ func TestCrossProcessLeaseExpiryTakeover(t *testing.T) {
 	drain(run1)
 	built1.Service.FinishRun(sess.ID, run1)
 	firstToken := leaseToken(t, leaseDir)
-
-	cfg2 := leaseBaseCfg(t, storeDir, leaseDir, workspace, memoryDir)
-	cfg2.SessionLeaseTTL = time.Second
-	cfg2.providerConstructor = func(_ Config, _, _, _ string) port.LLMProvider {
-		return mockllm.New(mockllm.TextTurn("replica two"))
-	}
-	built2, err := buildIsolated(t, ctx, cfg2)
-	if err != nil {
-		t.Fatalf("Build #2: %v", err)
-	}
-	defer built2.Close()
 
 	if _, err := built2.Service.StartRun(ctx, sess.ID, "take over before expiry"); !errors.Is(err, server.ErrSessionLeasedElsewhere) {
 		t.Fatalf("StartRun #2 before expiry = %v, want ErrSessionLeasedElsewhere", err)
