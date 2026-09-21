@@ -119,7 +119,7 @@ kube -n local-path-storage get configmap local-path-config -o json \
 kube -n execution-qualification create configmap execution-mock --from-file=mock-script.json="$root/deploy/mecatl-execution-kind/mock-script.json" --dry-run=client -o yaml | kube apply -f -
 kube -n execution-qualification rollout status deployment/mecatl-execution --timeout=240s
 helm_kube upgrade --install mecak8s "$root/deploy/helm/mecak8s" --namespace execution-qualification -f "$root/deploy/mecatl-execution-kind/mecak8s-values.yaml" \
-  --set-string image.repository="${agent_image%@*}" --set-string image.digest="${agent_image#*@}" --wait --timeout=5m
+  --set-string image.repository="${agent_image%@*}" --set-string image.tag= --set-string image.digest="${agent_image#*@}" --wait --timeout=5m
 kube -n execution-qualification rollout restart deployment/mecak8s
 kube -n execution-qualification rollout status deployment/mecak8s --timeout=240s
 dev env -i HOME="$HOME" PATH="$PATH" KUBECONFIG="$kubeconfig" MECATL_KUBE_CONTEXT="$context" MECATL_EXECUTION_QUAL_STATE="$state" \
@@ -136,7 +136,7 @@ restore() {
   secret_cleaned=0
   if [ "$restore_needed" -eq 1 ]; then
     if helm_kube upgrade --install mecak8s "$root/deploy/helm/mecak8s" --namespace execution-qualification -f "$root/deploy/mecatl-execution-kind/mecak8s-values.yaml" \
-      --set-string image.repository="${agent_image%@*}" --set-string image.digest="${agent_image#*@}" --wait --timeout=5m >/dev/null 2>&1; then
+      --set-string image.repository="${agent_image%@*}" --set-string image.tag= --set-string image.digest="${agent_image#*@}" --wait --timeout=5m >/dev/null 2>&1; then
       mock_restored=1
     else
       echo "mock profile restoration failed; cluster retained for inspection" >&2
@@ -170,7 +170,7 @@ dev env -i HOME="$HOME" PATH="$PATH" KUBECONFIG="$kubeconfig" MECATL_KUBE_CONTEX
   go run -tags kind_execution_e2e ./e2e/k8s_execution/fixture/credentialloader stage "$kubeconfig" "$context" "$secret" "$receipt"
 restore_needed=1
 helm_kube upgrade --install mecak8s "$root/deploy/helm/mecak8s" --namespace execution-qualification -f "$root/deploy/mecatl-execution-kind/mecak8s-values.yaml" \
-  --set-string image.repository="${agent_image%@*}" --set-string image.digest="${agent_image#*@}" \
+  --set-string image.repository="${agent_image%@*}" --set-string image.tag= --set-string image.digest="${agent_image#*@}" \
   --set mockProvider=false --set security.allowUnsafeRealProvider=true --set defaultProvider=openrouter --set-string model=anthropic/claude-haiku-4.5 --set maxRunTokens=32000 \
   --set-json 'extraArgs=["--no-soul","--no-user-model","--permissions-conventional=false","--agents-conventional=false"]' \
   --set extraVolumes=null --set extraVolumeMounts=null \

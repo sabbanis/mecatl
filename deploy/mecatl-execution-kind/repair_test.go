@@ -99,6 +99,47 @@ esac
 	}
 }
 
+func TestLiveHelmDigestExclusiveThroughRestoration(t *testing.T) {
+	live := scriptRange(t, "live.sh", "helm_kube upgrade --install", "\necho \"live qualification passed")
+	root := t.TempDir()
+	marker := filepath.Join(root, "helm-calls")
+	digest := "sha256:" + strings.Repeat("a", 64)
+	out, err := runStep(t, root, `
+set -u
+kube() { :; }
+dev() { :; }
+helm_kube() {
+  test "$1 $2 $3" = 'upgrade --install mecak8s' || return 1
+  # Model a nonempty inherited tag; apply the actual CLI overrides in order.
+  tag=e2e digest= repository= profile=mock
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+    --set-string|--set)
+      shift
+      case "$1" in
+      image.tag=*) tag=${1#*=} ;;
+      image.digest=*) digest=${1#*=} ;;
+      image.repository=*) repository=${1#*=} ;;
+      mockProvider=false) profile=live ;;
+      esac ;;
+    esac
+    shift
+  done
+  test -z "$tag" && test "$repository@$digest" = "$agent_image" || return 1
+  printf '%s\n' "$profile" >> "$MARKER"
+}
+`+live, "root="+root, "state="+root, "MARKER="+marker,
+		"agent_image=ko.local/mecak8s@"+digest, "kubeconfig=synthetic", "context=synthetic",
+		"cluster=owned", "MECATL_EXECUTION_CREDENTIAL_FILE=unused")
+	if err != nil {
+		t.Fatalf("digest-only Helm lifecycle failed: %v: %s", err, out)
+	}
+	calls, err := os.ReadFile(marker)
+	if err != nil || string(calls) != "mock\nlive\nmock\n" {
+		t.Fatalf("expected digest-only mock setup, live upgrade, and mock restoration: %q: %v", calls, err)
+	}
+}
+
 func TestLiveSignalPreservesFailureAndAttemptsCleanup(t *testing.T) {
 	restore := scriptRange(t, "live.sh", "restore() {", "\ndev env -i HOME=\"$HOME\" PATH=\"$PATH\" KUBECONFIG=\"$kubeconfig\" MECATL_KUBE_CONTEXT=\"$context\" MECATL_EXECUTION_CREDENTIAL_FILE=")
 	for _, signal := range []struct {
