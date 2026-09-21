@@ -695,25 +695,36 @@ func validateManagedProcess(record managedProcessRecord, paths Paths) error { //
 	return errors.New("managed daemon stop is unsupported on this platform")
 }
 
+func linuxProcessStat(pid int) (byte, string, error) {
+	data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+	if err != nil {
+		return 0, "", err
+	}
+	closeParen := strings.LastIndexByte(string(data), ')')
+	if closeParen < 0 {
+		return 0, "", errors.New("malformed process stat")
+	}
+	fields := strings.Fields(string(data[closeParen+1:]))
+	if len(fields) <= 19 || len(fields[0]) != 1 {
+		return 0, "", errors.New("process stat omits state or start time")
+	}
+	return fields[0][0], fields[19], nil
+}
+
 func processStartIdentity(pid int) (string, error) {
 	if runtime.GOOS == "linux" {
-		data, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
+		state, startTime, err := linuxProcessStat(pid)
 		if err != nil {
 			return "", err
 		}
-		closeParen := strings.LastIndexByte(string(data), ')')
-		if closeParen < 0 {
-			return "", errors.New("malformed process stat")
-		}
-		fields := strings.Fields(string(data[closeParen+1:]))
-		if len(fields) <= 19 {
-			return "", errors.New("process stat omits start time")
+		if state == 'Z' {
+			return "", fs.ErrNotExist
 		}
 		bootID, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
 		if err != nil {
 			return "", err
 		}
-		return strings.TrimSpace(string(bootID)) + ":" + fields[19], nil
+		return strings.TrimSpace(string(bootID)) + ":" + startTime, nil
 	}
 	if runtime.GOOS == "darwin" {
 		output, err := scrubbedCommand(exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "lstart=")).Output()

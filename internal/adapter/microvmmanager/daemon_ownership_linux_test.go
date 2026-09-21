@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func TestDefaultOperationsStartReusesPreSocketDaemonOwnership(t *testing.T) {
@@ -72,6 +73,45 @@ func TestEnsureNoLiveManagedDaemonFailsClosedWhenInstalledExecutableDisappears(t
 	err = ensureNoLiveManagedDaemon(paths)
 	if err == nil || !strings.Contains(err.Error(), "refusing to start a possible duplicate") {
 		t.Fatalf("live process with missing installed executable error = %v", err)
+	}
+}
+
+func TestEnsureNoLiveManagedDaemonAllowsZombieRecordedProcess(t *testing.T) {
+	paths := testPaths(t.TempDir())
+	if err := os.MkdirAll(paths.StateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	helper := exec.Command("sh", "-c", "exit 0")
+	if err := helper.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = helper.Wait() })
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		state, _, err := linuxProcessStat(helper.Process.Pid)
+		if err != nil {
+			t.Fatalf("inspect unreaped helper: %v", err)
+		}
+		if state == 'Z' {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("helper did not become a zombie")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	record := managedProcessRecord{Schema: managedProcessSchema, PID: helper.Process.Pid, ProcessIdentity: "recorded-before-exit"}
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(paths.StateDir, "microvmd.process.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureNoLiveManagedDaemon(paths); err != nil {
+		t.Fatalf("zombie recorded process error = %v", err)
 	}
 }
 

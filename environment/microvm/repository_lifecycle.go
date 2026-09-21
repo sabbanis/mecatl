@@ -593,7 +593,7 @@ func (r *RepositoryVMRegistry) materializeAndPublishRootFS(directory *repository
 	if err := materializer.Materialize(artifacts.ExecutionImage.Path, stagingPath, artifacts.GuestAgent.Path); err != nil {
 		return fmt.Errorf("materialize staged repository rootfs: %w", err)
 	}
-	if err := unix.Renameat2(int(directory.file.Fd()), record.RootFSStagingName, int(directory.file.Fd()), "rootfs", unix.RENAME_NOREPLACE); err != nil {
+	if err := renameatNoReplace(int(directory.file.Fd()), record.RootFSStagingName, int(directory.file.Fd()), "rootfs"); err != nil {
 		return fmt.Errorf("publish repository rootfs without overwrite: %w", err)
 	}
 	if err := directory.file.Sync(); err != nil {

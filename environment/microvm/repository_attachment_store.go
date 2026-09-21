@@ -358,7 +358,7 @@ func writeAttachmentFile(directory, target string, data []byte) error { //nolint
 			return err
 		}
 	} else if errors.Is(err, unix.ENOENT) {
-		if err := unix.Renameat2(stagingFD, name, directoryFD, target, unix.RENAME_NOREPLACE); err != nil {
+		if err := renameatNoReplace(stagingFD, name, directoryFD, target); err != nil {
 			return err
 		}
 	} else {

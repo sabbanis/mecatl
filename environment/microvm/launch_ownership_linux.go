@@ -938,20 +938,6 @@ func openatExclusive(dirFD int, name string, flags int, mode uint32) (*os.File, 
 	return os.NewFile(uintptr(fd), name), nil
 }
 
-func openatExistingFile(dirFD int, name string, flags int) (*os.File, error) {
-	fd, err := unix.Openat(dirFD, name, flags|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
-	if err != nil {
-		return nil, err
-	}
-	file := os.NewFile(uintptr(fd), name)
-	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
-		_ = file.Close()
-		return nil, errors.New("launch ownership file is unsafe")
-	}
-	return file, nil
-}
-
 func rawFileStat(file *os.File) (*syscall.Stat_t, error) {
 	info, err := file.Stat()
 	if err != nil {
