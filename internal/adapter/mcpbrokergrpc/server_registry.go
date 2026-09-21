@@ -14,6 +14,8 @@ import (
 	"github.com/stacklok/mecatl/internal/mcpbroker"
 )
 
+// lifecycleOperation identifies the two operations that close an attachment.
+// Commit is not terminal: the caller may continue using the committed attachment.
 type lifecycleOperation uint8
 
 const (
@@ -22,101 +24,175 @@ const (
 	lifecycleClose
 )
 
+// executeReceipt lets retries of the same call join its execution or replay its
+// result rather than dispatching the tool again. Authorization may reserve one
+// before Execute arrives. Server.mu protects updates; closing done publishes the
+// immutable response and err to waiters.
 type executeReceipt struct {
-	digest   [sha256.Size]byte
-	bytes    int
-	started  bool
-	done     chan struct{}
-	response *brokerv1.ExecuteResponse
-	err      error
+	digest   [sha256.Size]byte         // Detects reuse of a call ID with different invocation content.
+	bytes    int                       // Reserved or retained bytes charged to the attachment's budget.
+	started  bool                      // Execute has claimed the receipt, even if capacity later rejects it.
+	done     chan struct{}             // Closed when the terminal response or error is available.
+	response *brokerv1.ExecuteResponse // Retained wire result, if execution produced one.
+	err      error                     // Retained RPC error, if the invocation failed at the transport layer.
 }
 
+// sessionOwner keeps a logical session bound to the same authenticated workload
+// across handle closure and reattachment. It is not the logical session itself.
+// Server.mu protects its fields.
 type sessionOwner struct {
-	principal session.Principal
-	pending   int
-	handles   int
-	expiresAt time.Time
-	retiring  bool
+	principal session.Principal // Workload identity allowed to attach to this session ID.
+	pending   int               // Admitted Attach calls that have not yet succeeded or failed.
+	handles   int               // Published attachments not yet terminal or reclaimed.
+	published bool              // A handle was published; retain ownership even after all handles close.
+	expiresAt time.Time         // Earliest retirement time; pending calls and open handles postpone it.
+	retiring  bool              // Blocks Attach while the sweeper deletes the underlying session.
+	changed   chan struct{}     // Closed and replaced when pending or retirement state changes.
 }
 
+// serverAttachment wraps one consumer's open handle to a logical broker session
+// with gRPC bookkeeping. Multiple attachments may refer to the same session;
+// closing one releases that handle, whereas deleting the session invalidates all
+// of them. The underlying attachment supplies tools and authorization operations.
+// Server.mu protects mutable fields. Terminal entries remain in handles until
+// expiry so repeated Close or Abort calls can recover the recorded outcome.
 type serverAttachment struct {
-	attachment      mcpbroker.Attachment
-	principal       *session.Principal
-	logicalID       session.SessionID
-	binding         string
-	tools           map[string]tool.Tool
-	active          int
-	expiresAt       time.Time
-	changed         chan struct{}
-	receipts        map[session.ToolCallID]*executeReceipt
-	receiptBytes    int
-	running         lifecycleOperation
-	runningDone     chan struct{}
-	terminal        lifecycleOperation
-	terminalOutcome mcpbroker.CloseOutcome
+	attachment      mcpbroker.Attachment                   // Underlying broker handle, not an MCP network connection.
+	principal       *session.Principal                     // Caller identity bound to this handle; nil for direct test usage.
+	logicalID       session.SessionID                      // Logical session shared with other attachments.
+	owner           *sessionOwner                          // Exact ownership entry charged by this handle.
+	binding         string                                 // Opaque identity of the exact logical state, used for conditional deletion.
+	tools           map[string]tool.Tool                   // Executable registry, replaced after successful workspace enrollment.
+	active          int                                    // In-flight operations that keep cleanup from reclaiming the handle.
+	expiresAt       time.Time                              // Absolute handle expiry set at Attach; use does not renew it.
+	changed         chan struct{}                          // Closed and replaced to wake lifecycle waiters when state changes.
+	receipts        map[session.ToolCallID]*executeReceipt // Invocation reservations and retained execution results.
+	receiptBytes    int                                    // Total bytes charged to receipts for this handle.
+	running         lifecycleOperation                     // Close or Abort currently invoking the underlying broker.
+	terminal        lifecycleOperation                     // Successfully settled Close or Abort, if any.
+	terminalOutcome mcpbroker.CloseOutcome                 // Outcome replayed to retries of the same terminal operation.
 }
 
-func (s *Server) bindSession(ctx context.Context, id session.SessionID) (*session.Principal, bool, error) {
+// bindSession reserves ownership while Attach calls the backing service without
+// holding Server.mu. After a successful bind, the caller must invoke
+// finishSessionBind whether Attach succeeds or fails.
+func (s *Server) bindSession(ctx context.Context, id session.SessionID) (*session.Principal, *sessionOwner, error) {
 	if !mcpbroker.ValidLogicalSessionID(id) {
-		return nil, false, invalid("session_id is invalid")
+		return nil, nil, invalid("session_id is invalid")
 	}
 	principal := session.PrincipalFromContext(ctx)
 	if principal == nil {
-		return nil, false, nil // Direct adapter calls are test-only; the network boundary always installs a principal.
+		return nil, nil, nil // Direct adapter calls are test-only; the network boundary always installs a principal.
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	owner := s.owners[id]
 	if owner != nil && owner.retiring {
-		return nil, false, reasonStatus(codes.Unavailable, "broker session is being retired", brokerv1.BrokerErrorReason_BROKER_ERROR_REASON_STATE_UNAVAILABLE, "")
+		return nil, nil, reasonStatus(codes.Unavailable, "broker session is being retired", brokerv1.BrokerErrorReason_BROKER_ERROR_REASON_STATE_UNAVAILABLE, "")
 	}
 	if owner != nil && !principal.SameIdentity(&owner.principal) {
-		return nil, false, status.Error(codes.PermissionDenied, "broker session is not available")
+		return nil, nil, status.Error(codes.PermissionDenied, "broker session is not available")
 	}
-	created := false
 	if owner == nil {
 		if len(s.owners) >= s.cfg.MaxOwners {
-			return nil, false, reasonStatus(codes.ResourceExhausted, "broker session capacity reached", brokerv1.BrokerErrorReason_BROKER_ERROR_REASON_CAPACITY_REACHED, "")
+			return nil, nil, reasonStatus(codes.ResourceExhausted, "broker session capacity reached", brokerv1.BrokerErrorReason_BROKER_ERROR_REASON_CAPACITY_REACHED, "")
 		}
-		owner = &sessionOwner{principal: *principal, expiresAt: time.Now().Add(s.cfg.OwnerRetention)}
+		owner = &sessionOwner{principal: *principal, expiresAt: time.Now().Add(s.cfg.OwnerRetention), changed: make(chan struct{})}
 		s.owners[id] = owner
-		created = true
 	}
 	owner.pending++
-	return principal.Clone(), created, nil
+	return principal.Clone(), owner, nil
 }
 
-func (s *Server) authorizeSession(ctx context.Context, id session.SessionID) error {
+func signalOwner(owner *sessionOwner) {
+	close(owner.changed)
+	owner.changed = make(chan struct{})
+}
+
+// beginSessionDelete atomically authorizes and fences one ownership entry before
+// waiting for pre-existing Attach calls to finish. A deleting owner blocks new
+// binds, so an old Attach cannot publish or recreate state after the delete.
+func (s *Server) beginSessionDelete(ctx context.Context, id session.SessionID) (*sessionOwner, error) {
 	principal := session.PrincipalFromContext(ctx)
-	if principal == nil {
-		return nil
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	owner := s.owners[id]
-	if owner == nil || !principal.SameIdentity(&owner.principal) {
-		return status.Error(codes.PermissionDenied, "broker session is not available")
+	if s.closed {
+		return nil, reasonStatus(codes.Unavailable, "broker state unavailable", brokerv1.BrokerErrorReason_BROKER_ERROR_REASON_STATE_UNAVAILABLE, "")
 	}
-	return nil
+	if principal != nil && (owner == nil || !principal.SameIdentity(&owner.principal)) {
+		return nil, status.Error(codes.PermissionDenied, "broker session is not available")
+	}
+	if owner == nil { // Direct adapter calls have no process-local owner to fence.
+		return nil, nil
+	}
+	if owner.retiring {
+		return nil, reasonStatus(codes.Unavailable, "broker session is being retired", brokerv1.BrokerErrorReason_BROKER_ERROR_REASON_STATE_UNAVAILABLE, "")
+	}
+	owner.retiring = true
+	signalOwner(owner)
+	for {
+		if err := ctx.Err(); err != nil {
+			owner.retiring = false
+			signalOwner(owner)
+			return nil, status.FromContextError(err).Err()
+		}
+		if s.closed || s.owners[id] != owner {
+			owner.retiring = false
+			signalOwner(owner)
+			return nil, reasonStatus(codes.Unavailable, "broker state unavailable", brokerv1.BrokerErrorReason_BROKER_ERROR_REASON_STATE_UNAVAILABLE, "")
+		}
+		if owner.pending == 0 {
+			return owner, nil
+		}
+		done := owner.changed
+		s.mu.Unlock()
+		select {
+		case <-done:
+		case <-ctx.Done():
+		case <-s.stop:
+		}
+		s.mu.Lock()
+	}
 }
 
-func (s *Server) removeOwnerLocked(id session.SessionID) {
-	delete(s.owners, id)
-}
-
-func (s *Server) finishSessionBind(id session.SessionID, attached, newlyCreated bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	owner := s.owners[id]
+func (s *Server) finishSessionDelete(id session.SessionID, owner *sessionOwner, deleted bool) {
 	if owner == nil {
 		return
 	}
-	owner.pending--
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.owners[id] != owner {
+		return
+	}
+	if deleted {
+		delete(s.owners, id)
+		return
+	}
+	owner.retiring = false
+	owner.expiresAt = time.Now().Add(s.cfg.OwnerRetention)
+	signalOwner(owner)
+}
+
+func (s *Server) finishSessionBind(id session.SessionID, owner *sessionOwner, attached bool) {
+	if owner == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if owner.pending > 0 {
+		owner.pending--
+	}
+	signalOwner(owner)
+	if s.owners[id] != owner {
+		return
+	}
 	if attached {
 		owner.handles++
+		return
 	}
-	if newlyCreated && !attached && owner.pending == 0 && owner.handles == 0 {
-		s.removeOwnerLocked(id)
+	if owner.pending == 0 && owner.handles == 0 && !owner.published && !owner.retiring {
+		delete(s.owners, id)
 	}
 	// Ownership is deliberately retained after the last handle closes. The
 	// logical session's absolute retention, delete, or shutdown reclaims it.
@@ -149,11 +225,16 @@ func (s *Server) checkIncarnation(got string, allowEmpty bool) error {
 	return nil
 }
 
+// signalAttachment broadcasts a state change to lifecycle waiters. The caller
+// holds Server.mu so waiters cannot miss a change between checking and subscribing.
 func signalAttachment(a *serverAttachment) {
 	close(a.changed)
 	a.changed = make(chan struct{})
 }
 
+// get admits an ordinary operation on an open handle and increments active so
+// lifecycle operations and expiry cleanup wait for it. The caller must invoke
+// the returned release function exactly once, even if its operation fails.
 func (s *Server) get(ctx context.Context, incarnation, handle string) (*serverAttachment, func(), error) {
 	if err := s.checkIncarnation(incarnation, false); err != nil {
 		return nil, nil, err
@@ -183,6 +264,11 @@ func (s *Server) get(ctx context.Context, incarnation, handle string) (*serverAt
 	}, nil
 }
 
+// beginLifecycle either replays a settled Close/Abort (the bool is true), or
+// waits for current work to drain and claims the next lifecycle attempt. A new
+// attempt blocks ordinary operations until its caller invokes finishLifecycle.
+// Admission reserves control capacity before any waiting, including duplicate
+// calls joining a running lifecycle attempt. Settled terminal replay needs no slot.
 func (s *Server) beginLifecycle(ctx context.Context, incarnation, handle string, operation lifecycleOperation) (*serverAttachment, mcpbroker.CloseOutcome, bool, error) {
 	if err := s.checkIncarnation(incarnation, false); err != nil {
 		return nil, "", false, err
@@ -190,6 +276,14 @@ func (s *Server) beginLifecycle(ctx context.Context, incarnation, handle string,
 	if handle == "" {
 		return nil, "", false, invalid("handle is required")
 	}
+	admitted := false
+	defer func() {
+		if admitted {
+			s.mu.Lock()
+			s.pendingControls--
+			s.mu.Unlock()
+		}
+	}()
 	for {
 		s.mu.Lock()
 		a := s.handles[handle]
@@ -210,6 +304,14 @@ func (s *Server) beginLifecycle(ctx context.Context, incarnation, handle string,
 			s.mu.Unlock()
 			return nil, outcome, true, nil
 		}
+		if !admitted {
+			if s.pendingControls >= s.cfg.MaxPendingControls {
+				s.mu.Unlock()
+				return nil, "", false, reasonStatus(codes.ResourceExhausted, "broker control capacity reached", brokerv1.BrokerErrorReason_BROKER_ERROR_REASON_CAPACITY_REACHED, "")
+			}
+			s.pendingControls++
+			admitted = true
+		}
 		if a.running != lifecycleNone || a.active != 0 {
 			done := a.changed
 			s.mu.Unlock()
@@ -220,22 +322,16 @@ func (s *Server) beginLifecycle(ctx context.Context, incarnation, handle string,
 				return nil, "", false, status.FromContextError(ctx.Err()).Err()
 			}
 		}
-		if s.pendingControls >= s.cfg.MaxPendingControls {
-			s.mu.Unlock()
-			return nil, "", false, reasonStatus(codes.ResourceExhausted, "broker control capacity reached", brokerv1.BrokerErrorReason_BROKER_ERROR_REASON_CAPACITY_REACHED, "")
-		}
 		a.running = operation
-		s.pendingControls++
-		a.runningDone = make(chan struct{})
 		a.active++
 		signalAttachment(a)
+		admitted = false // finishLifecycle now owns this control slot.
 		s.mu.Unlock()
 		return a, "", false, nil
 	}
 }
 
-func (s *Server) releaseOwnerHandleLocked(id session.SessionID) {
-	owner := s.owners[id]
+func releaseOwnerHandleLocked(owner *sessionOwner) {
 	if owner == nil || owner.handles == 0 {
 		return
 	}
@@ -253,10 +349,13 @@ func (s *Server) releaseClosedReceiptsLocked(attachment *serverAttachment) {
 	}
 }
 
+// finishLifecycle releases an attempt's active/control slots and wakes waiters.
+// A terminal attempt retains its outcome for replay; a nonterminal failure leaves
+// the handle open for another attempt.
 func (s *Server) finishLifecycle(a *serverAttachment, operation lifecycleOperation, outcome mcpbroker.CloseOutcome, terminal bool) {
 	s.mu.Lock()
 	if terminal {
-		s.releaseOwnerHandleLocked(a.logicalID)
+		releaseOwnerHandleLocked(a.owner)
 	}
 	a.active--
 	s.releaseClosedReceiptsLocked(a)
@@ -268,13 +367,13 @@ func (s *Server) finishLifecycle(a *serverAttachment, operation lifecycleOperati
 		s.pendingControls--
 	}
 	a.running = lifecycleNone
-	done := a.runningDone
-	a.runningDone = nil
-	close(done)
 	signalAttachment(a)
 	s.mu.Unlock()
 }
 
+// sweep removes expired, inactive handles and selects owner entries eligible for
+// retirement under Server.mu. Backing-service cleanup runs outside the lock;
+// owners stay marked retiring so Attach cannot reuse their IDs during deletion.
 func (s *Server) sweep() {
 	defer close(s.done)
 	ticker := time.NewTicker(s.cfg.SweepInterval)
@@ -296,7 +395,7 @@ func (s *Server) sweep() {
 					releaseReceiptsLocked(attachment)
 					delete(s.handles, handle)
 					if attachment.terminal == lifecycleNone {
-						s.releaseOwnerHandleLocked(attachment.logicalID)
+						releaseOwnerHandleLocked(attachment.owner)
 						expired = append(expired, attachment)
 					}
 				}
@@ -318,6 +417,9 @@ func (s *Server) sweep() {
 	}
 }
 
+// retireOwner releases ownership only after backing-session deletion succeeds.
+// Failure retains ownership and schedules a later retry. The pointer check keeps
+// an old cleanup result from removing a replacement ownership entry.
 func (s *Server) retireOwner(id session.SessionID, owner *sessionOwner) {
 	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.CleanupTimeout)
 	_, err := s.service.DeleteSession(ctx, id)
@@ -328,7 +430,7 @@ func (s *Server) retireOwner(id session.SessionID, owner *sessionOwner) {
 		return
 	}
 	if err == nil {
-		s.removeOwnerLocked(id)
+		delete(s.owners, id)
 		return
 	}
 	owner.retiring = false

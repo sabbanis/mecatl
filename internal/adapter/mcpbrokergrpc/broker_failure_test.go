@@ -828,6 +828,248 @@ func TestSingletonBrokerRemediation_Scenario2_BoundedAdmissionAcrossBrokerRegist
 	})
 }
 
+func TestSingletonBrokerRemediation_Scenario2_PendingLifecycleAdmissionIncludesWaiters(t *testing.T) {
+	newServer := func(t *testing.T) (*mcpbrokergrpc.Server, *failureBroker, *brokerv1.AttachResponse) {
+		t.Helper()
+		local := newFailureBroker()
+		local.blockExecute = make(chan struct{})
+		cfg := shortConfig()
+		cfg.MaxPendingControls = 1
+		cfg.RPCDeadline = time.Second
+		server, err := mcpbrokergrpc.NewServer(local, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = server.Shutdown(context.Background()) })
+		attached, err := server.Attach(t.Context(), &brokerv1.AttachRequest{SessionId: "pending-waiter"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return server, local, attached
+	}
+	startExecute := func(t *testing.T, server *mcpbrokergrpc.Server, local *failureBroker, attached *brokerv1.AttachResponse) chan error {
+		t.Helper()
+		done := make(chan error, 1)
+		go func() {
+			_, err := server.Execute(context.Background(), &brokerv1.ExecuteRequest{Handle: attached.GetHandle(), BrokerIncarnation: attached.GetBrokerIncarnation(), Name: "read", CallId: "blocking", Args: []byte(`{}`)})
+			done <- err
+		}()
+		select {
+		case <-local.executeEntered:
+		case <-time.After(testWait):
+			t.Fatal("execute did not enter")
+		}
+		return done
+	}
+
+	t.Run("waiting control consumes capacity", func(t *testing.T) {
+		server, local, attached := newServer(t)
+		executeDone := startExecute(t, server, local, attached)
+		closeDone := make(chan error, 1)
+		go func() {
+			_, err := server.Close(context.Background(), &brokerv1.CloseRequest{Handle: attached.GetHandle(), BrokerIncarnation: attached.GetBrokerIncarnation()})
+			closeDone <- err
+		}()
+		time.Sleep(10 * time.Millisecond) // Let Close reserve its control slot while Execute is active.
+		_, err := server.Abort(t.Context(), &brokerv1.AbortRequest{Handle: attached.GetHandle(), BrokerIncarnation: attached.GetBrokerIncarnation()})
+		if status.Code(err) != codes.ResourceExhausted || !hasBrokerReason(err, brokerv1.BrokerErrorReason_BROKER_ERROR_REASON_CAPACITY_REACHED) {
+			t.Fatalf("waiting control capacity = %v, want structured capacity", err)
+		}
+		close(local.blockExecute)
+		if err := <-executeDone; err != nil {
+			t.Fatalf("execute: %v", err)
+		}
+		if err := <-closeDone; err != nil {
+			t.Fatalf("close: %v", err)
+		}
+	})
+
+	t.Run("cancellation releases capacity", func(t *testing.T) {
+		server, local, attached := newServer(t)
+		executeDone := startExecute(t, server, local, attached)
+		ctx, cancel := context.WithCancel(t.Context())
+		closeDone := make(chan error, 1)
+		go func() {
+			_, err := server.Close(ctx, &brokerv1.CloseRequest{Handle: attached.GetHandle(), BrokerIncarnation: attached.GetBrokerIncarnation()})
+			closeDone <- err
+		}()
+		time.Sleep(10 * time.Millisecond) // Let Close reserve its control slot while Execute is active.
+		cancel()
+		if err := <-closeDone; status.Code(err) != codes.Canceled {
+			t.Fatalf("cancelled close = %v, want Canceled", err)
+		}
+		abortDone := make(chan error, 1)
+		go func() {
+			_, err := server.Abort(t.Context(), &brokerv1.AbortRequest{Handle: attached.GetHandle(), BrokerIncarnation: attached.GetBrokerIncarnation()})
+			abortDone <- err
+		}()
+		close(local.blockExecute)
+		if err := <-executeDone; err != nil {
+			t.Fatalf("execute: %v", err)
+		}
+		if err := <-abortDone; err != nil {
+			t.Fatalf("abort after cancellation: %v", err)
+		}
+	})
+
+	t.Run("duplicate close joins running lifecycle", func(t *testing.T) {
+		local := newFailureBroker()
+		local.blockClose = make(chan struct{})
+		local.closeEntered = make(chan struct{}, 1)
+		cfg := shortConfig()
+		cfg.MaxPendingControls = 2
+		server, err := mcpbrokergrpc.NewServer(local, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = server.Shutdown(context.Background()) })
+		attached, err := server.Attach(t.Context(), &brokerv1.AttachRequest{SessionId: "duplicate-lifecycle"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		firstDone := make(chan error, 1)
+		go func() {
+			_, closeErr := server.Close(t.Context(), &brokerv1.CloseRequest{Handle: attached.GetHandle(), BrokerIncarnation: attached.GetBrokerIncarnation()})
+			firstDone <- closeErr
+		}()
+		select {
+		case <-local.closeEntered:
+		case <-time.After(testWait):
+			t.Fatal("first close did not enter")
+		}
+		secondDone := make(chan *brokerv1.CloseResponse, 1)
+		secondErr := make(chan error, 1)
+		go func() {
+			response, closeErr := server.Close(t.Context(), &brokerv1.CloseRequest{Handle: attached.GetHandle(), BrokerIncarnation: attached.GetBrokerIncarnation()})
+			secondDone <- response
+			secondErr <- closeErr
+		}()
+		close(local.blockClose)
+		if err := <-firstDone; err != nil {
+			t.Fatalf("first close: %v", err)
+		}
+		second := <-secondDone
+		if err := <-secondErr; err != nil || second.GetOutcome() != string(mcpbroker.CloseClosed) || local.closeCalls.Load() != 1 {
+			t.Fatalf("duplicate close = %#v, %v, calls=%d", second, err, local.closeCalls.Load())
+		}
+	})
+
+	t.Run("settled close replays", func(t *testing.T) {
+		local := newFailureBroker()
+		server, err := mcpbrokergrpc.NewServer(local, shortConfig())
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = server.Shutdown(context.Background()) })
+		attached, err := server.Attach(t.Context(), &brokerv1.AttachRequest{SessionId: "terminal-replay"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		first, err := server.Close(t.Context(), &brokerv1.CloseRequest{Handle: attached.GetHandle(), BrokerIncarnation: attached.GetBrokerIncarnation()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		replay, err := server.Close(t.Context(), &brokerv1.CloseRequest{Handle: attached.GetHandle(), BrokerIncarnation: attached.GetBrokerIncarnation()})
+		if err != nil || replay.GetOutcome() != first.GetOutcome() || local.closeCalls.Load() != 1 {
+			t.Fatalf("settled close replay = %#v, %v, calls=%d", replay, err, local.closeCalls.Load())
+		}
+	})
+}
+
+func TestDeleteNotFoundBindingMismatchRetainsOwner(t *testing.T) {
+	cfg := shortConfig()
+	cfg.OwnerRetention = time.Second
+	local := newFailureBroker()
+	server, err := mcpbrokergrpc.NewServer(local, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Shutdown(context.Background()) })
+	ownerCtx := session.WithPrincipal(t.Context(), &session.Principal{Subject: "owner-a"})
+	attached, err := server.Attach(ownerCtx, &brokerv1.AttachRequest{SessionId: "delete-mismatch"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := server.Delete(ownerCtx, &brokerv1.DeleteRequest{SessionId: "delete-mismatch", Binding: "wrong-binding", BrokerIncarnation: attached.GetBrokerIncarnation()})
+	if err != nil || deleted.GetOutcome() != string(mcpbroker.DeleteNotFound) {
+		t.Fatalf("conditional mismatch delete = %#v, %v", deleted, err)
+	}
+	otherCtx := session.WithPrincipal(t.Context(), &session.Principal{Subject: "owner-b"})
+	if _, err := server.Attach(otherCtx, &brokerv1.AttachRequest{SessionId: "delete-mismatch"}); status.Code(err) != codes.PermissionDenied {
+		t.Fatalf("mismatch delete released owner: %v", err)
+	}
+}
+
+func TestDeleteFencesConcurrentAttachUntilExactStateIsGone(t *testing.T) {
+	cfg := shortConfig()
+	cfg.OwnerRetention = time.Second
+	local := newFailureBroker()
+	local.blockDelete = make(chan struct{})
+	local.deleteEntered = make(chan struct{}, 1)
+	server, err := mcpbrokergrpc.NewServer(local, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Shutdown(context.Background()) })
+	ownerCtx := session.WithPrincipal(t.Context(), &session.Principal{Subject: "owner-a"})
+	attached, err := server.Attach(ownerCtx, &brokerv1.AttachRequest{SessionId: "delete-interleave"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleteDone := make(chan error, 1)
+	go func() {
+		_, deleteErr := server.Delete(ownerCtx, &brokerv1.DeleteRequest{SessionId: "delete-interleave", Binding: attached.GetBinding(), BrokerIncarnation: attached.GetBrokerIncarnation()})
+		deleteDone <- deleteErr
+	}()
+	select {
+	case <-local.deleteEntered:
+	case <-time.After(testWait):
+		t.Fatal("delete did not reach backing service")
+	}
+	if _, err := server.Attach(ownerCtx, &brokerv1.AttachRequest{SessionId: "delete-interleave"}); status.Code(err) != codes.Unavailable {
+		t.Fatalf("attach during delete = %v, want Unavailable", err)
+	}
+	close(local.blockDelete)
+	if err := <-deleteDone; err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	if replacement, err := server.Attach(ownerCtx, &brokerv1.AttachRequest{SessionId: "delete-interleave"}); err != nil || replacement.GetBinding() == attached.GetBinding() {
+		t.Fatalf("attach after delete = %#v, %v", replacement, err)
+	}
+}
+
+func TestOldHandleReleaseDoesNotChargeReplacementOwner(t *testing.T) {
+	cfg := shortConfig()
+	cfg.HandleIdleTimeout = time.Second
+	cfg.OwnerRetention = 25 * time.Millisecond
+	cfg.SweepInterval = 5 * time.Millisecond
+	local := newFailureBroker()
+	server, err := mcpbrokergrpc.NewServer(local, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Shutdown(context.Background()) })
+	ownerCtx := session.WithPrincipal(t.Context(), &session.Principal{Subject: "owner-a"})
+	old, err := server.Attach(ownerCtx, &brokerv1.AttachRequest{SessionId: "replacement-owner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.Delete(ownerCtx, &brokerv1.DeleteRequest{SessionId: "replacement-owner", Binding: old.GetBinding(), BrokerIncarnation: old.GetBrokerIncarnation()}); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := server.Attach(ownerCtx, &brokerv1.AttachRequest{SessionId: "replacement-owner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.Close(ownerCtx, &brokerv1.CloseRequest{Handle: old.GetHandle(), BrokerIncarnation: old.GetBrokerIncarnation()}); err != nil {
+		t.Fatalf("close old handle: %v", err)
+	}
+	time.Sleep(4 * cfg.OwnerRetention)
+	if !local.hasBinding("replacement-owner", replacement.GetBinding()) {
+		t.Fatal("old handle release retired replacement logical state")
+	}
+}
+
 func TestSingletonBrokerRemediation_OwnershipOutlivesExpiredHandles(t *testing.T) {
 	cfg := shortConfig()
 	cfg.HandleIdleTimeout = 20 * time.Millisecond
@@ -1083,28 +1325,31 @@ func failureBufServer(t *testing.T, local mcpbroker.Service, interceptor grpc.Un
 var failureBrokerSerial atomic.Int32
 
 type failureBroker struct {
-	mu            sync.Mutex
-	serial        int32
-	sessions      map[session.SessionID]*failureAttachment
-	next          int
-	authCalls     atomic.Int32
-	executeCalls  atomic.Int32
-	beginCalls    atomic.Int32
-	abortCalls    atomic.Int32
-	closeCalls    atomic.Int32
-	abortErr      error
-	closeOutcome  mcpbroker.CloseOutcome
-	closeErr      error
-	blockExecute  chan struct{}
-	executeExited chan struct{}
-	blockClose    chan struct{}
-	closeEntered  chan struct{}
-	deleteCalls   atomic.Int32
-	deleteFails   atomic.Bool
+	mu             sync.Mutex
+	serial         int32
+	sessions       map[session.SessionID]*failureAttachment
+	next           int
+	authCalls      atomic.Int32
+	executeCalls   atomic.Int32
+	beginCalls     atomic.Int32
+	abortCalls     atomic.Int32
+	closeCalls     atomic.Int32
+	abortErr       error
+	closeOutcome   mcpbroker.CloseOutcome
+	closeErr       error
+	blockExecute   chan struct{}
+	executeEntered chan struct{}
+	executeExited  chan struct{}
+	blockClose     chan struct{}
+	closeEntered   chan struct{}
+	deleteCalls    atomic.Int32
+	deleteFails    atomic.Bool
+	blockDelete    chan struct{}
+	deleteEntered  chan struct{}
 }
 
 func newFailureBroker() *failureBroker {
-	return &failureBroker{serial: failureBrokerSerial.Add(1), sessions: make(map[session.SessionID]*failureAttachment), executeExited: make(chan struct{}, 1)}
+	return &failureBroker{serial: failureBrokerSerial.Add(1), sessions: make(map[session.SessionID]*failureAttachment), executeEntered: make(chan struct{}, 1), executeExited: make(chan struct{}, 1)}
 }
 func (b *failureBroker) AttachSession(_ context.Context, id session.SessionID) (mcpbroker.Attachment, mcpbroker.AttachOutcome, error) {
 	b.mu.Lock()
@@ -1135,18 +1380,34 @@ func (b *failureBroker) DeleteSession(_ context.Context, id session.SessionID) (
 	delete(b.sessions, id)
 	return mcpbroker.DeleteDeleted, nil
 }
-func (b *failureBroker) DeleteSessionIfBinding(_ context.Context, id session.SessionID, binding session.ExternalBinding) (mcpbroker.DeleteOutcome, error) {
+func (b *failureBroker) DeleteSessionIfBinding(ctx context.Context, id session.SessionID, binding session.ExternalBinding) (mcpbroker.DeleteOutcome, error) {
+	if b.blockDelete != nil {
+		if b.deleteEntered != nil {
+			select {
+			case b.deleteEntered <- struct{}{}:
+			default:
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-b.blockDelete:
+		}
+	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	a := b.sessions[id]
-	if a == nil {
+	if a == nil || a.binding != binding {
 		return mcpbroker.DeleteNotFound, nil
-	}
-	if a.binding != binding {
-		return "", mcpbroker.ErrStateUnavailable
 	}
 	delete(b.sessions, id)
 	return mcpbroker.DeleteDeleted, nil
+}
+
+func (b *failureBroker) hasBinding(id session.SessionID, binding string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.sessions[id] != nil && string(b.sessions[id].binding) == binding
 }
 func (b *failureBroker) operations() int32 {
 	return b.authCalls.Load() + b.executeCalls.Load() + b.beginCalls.Load()
@@ -1252,6 +1513,12 @@ func (*failureTool) ReadOnly() bool { return true }
 func (t *failureTool) Execute(ctx context.Context, call session.ToolCall, _ tool.Environment) (session.ToolResult, error) {
 	t.a.broker.executeCalls.Add(1)
 	if t.a.broker.blockExecute != nil {
+		if t.a.broker.executeEntered != nil {
+			select {
+			case t.a.broker.executeEntered <- struct{}{}:
+			default:
+			}
+		}
 		select {
 		case <-ctx.Done():
 			select {

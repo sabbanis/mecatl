@@ -28,12 +28,12 @@ func (s *Server) Attach(ctx context.Context, req *brokerv1.AttachRequest) (*brok
 	if !mcpbroker.ValidLogicalSessionID(logicalID) {
 		return nil, invalid("session_id is invalid")
 	}
-	principal, newlyCreated, err := s.bindSession(ctx, logicalID)
+	principal, owner, err := s.bindSession(ctx, logicalID)
 	if err != nil {
 		return nil, err
 	}
 	attached := false
-	defer func() { s.finishSessionBind(logicalID, attached, newlyCreated) }()
+	defer func() { s.finishSessionBind(logicalID, owner, attached) }()
 	a, outcome, err := s.service.AttachSession(ctx, logicalID)
 	if err != nil {
 		return nil, brokerStatus(err)
@@ -58,9 +58,16 @@ func (s *Server) Attach(ctx context.Context, req *brokerv1.AttachRequest) (*brok
 		s.discardUnpublishedAttachment(a, outcome)
 		return nil, reasonStatus(codes.ResourceExhausted, "attachment handle capacity reached", brokerv1.BrokerErrorReason_BROKER_ERROR_REASON_CAPACITY_REACHED, "")
 	}
+	if owner != nil && (s.owners[logicalID] != owner || owner.retiring) {
+		s.discardUnpublishedAttachment(a, outcome)
+		return nil, reasonStatus(codes.Unavailable, "broker session is being retired", brokerv1.BrokerErrorReason_BROKER_ERROR_REASON_STATE_UNAVAILABLE, "")
+	}
+	if owner != nil {
+		owner.published = true
+	}
 	_, enrollment := a.(mcpbroker.WorkspaceEnrollmentAttachment)
 	now := time.Now()
-	s.handles[h] = &serverAttachment{attachment: a, principal: principal, logicalID: logicalID, binding: string(a.Binding()), tools: tools, expiresAt: now.Add(s.cfg.HandleIdleTimeout), changed: make(chan struct{}), receipts: make(map[session.ToolCallID]*executeReceipt)}
+	s.handles[h] = &serverAttachment{attachment: a, principal: principal, logicalID: logicalID, owner: owner, binding: string(a.Binding()), tools: tools, expiresAt: now.Add(s.cfg.HandleIdleTimeout), changed: make(chan struct{}), receipts: make(map[session.ToolCallID]*executeReceipt)}
 	attached = true
 	return &brokerv1.AttachResponse{Binding: string(a.Binding()), Handle: h, Outcome: string(outcome), Tools: desc, BrokerIncarnation: s.instanceID, WorkspaceEnrollment: enrollment}, nil
 }
@@ -145,20 +152,21 @@ func (s *Server) Delete(ctx context.Context, req *brokerv1.DeleteRequest) (*brok
 	if err := s.checkIncarnation(req.GetBrokerIncarnation(), true); err != nil {
 		return nil, err
 	}
-	if err := s.authorizeSession(ctx, session.SessionID(req.GetSessionId())); err != nil {
+	owner, err := s.beginSessionDelete(ctx, session.SessionID(req.GetSessionId()))
+	if err != nil {
 		return nil, err
 	}
 	d, ok := s.service.(mcpbroker.BindingSessionDeleter)
 	if !ok {
+		s.finishSessionDelete(session.SessionID(req.GetSessionId()), owner, false)
 		return nil, status.Error(codes.FailedPrecondition, "binding delete is unsupported")
 	}
 	out, err := d.DeleteSessionIfBinding(ctx, session.SessionID(req.GetSessionId()), session.ExternalBinding(req.GetBinding()))
 	if err != nil {
+		s.finishSessionDelete(session.SessionID(req.GetSessionId()), owner, false)
 		return nil, brokerStatus(err)
 	}
-	s.mu.Lock()
-	s.removeOwnerLocked(session.SessionID(req.GetSessionId()))
-	s.mu.Unlock()
+	s.finishSessionDelete(session.SessionID(req.GetSessionId()), owner, out == mcpbroker.DeleteDeleted)
 	return &brokerv1.DeleteResponse{Outcome: string(out)}, nil
 }
 
