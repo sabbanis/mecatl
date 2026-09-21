@@ -475,8 +475,68 @@ func (f *FileSystem) Glob(ctx context.Context, pattern string) ([]string, error)
 	return matches, nil
 }
 
+// globWalkFS makes cancellation visible to doublestar as an I/O error at every
+// traversal boundary. Ordinary filesystem errors keep GlobWalk's historical
+// ignore-and-continue semantics.
+type globWalkFS struct {
+	ctx  context.Context
+	base fs.FS
+}
+
+func (f globWalkFS) Open(name string) (fs.File, error) {
+	if err := f.ctx.Err(); err != nil {
+		return nil, err
+	}
+	file, err := f.base.Open(name)
+	if ctxErr := f.ctx.Err(); ctxErr != nil {
+		if file != nil {
+			_ = file.Close()
+		}
+		return nil, ctxErr
+	}
+	if err != nil {
+		return nil, globNotExist("open", name)
+	}
+	return file, nil
+}
+
+func (f globWalkFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	if err := f.ctx.Err(); err != nil {
+		return nil, err
+	}
+	entries, err := fs.ReadDir(f.base, name)
+	if ctxErr := f.ctx.Err(); ctxErr != nil {
+		return nil, ctxErr
+	}
+	if err != nil {
+		return nil, nil
+	}
+	return entries, nil
+}
+
+func (f globWalkFS) Stat(name string) (fs.FileInfo, error) {
+	if err := f.ctx.Err(); err != nil {
+		return nil, err
+	}
+	info, err := fs.Stat(f.base, name)
+	if ctxErr := f.ctx.Err(); ctxErr != nil {
+		return nil, ctxErr
+	}
+	if err != nil {
+		return nil, globNotExist("stat", name)
+	}
+	return info, nil
+}
+
+func globNotExist(op, name string) error {
+	return &fs.PathError{Op: op, Path: name, Err: fs.ErrNotExist}
+}
+
 // globWalk visits root-relative matches without first materializing them.
 func (f *FileSystem) globWalk(ctx context.Context, pattern string, visit func(string, fs.DirEntry) error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// doublestar patterns are root-relative, slash-separated paths. normalizeGlobPattern
 	// preserves the old filepath.Join leniency (silently absorbing a leading "/"
 	// or "./", which would otherwise be an invalid absolute pattern). An empty or
@@ -492,7 +552,7 @@ func (f *FileSystem) globWalk(ctx context.Context, pattern string, visit func(st
 	// intermediate-directory components are rejected by construction — closing
 	// the filename-enumeration leak filepath.Glob had. WithNoFollow keeps the
 	// walk from descending into symlinked directories.
-	return doublestar.GlobWalk(f.r.FS(), pat, func(path string, entry fs.DirEntry) error {
+	err := doublestar.GlobWalk(globWalkFS{ctx: ctx, base: f.r.FS()}, pat, func(path string, entry fs.DirEntry) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -511,7 +571,11 @@ func (f *FileSystem) globWalk(ctx context.Context, pattern string, visit func(st
 		// path is already root-relative and slash-separated. Returning the visitor
 		// error stops GlobWalk immediately.
 		return visit(path, entry)
-	}, doublestar.WithNoFollow())
+	}, doublestar.WithNoFollow(), doublestar.WithFailOnIOErrors())
+	if err != nil {
+		return err
+	}
+	return ctx.Err()
 }
 
 // normalizeGlobPattern applies the leniency the old filepath.Join-based Glob
