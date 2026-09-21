@@ -1,5 +1,5 @@
 # Publishes and signs the mecated, mecatui, and mecak8s images, the Slack bot
-# example image, the Mecatl Studio image (experimental, ADR 0350), the mecak8s
+# example image, the Mecatl Studio image (ADR 0350), the mecak8s
 # Helm chart, and the mecated+mecatui CLI archives (a GitHub Release plus a
 # stacklok/homebrew-tap formula) from root `v*` tags or an explicitly selected tag.
 name: Release
@@ -696,10 +696,9 @@ jobs:
       # Build context is apps/ ONLY: Studio consumes the PUBLISHED
       # @stacklok-oss/mecatl-sdk, never the in-tree SDK (ADR 0350), so the Go
       # root and sdk/typescript are not part of the image. Tag both the version
-      # and latest, matching the jobs above. The image is EXPERIMENTAL while the
-      # Studio skeleton has no product features — the stage label says so, so
-      # infrastructure can wire the deployment early without mistaking it for a
-      # supported surface.
+      # and latest, matching the jobs above. The bootstrap carried an
+      # `org.stacklok.mecatl.studio.stage=experimental` label while Studio had no
+      # product feature; the chat layer (docs/acceptance/studio-chat.md) removed it.
       - name: Build and push image
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -716,7 +715,6 @@ jobs:
             org.opencontainers.image.title=studio
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.vendor=Stacklok
-            org.stacklok.mecatl.studio.stage=experimental
 
       # Sign/SBOM/attest the pushed manifest list BY DIGEST, matching the
       # ko-based jobs above — never a mutable tag, so this binds to the exact

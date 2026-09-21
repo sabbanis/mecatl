@@ -1,11 +1,10 @@
 # Mecatl Studio (`apps/`)
 
-> **Experimental — bootstrap only.** This workspace is the *skeleton* of the Mecatl web
-> UI: health, runtime status, browser login, and an empty React shell. It has **no
-> product features yet**; each feature lands as its own acceptance plan. The published
-> image (`ghcr.io/stacklok/mecatl/studio`) carries the label
-> `org.stacklok.mecatl.studio.stage=experimental` for the same reason. Do not point it at
-> anything you would not point a prototype at.
+> **Early.** Studio ships the bootstrap (health, runtime status, browser login, the shell)
+> plus its first product feature, **chat**: sessions, streamed runs with images,
+> approvals, steering, model and effort selection. Schedules, skills, settings, and search
+> land as their own acceptance plans (see `docs/acceptance/studio-*.md`). The published
+> image is `ghcr.io/stacklok/mecatl/studio`.
 
 Mecatl Studio is a browser UI for a mecatl deployment, split in three packages that form
 one self-contained pnpm workspace (pnpm 12.4.2, Node 24, see `package.json`):
@@ -116,6 +115,8 @@ when it exists, and `docker compose` reads `apps/.env`.
 | `STUDIO_TRUSTED_PROXY_HOPS`    | `0`                                           | Number of trusted reverse-proxy hops in front of Studio. `0` uses the socket peer as the client address; `n > 0` uses the corresponding right-most `X-Forwarded-For` entry.  |
 | `STUDIO_RATE_LIMIT_MAX`        | `20`                                          | Requests allowed per client address per window on `/api/v1/auth/*`.                                                                                                        |
 | `STUDIO_RATE_LIMIT_WINDOW_MS`  | `60000`                                       | The rate-limit window in milliseconds.                                                                                                                                     |
+| `STUDIO_ACTIVITY_REPLAY_MAX` | `2000` | Durable replay events one activity request forwards before it reports truncation. Live events are never bounded. |
+| `STUDIO_ACTIVITY_MAX_STREAMS` | `4` | Concurrent activity streams one session admits per replica; beyond it the route answers `429`. |
 | `STUDIO_LOG_LEVEL`             | `info`                                        | `debug`, `info`, `warn`, or `error`.                                                                                                                                       |
 | `STUDIO_WEB_DIST`              | `../web/dist` relative to the server package (`/app/web/dist` in the image) | Directory holding the built SPA the BFF serves. Normally you never set it; the Dockerfile does.                                                        |
 
