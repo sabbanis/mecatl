@@ -20,7 +20,7 @@ import (
 var ErrBrokerBindingMismatch = errors.New("MCP broker binding mismatch")
 
 type localBrokerAttachment struct {
-	attachment brokercontract.Attachment
+	attachment brokercontract.SessionHandle
 	generation uint64
 	owned      bool
 }

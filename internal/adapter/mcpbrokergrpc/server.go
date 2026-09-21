@@ -31,10 +31,10 @@ type Server struct {
 	// replacement server rejects requests tied to the lost process-local state.
 	instanceID string
 
-	// mu protects the retained registries, their attachment and owner state, the
+	// mu protects the retained registries, their session-handle and owner state, the
 	// closed flag, and the execution/control counters below.
 	mu              sync.Mutex
-	handles         map[string]*serverAttachment        // Process-local handles retained until expiry or shutdown cleanup.
+	handles         map[string]*serverHandle            // Process-local handles retained until expiry or shutdown cleanup.
 	owners          map[session.SessionID]*sessionOwner // Logical-session ownership retained beyond individual handles.
 	closed          bool                                // Rejects new work once Shutdown begins.
 	activeExecutes  int                                 // Dispatched executions counted against cfg.MaxActiveExecutes.
@@ -47,7 +47,7 @@ type Server struct {
 	// executeCtx is cancelled by executeStop when Shutdown begins.
 	executeCtx  context.Context
 	executeStop context.CancelFunc
-	// executeWG joins dispatched executions before attachment cleanup.
+	// executeWG joins dispatched executions before session-handle cleanup.
 	executeWG sync.WaitGroup
 }
 
@@ -83,7 +83,7 @@ func NewServer(service mcpbroker.Service, cfg Config) (*Server, error) {
 		return nil, fmt.Errorf("mcpbrokergrpc: mint broker instance ID: %w", err)
 	}
 	executeCtx, executeStop := context.WithCancel(context.Background())
-	s := &Server{service: service, diagnostics: port.NopDiagnostics{}, cfg: cfg, instanceID: instanceID, handles: make(map[string]*serverAttachment), owners: make(map[session.SessionID]*sessionOwner), done: make(chan struct{}), stop: make(chan struct{}), executeCtx: executeCtx, executeStop: executeStop}
+	s := &Server{service: service, diagnostics: port.NopDiagnostics{}, cfg: cfg, instanceID: instanceID, handles: make(map[string]*serverHandle), owners: make(map[session.SessionID]*sessionOwner), done: make(chan struct{}), stop: make(chan struct{}), executeCtx: executeCtx, executeStop: executeStop}
 	go s.sweep()
 	return s, nil
 }
@@ -108,7 +108,7 @@ func (s *Server) TraceRPC(ctx context.Context, operation, outcome string, fields
 	s.diagnostics.Log(ctx, level, "broker RPC", append([]any{"operation", operation, "outcome", outcome, "inbound_credential_kind", "workload_jwt"}, fields...)...)
 }
 
-func (s *Server) traceUnknownTool(ctx context.Context, a *serverAttachment, requested string) {
+func (s *Server) traceUnknownTool(ctx context.Context, a *serverHandle, requested string) {
 	const previewLimit = 8
 	names := make([]string, 0, len(a.tools))
 	for name := range a.tools {
@@ -148,13 +148,13 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	s.closed = true
 	close(s.stop)
-	attachments := make([]*serverAttachment, 0, len(s.handles))
-	toClose := make([]*serverAttachment, 0, len(s.handles))
-	for handle, attachment := range s.handles {
-		delete(s.handles, handle)
-		attachments = append(attachments, attachment)
-		if attachment.terminal == lifecycleNone {
-			toClose = append(toClose, attachment)
+	handles := make([]*serverHandle, 0, len(s.handles))
+	toClose := make([]*serverHandle, 0, len(s.handles))
+	for id, handle := range s.handles {
+		delete(s.handles, id)
+		handles = append(handles, handle)
+		if handle.terminal == lifecycleNone {
+			toClose = append(toClose, handle)
 		}
 	}
 	clear(s.owners)
@@ -168,16 +168,16 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	select {
 	case <-executeDone:
 		s.mu.Lock()
-		for _, attachment := range attachments {
-			releaseReceiptsLocked(attachment)
+		for _, handle := range handles {
+			releaseReceiptsLocked(handle)
 		}
 		s.mu.Unlock()
 	case <-ctx.Done():
 		return ctx.Err()
 	}
-	for _, attachment := range toClose {
+	for _, handle := range toClose {
 		closeCtx, cancel := context.WithTimeout(ctx, s.cfg.CleanupTimeout)
-		_, err := attachment.attachment.Close(closeCtx)
+		_, err := handle.sessionHandle.Close(closeCtx)
 		cancel()
 		if err != nil && ctx.Err() != nil {
 			return ctx.Err()

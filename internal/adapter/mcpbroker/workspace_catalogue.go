@@ -34,7 +34,7 @@ func cloneRoutes(routes []route) []route {
 	return out
 }
 
-func (a *Attachment) installCompletedEnrollment(completed *completedWorkspaceEnrollment) (contract.WorkspaceCatalogue, error) {
+func (a *SessionHandle) installCompletedEnrollment(completed *completedWorkspaceEnrollment) (contract.WorkspaceCatalogue, error) {
 	if completed == nil {
 		return nil, ErrAuthenticatedDiscovery
 	}
@@ -107,7 +107,7 @@ func (c *attachmentCatalogue) Tools() []tool.Tool {
 // model-visible name set outside this attachment catalogue (core/global tools).
 // brokerCredential is opaque and is passed only through ToolHive's incoming
 // identity middleware.
-func (a *Attachment) FreezeAuthenticatedCatalogue(ctx context.Context, ref contract.WorkspaceEnrollmentRef, process *Process, brokerCredential oauth2.TokenSource, reservedToolNames []string) (contract.WorkspaceCatalogue, error) {
+func (a *SessionHandle) FreezeAuthenticatedCatalogue(ctx context.Context, ref contract.WorkspaceEnrollmentRef, process *Process, brokerCredential oauth2.TokenSource, reservedToolNames []string) (contract.WorkspaceCatalogue, error) {
 	frozen, _, err := a.freezeAuthenticatedCatalogue(ctx, ref, process, brokerCredential, reservedToolNames, true)
 	return frozen, err
 }
@@ -116,7 +116,7 @@ func (a *Attachment) FreezeAuthenticatedCatalogue(ctx context.Context, ref contr
 // uses publish=false so the catalogue remains private until its logical commit.
 //
 //nolint:gocyclo // every early-return guards a distinct precondition (closed, stale ref, process authority, publish race); splitting would scatter the single freeze/publish invariant
-func (a *Attachment) freezeAuthenticatedCatalogue(ctx context.Context, ref contract.WorkspaceEnrollmentRef, process *Process, brokerCredential oauth2.TokenSource, reservedToolNames []string, publish bool) (contract.WorkspaceCatalogue, *attachmentCatalogue, error) {
+func (a *SessionHandle) freezeAuthenticatedCatalogue(ctx context.Context, ref contract.WorkspaceEnrollmentRef, process *Process, brokerCredential oauth2.TokenSource, reservedToolNames []string, publish bool) (contract.WorkspaceCatalogue, *attachmentCatalogue, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
@@ -191,7 +191,7 @@ func (a *Attachment) freezeAuthenticatedCatalogue(ctx context.Context, ref contr
 	return frozen, candidate, nil
 }
 
-func (a *Attachment) stateErrorLocked() error {
+func (a *SessionHandle) stateErrorLocked() error {
 	a.logical.mu.RLock()
 	deleted := a.logical.deleted
 	a.logical.mu.RUnlock()
@@ -317,7 +317,7 @@ func (p *Process) catalogueStillAvailable(runtime *Runtime) bool {
 
 // lookupRoute is the execution-side route identity lookup. It never scans
 // wrappers or relies on their concrete types.
-func (a *Attachment) lookupRoute(name string) (route, bool) {
+func (a *SessionHandle) lookupRoute(name string) (route, bool) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.catalogue.route(name)

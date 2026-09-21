@@ -12,7 +12,7 @@ func TestReceiptAccountingClearedByRetentionSweep(t *testing.T) {
 	attachment := accountedTerminalAttachment(37, time.Now().Add(-time.Second))
 	server := &Server{
 		cfg:     Config{SweepInterval: time.Millisecond},
-		handles: map[string]*serverAttachment{"expired": attachment},
+		handles: map[string]*serverHandle{"expired": attachment},
 		owners:  make(map[session.SessionID]*sessionOwner),
 		stop:    make(chan struct{}),
 		done:    make(chan struct{}),
@@ -51,7 +51,7 @@ func TestReceiptAccountingClearedByShutdown(t *testing.T) {
 	executeCtx, executeStop := context.WithCancel(context.Background())
 	server := &Server{
 		cfg:         Config{SweepInterval: time.Hour},
-		handles:     map[string]*serverAttachment{"retained": attachment},
+		handles:     map[string]*serverHandle{"retained": attachment},
 		owners:      make(map[session.SessionID]*sessionOwner),
 		stop:        make(chan struct{}),
 		done:        make(chan struct{}),
@@ -67,8 +67,8 @@ func TestReceiptAccountingClearedByShutdown(t *testing.T) {
 	}
 }
 
-func accountedTerminalAttachment(bytes int, expiresAt time.Time) *serverAttachment {
-	return &serverAttachment{
+func accountedTerminalAttachment(bytes int, expiresAt time.Time) *serverHandle {
+	return &serverHandle{
 		expiresAt:    expiresAt,
 		changed:      make(chan struct{}),
 		receipts:     map[session.ToolCallID]*executeReceipt{"call": {bytes: bytes, done: make(chan struct{})}},

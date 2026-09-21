@@ -15,11 +15,11 @@ var ErrWorkspaceEnrollmentUnsupported = errors.New("mcpbroker: workspace enrollm
 
 var errWorkspaceEnrollmentAlreadyCompleted = errors.New("mcpbroker: workspace enrollment is already completed")
 
-var _ contract.WorkspaceEnrollmentAttachment = (*Attachment)(nil)
+var _ contract.WorkspaceEnrollmentHandle = (*SessionHandle)(nil)
 
 // bundleBackends returns the deterministic configured protected backends, the
 // shared bundle-wide authorization target, and the owning Process.
-func (a *Attachment) bundleBackends() ([]string, *oauthRoute, *Process) {
+func (a *SessionHandle) bundleBackends() ([]string, *oauthRoute, *Process) {
 	process := a.runtime.process
 	if process == nil {
 		return nil, nil, nil
@@ -42,7 +42,7 @@ func (a *Attachment) bundleBackends() ([]string, *oauthRoute, *Process) {
 // is never overwritten. resolved reports whether the caller should return
 // immediately with (result, err); resolved == false means a new transaction
 // must be created.
-func existingWorkspaceEnrollmentLocked(a *Attachment, logical *logicalSession) (result contract.WorkspaceEnrollmentPresentation, resolved bool, err error) {
+func existingWorkspaceEnrollmentLocked(a *SessionHandle, logical *logicalSession) (result contract.WorkspaceEnrollmentPresentation, resolved bool, err error) {
 	if logical.deleted {
 		return contract.WorkspaceEnrollmentPresentation{}, true, contract.ErrStateUnavailable
 	}
@@ -73,7 +73,7 @@ func existingWorkspaceEnrollmentLocked(a *Attachment, logical *logicalSession) (
 // BeginWorkspaceEnrollment starts, or idempotently re-presents, the one
 // bundle-wide pre-prompt ToolHive authorization transaction for every protected
 // backend.
-func (a *Attachment) BeginWorkspaceEnrollment(ctx context.Context) (contract.WorkspaceEnrollmentPresentation, error) {
+func (a *SessionHandle) BeginWorkspaceEnrollment(ctx context.Context) (contract.WorkspaceEnrollmentPresentation, error) {
 	if err := ctx.Err(); err != nil {
 		return contract.WorkspaceEnrollmentPresentation{}, err
 	}
@@ -164,7 +164,7 @@ func (a *Attachment) BeginWorkspaceEnrollment(ctx context.Context) (contract.Wor
 // only if every backend succeeds, publishes the frozen catalogue.
 //
 //nolint:gocyclo // one switch over every terminal transaction status plus the granted-path discovery/reverify/publish sequence; splitting would separate a status branch from the reverify it must share
-func (a *Attachment) ObserveWorkspaceEnrollment(ctx context.Context, ref contract.WorkspaceEnrollmentRef) (contract.WorkspaceEnrollmentResult, error) {
+func (a *SessionHandle) ObserveWorkspaceEnrollment(ctx context.Context, ref contract.WorkspaceEnrollmentRef) (contract.WorkspaceEnrollmentResult, error) {
 	if err := ctx.Err(); err != nil {
 		return contract.WorkspaceEnrollmentResult{}, err
 	}
@@ -296,7 +296,7 @@ func (a *Attachment) ObserveWorkspaceEnrollment(ctx context.Context, ref contrac
 
 // CancelWorkspaceEnrollment cancels the exact pending bundle and clears its
 // aggregate broker credential. No terminal outcome leaves partial authority.
-func (a *Attachment) CancelWorkspaceEnrollment(ctx context.Context, ref contract.WorkspaceEnrollmentRef) (contract.WorkspaceEnrollmentResult, error) {
+func (a *SessionHandle) CancelWorkspaceEnrollment(ctx context.Context, ref contract.WorkspaceEnrollmentRef) (contract.WorkspaceEnrollmentResult, error) {
 	if err := ctx.Err(); err != nil {
 		return contract.WorkspaceEnrollmentResult{}, err
 	}
@@ -323,7 +323,7 @@ func (a *Attachment) CancelWorkspaceEnrollment(ctx context.Context, ref contract
 	return result, nil
 }
 
-func (a *Attachment) failWorkspaceTransaction(logical *logicalSession, transaction *authorizationTransaction) contract.WorkspaceEnrollmentResult {
+func (a *SessionHandle) failWorkspaceTransaction(logical *logicalSession, transaction *authorizationTransaction) contract.WorkspaceEnrollmentResult {
 	logical.mu.Lock()
 	defer logical.mu.Unlock()
 	if lookupWorkspaceTransactionLocked(logical, session.WorkspaceEnrollmentID(transaction.identity.id)) == nil {
@@ -339,7 +339,7 @@ func (a *Attachment) failWorkspaceTransaction(logical *logicalSession, transacti
 // a metadata-only tombstone. Observe can therefore repeat the same terminal
 // result after a host save failure; the next Begin removes the tombstone once
 // the aggregate has acknowledged it by clearing its pending record.
-func (a *Attachment) observeTerminalWorkspaceTransactionLocked(logical *logicalSession, transaction *authorizationTransaction, status contract.WorkspaceEnrollmentStatus) contract.WorkspaceEnrollmentResult {
+func (a *SessionHandle) observeTerminalWorkspaceTransactionLocked(logical *logicalSession, transaction *authorizationTransaction, status contract.WorkspaceEnrollmentStatus) contract.WorkspaceEnrollmentResult {
 	a.runtime.removeCallbackState(transaction.state, transaction)
 	if transaction.cancel != nil {
 		transaction.cancel()
@@ -352,7 +352,7 @@ func (a *Attachment) observeTerminalWorkspaceTransactionLocked(logical *logicalS
 
 // terminateWorkspaceTransactionLocked clears the aggregate broker credential and
 // transaction record, and must be called with logical.mu held.
-func (a *Attachment) terminateWorkspaceTransactionLocked(logical *logicalSession, transaction *authorizationTransaction, status contract.WorkspaceEnrollmentStatus) contract.WorkspaceEnrollmentResult {
+func (a *SessionHandle) terminateWorkspaceTransactionLocked(logical *logicalSession, transaction *authorizationTransaction, status contract.WorkspaceEnrollmentStatus) contract.WorkspaceEnrollmentResult {
 	a.runtime.removeCallbackState(transaction.state, transaction)
 	if transaction.cancel != nil {
 		transaction.cancel()

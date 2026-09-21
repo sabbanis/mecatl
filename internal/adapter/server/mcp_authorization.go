@@ -287,7 +287,7 @@ func (s *Service) recheckExpiredAuthorizationLocked(ctx context.Context, sess *s
 	return s.applyAuthorizationStatusLocked(ctx, sess, pending, status)
 }
 
-func reconcileAuthorizationCancellation(ctx context.Context, attachment brokercontract.Attachment, authorization session.ExternalAuthorization, outcome brokercontract.CancelOutcome, freshStatus session.AuthorizationStatus) (session.AuthorizationStatus, error) {
+func reconcileAuthorizationCancellation(ctx context.Context, attachment brokercontract.SessionHandle, authorization session.ExternalAuthorization, outcome brokercontract.CancelOutcome, freshStatus session.AuthorizationStatus) (session.AuthorizationStatus, error) {
 	switch outcome {
 	case brokercontract.CancelCancelled:
 		return freshStatus, nil
@@ -309,7 +309,7 @@ func reconcileAuthorizationCancellation(ctx context.Context, attachment brokerco
 
 // authorizationAttachment returns a committed exact-binding attachment while
 // holding brokerMu until release. Callers must release before engine rebuilding.
-func (s *Service) authorizationAttachment(ctx context.Context, sess *session.Session) (brokercontract.Attachment, func(), error) {
+func (s *Service) authorizationAttachment(ctx context.Context, sess *session.Session) (brokercontract.SessionHandle, func(), error) {
 	unlock := s.brokerMu.lock(sess.ID)
 	local, err := s.openBrokerAttachment(ctx, sess.ID, sess.ExternalBinding, true)
 	if err != nil {

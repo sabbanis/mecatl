@@ -22,7 +22,7 @@ const (
 	sessionUnavailableMessage = "tool temporarily unavailable"
 )
 
-// Config bounds transport calls and server-side attachment retention.
+// Config bounds transport calls and server-side session-handle retention.
 type Config struct {
 	// DialTimeout bounds the initial wait for a remote broker connection to become ready.
 	DialTimeout time.Duration
@@ -30,17 +30,17 @@ type Config struct {
 	RPCDeadline time.Duration
 	// ExecuteDeadline bounds one tool execution, including the server-side work it starts.
 	ExecuteDeadline time.Duration
-	// HandleIdleTimeout expires an attachment handle after inactivity; polling or other
+	// HandleIdleTimeout expires a session handle after inactivity; polling or other
 	// use does not extend the absolute lifetime of an individual execution receipt.
 	HandleIdleTimeout time.Duration
 	// OwnerRetention keeps logical-session ownership after its last handle closes, so
-	// a short-lived attachment does not immediately make the session adoptable.
+	// a short-lived session handle does not immediately make the session adoptable.
 	OwnerRetention time.Duration
 	// SweepInterval controls how often expired handles, owners, and receipts are reclaimed.
 	SweepInterval time.Duration
 	// CleanupTimeout bounds best-effort cleanup of an expired or orphaned remote handle.
 	CleanupTimeout time.Duration
-	// MaxHandles limits concurrently retained process-local attachment handles.
+	// MaxHandles limits concurrently retained process-local session handles.
 	MaxHandles int
 	// MaxOwners limits retained logical-session owners; refusal never evicts an owner.
 	MaxOwners int

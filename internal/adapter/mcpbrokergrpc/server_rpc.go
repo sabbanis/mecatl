@@ -40,46 +40,46 @@ func (s *Server) Attach(ctx context.Context, req *brokerv1.AttachRequest) (*brok
 	}
 	desc, tools, err := descriptors(a.Tools())
 	if err != nil {
-		s.discardUnpublishedAttachment(a, outcome)
+		s.discardUnpublishedHandle(a, outcome)
 		return nil, invalid(err.Error())
 	}
 	h, err := newHandle()
 	if err != nil {
-		s.discardUnpublishedAttachment(a, outcome)
+		s.discardUnpublishedHandle(a, outcome)
 		return nil, status.Error(codes.Internal, "mint attachment handle")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
-		s.discardUnpublishedAttachment(a, outcome)
+		s.discardUnpublishedHandle(a, outcome)
 		return nil, reasonStatus(codes.Unavailable, "broker state unavailable", brokerv1.BrokerErrorReason_BROKER_ERROR_REASON_STATE_UNAVAILABLE, "")
 	}
 	if len(s.handles) >= s.cfg.MaxHandles {
-		s.discardUnpublishedAttachment(a, outcome)
+		s.discardUnpublishedHandle(a, outcome)
 		return nil, reasonStatus(codes.ResourceExhausted, "attachment handle capacity reached", brokerv1.BrokerErrorReason_BROKER_ERROR_REASON_CAPACITY_REACHED, "")
 	}
 	if owner != nil && (s.owners[logicalID] != owner || owner.retiring) {
-		s.discardUnpublishedAttachment(a, outcome)
+		s.discardUnpublishedHandle(a, outcome)
 		return nil, reasonStatus(codes.Unavailable, "broker session is being retired", brokerv1.BrokerErrorReason_BROKER_ERROR_REASON_STATE_UNAVAILABLE, "")
 	}
 	if owner != nil {
 		owner.published = true
 	}
-	_, enrollment := a.(mcpbroker.WorkspaceEnrollmentAttachment)
+	_, enrollment := a.(mcpbroker.WorkspaceEnrollmentHandle)
 	now := time.Now()
-	s.handles[h] = &serverAttachment{attachment: a, principal: principal, logicalID: logicalID, owner: owner, binding: string(a.Binding()), tools: tools, expiresAt: now.Add(s.cfg.HandleIdleTimeout), changed: make(chan struct{}), receipts: make(map[session.ToolCallID]*executeReceipt)}
+	s.handles[h] = &serverHandle{sessionHandle: a, principal: principal, logicalID: logicalID, owner: owner, binding: string(a.Binding()), tools: tools, expiresAt: now.Add(s.cfg.HandleIdleTimeout), changed: make(chan struct{}), receipts: make(map[session.ToolCallID]*executeReceipt)}
 	attached = true
 	return &brokerv1.AttachResponse{Binding: string(a.Binding()), Handle: h, Outcome: string(outcome), Tools: desc, BrokerIncarnation: s.instanceID, WorkspaceEnrollment: enrollment}, nil
 }
 
-func (s *Server) discardUnpublishedAttachment(attachment mcpbroker.Attachment, outcome mcpbroker.AttachOutcome) {
+func (s *Server) discardUnpublishedHandle(handle mcpbroker.SessionHandle, outcome mcpbroker.AttachOutcome) {
 	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.CleanupTimeout)
 	defer cancel()
 	if outcome == mcpbroker.AttachCreated {
-		_ = attachment.Abort(ctx)
+		_ = handle.Abort(ctx)
 		return
 	}
-	_, _ = attachment.Close(ctx)
+	_, _ = handle.Close(ctx)
 }
 
 // Commit commits the provisional state behind one exact handle.
@@ -91,7 +91,7 @@ func (s *Server) Commit(ctx context.Context, req *brokerv1.CommitRequest) (*brok
 		return nil, e
 	}
 	defer release()
-	if e = a.attachment.Commit(ctx); e != nil {
+	if e = a.sessionHandle.Commit(ctx); e != nil {
 		return nil, brokerStatus(e)
 	}
 	return &brokerv1.CommitResponse{}, nil
@@ -108,7 +108,7 @@ func (s *Server) Abort(ctx context.Context, req *brokerv1.AbortRequest) (*broker
 	if receipt {
 		return &brokerv1.AbortResponse{}, nil
 	}
-	e = a.attachment.Abort(ctx)
+	e = a.sessionHandle.Abort(ctx)
 	s.finishLifecycle(a, lifecycleAbort, "", e == nil)
 	if e != nil {
 		return nil, brokerStatus(e)
@@ -127,7 +127,7 @@ func (s *Server) Close(ctx context.Context, req *brokerv1.CloseRequest) (*broker
 	if receipt {
 		return &brokerv1.CloseResponse{Outcome: string(out)}, nil
 	}
-	out, e = a.attachment.Close(ctx)
+	out, e = a.sessionHandle.Close(ctx)
 	terminal := out == mcpbroker.CloseClosed || out == mcpbroker.CloseAlreadyClosed
 	s.finishLifecycle(a, lifecycleClose, out, terminal)
 	if e != nil {
@@ -261,7 +261,7 @@ func (s *Server) PresentAuthorization(ctx context.Context, req *brokerv1.Present
 	if err != nil {
 		return nil, err
 	}
-	url, err := a.attachment.PresentAuthorization(ctx, auth)
+	url, err := a.sessionHandle.PresentAuthorization(ctx, auth)
 	if err != nil {
 		return nil, brokerStatus(err)
 	}
@@ -284,7 +284,7 @@ func (s *Server) AuthorizationStatus(ctx context.Context, req *brokerv1.Authoriz
 	if err != nil {
 		return nil, err
 	}
-	out, err := a.attachment.AuthorizationStatus(ctx, auth)
+	out, err := a.sessionHandle.AuthorizationStatus(ctx, auth)
 	if err != nil {
 		return nil, brokerStatus(err)
 	}
@@ -307,7 +307,7 @@ func (s *Server) CancelAuthorization(ctx context.Context, req *brokerv1.CancelAu
 	if err != nil {
 		return nil, err
 	}
-	out, err := a.attachment.CancelAuthorization(ctx, auth)
+	out, err := a.sessionHandle.CancelAuthorization(ctx, auth)
 	if err != nil {
 		return nil, brokerStatus(err)
 	}
@@ -326,7 +326,7 @@ func (s *Server) BeginWorkspaceEnrollment(ctx context.Context, req *brokerv1.Beg
 		return nil, err
 	}
 	defer release()
-	enroller, ok := a.attachment.(mcpbroker.WorkspaceEnrollmentAttachment)
+	enroller, ok := a.sessionHandle.(mcpbroker.WorkspaceEnrollmentHandle)
 	if !ok {
 		return nil, status.Error(codes.FailedPrecondition, "workspace enrollment unsupported")
 	}
@@ -372,7 +372,7 @@ func (s *Server) workspaceResult(ctx context.Context, incarnation, handle string
 		return workspaceResultWire{}, err
 	}
 	defer release()
-	enroller, ok := a.attachment.(mcpbroker.WorkspaceEnrollmentAttachment)
+	enroller, ok := a.sessionHandle.(mcpbroker.WorkspaceEnrollmentHandle)
 	if !ok {
 		return workspaceResultWire{}, status.Error(codes.FailedPrecondition, "workspace enrollment unsupported")
 	}

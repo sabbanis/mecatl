@@ -29,9 +29,9 @@ func TestWorkspaceEnrollment_ToolDiscoveredOnlyByEnrollment_ExecutesThroughSameH
 		t.Fatalf("initial Tools() = %#v, want empty (no static declaration)", got)
 	}
 
-	enroller, ok := attachment.(mcpbroker.WorkspaceEnrollmentAttachment)
+	enroller, ok := attachment.(mcpbroker.WorkspaceEnrollmentHandle)
 	if !ok {
-		t.Fatal("attachment does not implement WorkspaceEnrollmentAttachment")
+		t.Fatal("attachment does not implement WorkspaceEnrollmentHandle")
 	}
 	presentation, err := enroller.BeginWorkspaceEnrollment(ctx)
 	if err != nil {
@@ -79,7 +79,7 @@ func TestWorkspaceEnrollment_CompleteCataloguePreservesWrappers(t *testing.T) {
 	if !ok {
 		t.Fatal("static tool lost authorization capability")
 	}
-	enroller := attachment.(mcpbroker.WorkspaceEnrollmentAttachment)
+	enroller := attachment.(mcpbroker.WorkspaceEnrollmentHandle)
 	presentation, err := enroller.BeginWorkspaceEnrollment(ctx)
 	if err != nil {
 		t.Fatal(err)
@@ -142,7 +142,7 @@ func TestWorkspaceEnrollment_CompleteCataloguePreservesWrappers(t *testing.T) {
 // enrollmentBroker starts empty unless a test supplies static tools.
 type enrollmentBroker struct{ initial []tool.Tool }
 
-func (b *enrollmentBroker) AttachSession(context.Context, session.SessionID) (mcpbroker.Attachment, mcpbroker.AttachOutcome, error) {
+func (b *enrollmentBroker) AttachSession(context.Context, session.SessionID) (mcpbroker.SessionHandle, mcpbroker.AttachOutcome, error) {
 	return &enrollmentAttachment{initial: b.initial}, mcpbroker.AttachCreated, nil
 }
 func (*enrollmentBroker) DeleteSession(context.Context, session.SessionID) (mcpbroker.DeleteOutcome, error) {
@@ -197,5 +197,5 @@ func (enrolledOnlyTool) Execute(_ context.Context, call session.ToolCall, _ tool
 	return session.NewToolResult(call.ID, "ok"), nil
 }
 
-var _ mcpbroker.WorkspaceEnrollmentAttachment = (*enrollmentAttachment)(nil)
+var _ mcpbroker.WorkspaceEnrollmentHandle = (*enrollmentAttachment)(nil)
 var _ mcpbroker.Service = (*enrollmentBroker)(nil)

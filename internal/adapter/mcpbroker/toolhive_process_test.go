@@ -232,14 +232,14 @@ func TestADR_0299_BrokerClientSecretNeverCrossesPublicBoundary(t *testing.T) {
 		t.Fatalf("AttachSession: %v", err)
 	}
 	t.Cleanup(func() { _, _ = attachment.Close(context.Background()) })
-	presentation, err := attachment.(contract.WorkspaceEnrollmentAttachment).BeginWorkspaceEnrollment(t.Context())
+	presentation, err := attachment.(contract.WorkspaceEnrollmentHandle).BeginWorkspaceEnrollment(t.Context())
 	if err != nil {
 		t.Fatalf("BeginWorkspaceEnrollment: %v", err)
 	}
 	if strings.Contains(presentation.URL, secret) {
 		t.Fatal("workspace enrollment presentation exposes the broker client secret")
 	}
-	for _, spec := range attachment.(*Attachment).Tools() {
+	for _, spec := range attachment.(*SessionHandle).Tools() {
 		if strings.Contains(spec.Spec().Description, secret) || strings.Contains(string(spec.Spec().Schema), secret) {
 			t.Fatal("model-facing tool specification exposes the broker client secret")
 		}
@@ -443,9 +443,9 @@ func TestADR_0298_ToolHiveConstructionMapsEveryProtectedProfileInOrder(t *testin
 		t.Fatalf("AttachSession: %v", err)
 	}
 	t.Cleanup(func() { _, _ = attachment.Close(context.Background()) })
-	enroller, ok := attachment.(contract.WorkspaceEnrollmentAttachment)
+	enroller, ok := attachment.(contract.WorkspaceEnrollmentHandle)
 	if !ok {
-		t.Fatal("Attachment does not implement WorkspaceEnrollmentAttachment")
+		t.Fatal("SessionHandle does not implement WorkspaceEnrollmentHandle")
 	}
 	presentation, err := enroller.BeginWorkspaceEnrollment(t.Context())
 	if err != nil {
@@ -583,7 +583,7 @@ func TestGenericStaticProtectedOIDCAndCIMDUseToolHiveTarget(t *testing.T) {
 				t.Fatalf("AttachSession: %v", err)
 			}
 			t.Cleanup(func() { _, _ = attached.Close(context.Background()) })
-			wrapped := toolByName(t, attached.(*Attachment), "mcp__private__read")
+			wrapped := toolByName(t, attached.(*SessionHandle), "mcp__private__read")
 			authorization, required, err := wrapped.(tool.AuthorizationRequester).RequestAuthorization(t.Context(), session.NewToolCall("call-1", wrapped.Spec().Name, json.RawMessage(`{}`)))
 			if err != nil || !required {
 				t.Fatalf("RequestAuthorization = (%+v, %v, %v)", authorization, required, err)
@@ -612,7 +612,7 @@ func TestToolHiveStaticToolAuthorizationStartsBundle(t *testing.T) {
 		t.Fatalf("AttachSession: %v", err)
 	}
 	t.Cleanup(func() { _, _ = attached.Close(context.Background()) })
-	attachment := attached.(*Attachment)
+	attachment := attached.(*SessionHandle)
 	wrapped := toolByName(t, attachment, "mcp__github__get_me")
 	requester, ok := wrapped.(tool.AuthorizationRequester)
 	if !ok {
@@ -691,14 +691,14 @@ func TestADR_0298_StaticProtectedToolsAreVisibleBeforeEnrollment(t *testing.T) {
 		t.Fatalf("AttachSession: %v", err)
 	}
 	t.Cleanup(func() { _, _ = attachment.Close(context.Background()) })
-	if got := toolNames(attachment.(*Attachment).Tools()); !reflect.DeepEqual(got, []string{"mcp__GitHub_API__reviewed", "mcp__public__status"}) {
+	if got := toolNames(attachment.(*SessionHandle).Tools()); !reflect.DeepEqual(got, []string{"mcp__GitHub_API__reviewed", "mcp__public__status"}) {
 		t.Fatalf("pre-enrollment attachment tools = %v, want anonymous and declared protected tools", got)
 	}
-	route, ok := attachment.(*Attachment).lookupRoute("mcp__GitHub_API__reviewed")
+	route, ok := attachment.(*SessionHandle).lookupRoute("mcp__GitHub_API__reviewed")
 	if !ok || route.oauth != process.protectedTarget || !route.broker {
 		t.Fatalf("declared route = %#v, want ToolHive OAuth and broker execution", route)
 	}
-	enroller := attachment.(contract.WorkspaceEnrollmentAttachment)
+	enroller := attachment.(contract.WorkspaceEnrollmentHandle)
 	presentation, err := enroller.BeginWorkspaceEnrollment(t.Context())
 	if err != nil || presentation.Ref.RequiredServices != 1 {
 		t.Fatalf("BeginWorkspaceEnrollment = (%+v, %v)", presentation, err)
@@ -858,7 +858,7 @@ func TestADR_0298_ToolHiveEnrollmentUsesRealIdentityMiddleware(t *testing.T) {
 				t.Fatalf("AttachSession: %v", err)
 			}
 			t.Cleanup(func() { _, _ = attached.Close(context.Background()) })
-			enroller := attached.(contract.WorkspaceEnrollmentAttachment)
+			enroller := attached.(contract.WorkspaceEnrollmentHandle)
 			presentation, err := enroller.BeginWorkspaceEnrollment(t.Context())
 			if err != nil || !presentation.Valid() {
 				t.Fatalf("BeginWorkspaceEnrollment = (%+v, %v)", presentation, err)
@@ -867,7 +867,7 @@ func TestADR_0298_ToolHiveEnrollmentUsesRealIdentityMiddleware(t *testing.T) {
 			if err != nil || presentedURL.Query().Get("resource") != process.protectedTarget.resource || process.protectedTarget.resource == "" {
 				t.Fatalf("presentation resource = %q, want %q (err=%v)", presentedURL.Query().Get("resource"), process.protectedTarget.resource, err)
 			}
-			if got, want := toolNames(attached.(*Attachment).Tools()), []string{"mcp__private__create"}; !reflect.DeepEqual(got, want) {
+			if got, want := toolNames(attached.(*SessionHandle).Tools()), []string{"mcp__private__create"}; !reflect.DeepEqual(got, want) {
 				t.Fatalf("pre-enrollment tools = %v, want %v", got, want)
 			}
 			flowCtx, cancelFlow := context.WithTimeout(t.Context(), 5*time.Second)
@@ -890,7 +890,7 @@ func TestADR_0298_ToolHiveEnrollmentUsesRealIdentityMiddleware(t *testing.T) {
 			if err != nil || connected.Status != contract.WorkspaceEnrollmentConnected {
 				t.Fatalf("ObserveWorkspaceEnrollment = (%+v, %v)", connected, err)
 			}
-			wrapped := toolByName(t, attached.(*Attachment), "mcp__private__create")
+			wrapped := toolByName(t, attached.(*SessionHandle), "mcp__private__create")
 			if _, asksAgain := wrapped.(tool.AuthorizationRequester); asksAgain {
 				t.Fatal("connected ToolHive wrapper exposes a second authorization flow")
 			}
@@ -974,7 +974,7 @@ func TestGenericStaticOAuth2AuthorizationCallbackAndExactExecution(t *testing.T)
 		t.Fatalf("AttachSession: %v", err)
 	}
 	t.Cleanup(func() { _, _ = attached.Close(context.Background()) })
-	wrapped := toolByName(t, attached.(*Attachment), "mcp__private__create")
+	wrapped := toolByName(t, attached.(*SessionHandle), "mcp__private__create")
 	requester := wrapped.(tool.AuthorizationRequester)
 	call := session.NewToolCall("call-1", wrapped.Spec().Name, json.RawMessage(`{"title":"one"}`))
 	if _, err := wrapped.Execute(t.Context(), call, tool.Environment{}); !errors.Is(err, contract.ErrAuthorizationNotFound) || calls.Load() != 0 {
@@ -1605,7 +1605,7 @@ func (f *toolHiveDCRFixture) enrollAndCall(t *testing.T, process *Process, id se
 		t.Fatalf("AttachSession: %v", err)
 	}
 	t.Cleanup(func() { _, _ = attached.Close(context.Background()) })
-	enroller := attached.(contract.WorkspaceEnrollmentAttachment)
+	enroller := attached.(contract.WorkspaceEnrollmentHandle)
 	presentation, err := enroller.BeginWorkspaceEnrollment(t.Context())
 	if err != nil || !presentation.Valid() {
 		t.Fatalf("BeginWorkspaceEnrollment = (%+v, %v)", presentation, err)
@@ -1627,7 +1627,7 @@ func (f *toolHiveDCRFixture) enrollAndCall(t *testing.T, process *Process, id se
 	if err != nil || connected.Status != contract.WorkspaceEnrollmentConnected {
 		t.Fatalf("ObserveWorkspaceEnrollment = (%+v, %v)", connected, err)
 	}
-	wrapped := toolByName(t, attached.(*Attachment), "mcp__private__create")
+	wrapped := toolByName(t, attached.(*SessionHandle), "mcp__private__create")
 	result, err := wrapped.Execute(t.Context(), session.NewToolCall(session.ToolCallID("call-"+string(id)), wrapped.Spec().Name, json.RawMessage(`{"title":"one"}`)), tool.Environment{})
 	if err != nil || result.IsError || !strings.HasPrefix(result.Content, "created:one") {
 		t.Fatalf("protected result = (%+v, %v)", result, err)

@@ -197,7 +197,7 @@ func TestWorkspaceEnrollmentDiagnosticsCoverBundleFlow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	enroller := attached.(contract.WorkspaceEnrollmentAttachment)
+	enroller := attached.(contract.WorkspaceEnrollmentHandle)
 	presentation, err := enroller.BeginWorkspaceEnrollment(t.Context())
 	if err != nil {
 		t.Fatalf("BeginWorkspaceEnrollment: %v", err)

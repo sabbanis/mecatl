@@ -14,8 +14,8 @@ import (
 	"github.com/stacklok/mecatl/internal/mcpbroker"
 )
 
-// lifecycleOperation identifies the two operations that close an attachment.
-// Commit is not terminal: the caller may continue using the committed attachment.
+// lifecycleOperation identifies the two operations that close a session handle.
+// Commit is not terminal: the caller may continue using the committed session handle.
 type lifecycleOperation uint8
 
 const (
@@ -30,7 +30,7 @@ const (
 // immutable response and err to waiters.
 type executeReceipt struct {
 	digest   [sha256.Size]byte         // Detects reuse of a call ID with different invocation content.
-	bytes    int                       // Reserved or retained bytes charged to the attachment's budget.
+	bytes    int                       // Reserved or retained bytes charged to the handle's budget.
 	started  bool                      // Execute has claimed the receipt, even if capacity later rejects it.
 	done     chan struct{}             // Closed when the terminal response or error is available.
 	response *brokerv1.ExecuteResponse // Retained wire result, if execution produced one.
@@ -43,23 +43,23 @@ type executeReceipt struct {
 type sessionOwner struct {
 	principal session.Principal // Workload identity allowed to attach to this session ID.
 	pending   int               // Admitted Attach calls that have not yet succeeded or failed.
-	handles   int               // Published attachments not yet terminal or reclaimed.
+	handles   int               // Published session handles not yet terminal or reclaimed.
 	published bool              // A handle was published; retain ownership even after all handles close.
 	expiresAt time.Time         // Earliest retirement time; pending calls and open handles postpone it.
 	retiring  bool              // Blocks Attach while the sweeper deletes the underlying session.
 	changed   chan struct{}     // Closed and replaced when pending or retirement state changes.
 }
 
-// serverAttachment wraps one consumer's open handle to a logical broker session
-// with gRPC bookkeeping. Multiple attachments may refer to the same session;
+// serverHandle wraps one consumer's open handle to a logical broker session
+// with gRPC bookkeeping. Multiple session handles may refer to the same session;
 // closing one releases that handle, whereas deleting the session invalidates all
-// of them. The underlying attachment supplies tools and authorization operations.
+// of them. The underlying session handle supplies tools and authorization operations.
 // Server.mu protects mutable fields. Terminal entries remain in handles until
 // expiry so repeated Close or Abort calls can recover the recorded outcome.
-type serverAttachment struct {
-	attachment      mcpbroker.Attachment                   // Underlying broker handle, not an MCP network connection.
+type serverHandle struct {
+	sessionHandle   mcpbroker.SessionHandle                // Underlying broker session handle, not an MCP network connection.
 	principal       *session.Principal                     // Caller identity bound to this handle; nil for direct test usage.
-	logicalID       session.SessionID                      // Logical session shared with other attachments.
+	logicalID       session.SessionID                      // Logical session shared with other session handles.
 	owner           *sessionOwner                          // Exact ownership entry charged by this handle.
 	binding         string                                 // Opaque identity of the exact logical state, used for conditional deletion.
 	tools           map[string]tool.Tool                   // Executable registry, replaced after successful workspace enrollment.
@@ -198,12 +198,12 @@ func (s *Server) finishSessionBind(id session.SessionID, owner *sessionOwner, at
 	// logical session's absolute retention, delete, or shutdown reclaims it.
 }
 
-func authorizeHandle(ctx context.Context, attachment *serverAttachment) error {
-	if attachment == nil || attachment.principal == nil {
+func authorizeHandle(ctx context.Context, handle *serverHandle) error {
+	if handle == nil || handle.principal == nil {
 		return nil
 	}
 	principal := session.PrincipalFromContext(ctx)
-	if principal == nil || !principal.SameIdentity(attachment.principal) {
+	if principal == nil || !principal.SameIdentity(handle.principal) {
 		return status.Error(codes.PermissionDenied, "broker attachment is not available")
 	}
 	return nil
@@ -225,9 +225,9 @@ func (s *Server) checkIncarnation(got string, allowEmpty bool) error {
 	return nil
 }
 
-// signalAttachment broadcasts a state change to lifecycle waiters. The caller
+// signalHandle broadcasts a state change to lifecycle waiters. The caller
 // holds Server.mu so waiters cannot miss a change between checking and subscribing.
-func signalAttachment(a *serverAttachment) {
+func signalHandle(a *serverHandle) {
 	close(a.changed)
 	a.changed = make(chan struct{})
 }
@@ -235,7 +235,7 @@ func signalAttachment(a *serverAttachment) {
 // get admits an ordinary operation on an open handle and increments active so
 // lifecycle operations and expiry cleanup wait for it. The caller must invoke
 // the returned release function exactly once, even if its operation fails.
-func (s *Server) get(ctx context.Context, incarnation, handle string) (*serverAttachment, func(), error) {
+func (s *Server) get(ctx context.Context, incarnation, handle string) (*serverHandle, func(), error) {
 	if err := s.checkIncarnation(incarnation, false); err != nil {
 		return nil, nil, err
 	}
@@ -253,13 +253,13 @@ func (s *Server) get(ctx context.Context, incarnation, handle string) (*serverAt
 		return nil, nil, reasonStatus(codes.FailedPrecondition, "attachment handle unavailable", brokerv1.BrokerErrorReason_BROKER_ERROR_REASON_STATE_UNAVAILABLE, "")
 	}
 	a.active++
-	signalAttachment(a)
+	signalHandle(a)
 	s.mu.Unlock()
 	return a, func() {
 		s.mu.Lock()
 		a.active--
 		s.releaseClosedReceiptsLocked(a)
-		signalAttachment(a)
+		signalHandle(a)
 		s.mu.Unlock()
 	}, nil
 }
@@ -269,7 +269,7 @@ func (s *Server) get(ctx context.Context, incarnation, handle string) (*serverAt
 // attempt blocks ordinary operations until its caller invokes finishLifecycle.
 // Admission reserves control capacity before any waiting, including duplicate
 // calls joining a running lifecycle attempt. Settled terminal replay needs no slot.
-func (s *Server) beginLifecycle(ctx context.Context, incarnation, handle string, operation lifecycleOperation) (*serverAttachment, mcpbroker.CloseOutcome, bool, error) {
+func (s *Server) beginLifecycle(ctx context.Context, incarnation, handle string, operation lifecycleOperation) (*serverHandle, mcpbroker.CloseOutcome, bool, error) {
 	if err := s.checkIncarnation(incarnation, false); err != nil {
 		return nil, "", false, err
 	}
@@ -324,7 +324,7 @@ func (s *Server) beginLifecycle(ctx context.Context, incarnation, handle string,
 		}
 		a.running = operation
 		a.active++
-		signalAttachment(a)
+		signalHandle(a)
 		admitted = false // finishLifecycle now owns this control slot.
 		s.mu.Unlock()
 		return a, "", false, nil
@@ -338,21 +338,21 @@ func releaseOwnerHandleLocked(owner *sessionOwner) {
 	owner.handles--
 }
 
-func releaseReceiptsLocked(attachment *serverAttachment) {
-	clear(attachment.receipts)
-	attachment.receiptBytes = 0
+func releaseReceiptsLocked(handle *serverHandle) {
+	clear(handle.receipts)
+	handle.receiptBytes = 0
 }
 
-func (s *Server) releaseClosedReceiptsLocked(attachment *serverAttachment) {
-	if s.closed && attachment.active == 0 {
-		releaseReceiptsLocked(attachment)
+func (s *Server) releaseClosedReceiptsLocked(handle *serverHandle) {
+	if s.closed && handle.active == 0 {
+		releaseReceiptsLocked(handle)
 	}
 }
 
 // finishLifecycle releases an attempt's active/control slots and wakes waiters.
 // A terminal attempt retains its outcome for replay; a nonterminal failure leaves
 // the handle open for another attempt.
-func (s *Server) finishLifecycle(a *serverAttachment, operation lifecycleOperation, outcome mcpbroker.CloseOutcome, terminal bool) {
+func (s *Server) finishLifecycle(a *serverHandle, operation lifecycleOperation, outcome mcpbroker.CloseOutcome, terminal bool) {
 	s.mu.Lock()
 	if terminal {
 		releaseOwnerHandleLocked(a.owner)
@@ -367,7 +367,7 @@ func (s *Server) finishLifecycle(a *serverAttachment, operation lifecycleOperati
 		s.pendingControls--
 	}
 	a.running = lifecycleNone
-	signalAttachment(a)
+	signalHandle(a)
 	s.mu.Unlock()
 }
 
@@ -384,19 +384,19 @@ func (s *Server) sweep() {
 			return
 		case now := <-ticker.C:
 			s.mu.Lock()
-			var expired []*serverAttachment
+			var expired []*serverHandle
 			type ownerRetirement struct {
 				id    session.SessionID
 				owner *sessionOwner
 			}
 			var retirements []ownerRetirement
-			for handle, attachment := range s.handles {
-				if attachment.active == 0 && !now.Before(attachment.expiresAt) {
-					releaseReceiptsLocked(attachment)
-					delete(s.handles, handle)
-					if attachment.terminal == lifecycleNone {
-						releaseOwnerHandleLocked(attachment.owner)
-						expired = append(expired, attachment)
+			for id, handle := range s.handles {
+				if handle.active == 0 && !now.Before(handle.expiresAt) {
+					releaseReceiptsLocked(handle)
+					delete(s.handles, id)
+					if handle.terminal == lifecycleNone {
+						releaseOwnerHandleLocked(handle.owner)
+						expired = append(expired, handle)
 					}
 				}
 			}
@@ -407,8 +407,8 @@ func (s *Server) sweep() {
 				}
 			}
 			s.mu.Unlock()
-			for _, attachment := range expired {
-				s.closeAttachment(attachment)
+			for _, handle := range expired {
+				s.closeHandle(handle)
 			}
 			for _, retirement := range retirements {
 				s.retireOwner(retirement.id, retirement.owner)
@@ -437,8 +437,8 @@ func (s *Server) retireOwner(id session.SessionID, owner *sessionOwner) {
 	owner.expiresAt = time.Now().Add(s.cfg.SweepInterval)
 }
 
-func (s *Server) closeAttachment(attachment *serverAttachment) {
+func (s *Server) closeHandle(handle *serverHandle) {
 	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.CleanupTimeout)
 	defer cancel()
-	_, _ = attachment.attachment.Close(ctx)
+	_, _ = handle.sessionHandle.Close(ctx)
 }

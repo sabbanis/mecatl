@@ -290,7 +290,7 @@ type commitFailureBroker struct {
 	first *commitFailureAttachment
 }
 
-func (b *commitFailureBroker) AttachSession(context.Context, session.SessionID) (brokercontract.Attachment, brokercontract.AttachOutcome, error) {
+func (b *commitFailureBroker) AttachSession(context.Context, session.SessionID) (brokercontract.SessionHandle, brokercontract.AttachOutcome, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.calls++
@@ -300,7 +300,7 @@ func (b *commitFailureBroker) AttachSession(context.Context, session.SessionID) 
 		b.first = attachment
 	}
 	ref := brokercontract.WorkspaceEnrollmentRef{ID: "commit-enrollment", RequiredServices: 1, ExpiresAt: time.Now().Add(time.Hour)}
-	return &enrollmentAttachment{Attachment: attachment, ref: ref, result: brokercontract.WorkspaceEnrollmentResult{Ref: ref, Status: brokercontract.WorkspaceEnrollmentPending}}, brokercontract.AttachCreated, nil
+	return &enrollmentAttachment{SessionHandle: attachment, ref: ref, result: brokercontract.WorkspaceEnrollmentResult{Ref: ref, Status: brokercontract.WorkspaceEnrollmentPending}}, brokercontract.AttachCreated, nil
 }
 
 func (*commitFailureBroker) DeleteSession(context.Context, session.SessionID) (brokercontract.DeleteOutcome, error) {
@@ -308,7 +308,7 @@ func (*commitFailureBroker) DeleteSession(context.Context, session.SessionID) (b
 }
 
 type commitFailureAttachment struct {
-	brokercontract.Attachment
+	brokercontract.SessionHandle
 	binding session.ExternalBinding
 	fail    bool
 	aborts  atomic.Int32
@@ -334,7 +334,7 @@ func (*commitFailureAttachment) Close(context.Context) (brokercontract.CloseOutc
 
 type alwaysIncarnationLostBroker struct{ brokercontract.Service }
 
-func (*alwaysIncarnationLostBroker) AttachSession(context.Context, session.SessionID) (brokercontract.Attachment, brokercontract.AttachOutcome, error) {
+func (*alwaysIncarnationLostBroker) AttachSession(context.Context, session.SessionID) (brokercontract.SessionHandle, brokercontract.AttachOutcome, error) {
 	return nil, "", brokercontract.ErrBrokerIncarnationLost
 }
 
@@ -449,7 +449,7 @@ func TestConcurrentWorkspaceEnrollmentRebindCoalescesBrokerReplacement(t *testin
 
 	type result struct {
 		id       session.SessionID
-		enroller brokercontract.WorkspaceEnrollmentAttachment
+		enroller brokercontract.WorkspaceEnrollmentHandle
 		release  func()
 		err      error
 	}
@@ -502,7 +502,7 @@ type incarnationLostBroker struct {
 	ready chan struct{}
 }
 
-func (b *incarnationLostBroker) AttachSession(context.Context, session.SessionID) (brokercontract.Attachment, brokercontract.AttachOutcome, error) {
+func (b *incarnationLostBroker) AttachSession(context.Context, session.SessionID) (brokercontract.SessionHandle, brokercontract.AttachOutcome, error) {
 	b.mu.Lock()
 	b.calls++
 	if b.calls == 2 {
@@ -516,13 +516,13 @@ func (b *incarnationLostBroker) AttachSession(context.Context, session.SessionID
 
 type multiEnrollmentBroker struct{ brokercontract.Service }
 
-func (b *multiEnrollmentBroker) AttachSession(ctx context.Context, id session.SessionID) (brokercontract.Attachment, brokercontract.AttachOutcome, error) {
+func (b *multiEnrollmentBroker) AttachSession(ctx context.Context, id session.SessionID) (brokercontract.SessionHandle, brokercontract.AttachOutcome, error) {
 	attachment, outcome, err := b.Service.AttachSession(ctx, id)
 	if err != nil {
 		return nil, outcome, err
 	}
 	ref := brokercontract.WorkspaceEnrollmentRef{ID: session.WorkspaceEnrollmentID("enrollment-" + string(id)), RequiredServices: 1, ExpiresAt: time.Now().Add(time.Hour)}
-	wrapped := &enrollmentAttachment{Attachment: attachment, ref: ref, result: brokercontract.WorkspaceEnrollmentResult{Ref: ref, Status: brokercontract.WorkspaceEnrollmentPending}}
+	wrapped := &enrollmentAttachment{SessionHandle: attachment, ref: ref, result: brokercontract.WorkspaceEnrollmentResult{Ref: ref, Status: brokercontract.WorkspaceEnrollmentPending}}
 	return wrapped, outcome, nil
 }
 

@@ -24,7 +24,7 @@ type callMcpWithQueryArgs struct {
 // attachmentQueryTool performs both the native broker call and the jq projection
 // while its attachment operation remains live. The unfiltered response therefore
 // never leaves the attachment as a model-facing ToolResult.
-type attachmentQueryTool struct{ attachment *Attachment }
+type attachmentQueryTool struct{ attachment *SessionHandle }
 
 var _ tool.AuthorizationRequester = (*attachmentQueryTool)(nil)
 
@@ -148,7 +148,7 @@ func (t *attachmentQueryTool) Execute(ctx context.Context, call session.ToolCall
 
 // CallMcpWithQueryTool exposes the attachment-bound query wrapper to composition.
 // Nil means the attachment has no currently eligible frozen routes.
-func (a *Attachment) CallMcpWithQueryTool() tool.Tool {
+func (a *SessionHandle) CallMcpWithQueryTool() tool.Tool {
 	if a == nil || a.runtime.queryCaller == nil || len(a.Tools()) == 0 {
 		return nil
 	}

@@ -83,17 +83,17 @@ type AttachOutcome string
 const (
 	// AttachCreated means the logical broker session was created.
 	AttachCreated AttachOutcome = "created"
-	// AttachReattached means an attachment was opened to existing logical state.
+	// AttachReattached means a session handle was opened to existing logical state.
 	AttachReattached AttachOutcome = "reattached"
 )
 
-// CloseOutcome is the closed, idempotent result vocabulary for Attachment.Close.
+// CloseOutcome is the closed, idempotent result vocabulary for SessionHandle.Close.
 type CloseOutcome string
 
 const (
-	// CloseClosed means this call released the local attachment.
+	// CloseClosed means this call released the local session handle.
 	CloseClosed CloseOutcome = "closed"
-	// CloseAlreadyClosed means the attachment had already been released.
+	// CloseAlreadyClosed means the session handle had already been released.
 	CloseAlreadyClosed CloseOutcome = "already_closed"
 )
 
@@ -358,10 +358,10 @@ func (r WorkspaceEnrollmentResult) Valid() bool {
 	return r.Catalogue != nil && r.Catalogue.Ref() == r.Ref && r.Catalogue.Valid()
 }
 
-// WorkspaceEnrollmentAttachment is the optional enrollment capability of an
-// Attachment. Callers may begin, observe, or cancel broker-owned state, but can
+// WorkspaceEnrollmentHandle is the optional enrollment capability of a
+// SessionHandle. Callers may begin, observe, or cancel broker-owned state, but can
 // never submit status, discovered definitions, authority, or success.
-type WorkspaceEnrollmentAttachment interface {
+type WorkspaceEnrollmentHandle interface {
 	// BeginWorkspaceEnrollment creates a broker-owned enrollment and returns a
 	// short-lived browser presentation for it.
 	BeginWorkspaceEnrollment(context.Context) (WorkspaceEnrollmentPresentation, error)
@@ -373,15 +373,15 @@ type WorkspaceEnrollmentAttachment interface {
 
 // Service attaches consumers to broker state keyed by the stable mecatl session
 // identity. AttachSession does not transfer ownership: multiple process-local
-// attachments may refer to the same logical state. DeleteSession, unlike Close,
+// session handles may refer to the same logical state. DeleteSession, unlike Close,
 // durably and idempotently destroys that logical state.
 type Service interface {
-	// AttachSession opens a local handle to the session's current incarnation,
+	// AttachSession opens a local session handle to the current incarnation,
 	// creating logical state when necessary.
-	AttachSession(context.Context, session.SessionID) (Attachment, AttachOutcome, error)
-	// DeleteSession durably invalidates every attachment to the deleted logical
+	AttachSession(context.Context, session.SessionID) (SessionHandle, AttachOutcome, error)
+	// DeleteSession durably invalidates every session handle to the deleted logical
 	// session incarnation. A later AttachSession with the same SessionID creates a
-	// new incarnation; stale attachments must return ErrStateUnavailable. Any
+	// new incarnation; stale session handles must return ErrStateUnavailable. Any
 	// generation or fencing mechanism used to enforce this remains private.
 	DeleteSession(context.Context, session.SessionID) (DeleteOutcome, error)
 }
@@ -394,39 +394,39 @@ type BindingSessionDeleter interface {
 	DeleteSessionIfBinding(context.Context, session.SessionID, session.ExternalBinding) (DeleteOutcome, error)
 }
 
-// Attachment is a process-local handle to one logical broker session.
+// SessionHandle is a process-local handle to one logical broker session.
 //
 // Authorization operations take session.ExternalAuthorization so callers reuse
 // the aggregate's existing value instead of a second broker DTO. Identity is the
 // stable authorization ID plus opaque AuthorizationBinding; ExpiresAt is freshness
 // metadata and must not participate in lookup equality. Implementations must not
 // infer a transaction from only the session or authorization ID.
-type Attachment interface {
+type SessionHandle interface {
 	// Commit publishes a newly created logical session after its host session is
 	// durable. It is idempotent. On a reattached handle it is a no-op. The
 	// implementation keeps any creation token private so remote brokers can provide
 	// the same transaction without exposing storage generations or CAS values.
 	Commit(context.Context) error
-	// Abort abandons this attachment's uncommitted creation and closes the local
+	// Abort abandons this session handle's uncommitted creation and closes the local
 	// handle. It may delete logical state only while that creation is still private;
-	// once another attachment has observed the session, Abort must preserve that
+	// once another session handle has observed the session, Abort must preserve that
 	// peer and degrade to local close. It is idempotent.
 	Abort(context.Context) error
 	// Binding is the opaque identity of this exact logical-session incarnation.
 	// It is persisted by the host and must match exactly on reattachment.
 	Binding() session.ExternalBinding
-	// Tools returns independently owned wrappers bound to this attachment.
+	// Tools returns independently owned wrappers bound to this session handle.
 	Tools() []tool.Tool
 	// PresentAuthorization returns the live presentation URL for the exact
 	// authorization. The URL is deliberately an ephemeral return value: it is not
 	// part of ExternalAuthorization or any broker reference intended for storage.
 	PresentAuthorization(context.Context, session.ExternalAuthorization) (string, error)
 	// AuthorizationStatus queries the exact authorization and remains available
-	// after closing an old attachment and reattaching to the logical session.
+	// after closing an old session handle and reattaching to the logical session.
 	AuthorizationStatus(context.Context, session.ExternalAuthorization) (session.AuthorizationStatus, error)
 	// CancelAuthorization precisely cancels the exact authorization reference.
 	CancelAuthorization(context.Context, session.ExternalAuthorization) (CancelOutcome, error)
-	// Close releases only this local attachment and is idempotent. It never
+	// Close releases only this local session handle and is idempotent. It never
 	// deletes logical broker state.
 	Close(context.Context) (CloseOutcome, error)
 }

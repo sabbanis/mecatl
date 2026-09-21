@@ -50,11 +50,11 @@ func TestExpiredCallbackStatesReleaseCapacityBeforeLogicalRetention(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	localAttachment, ok := attachment.(*Attachment)
+	localSessionHandle, ok := attachment.(*SessionHandle)
 	if !ok {
 		t.Fatal("runtime returned unexpected attachment type")
 	}
-	requester := toolByName(t, localAttachment, "mcp__github__create").(tool.AuthorizationRequester)
+	requester := toolByName(t, localSessionHandle, "mcp__github__create").(tool.AuthorizationRequester)
 	first, required, err := requester.RequestAuthorization(t.Context(), session.ToolCall{ID: "first", Name: "mcp__github__create", Args: []byte(`{}`)})
 	if err != nil || !required {
 		t.Fatalf("first authorization = (%+v, %v, %v)", first, required, err)
@@ -79,9 +79,9 @@ func TestExpiredCallbackStatesReleaseCapacityBeforeLogicalRetention(t *testing.T
 		}
 		time.Sleep(time.Millisecond)
 	}
-	localAttachment.logical.mu.Lock()
+	localSessionHandle.logical.mu.Lock()
 	retainedSecret := transaction.clientSecret != "" || transaction.verifier != "" || transaction.state != ""
-	localAttachment.logical.mu.Unlock()
+	localSessionHandle.logical.mu.Unlock()
 	if retainedSecret {
 		t.Fatal("expired transaction retained secret callback material")
 	}
@@ -231,7 +231,7 @@ func newProtectedHarness(t *testing.T, tokenServer *httptest.Server) *protectedH
 	return harness
 }
 
-func requestProtected(t *testing.T, attachment *Attachment, call session.ToolCall) (session.ExternalAuthorization, string) {
+func requestProtected(t *testing.T, attachment *SessionHandle, call session.ToolCall) (session.ExternalAuthorization, string) {
 	t.Helper()
 	candidate := toolByName(t, attachment, call.Name)
 	requester, ok := candidate.(tool.AuthorizationRequester)
@@ -840,11 +840,11 @@ func TestTokenExtraMetadataSurvivesScopedTokenSource(t *testing.T) {
 	}
 }
 
-// TestAttachmentCloseWaitsForRequestAuthorization pins P2-8: Close must not
+// TestSessionHandleCloseWaitsForRequestAuthorization pins P2-8: Close must not
 // return while a RequestAuthorization call is still mid-flight (blocked
 // resolving its secret), or a caller that tears down owned resources right
 // after Close returns can race a transaction this call is about to create.
-func TestAttachmentCloseWaitsForRequestAuthorization(t *testing.T) {
+func TestSessionHandleCloseWaitsForRequestAuthorization(t *testing.T) {
 	release := make(chan struct{})
 	entered := make(chan struct{})
 	catalogue, err := Compile(protectedConfig("https://token.example/token"),
@@ -892,7 +892,7 @@ func TestAttachmentCloseWaitsForRequestAuthorization(t *testing.T) {
 
 	select {
 	case <-closeDone:
-		t.Fatal("Attachment.Close returned while RequestAuthorization was still resolving its secret")
+		t.Fatal("SessionHandle.Close returned while RequestAuthorization was still resolving its secret")
 	case <-time.After(50 * time.Millisecond):
 	}
 
@@ -905,7 +905,7 @@ func TestAttachmentCloseWaitsForRequestAuthorization(t *testing.T) {
 	select {
 	case <-closeDone:
 	case <-time.After(2 * time.Second):
-		t.Fatal("Attachment.Close never returned after RequestAuthorization finished")
+		t.Fatal("SessionHandle.Close never returned after RequestAuthorization finished")
 	}
 }
 

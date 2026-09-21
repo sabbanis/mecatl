@@ -925,7 +925,7 @@ type Service struct {
 	// local detach, and permanent logical deletion for one canonical session ID;
 	// it is separate from runEntryMu because engine rebuilds may already hold that
 	// run-entry lock.
-	brokerAttachments          map[session.SessionID]brokercontract.Attachment
+	brokerAttachments          map[session.SessionID]brokercontract.SessionHandle
 	brokerAttachmentGeneration map[session.SessionID]uint64
 	brokerMu                   keyedMutex
 	// authorizationExpiry is Service-owned and guarded by mu.
@@ -1397,7 +1397,7 @@ func NewServiceContext(ctx context.Context, cfg Config) (*Service, error) {
 		runs:                       make(map[session.SessionID]*runState),
 		teams:                      make(map[string]*teamState),
 		sessionEngines:             make(map[session.SessionID]*sessionEngine),
-		brokerAttachments:          make(map[session.SessionID]brokercontract.Attachment),
+		brokerAttachments:          make(map[session.SessionID]brokercontract.SessionHandle),
 		brokerAttachmentGeneration: make(map[session.SessionID]uint64),
 		authorizationExpiry:        make(map[session.SessionID]*authorizationExpiry),
 		sessionEnvironments:        make(map[session.SessionID]tool.Environment),
@@ -2959,7 +2959,7 @@ func (s *Service) Close() {
 	engines := s.sessionEngines
 	s.sessionEngines = make(map[session.SessionID]*sessionEngine)
 	brokerAttachments := s.brokerAttachments
-	s.brokerAttachments = make(map[session.SessionID]brokercontract.Attachment)
+	s.brokerAttachments = make(map[session.SessionID]brokercontract.SessionHandle)
 	s.brokerAttachmentGeneration = make(map[session.SessionID]uint64)
 	// Drop all per-session environment overrides on shutdown; they hold no resources
 	// of their own (the underlying connection is closed separately) but must not

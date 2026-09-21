@@ -83,7 +83,7 @@ func (s *Server) Execute(ctx context.Context, req *brokerv1.ExecuteRequest) (*br
 	}
 	s.activeExecutes++
 	a.active++
-	signalAttachment(a)
+	signalHandle(a)
 	s.executeWG.Add(1)
 	s.mu.Unlock()
 
@@ -126,7 +126,7 @@ func invocationDigest(call session.ToolCall) [sha256.Size]byte {
 	return digest
 }
 
-func (s *Server) executeOwner(a *serverAttachment, receipt *executeReceipt, target tool.Tool, call session.ToolCall) {
+func (s *Server) executeOwner(a *serverHandle, receipt *executeReceipt, target tool.Tool, call session.ToolCall) {
 	defer s.executeWG.Done()
 	var response *brokerv1.ExecuteResponse
 	var executeErr error
@@ -160,7 +160,7 @@ func (s *Server) executeOwner(a *serverAttachment, receipt *executeReceipt, targ
 	s.mu.Unlock()
 }
 
-func (s *Server) finishExecuteLocked(a *serverAttachment, receipt *executeReceipt, call session.ToolCall, response *brokerv1.ExecuteResponse, err error, dispatched bool) {
+func (s *Server) finishExecuteLocked(a *serverHandle, receipt *executeReceipt, call session.ToolCall, response *brokerv1.ExecuteResponse, err error, dispatched bool) {
 	bytes := invocationReceiptBytes(call)
 	switch {
 	case response != nil:
@@ -183,7 +183,7 @@ func (s *Server) finishExecuteLocked(a *serverAttachment, receipt *executeReceip
 		a.active--
 	}
 	s.releaseClosedReceiptsLocked(a)
-	signalAttachment(a)
+	signalHandle(a)
 }
 
 func waitExecuteReceipt(ctx context.Context, receipt *executeReceipt) (*brokerv1.ExecuteResponse, error) {

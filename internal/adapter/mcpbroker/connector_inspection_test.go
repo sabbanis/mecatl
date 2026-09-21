@@ -20,7 +20,7 @@ import (
 	contract "github.com/stacklok/mecatl/internal/mcpbroker"
 )
 
-func connectorFixture(t *testing.T) (*Runtime, *Attachment, *orderedCapabilityQueries, *atomic.Int32) {
+func connectorFixture(t *testing.T) (*Runtime, *SessionHandle, *orderedCapabilityQueries, *atomic.Int32) {
 	t.Helper()
 	requests := &atomic.Int32{}
 	tokenServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

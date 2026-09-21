@@ -316,7 +316,7 @@ type Runtime struct {
 	closed           bool
 	drainSessions    []*logicalSession
 	// process is set only when this Runtime is owned by a bundled ToolHive
-	// Process (NewToolHiveProcess). It lets an Attachment reach the pre-prompt
+	// Process (NewToolHiveProcess). It lets a SessionHandle reach the pre-prompt
 	// authenticated-discovery primitives without widening the neutral contract.
 	// nil for a plain Compile-based Runtime, which never supports workspace
 	// enrollment.
@@ -417,7 +417,7 @@ func New(catalogue *Catalogue, caller Caller, options ...Option) (*Runtime, erro
 
 // AttachSession creates or reattaches to logical state keyed by the canonical
 // mecatl session ID. Each call returns an independently closeable local handle.
-func (r *Runtime) AttachSession(ctx context.Context, id session.SessionID) (contract.Attachment, contract.AttachOutcome, error) {
+func (r *Runtime) AttachSession(ctx context.Context, id session.SessionID) (contract.SessionHandle, contract.AttachOutcome, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, "", err
 	}
@@ -464,32 +464,32 @@ func (r *Runtime) AttachSession(ctx context.Context, id session.SessionID) (cont
 	logical.mu.Unlock()
 	r.mu.Unlock()
 
-	attachment := &Attachment{runtime: r, logical: logical, creator: outcome == contract.AttachCreated}
+	handle := &SessionHandle{runtime: r, logical: logical, creator: outcome == contract.AttachCreated}
 	tools := make([]tool.Tool, len(r.catalogue.routes))
 	for i, route := range r.catalogue.routes {
-		base := &sessionTool{attachment: attachment, route: route}
+		base := &sessionTool{attachment: handle, route: route}
 		if route.oauth != nil {
 			tools[i] = &protectedSessionTool{sessionTool: base}
 		} else {
 			tools[i] = base
 		}
 	}
-	attachment.catalogue = newAttachmentCatalogue(r.catalogue.routes, tools, nil)
+	handle.catalogue = newAttachmentCatalogue(r.catalogue.routes, tools, nil)
 	logical.mu.RLock()
 	completed := logical.completedEnrollment
 	logical.mu.RUnlock()
 	if completed != nil {
-		if _, err := attachment.installCompletedEnrollment(completed); err != nil {
-			// Attach has already incremented the logical attachment count. The
+		if _, err := handle.installCompletedEnrollment(completed); err != nil {
+			// Attach has already incremented the logical handle count. The
 			// completed catalogue is installed before the handle is returned, so
 			// every failure must release that handle through the same lifecycle
 			// path rather than leaking logical capacity.
-			_ = attachment.Abort(context.Background())
+			_ = handle.Abort(context.Background())
 			return nil, "", err
 		}
 	}
 	r.logSessionAttach(ctx, id, outcome)
-	return attachment, outcome, nil
+	return handle, outcome, nil
 }
 
 // DeleteSession logically deletes one broker session and invalidates all handles
@@ -543,10 +543,10 @@ func (r *Runtime) deleteSession(ctx context.Context, id session.SessionID, bindi
 	return contract.DeleteDeleted, nil
 }
 
-// Attachment is a local handle to a logical broker session. Tools is an
+// SessionHandle is a local handle to a logical broker session. Tools is an
 // adapter-specific projection used by composition; the P06 lifecycle methods
 // satisfy the neutral contract.
-type Attachment struct {
+type SessionHandle struct {
 	mu             sync.RWMutex
 	enrollmentMu   sync.Mutex
 	runtime        *Runtime
@@ -560,7 +560,7 @@ type Attachment struct {
 	catalogue      *attachmentCatalogue
 }
 
-func (a *Attachment) detachLogical() {
+func (a *SessionHandle) detachLogical() {
 	a.mu.Lock()
 	if a.detached {
 		a.mu.Unlock()
@@ -575,12 +575,12 @@ func (a *Attachment) detachLogical() {
 	a.logical.mu.Unlock()
 }
 
-var _ contract.Attachment = (*Attachment)(nil)
+var _ contract.SessionHandle = (*SessionHandle)(nil)
 
 // Commit publishes this attachment's private creation. Reattached attachments
 // have already published the logical session by observing it, so Commit is a
 // harmless idempotent settlement for them.
-func (a *Attachment) Commit(ctx context.Context) error {
+func (a *SessionHandle) Commit(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -622,7 +622,7 @@ func (a *Attachment) Commit(ctx context.Context) error {
 // Abort closes this attachment and conditionally rolls back only a still-private
 // creation. A peer attachment publishes the logical session at reattachment, so
 // aborting the creator can never invalidate an observed peer.
-func (a *Attachment) Abort(ctx context.Context) error {
+func (a *SessionHandle) Abort(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -664,14 +664,14 @@ func (a *Attachment) Abort(ctx context.Context) error {
 }
 
 // Binding returns the opaque identity of this logical-session incarnation.
-func (a *Attachment) Binding() session.ExternalBinding {
+func (a *SessionHandle) Binding() session.ExternalBinding {
 	return session.ExternalBinding(a.runtime.bindingPrefix + "." + fmt.Sprint(a.logical.ref.generation))
 }
 
 // Tools returns a copy of the attachment's current whole catalogue. Publication
 // replaces the catalogue in one assignment, so callers cannot observe staged
 // protected tools.
-func (a *Attachment) Tools() []tool.Tool {
+func (a *SessionHandle) Tools() []tool.Tool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.catalogue.Tools()
@@ -679,7 +679,7 @@ func (a *Attachment) Tools() []tool.Tool {
 
 // Close rejects new work through this attachment and joins work that was already
 // registered through it. It does not cancel sibling attachments or logical state.
-func (a *Attachment) Close(ctx context.Context) (contract.CloseOutcome, error) {
+func (a *SessionHandle) Close(ctx context.Context) (contract.CloseOutcome, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
@@ -703,7 +703,7 @@ func (a *Attachment) Close(ctx context.Context) (contract.CloseOutcome, error) {
 	return contract.CloseClosed, nil
 }
 
-func (a *Attachment) beginOperation(parent context.Context) (context.Context, func(), error) {
+func (a *SessionHandle) beginOperation(parent context.Context) (context.Context, func(), error) {
 	a.mu.Lock()
 	if a.closed {
 		a.mu.Unlock()
@@ -751,7 +751,7 @@ func (a *Attachment) beginOperation(parent context.Context) (context.Context, fu
 	}, nil
 }
 
-func (a *Attachment) finishAttachmentOperation() {
+func (a *SessionHandle) finishAttachmentOperation() {
 	a.activeOps--
 	if a.activeOps == 0 {
 		close(a.operationsDone)
@@ -760,7 +760,7 @@ func (a *Attachment) finishAttachmentOperation() {
 }
 
 type sessionTool struct {
-	attachment  *Attachment
+	attachment  *SessionHandle
 	route       route
 	queryFilter string
 }

@@ -14,7 +14,7 @@ import (
 )
 
 type blockedLifecycleAttachment struct {
-	mcpbroker.Attachment
+	mcpbroker.SessionHandle
 	release chan struct{}
 	calls   int
 }
@@ -41,10 +41,10 @@ func TestLifecycleDuplicateAdmission(t *testing.T) {
 				synctest.Test(t, func(t *testing.T) {
 					backing := &blockedLifecycleAttachment{release: make(chan struct{})}
 					defer close(backing.release)
-					a := &serverAttachment{attachment: backing, expiresAt: time.Now().Add(time.Hour), changed: make(chan struct{})}
+					a := &serverHandle{sessionHandle: backing, expiresAt: time.Now().Add(time.Hour), changed: make(chan struct{})}
 					cfg := DefaultConfig()
 					cfg.MaxPendingControls = capacity
-					s := &Server{cfg: cfg, instanceID: "instance", handles: map[string]*serverAttachment{"handle": a}}
+					s := &Server{cfg: cfg, instanceID: "instance", handles: map[string]*serverHandle{"handle": a}}
 					invoke := func(ctx context.Context) error {
 						if operation == "Abort" {
 							_, err := s.Abort(ctx, &brokerv1.AbortRequest{Handle: "handle", BrokerIncarnation: "instance"})

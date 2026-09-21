@@ -40,7 +40,7 @@ type fakeAttachment struct {
 }
 
 var _ mcpbroker.Service = (*fakeService)(nil)
-var _ mcpbroker.Attachment = (*fakeAttachment)(nil)
+var _ mcpbroker.SessionHandle = (*fakeAttachment)(nil)
 
 func newFakeService() *fakeService {
 	return &fakeService{sessions: make(map[session.SessionID]*fakeLogicalSession)}
@@ -50,7 +50,7 @@ func authorizationIdentity(authorization session.ExternalAuthorization) authoriz
 	return authorizationKey{id: authorization.ID, binding: authorization.Binding}
 }
 
-func (s *fakeService) AttachSession(_ context.Context, id session.SessionID) (mcpbroker.Attachment, mcpbroker.AttachOutcome, error) {
+func (s *fakeService) AttachSession(_ context.Context, id session.SessionID) (mcpbroker.SessionHandle, mcpbroker.AttachOutcome, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	outcome := mcpbroker.AttachReattached

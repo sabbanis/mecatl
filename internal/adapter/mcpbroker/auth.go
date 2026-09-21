@@ -467,7 +467,7 @@ func lookupAuthorization(logical *logicalSession, authorization session.External
 	return transaction, nil
 }
 
-func (a *Attachment) lookupAuthorizationLocked(authorization session.ExternalAuthorization) (*authorizationTransaction, error) {
+func (a *SessionHandle) lookupAuthorizationLocked(authorization session.ExternalAuthorization) (*authorizationTransaction, error) {
 	transaction, err := lookupAuthorization(a.logical, authorization)
 	if errors.Is(err, contract.ErrAuthorizationNotFound) && a.runtime.catalogue.protected() && len(a.logical.authorizations) == 0 {
 		// A protected authorization reference with no process-local transaction is
@@ -478,7 +478,7 @@ func (a *Attachment) lookupAuthorizationLocked(authorization session.ExternalAut
 }
 
 // PresentAuthorization returns a live URL for the exact process-local transaction.
-func (a *Attachment) PresentAuthorization(ctx context.Context, authorization session.ExternalAuthorization) (string, error) {
+func (a *SessionHandle) PresentAuthorization(ctx context.Context, authorization session.ExternalAuthorization) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
@@ -504,7 +504,7 @@ func (a *Attachment) PresentAuthorization(ctx context.Context, authorization ses
 }
 
 // AuthorizationStatus reports the exact transaction's current lifecycle status.
-func (a *Attachment) AuthorizationStatus(ctx context.Context, authorization session.ExternalAuthorization) (session.AuthorizationStatus, error) {
+func (a *SessionHandle) AuthorizationStatus(ctx context.Context, authorization session.ExternalAuthorization) (session.AuthorizationStatus, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
@@ -525,7 +525,7 @@ func (a *Attachment) AuthorizationStatus(ctx context.Context, authorization sess
 	return transaction.status, nil
 }
 
-func (a *Attachment) expireLocked(transaction *authorizationTransaction) {
+func (a *SessionHandle) expireLocked(transaction *authorizationTransaction) {
 	if transaction.status == session.AuthorizationPending && !a.runtime.oauth.now().Before(transaction.expiresAt) {
 		transaction.status = session.AuthorizationExpired
 		a.runtime.removeCallbackState(transaction.state, transaction)
@@ -539,7 +539,7 @@ func (a *Attachment) expireLocked(transaction *authorizationTransaction) {
 }
 
 // CancelAuthorization idempotently settles only the exact pending transaction.
-func (a *Attachment) CancelAuthorization(ctx context.Context, authorization session.ExternalAuthorization) (contract.CancelOutcome, error) {
+func (a *SessionHandle) CancelAuthorization(ctx context.Context, authorization session.ExternalAuthorization) (contract.CancelOutcome, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}

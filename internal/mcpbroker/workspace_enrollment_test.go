@@ -47,7 +47,7 @@ func (*enrollmentAuthorizationTool) AbortAuthorization(context.Context, session.
 
 type enrollmentAttachmentFake struct{}
 
-var _ mcpbroker.WorkspaceEnrollmentAttachment = enrollmentAttachmentFake{}
+var _ mcpbroker.WorkspaceEnrollmentHandle = enrollmentAttachmentFake{}
 
 func (enrollmentAttachmentFake) BeginWorkspaceEnrollment(context.Context) (mcpbroker.WorkspaceEnrollmentPresentation, error) {
 	return mcpbroker.WorkspaceEnrollmentPresentation{}, nil
@@ -355,7 +355,7 @@ func TestWorkspaceEnrollmentPresentationURLValidationAndIsolation(t *testing.T) 
 }
 
 func TestWorkspaceEnrollmentInterfaceHasNoClientAuthoredResolution(t *testing.T) {
-	typ := reflect.TypeOf((*mcpbroker.WorkspaceEnrollmentAttachment)(nil)).Elem()
+	typ := reflect.TypeOf((*mcpbroker.WorkspaceEnrollmentHandle)(nil)).Elem()
 	contextType := reflect.TypeOf((*context.Context)(nil)).Elem()
 	refType := reflect.TypeOf(mcpbroker.WorkspaceEnrollmentRef{})
 	for i := 0; i < typ.NumMethod(); i++ {

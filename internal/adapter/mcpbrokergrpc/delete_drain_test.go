@@ -164,7 +164,7 @@ type drainingDeleteBroker struct {
 	entered, resume, deleted chan struct{}
 }
 
-func (b *drainingDeleteBroker) AttachSession(ctx context.Context, _ session.SessionID) (mcpbroker.Attachment, mcpbroker.AttachOutcome, error) {
+func (b *drainingDeleteBroker) AttachSession(ctx context.Context, _ session.SessionID) (mcpbroker.SessionHandle, mcpbroker.AttachOutcome, error) {
 	if b.block {
 		close(b.entered)
 		select {
@@ -181,7 +181,7 @@ func (b *drainingDeleteBroker) DeleteSessionIfBinding(context.Context, session.S
 	return mcpbroker.DeleteDeleted, nil
 }
 
-type drainingDeleteAttachment struct{ mcpbroker.Attachment }
+type drainingDeleteAttachment struct{ mcpbroker.SessionHandle }
 
 func (drainingDeleteAttachment) Binding() session.ExternalBinding { return "binding" }
 func (drainingDeleteAttachment) Tools() []tool.Tool               { return nil }

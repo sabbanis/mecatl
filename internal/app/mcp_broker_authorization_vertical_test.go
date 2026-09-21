@@ -244,7 +244,7 @@ func TestSingletonBrokerRemediation_Scenario5_CallbackCorrelationReplayAndNonDis
 	}
 	t.Cleanup(func() { _ = closeRemote() })
 
-	requestAuthorization := func(id, callID string) (brokercontract.Attachment, session.ExternalAuthorization, string, string) {
+	requestAuthorization := func(id, callID string) (brokercontract.SessionHandle, session.ExternalAuthorization, string, string) {
 		attachment, _, err := remote.AttachSession(ctx, session.SessionID(id))
 		if err != nil {
 			t.Fatalf("attach %s: %v", id, err)

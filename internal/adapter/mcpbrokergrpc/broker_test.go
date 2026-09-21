@@ -154,7 +154,7 @@ func TestSingletonBrokerRemediation_Scenario1_HostilePeerBoundary(t *testing.T) 
 
 type byteExactBroker struct{}
 
-func (byteExactBroker) AttachSession(context.Context, session.SessionID) (mcpbroker.Attachment, mcpbroker.AttachOutcome, error) {
+func (byteExactBroker) AttachSession(context.Context, session.SessionID) (mcpbroker.SessionHandle, mcpbroker.AttachOutcome, error) {
 	return &byteExactAttachment{}, mcpbroker.AttachCreated, nil
 }
 func (byteExactBroker) DeleteSession(context.Context, session.SessionID) (mcpbroker.DeleteOutcome, error) {
@@ -294,7 +294,7 @@ func (malformedAttachConn) NewStream(context.Context, *grpc.StreamDesc, string, 
 
 type invalidDescriptorBroker struct{ attachment *invalidDescriptorAttachment }
 
-func (b *invalidDescriptorBroker) AttachSession(context.Context, session.SessionID) (mcpbroker.Attachment, mcpbroker.AttachOutcome, error) {
+func (b *invalidDescriptorBroker) AttachSession(context.Context, session.SessionID) (mcpbroker.SessionHandle, mcpbroker.AttachOutcome, error) {
 	b.attachment = &invalidDescriptorAttachment{}
 	return b.attachment, mcpbroker.AttachCreated, nil
 }
@@ -323,7 +323,7 @@ func (invalidSchemaTool) Spec() tool.ToolSpec {
 type broker struct{ exists bool }
 
 func newBroker() *broker { return &broker{} }
-func (b *broker) AttachSession(context.Context, session.SessionID) (mcpbroker.Attachment, mcpbroker.AttachOutcome, error) {
+func (b *broker) AttachSession(context.Context, session.SessionID) (mcpbroker.SessionHandle, mcpbroker.AttachOutcome, error) {
 	if !b.exists {
 		b.exists = true
 		return &attachment{}, mcpbroker.AttachCreated, nil

@@ -24,7 +24,7 @@ import (
 )
 
 type enrollmentAttachment struct {
-	brokercontract.Attachment
+	brokercontract.SessionHandle
 	ref           brokercontract.WorkspaceEnrollmentRef
 	result        brokercontract.WorkspaceEnrollmentResult
 	catalogue     brokercontract.WorkspaceCatalogue
@@ -81,7 +81,7 @@ func (a *enrollmentAttachment) Tools() []tool.Tool {
 	if a.catalogue != nil {
 		return a.catalogue.Tools()
 	}
-	return a.Attachment.Tools()
+	return a.SessionHandle.Tools()
 }
 
 type enrollmentBroker struct {
@@ -90,7 +90,7 @@ type enrollmentBroker struct {
 	attachErr  error
 }
 
-func (b *enrollmentBroker) AttachSession(ctx context.Context, id session.SessionID) (brokercontract.Attachment, brokercontract.AttachOutcome, error) {
+func (b *enrollmentBroker) AttachSession(ctx context.Context, id session.SessionID) (brokercontract.SessionHandle, brokercontract.AttachOutcome, error) {
 	if b.attachErr != nil {
 		return nil, "", b.attachErr
 	}
@@ -100,7 +100,7 @@ func (b *enrollmentBroker) AttachSession(ctx context.Context, id session.Session
 	}
 	if b.attachment == nil {
 		ref := brokercontract.WorkspaceEnrollmentRef{ID: "enrollment-1", RequiredServices: 1, ExpiresAt: time.Now().Add(time.Hour)}
-		b.attachment = &enrollmentAttachment{Attachment: attachment, ref: ref, result: brokercontract.WorkspaceEnrollmentResult{Ref: ref, Status: brokercontract.WorkspaceEnrollmentPending}}
+		b.attachment = &enrollmentAttachment{SessionHandle: attachment, ref: ref, result: brokercontract.WorkspaceEnrollmentResult{Ref: ref, Status: brokercontract.WorkspaceEnrollmentPending}}
 	}
 	return b.attachment, outcome, nil
 }

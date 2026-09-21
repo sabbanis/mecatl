@@ -205,13 +205,13 @@ func testAnonymousRuntime(t *testing.T) *Runtime {
 	return runtime
 }
 
-func testAttachment(t *testing.T, runtime *Runtime) *Attachment {
+func testAttachment(t *testing.T, runtime *Runtime) *SessionHandle {
 	t.Helper()
 	attached, _, err := runtime.AttachSession(t.Context(), "session")
 	if err != nil {
 		t.Fatal(err)
 	}
-	return attached.(*Attachment)
+	return attached.(*SessionHandle)
 }
 
 func testEnrollmentRef() contract.WorkspaceEnrollmentRef {

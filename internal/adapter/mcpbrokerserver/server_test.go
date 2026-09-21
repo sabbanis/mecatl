@@ -133,7 +133,7 @@ func TestSingletonBrokerRemediation_Scenario3_ReadinessDoesNotLaunderStaleKeys(t
 
 type countingService struct{ reads atomic.Int32 }
 
-func (s *countingService) AttachSession(context.Context, session.SessionID) (contract.Attachment, contract.AttachOutcome, error) {
+func (s *countingService) AttachSession(context.Context, session.SessionID) (contract.SessionHandle, contract.AttachOutcome, error) {
 	s.reads.Add(1)
 	return &emptyAttachment{}, contract.AttachCreated, nil
 }
@@ -180,7 +180,7 @@ func (*traceAttachment) Tools() []tool.Tool { return []tool.Tool{traceTool{}} }
 
 type traceService struct{ countingService }
 
-func (s *traceService) AttachSession(context.Context, session.SessionID) (contract.Attachment, contract.AttachOutcome, error) {
+func (s *traceService) AttachSession(context.Context, session.SessionID) (contract.SessionHandle, contract.AttachOutcome, error) {
 	return &traceAttachment{}, contract.AttachCreated, nil
 }
 

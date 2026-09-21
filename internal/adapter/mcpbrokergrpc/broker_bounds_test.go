@@ -63,7 +63,7 @@ func TestHandleCapacityAbortsRejectedCreatedLogicalSession(t *testing.T) {
 
 type abortCountingBroker struct{ aborted atomic.Int32 }
 
-func (b *abortCountingBroker) AttachSession(context.Context, session.SessionID) (mcpbroker.Attachment, mcpbroker.AttachOutcome, error) {
+func (b *abortCountingBroker) AttachSession(context.Context, session.SessionID) (mcpbroker.SessionHandle, mcpbroker.AttachOutcome, error) {
 	return &abortCountingAttachment{owner: b}, mcpbroker.AttachCreated, nil
 }
 
@@ -259,7 +259,7 @@ func TestReceiptBinaryPartBytesAreBounded(t *testing.T) {
 
 type binaryReceiptBroker struct{}
 
-func (binaryReceiptBroker) AttachSession(context.Context, session.SessionID) (mcpbroker.Attachment, mcpbroker.AttachOutcome, error) {
+func (binaryReceiptBroker) AttachSession(context.Context, session.SessionID) (mcpbroker.SessionHandle, mcpbroker.AttachOutcome, error) {
 	return &binaryReceiptAttachment{}, mcpbroker.AttachCreated, nil
 }
 
@@ -308,7 +308,7 @@ type failFirstAttach struct {
 	failed   bool
 }
 
-func (s *failFirstAttach) AttachSession(ctx context.Context, id session.SessionID) (mcpbroker.Attachment, mcpbroker.AttachOutcome, error) {
+func (s *failFirstAttach) AttachSession(ctx context.Context, id session.SessionID) (mcpbroker.SessionHandle, mcpbroker.AttachOutcome, error) {
 	if !s.failed {
 		s.failed = true
 		return nil, "", errors.New("attach failed")

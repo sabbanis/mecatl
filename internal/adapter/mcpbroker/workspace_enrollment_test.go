@@ -79,10 +79,10 @@ func TestADR_0298_OpaqueBrokerCredentialIsNotDecodedOrCopied(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	attachment := attached.(*Attachment)
-	enroller, ok := attached.(contract.WorkspaceEnrollmentAttachment)
+	attachment := attached.(*SessionHandle)
+	enroller, ok := attached.(contract.WorkspaceEnrollmentHandle)
 	if !ok {
-		t.Fatal("Attachment does not implement WorkspaceEnrollmentAttachment")
+		t.Fatal("SessionHandle does not implement WorkspaceEnrollmentHandle")
 	}
 
 	presentation, err := enroller.BeginWorkspaceEnrollment(t.Context())
@@ -150,7 +150,7 @@ func TestADR_0298_OpaqueBrokerCredentialIsNotDecodedOrCopied(t *testing.T) {
 	if err != nil || outcome != contract.AttachReattached {
 		t.Fatalf("reattach = (%v, %q, %v)", reopened, outcome, err)
 	}
-	reobserved, err := reopened.(contract.WorkspaceEnrollmentAttachment).ObserveWorkspaceEnrollment(t.Context(), presentation.Ref)
+	reobserved, err := reopened.(contract.WorkspaceEnrollmentHandle).ObserveWorkspaceEnrollment(t.Context(), presentation.Ref)
 	if err != nil || reobserved.Status != contract.WorkspaceEnrollmentConnected || !reflect.DeepEqual(reobserved.Catalogue.ToolNames(), connected.Catalogue.ToolNames()) {
 		t.Fatalf("reobserve completed enrollment = (%+v, %v)", reobserved, err)
 	}
@@ -160,11 +160,11 @@ func TestADR_0298_OpaqueBrokerCredentialIsNotDecodedOrCopied(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("authenticated discovery calls = %d, want 1", calls)
 	}
-	route, ok = reopened.(*Attachment).lookupRoute("mcp__github__list_issues")
+	route, ok = reopened.(*SessionHandle).lookupRoute("mcp__github__list_issues")
 	if !ok || !route.broker || route.oauth != nil {
 		t.Fatalf("reattached broker route = %+v, %v", route, ok)
 	}
-	if _, err := reopened.(contract.WorkspaceEnrollmentAttachment).BeginWorkspaceEnrollment(t.Context()); !errors.Is(err, errWorkspaceEnrollmentAlreadyCompleted) {
+	if _, err := reopened.(contract.WorkspaceEnrollmentHandle).BeginWorkspaceEnrollment(t.Context()); !errors.Is(err, errWorkspaceEnrollmentAlreadyCompleted) {
 		t.Fatalf("BeginWorkspaceEnrollment after completion error = %v, want completed enrollment rejection", err)
 	}
 }
@@ -177,7 +177,7 @@ func TestWorkspaceEnrollmentControlsRequireExactAggregateReference(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	enroller := attached.(contract.WorkspaceEnrollmentAttachment)
+	enroller := attached.(contract.WorkspaceEnrollmentHandle)
 	presentation, err := enroller.BeginWorkspaceEnrollment(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -208,7 +208,7 @@ func TestWorkspaceEnrollmentCancelClearsBundleState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	enroller := attached.(contract.WorkspaceEnrollmentAttachment)
+	enroller := attached.(contract.WorkspaceEnrollmentHandle)
 
 	presentation, err := enroller.BeginWorkspaceEnrollment(t.Context())
 	if err != nil {
@@ -239,9 +239,9 @@ func TestWorkspaceEnrollmentUnsupportedWithoutDynamicBackend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	enroller, ok := attached.(contract.WorkspaceEnrollmentAttachment)
+	enroller, ok := attached.(contract.WorkspaceEnrollmentHandle)
 	if !ok {
-		t.Fatal("Attachment does not implement WorkspaceEnrollmentAttachment")
+		t.Fatal("SessionHandle does not implement WorkspaceEnrollmentHandle")
 	}
 	if _, err := enroller.BeginWorkspaceEnrollment(t.Context()); !errors.Is(err, ErrWorkspaceEnrollmentUnsupported) {
 		t.Fatalf("begin without process = %v, want ErrWorkspaceEnrollmentUnsupported", err)
@@ -268,7 +268,7 @@ func TestWorkspaceEnrollmentTerminalObservationIsRetryable(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			enroller := attached.(contract.WorkspaceEnrollmentAttachment)
+			enroller := attached.(contract.WorkspaceEnrollmentHandle)
 			presentation, err := enroller.BeginWorkspaceEnrollment(t.Context())
 			if err != nil {
 				t.Fatal(err)
@@ -313,8 +313,8 @@ func TestWorkspaceEnrollmentDiscoveryCancellationIsRetryable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	attachment := attached.(*Attachment)
-	enroller := attached.(contract.WorkspaceEnrollmentAttachment)
+	attachment := attached.(*SessionHandle)
+	enroller := attached.(contract.WorkspaceEnrollmentHandle)
 	presentation := beginAndGrantWorkspaceEnrollment(t, runtime, enroller)
 
 	entered := make(chan struct{})
@@ -379,9 +379,9 @@ func TestCancelledPeerCannotPublishUncommittedCatalogue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first := firstRaw.(*Attachment)
-	firstEnroller := firstRaw.(contract.WorkspaceEnrollmentAttachment)
-	peerEnroller := peerRaw.(contract.WorkspaceEnrollmentAttachment)
+	first := firstRaw.(*SessionHandle)
+	firstEnroller := firstRaw.(contract.WorkspaceEnrollmentHandle)
+	peerEnroller := peerRaw.(contract.WorkspaceEnrollmentHandle)
 	presentation := beginAndGrantWorkspaceEnrollment(t, runtime, firstEnroller)
 
 	entered := make(chan struct{})
@@ -425,7 +425,7 @@ func TestCancelledPeerCannotPublishUncommittedCatalogue(t *testing.T) {
 	}
 }
 
-func beginAndGrantWorkspaceEnrollment(t *testing.T, runtime *Runtime, enroller contract.WorkspaceEnrollmentAttachment) contract.WorkspaceEnrollmentPresentation {
+func beginAndGrantWorkspaceEnrollment(t *testing.T, runtime *Runtime, enroller contract.WorkspaceEnrollmentHandle) contract.WorkspaceEnrollmentPresentation {
 	t.Helper()
 	presentation, err := enroller.BeginWorkspaceEnrollment(t.Context())
 	if err != nil {

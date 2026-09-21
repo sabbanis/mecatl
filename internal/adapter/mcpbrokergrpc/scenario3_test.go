@@ -207,7 +207,7 @@ func newContinuationBroker() *continuationBroker {
 	return &continuationBroker{status: session.AuthorizationPending, presentation: "https://broker.example/authorize/opaque-auth"}
 }
 
-func (b *continuationBroker) AttachSession(context.Context, session.SessionID) (mcpbroker.Attachment, mcpbroker.AttachOutcome, error) {
+func (b *continuationBroker) AttachSession(context.Context, session.SessionID) (mcpbroker.SessionHandle, mcpbroker.AttachOutcome, error) {
 	return &continuationAttachment{broker: b}, mcpbroker.AttachCreated, nil
 }
 func (*continuationBroker) DeleteSession(context.Context, session.SessionID) (mcpbroker.DeleteOutcome, error) {

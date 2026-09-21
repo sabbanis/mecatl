@@ -41,7 +41,7 @@ func (s *Service) ConnectWorkspaceServices(ctx context.Context, id session.Sessi
 			if rebindErr != nil {
 				return WorkspaceEnrollmentProjection{}, rebindErr
 			}
-			enroller, exists = local.attachment.(brokercontract.WorkspaceEnrollmentAttachment)
+			enroller, exists = local.attachment.(brokercontract.WorkspaceEnrollmentHandle)
 			if !exists {
 				return WorkspaceEnrollmentProjection{}, fmt.Errorf("%w: workspace services are not configured", ErrFailedPrecondition)
 			}
@@ -57,7 +57,7 @@ func (s *Service) ConnectWorkspaceServices(ctx context.Context, id session.Sessi
 		if rebindErr != nil {
 			return WorkspaceEnrollmentProjection{}, rebindErr
 		}
-		freshEnroller, ok := local.attachment.(brokercontract.WorkspaceEnrollmentAttachment)
+		freshEnroller, ok := local.attachment.(brokercontract.WorkspaceEnrollmentHandle)
 		if !ok {
 			return WorkspaceEnrollmentProjection{}, fmt.Errorf("%w: workspace services are not configured", ErrFailedPrecondition)
 		}
@@ -72,8 +72,8 @@ func (s *Service) ConnectWorkspaceServices(ctx context.Context, id session.Sessi
 	}
 
 	// The authenticated result is the single snapshot for both executable wrappers
-	// and durable authority. Never re-read Attachment.Tools during this rebuild: a
-	// remote attachment may advance between observation and engine construction.
+	// and durable authority. Never re-read SessionHandle.Tools during this rebuild: a
+	// remote session handle may advance between observation and engine construction.
 	// Read the names from the catalogue's own frozen ToolNames(), never by
 	// re-calling Spec() per tool: the catalogue is the one authoritative source.
 	exactTools := result.Catalogue.Tools()
@@ -93,7 +93,7 @@ func (s *Service) ConnectWorkspaceServices(ctx context.Context, id session.Sessi
 	return WorkspaceEnrollmentProjection{Ref: result.Ref, Status: result.Status}, nil
 }
 
-func (s *Service) recordNewWorkspaceEnrollment(ctx context.Context, sess *session.Session, enroller brokercontract.WorkspaceEnrollmentAttachment, presentation brokercontract.WorkspaceEnrollmentPresentation, beginErr error) (WorkspaceEnrollmentProjection, error) {
+func (s *Service) recordNewWorkspaceEnrollment(ctx context.Context, sess *session.Session, enroller brokercontract.WorkspaceEnrollmentHandle, presentation brokercontract.WorkspaceEnrollmentPresentation, beginErr error) (WorkspaceEnrollmentProjection, error) {
 	if beginErr != nil || !presentation.Valid() {
 		return WorkspaceEnrollmentProjection{}, fmt.Errorf("%w: begin workspace enrollment", ErrFailedPrecondition)
 	}
@@ -199,7 +199,7 @@ func (s *Service) settleTerminalWorkspaceEnrollment(ctx context.Context, sess *s
 	return WorkspaceEnrollmentProjection{Ref: enrollmentRef(pending), Status: status}, nil
 }
 
-func (s *Service) workspaceEnrollmentTarget(ctx context.Context, id session.SessionID) (*session.Session, brokercontract.WorkspaceEnrollmentAttachment, func(), error) {
+func (s *Service) workspaceEnrollmentTarget(ctx context.Context, id session.SessionID) (*session.Session, brokercontract.WorkspaceEnrollmentHandle, func(), error) {
 	sess, err := s.cfg.Store.Load(ctx, id)
 	if err != nil || sess == nil || sess.ID != id || s.authorizeSession(ctx, sess) != nil {
 		return nil, nil, nil, ErrNotFound
@@ -230,7 +230,7 @@ func (s *Service) workspaceEnrollmentTarget(ctx context.Context, id session.Sess
 			return sess, nil, nil, err
 		}
 	}
-	enroller, ok := local.attachment.(brokercontract.WorkspaceEnrollmentAttachment)
+	enroller, ok := local.attachment.(brokercontract.WorkspaceEnrollmentHandle)
 	if !ok {
 		brokerUnlock()
 		return nil, nil, nil, fmt.Errorf("%w: workspace services are not configured", ErrFailedPrecondition)
@@ -238,7 +238,7 @@ func (s *Service) workspaceEnrollmentTarget(ctx context.Context, id session.Sess
 	return sess, enroller, brokerUnlock, nil
 }
 
-func cancelWorkspaceEnrollmentDetached(ctx context.Context, enroller brokercontract.WorkspaceEnrollmentAttachment, ref brokercontract.WorkspaceEnrollmentRef) {
+func cancelWorkspaceEnrollmentDetached(ctx context.Context, enroller brokercontract.WorkspaceEnrollmentHandle, ref brokercontract.WorkspaceEnrollmentRef) {
 	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), engineCloseTimeout)
 	defer cancel()
 	_, _ = enroller.CancelWorkspaceEnrollment(cleanupCtx, ref)

@@ -865,7 +865,7 @@ type Config struct {
 	// MCPBrokerFactory selects an externally hosted broker instead of constructing
 	// ToolHive in this process. Build calls it only when broker authority is selected
 	// and owns the returned close function. The remote service must provide the same
-	// Attachment contract; no local fallback is attempted on factory failure.
+	// SessionHandle contract; no local fallback is attempted on factory failure.
 	MCPBrokerFactory func(context.Context) (mcpbrokercontract.Service, func() error, error)
 	// MCPBrokerFactoryRequired prevents a broker-capable command root from
 	// silently constructing an in-process ToolHive broker when remote custody is

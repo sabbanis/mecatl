@@ -185,7 +185,7 @@ type executeLimitBroker struct {
 	waitForCancel bool
 }
 
-func (b *executeLimitBroker) AttachSession(context.Context, session.SessionID) (mcpbroker.Attachment, mcpbroker.AttachOutcome, error) {
+func (b *executeLimitBroker) AttachSession(context.Context, session.SessionID) (mcpbroker.SessionHandle, mcpbroker.AttachOutcome, error) {
 	return &executeLimitAttachment{broker: b}, mcpbroker.AttachCreated, nil
 }
 func (*executeLimitBroker) DeleteSession(context.Context, session.SessionID) (mcpbroker.DeleteOutcome, error) {

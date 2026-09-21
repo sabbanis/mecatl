@@ -16,7 +16,7 @@ type connectorBrokerSpy struct {
 	attaches int
 }
 
-func (s *connectorBrokerSpy) AttachSession(ctx context.Context, id session.SessionID) (brokercontract.Attachment, brokercontract.AttachOutcome, error) {
+func (s *connectorBrokerSpy) AttachSession(ctx context.Context, id session.SessionID) (brokercontract.SessionHandle, brokercontract.AttachOutcome, error) {
 	s.attaches++
 	return s.Service.AttachSession(ctx, id)
 }
@@ -141,7 +141,7 @@ func TestBrokerMCPStatus_Scenario1_PersistedPendingGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	enroller, ok := attachment.(brokercontract.WorkspaceEnrollmentAttachment)
+	enroller, ok := attachment.(brokercontract.WorkspaceEnrollmentHandle)
 	if !ok {
 		t.Fatal("broker attachment does not support enrollment")
 	}

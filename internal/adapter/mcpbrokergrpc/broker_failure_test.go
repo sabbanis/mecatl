@@ -220,7 +220,7 @@ func TestSingletonBrokerRemediation_Scenario1_StaleIncarnationRejectedAcrossSurf
 	assertStateLoss("observe authorization", err)
 	_, err = attached.CancelAuthorization(t.Context(), auth)
 	assertStateLoss("cancel authorization", err)
-	enroller, ok := attached.(mcpbroker.WorkspaceEnrollmentAttachment)
+	enroller, ok := attached.(mcpbroker.WorkspaceEnrollmentHandle)
 	if !ok {
 		t.Fatal("remote attachment does not preserve enrollment capability")
 	}
@@ -1231,7 +1231,7 @@ func TestSingletonBrokerRemediation_Scenario2_FreshClientPrePromptRecovery(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldEnroller := oldAttachment.(mcpbroker.WorkspaceEnrollmentAttachment)
+	oldEnroller := oldAttachment.(mcpbroker.WorkspaceEnrollmentHandle)
 	oldPresentation, err := oldEnroller.BeginWorkspaceEnrollment(t.Context())
 	if err != nil {
 		t.Fatal(err)
@@ -1252,7 +1252,7 @@ func TestSingletonBrokerRemediation_Scenario2_FreshClientPrePromptRecovery(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	freshPresentation, err := freshAttachment.(mcpbroker.WorkspaceEnrollmentAttachment).BeginWorkspaceEnrollment(t.Context())
+	freshPresentation, err := freshAttachment.(mcpbroker.WorkspaceEnrollmentHandle).BeginWorkspaceEnrollment(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1351,7 +1351,7 @@ type failureBroker struct {
 func newFailureBroker() *failureBroker {
 	return &failureBroker{serial: failureBrokerSerial.Add(1), sessions: make(map[session.SessionID]*failureAttachment), executeEntered: make(chan struct{}, 1), executeExited: make(chan struct{}, 1)}
 }
-func (b *failureBroker) AttachSession(_ context.Context, id session.SessionID) (mcpbroker.Attachment, mcpbroker.AttachOutcome, error) {
+func (b *failureBroker) AttachSession(_ context.Context, id session.SessionID) (mcpbroker.SessionHandle, mcpbroker.AttachOutcome, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if existing := b.sessions[id]; existing != nil {
@@ -1540,4 +1540,4 @@ func (*failureTool) AbortAuthorization(context.Context, session.ExternalAuthoriz
 }
 
 var _ mcpbroker.BindingSessionDeleter = (*failureBroker)(nil)
-var _ mcpbroker.WorkspaceEnrollmentAttachment = (*failureAttachment)(nil)
+var _ mcpbroker.WorkspaceEnrollmentHandle = (*failureAttachment)(nil)

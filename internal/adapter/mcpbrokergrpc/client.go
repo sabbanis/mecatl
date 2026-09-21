@@ -42,7 +42,7 @@ func NewClientWithConfig(conn grpc.ClientConnInterface, cfg Config) (*Client, er
 func (c *Client) brokerIncarnation() string { c.mu.Lock(); defer c.mu.Unlock(); return c.incarnation }
 
 // AttachSession opens a handle while pinning the first observed broker incarnation.
-func (c *Client) AttachSession(ctx context.Context, id session.SessionID) (mcpbroker.Attachment, mcpbroker.AttachOutcome, error) {
+func (c *Client) AttachSession(ctx context.Context, id session.SessionID) (mcpbroker.SessionHandle, mcpbroker.AttachOutcome, error) {
 	if id == "" {
 		return nil, "", errors.New("mcpbrokergrpc: session id is required")
 	}
@@ -61,7 +61,7 @@ func (c *Client) AttachSession(ctx context.Context, id session.SessionID) (mcpbr
 		c.discardAttachResponse(r)
 		return nil, "", e
 	}
-	base := &clientAttachment{client: c, handle: r.GetHandle(), binding: session.ExternalBinding(r.GetBinding()), incarnation: r.GetBrokerIncarnation(), tools: tools}
+	base := &clientSessionHandle{client: c, handle: r.GetHandle(), binding: session.ExternalBinding(r.GetBinding()), incarnation: r.GetBrokerIncarnation(), tools: tools}
 	c.mu.Lock()
 	if c.incarnation != "" && c.incarnation != r.GetBrokerIncarnation() {
 		c.mu.Unlock()
@@ -71,13 +71,13 @@ func (c *Client) AttachSession(ctx context.Context, id session.SessionID) (mcpbr
 	c.incarnation = r.GetBrokerIncarnation()
 	c.mu.Unlock()
 	if r.GetWorkspaceEnrollment() {
-		return &clientEnrollmentAttachment{clientAttachment: base}, mcpbroker.AttachOutcome(r.GetOutcome()), nil
+		return &clientEnrollmentSessionHandle{clientSessionHandle: base}, mcpbroker.AttachOutcome(r.GetOutcome()), nil
 	}
 	return base, mcpbroker.AttachOutcome(r.GetOutcome()), nil
 }
 
 func (c *Client) discardAttachResponse(response *brokerv1.AttachResponse) {
-	attachment := &clientAttachment{
+	handle := &clientSessionHandle{
 		client:      c,
 		handle:      response.GetHandle(),
 		incarnation: response.GetBrokerIncarnation(),
@@ -85,10 +85,10 @@ func (c *Client) discardAttachResponse(response *brokerv1.AttachResponse) {
 	ctx, cancel := context.WithTimeout(context.Background(), c.cfg.RPCDeadline)
 	defer cancel()
 	if response.GetOutcome() == string(mcpbroker.AttachCreated) {
-		_ = attachment.Abort(ctx)
+		_ = handle.Abort(ctx)
 		return
 	}
-	_, _ = attachment.Close(ctx)
+	_, _ = handle.Close(ctx)
 }
 
 // DeleteSession is unavailable remotely because remote deletion requires an exact
@@ -117,7 +117,7 @@ func (c *Client) delete(ctx context.Context, id session.SessionID, binding sessi
 	return mcpbroker.DeleteOutcome(r.GetOutcome()), nil
 }
 
-type clientAttachment struct {
+type clientSessionHandle struct {
 	client      *Client
 	handle      string
 	binding     session.ExternalBinding
@@ -127,21 +127,21 @@ type clientAttachment struct {
 	closed      bool
 }
 
-func (a *clientAttachment) Binding() session.ExternalBinding { return a.binding }
-func (a *clientAttachment) Tools() []tool.Tool               { return append([]tool.Tool(nil), a.tools...) }
-func (a *clientAttachment) Commit(ctx context.Context) error {
+func (a *clientSessionHandle) Binding() session.ExternalBinding { return a.binding }
+func (a *clientSessionHandle) Tools() []tool.Tool               { return append([]tool.Tool(nil), a.tools...) }
+func (a *clientSessionHandle) Commit(ctx context.Context) error {
 	rpcCtx, cancel := context.WithTimeout(ctx, a.client.cfg.RPCDeadline)
 	defer cancel()
 	_, e := a.client.rpc.Commit(rpcCtx, &brokerv1.CommitRequest{Handle: a.handle, BrokerIncarnation: a.incarnation})
 	return clientError(e)
 }
-func (a *clientAttachment) Abort(ctx context.Context) error {
+func (a *clientSessionHandle) Abort(ctx context.Context) error {
 	rpcCtx, cancel := context.WithTimeout(ctx, a.client.cfg.RPCDeadline)
 	defer cancel()
 	_, e := a.client.rpc.Abort(rpcCtx, &brokerv1.AbortRequest{Handle: a.handle, BrokerIncarnation: a.incarnation})
 	return clientError(e)
 }
-func (a *clientAttachment) Close(ctx context.Context) (mcpbroker.CloseOutcome, error) {
+func (a *clientSessionHandle) Close(ctx context.Context) (mcpbroker.CloseOutcome, error) {
 	a.mu.Lock()
 	if a.closed {
 		a.mu.Unlock()
@@ -162,7 +162,7 @@ func (a *clientAttachment) Close(ctx context.Context) (mcpbroker.CloseOutcome, e
 	a.mu.Unlock()
 	return mcpbroker.CloseOutcome(r.GetOutcome()), nil
 }
-func (a *clientAttachment) PresentAuthorization(ctx context.Context, auth session.ExternalAuthorization) (string, error) {
+func (a *clientSessionHandle) PresentAuthorization(ctx context.Context, auth session.ExternalAuthorization) (string, error) {
 	rpcCtx, cancel := context.WithTimeout(ctx, a.client.cfg.RPCDeadline)
 	defer cancel()
 	r, err := a.client.rpc.PresentAuthorization(rpcCtx, &brokerv1.PresentAuthorizationRequest{Handle: a.handle, Authorization: authToWire(auth), BrokerIncarnation: a.incarnation})
@@ -174,7 +174,7 @@ func (a *clientAttachment) PresentAuthorization(ctx context.Context, auth sessio
 	}
 	return r.GetUrl(), nil
 }
-func (a *clientAttachment) AuthorizationStatus(ctx context.Context, auth session.ExternalAuthorization) (session.AuthorizationStatus, error) {
+func (a *clientSessionHandle) AuthorizationStatus(ctx context.Context, auth session.ExternalAuthorization) (session.AuthorizationStatus, error) {
 	rpcCtx, cancel := context.WithTimeout(ctx, a.client.cfg.RPCDeadline)
 	defer cancel()
 	r, err := a.client.rpc.AuthorizationStatus(rpcCtx, &brokerv1.AuthorizationStatusRequest{Handle: a.handle, Authorization: authToWire(auth), BrokerIncarnation: a.incarnation})
@@ -187,7 +187,7 @@ func (a *clientAttachment) AuthorizationStatus(ctx context.Context, auth session
 	}
 	return out, nil
 }
-func (a *clientAttachment) CancelAuthorization(ctx context.Context, auth session.ExternalAuthorization) (mcpbroker.CancelOutcome, error) {
+func (a *clientSessionHandle) CancelAuthorization(ctx context.Context, auth session.ExternalAuthorization) (mcpbroker.CancelOutcome, error) {
 	rpcCtx, cancel := context.WithTimeout(ctx, a.client.cfg.RPCDeadline)
 	defer cancel()
 	r, err := a.client.rpc.CancelAuthorization(rpcCtx, &brokerv1.CancelAuthorizationRequest{Handle: a.handle, Authorization: authToWire(auth), BrokerIncarnation: a.incarnation})
@@ -201,9 +201,9 @@ func (a *clientAttachment) CancelAuthorization(ctx context.Context, auth session
 	return out, nil
 }
 
-type clientEnrollmentAttachment struct{ *clientAttachment }
+type clientEnrollmentSessionHandle struct{ *clientSessionHandle }
 
-func (a *clientEnrollmentAttachment) BeginWorkspaceEnrollment(ctx context.Context) (mcpbroker.WorkspaceEnrollmentPresentation, error) {
+func (a *clientEnrollmentSessionHandle) BeginWorkspaceEnrollment(ctx context.Context) (mcpbroker.WorkspaceEnrollmentPresentation, error) {
 	rpcCtx, cancel := context.WithTimeout(ctx, a.client.cfg.RPCDeadline)
 	defer cancel()
 	r, err := a.client.rpc.BeginWorkspaceEnrollment(rpcCtx, &brokerv1.BeginWorkspaceEnrollmentRequest{Handle: a.handle, BrokerIncarnation: a.incarnation})
@@ -220,13 +220,13 @@ func (a *clientEnrollmentAttachment) BeginWorkspaceEnrollment(ctx context.Contex
 	}
 	return out, nil
 }
-func (a *clientEnrollmentAttachment) ObserveWorkspaceEnrollment(ctx context.Context, ref mcpbroker.WorkspaceEnrollmentRef) (mcpbroker.WorkspaceEnrollmentResult, error) {
+func (a *clientEnrollmentSessionHandle) ObserveWorkspaceEnrollment(ctx context.Context, ref mcpbroker.WorkspaceEnrollmentRef) (mcpbroker.WorkspaceEnrollmentResult, error) {
 	return a.workspaceResult(ctx, ref, false)
 }
-func (a *clientEnrollmentAttachment) CancelWorkspaceEnrollment(ctx context.Context, ref mcpbroker.WorkspaceEnrollmentRef) (mcpbroker.WorkspaceEnrollmentResult, error) {
+func (a *clientEnrollmentSessionHandle) CancelWorkspaceEnrollment(ctx context.Context, ref mcpbroker.WorkspaceEnrollmentRef) (mcpbroker.WorkspaceEnrollmentResult, error) {
 	return a.workspaceResult(ctx, ref, true)
 }
-func (a *clientEnrollmentAttachment) workspaceResult(ctx context.Context, ref mcpbroker.WorkspaceEnrollmentRef, cancelOperation bool) (mcpbroker.WorkspaceEnrollmentResult, error) {
+func (a *clientEnrollmentSessionHandle) workspaceResult(ctx context.Context, ref mcpbroker.WorkspaceEnrollmentRef, cancelOperation bool) (mcpbroker.WorkspaceEnrollmentResult, error) {
 	rpcCtx, cancel := context.WithTimeout(ctx, a.client.cfg.RPCDeadline)
 	defer cancel()
 	var r workspaceResultResponse

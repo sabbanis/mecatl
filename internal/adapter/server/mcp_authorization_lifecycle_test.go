@@ -133,7 +133,7 @@ type lifecycleBroker struct {
 	attachErr  error
 }
 
-func (b *lifecycleBroker) AttachSession(context.Context, session.SessionID) (brokercontract.Attachment, brokercontract.AttachOutcome, error) {
+func (b *lifecycleBroker) AttachSession(context.Context, session.SessionID) (brokercontract.SessionHandle, brokercontract.AttachOutcome, error) {
 	if b.attachErr != nil {
 		return nil, "", b.attachErr
 	}

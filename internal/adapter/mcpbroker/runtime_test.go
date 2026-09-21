@@ -133,20 +133,20 @@ func newTestRuntime(t *testing.T) (*Runtime, *callRecorder) {
 	return runtime, recorder
 }
 
-func attach(t *testing.T, runtime *Runtime, id session.SessionID) (*Attachment, contract.AttachOutcome) {
+func attach(t *testing.T, runtime *Runtime, id session.SessionID) (*SessionHandle, contract.AttachOutcome) {
 	t.Helper()
 	neutral, outcome, err := runtime.AttachSession(t.Context(), id)
 	if err != nil {
 		t.Fatalf("AttachSession(%q): %v", id, err)
 	}
-	attachment, ok := neutral.(*Attachment)
+	attachment, ok := neutral.(*SessionHandle)
 	if !ok {
 		t.Fatalf("attachment type = %T", neutral)
 	}
 	return attachment, outcome
 }
 
-func toolByName(t *testing.T, attachment *Attachment, name string) tool.Tool {
+func toolByName(t *testing.T, attachment *SessionHandle, name string) tool.Tool {
 	t.Helper()
 	for _, candidate := range attachment.Tools() {
 		if candidate.Spec().Name == name {
@@ -157,7 +157,7 @@ func toolByName(t *testing.T, attachment *Attachment, name string) tool.Tool {
 	return nil
 }
 
-func TestCallMcpWithQueryBrokerSupport_Scenario1_BoundedAttachmentProjection(t *testing.T) {
+func TestCallMcpWithQueryBrokerSupport_Scenario1_BoundedSessionHandleProjection(t *testing.T) {
 	catalogue, err := Compile(anonymousConfig(), discoveredTools(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -193,7 +193,7 @@ func TestCallMcpWithQueryBrokerSupport_Scenario1_BoundedAttachmentProjection(t *
 	}
 }
 
-func TestCallMcpWithQueryBrokerSupport_Scenario1_AttachmentIsolationAndAuthorization(t *testing.T) {
+func TestCallMcpWithQueryBrokerSupport_Scenario1_SessionHandleIsolationAndAuthorization(t *testing.T) {
 	catalogue, err := Compile(anonymousConfig(), discoveredTools(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -355,7 +355,7 @@ func TestWrappersBindCanonicalSessionAndPrivateRoute(t *testing.T) {
 	}
 }
 
-func TestAttachmentCloseWaitIsContextAwareWithoutEarlyStateCleanup(t *testing.T) {
+func TestSessionHandleCloseWaitIsContextAwareWithoutEarlyStateCleanup(t *testing.T) {
 	catalogue, err := Compile(anonymousConfig(), discoveredTools(), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -532,7 +532,7 @@ func TestRuntimeCloseAndDrainUsesOneProcessDeadline(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, finish, err := attached.(*Attachment).beginOperation(context.Background())
+		_, finish, err := attached.(*SessionHandle).beginOperation(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
