@@ -112,6 +112,7 @@ This reference describes the declarations exported by `@stacklok-oss/mecatl-sdk`
 | [`PermissionAskEventPayload`](#api-permissionaskeventpayload-interface) | Interface |
 | [`PermissionAskResponder`](#api-permissionaskresponder-typealias) | Type alias |
 | [`PermissionVerdict`](#api-permissionverdict-typealias) | Type alias |
+| [`PermissionVerdict`](#api-permissionverdict-variable) | Variable |
 | [`PlanApprovalRequiredError`](#api-planapprovalrequirederror-class) | Class |
 | [`PlanApprovalResponder`](#api-planapprovalresponder-typealias) | Type alias |
 | [`PlanApprovalVerdict`](#api-planapprovalverdict-typealias) | Type alias |
@@ -129,6 +130,7 @@ This reference describes the declarations exported by `@stacklok-oss/mecatl-sdk`
 | [`RequestOptions`](#api-requestoptions-typealias) | Type alias |
 | [`ResultEventPayload`](#api-resulteventpayload-interface) | Interface |
 | [`RetryDisposition`](#api-retrydisposition-typealias) | Type alias |
+| [`RetryDisposition`](#api-retrydisposition-variable) | Variable |
 | [`Run`](#api-run-interface) | Interface |
 | [`RunAuthorizationRequiredError`](#api-runauthorizationrequirederror-class) | Class |
 | [`RunAuthorizationRequiredOutcome`](#api-runauthorizationrequiredoutcome-interface) | Interface |
@@ -183,6 +185,7 @@ This reference describes the declarations exported by `@stacklok-oss/mecatl-sdk`
 | [`SteerOutcomeEventPayload`](#api-steeroutcomeeventpayload-interface) | Interface |
 | [`Storage`](#api-storage-interface) | Interface |
 | [`StreamProgress`](#api-streamprogress-typealias) | Type alias |
+| [`StreamProgress`](#api-streamprogress-variable) | Variable |
 | [`SubagentEventPayload`](#api-subagenteventpayload-interface) | Interface |
 | [`SUPPORTED_API_MAJOR`](#api-supported-api-major-variable) | Variable |
 | [`Team`](#api-team-interface) | Interface |
@@ -3438,7 +3441,7 @@ Parameters:
 - `askId` (`string`): ID carried by the permission ask.
 - `verdict` (`PermissionVerdict`): Decision to apply to the pending ask.
 
-Returns: `Promise<void>`: A promise that resolves after the server accepts the verdict.
+Returns: `Promise<void>`: A promise that resolves after the verdict frame is handed to the active stream transport. This send-only API does not acknowledge server acceptance; use `Session.controls(runId).resolveAsk()` when an acknowledged control operation is required.
 
 Throws: `PermissionAskAlreadyResolvedError` when the ask is no longer pending.
 
@@ -3571,7 +3574,7 @@ Returns: `Promise<RunSteerCancellationAcknowledgement>`: Whether the server retr
 
 <Heading as="h4" id="api-runcontrols-resolveask-methodsignature"><code>RunControls.resolveAsk</code></Heading>
 
-Resolves one ordinary permission ask on this exact run. Root and surfaced-child permission asks are supported, including an ordinary ask restored from a persisted awaiting run. Plan-originated asks require `Session.resolvePlan()` and fail with `plan_resolution_required`. Unknown or already resolved asks fail with `ask_not_pending`.
+Resolves one ordinary permission ask on this exact run. Root and surfaced-child permission asks are supported, including an ordinary ask restored from a persisted awaiting run. Plan-originated asks require `Session.resolvePlan()` and fail with `plan_resolution_required`. Unknown or already resolved asks fail with `ask_not_pending`. Unlike the stream-local `Run.resolveAsk()` send-only operation, this control returns only after the server acknowledges acceptance.
 
 ```ts
 resolveAsk(askId: string, verdict: PermissionVerdict, requestOptions?: RequestOptions): Promise<void>;
@@ -6714,10 +6717,10 @@ export type PermissionAskResponder = (ask: PermissionAskEventPayload, signal: Ab
 
 <Heading as="h3" id="api-permissionverdict-typealias"><code>PermissionVerdict</code></Heading>
 
-A server permission verdict accepted by run.resolveAsk().
+One server permission verdict accepted by run.resolveAsk().
 
 ```ts
-export type PermissionVerdict = "allow_once" | "allow_always" | "deny";
+export type PermissionVerdict = (typeof PermissionVerdict)[keyof typeof PermissionVerdict];
 ```
 
 <Heading as="h3" id="api-planapprovalresponder-typealias"><code>PlanApprovalResponder</code></Heading>
@@ -6770,10 +6773,10 @@ export type RequestOptions = CallOptions;
 
 <Heading as="h3" id="api-retrydisposition-typealias"><code>RetryDisposition</code></Heading>
 
-Retry classification fields carried by model-retry and result payloads.
+One canonical retry-classification value.
 
 ```ts
-export type RetryDisposition = 0 | 1 | 2 | 3;
+export type RetryDisposition = (typeof RetryDisposition)[keyof typeof RetryDisposition];
 ```
 
 <Heading as="h3" id="api-runoutcome-typealias"><code>RunOutcome</code></Heading>
@@ -6834,10 +6837,10 @@ export type SessionMode = (typeof SessionMode)[keyof typeof SessionMode];
 
 <Heading as="h3" id="api-streamprogress-typealias"><code>StreamProgress</code></Heading>
 
-Stream-progress classification carried by model-retry and result payloads.
+One canonical stream-progress value.
 
 ```ts
-export type StreamProgress = 0 | 1 | 2 | 3 | 4;
+export type StreamProgress = (typeof StreamProgress)[keyof typeof StreamProgress];
 ```
 
 <Heading as="h3" id="api-teamevent-typealias"><code>TeamEvent</code></Heading>
@@ -6997,6 +7000,31 @@ Watch phases this SDK understands.
 MECATL_WATCH_PHASES: readonly ["gap", "live", "replay"]
 ```
 
+<Heading as="h3" id="api-permissionverdict-variable"><code>PermissionVerdict</code></Heading>
+
+Canonical server permission verdicts.
+
+```ts
+PermissionVerdict: {
+    readonly AllowOnce: "allow_once";
+    readonly AllowAlways: "allow_always";
+    readonly Deny: "deny";
+}
+```
+
+<Heading as="h3" id="api-retrydisposition-variable"><code>RetryDisposition</code></Heading>
+
+Canonical retry classifications carried by model-retry and result payloads.
+
+```ts
+RetryDisposition: {
+    readonly Unspecified: 0;
+    readonly Unknown: 1;
+    readonly Retryable: 2;
+    readonly Permanent: 3;
+}
+```
+
 <Heading as="h3" id="api-serverfeature-variable"><code>ServerFeature</code></Heading>
 
 Known server feature identifiers. Unknown identifiers remain observable.
@@ -7043,6 +7071,20 @@ SessionMode: {
     readonly Default: 1;
     readonly Plan: 2;
     readonly AcceptEdits: 3;
+}
+```
+
+<Heading as="h3" id="api-streamprogress-variable"><code>StreamProgress</code></Heading>
+
+Canonical stream-progress classifications carried by model-retry and result payloads.
+
+```ts
+StreamProgress: {
+    readonly Unspecified: 0;
+    readonly Unknown: 1;
+    readonly Precommit: 2;
+    readonly Visible: 3;
+    readonly Complete: 4;
 }
 ```
 
