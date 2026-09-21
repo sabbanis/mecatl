@@ -428,7 +428,7 @@ func TestMCPAuthorizationGRPCControlEOFDrainsContinuationWithoutCancellingIt(t *
 
 func TestMCPAuthorizationGRPCControlEOFCancelsStrandedPermissionContinuation(t *testing.T) {
 	followup := session.NewToolCall("followup-call", "protected", nil)
-	f := newLifecycleFixtureWithTurns(t, session.AuthorizationGranted, nil, time.Now, nil,
+	f := newLifecycleFixtureWithPolicyTurns(t, session.AuthorizationGranted, nil, time.Now, nil, transportAskPolicy{},
 		mockllm.ToolCallTurn(followup), mockllm.TextTurn("must not continue after a stranded ask"))
 	stream := &recheckAuthorizationStream{
 		ctx:         t.Context(),
@@ -455,7 +455,7 @@ func TestMCPAuthorizationGRPCControlEOFCancelsStrandedPermissionContinuation(t *
 
 func TestMCPAuthorizationGRPCControlEOFBeforeAskCancelsWhenContinuationLaterStrands(t *testing.T) {
 	followup := session.NewToolCall("followup-call", "protected", nil)
-	f := newLifecycleFixtureWithTurns(t, session.AuthorizationGranted, nil, time.Now, nil,
+	f := newLifecycleFixtureWithPolicyTurns(t, session.AuthorizationGranted, nil, time.Now, nil, transportAskPolicy{},
 		mockllm.ToolCallTurn(followup), mockllm.TextTurn("must not continue after a stranded ask"))
 	recvErred := make(chan struct{})
 	releaseWork := make(chan struct{})

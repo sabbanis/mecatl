@@ -269,14 +269,19 @@ func newLifecycleFixtureWithTurns(t *testing.T, status session.AuthorizationStat
 }
 
 func newLifecycleFixtureWithMode(t *testing.T, status session.AuthorizationStatus, attachErr error, now func() time.Time, timer AuthorizationTimerFactory, mode session.PermissionMode, turns ...mockllm.Turn) lifecycleFixture {
-	return newLifecycleFixtureConfigured(t, status, attachErr, now, timer, mode, false, turns...)
+	return newLifecycleFixtureConfigured(t, status, attachErr, now, timer, mode, false, lifecycleAllowPolicy{}, turns...)
 }
 
 func newInteractiveLifecycleFixtureWithMode(t *testing.T, status session.AuthorizationStatus, attachErr error, now func() time.Time, timer AuthorizationTimerFactory, mode session.PermissionMode, turns ...mockllm.Turn) lifecycleFixture {
-	return newLifecycleFixtureConfigured(t, status, attachErr, now, timer, mode, true, turns...)
+	return newLifecycleFixtureConfigured(t, status, attachErr, now, timer, mode, true, lifecycleAllowPolicy{}, turns...)
 }
 
-func newLifecycleFixtureConfigured(t *testing.T, status session.AuthorizationStatus, attachErr error, now func() time.Time, timer AuthorizationTimerFactory, mode session.PermissionMode, interactive bool, turns ...mockllm.Turn) lifecycleFixture {
+func newLifecycleFixtureWithPolicyTurns(t *testing.T, status session.AuthorizationStatus, attachErr error, now func() time.Time, timer AuthorizationTimerFactory, policy port.PermissionPolicy, turns ...mockllm.Turn) lifecycleFixture {
+	t.Helper()
+	return newLifecycleFixtureConfigured(t, status, attachErr, now, timer, session.ModeDefault, false, policy, turns...)
+}
+
+func newLifecycleFixtureConfigured(t *testing.T, status session.AuthorizationStatus, attachErr error, now func() time.Time, timer AuthorizationTimerFactory, mode session.PermissionMode, interactive bool, policy port.PermissionPolicy, turns ...mockllm.Turn) lifecycleFixture {
 	t.Helper()
 	store := memstore.New()
 	mutation := &lifecycleTool{}
@@ -287,7 +292,7 @@ func newLifecycleFixtureConfigured(t *testing.T, status session.AuthorizationSta
 		for _, one := range tools {
 			catalog.MustRegister(one)
 		}
-		return agent.NewEngine(agent.Deps{LLM: mockllm.New(turns...), Catalog: catalog, Policy: lifecycleAllowPolicy{}, Store: store, Model: "mock", Interactive: interactive})
+		return agent.NewEngine(agent.Deps{LLM: mockllm.New(turns...), Catalog: catalog, Policy: policy, Store: store, Model: "mock", Interactive: interactive})
 	}
 	shared := buildEngine(nil)
 	var builtTools [][]string

@@ -117,7 +117,7 @@ func (e *Engine) dispatch(ctx context.Context, r *Run, sess *session.Session, en
 		if !readBatchable(t, known, c) {
 			res, park, cancelled := e.runOne(ctx, r, sess, env, turnIdx, c, t, known, enqueue)
 			if cancelled {
-				return nil, nil, true
+				return completedDispatchResults(calls[:i], results), nil, true
 			}
 			if park != nil {
 				park.deferred = append([]session.ToolCall(nil), calls[i+1:]...)
@@ -152,7 +152,7 @@ func (e *Engine) dispatch(ctx context.Context, r *Run, sess *session.Session, en
 				e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(result)})
 				results[remaining.ID] = result
 			}
-			return orderedDispatchResults(calls, results), nil, true
+			return completedDispatchResults(calls, results), nil, true
 		}
 		i = j
 	}
@@ -163,6 +163,16 @@ func (e *Engine) dispatch(ctx context.Context, r *Run, sess *session.Session, en
 		ordered[k] = results[c.ID]
 	}
 	return ordered, nil, false
+}
+
+func completedDispatchResults(calls []session.ToolCall, results map[session.ToolCallID]session.ToolResult) []session.ToolResult {
+	ordered := make([]session.ToolResult, 0, len(results))
+	for _, call := range calls {
+		if result, ok := results[call.ID]; ok {
+			ordered = append(ordered, result)
+		}
+	}
+	return ordered
 }
 
 func orderedDispatchResults(calls []session.ToolCall, results map[session.ToolCallID]session.ToolResult) []session.ToolResult {
