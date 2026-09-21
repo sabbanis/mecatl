@@ -1,7 +1,8 @@
 # Mecatl
 
 <p align="center">
-  <img src="./assets/mecatito.png" alt="Mecatito, the Mecatl mascot" width="260">
+  <img src="./assets/mecatl-hero.png" width="800"
+       alt="A traditional harness couples its UI, runtime, and models into one sealed vendor stack. Mecatl keeps the engine loop constant and lets you choose all three: any client, anywhere it runs, any model provider. Mecatito, the Mecatl mascot, leans over the top-right corner.">
 </p>
 
 **Mecatl is an open source, cloud-native agent harness.** It provides
@@ -48,50 +49,16 @@ Read the [Mecatl documentation](https://mecatl.dev/docs) to get started.
 
 ## Install
 
-The following methods install the two executables most people run — `mecatui`,
-the terminal client, and `mecated`, the server:
-
-<details>
-<summary><b>Homebrew</b></summary>
+Install `mecatui`, the terminal client, and `mecated`, the server, with
+Homebrew:
 
 ```sh
 brew install stacklok/tap/mecatl
 ```
 
-</details>
-
-<details>
-<summary><b>Conda</b></summary>
-
-```sh
-conda install -c conda-forge mecatl
-```
-
-</details>
-<details>
-<summary><b>Mamba</b></summary>
-
-```sh
-mamba install -c conda-forge mecatl
-```
-
-</details>
-
-<details>
-<summary><b>Pixi</b></summary>
-
-```sh
-pixi add mecatl
-```
-
-</details>
-
-Every release also attaches macOS and Linux archives (amd64 and arm64) with
-checksums, cosign signature bundles, SBOMs, and build provenance. See
-[Install Mecatl](https://mecatl.dev/docs/install) for archive verification, the
-container images, and the from-source path. `mecademo`, `mecatequi`, and
-`mecak8s` are not in the formulae — build them from a checkout with
-`task build`.
+[Install and verify Mecatl](https://mecatl.dev/docs/install) covers Conda-forge,
+release archives, verification, and source builds. Build `mecademo`,
+`mecatequi`, and `mecak8s` from a checkout with `task build`.
 
 ## Run agents as production workloads
 
@@ -109,6 +76,11 @@ and provide the backing services and execution environment yourself. See
 for the runtime guarantees and boundaries.
 
 ## Open and modular by design
+
+<p align="center">
+  <img src="./assets/mecatl-architecture.png" width="800"
+       alt="The Mecatl engine loop sits at the center, providing tool dispatch, permissions, hooks, delegation, compaction, and events. Around it, each layer stays yours to choose: any client, any runtime, any model provider, any MCP server or gateway, and a state store that lives outside the process.">
+</p>
 
 Mecatl keeps the agent loop independent of the provider and infrastructure
 behind it. Reference adapters support offline development, while integrations
