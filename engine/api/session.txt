@@ -88,6 +88,9 @@
     method func (Usage).CacheHitRate() float64
     method func (Usage).TotalTokens() int
     method func (WorkspaceEnrollmentID).Valid() bool
+const ActivityActive ActivityState = "active"
+const ActivityDraft ActivityState = "draft"
+const ActivityUnknown ActivityState = ""
 const ApprovalOriginHookGuardrail ApprovalOrigin = "hook_guardrail"
 const ApprovalOriginPermission ApprovalOrigin = "permission"
 const ApprovalOriginPlan ApprovalOrigin = "plan"
@@ -169,6 +172,8 @@ const MediaImage MediaKind = "image"
 const ModeAccept PermissionMode = "acceptEdits"
 const ModeDefault PermissionMode = "default"
 const ModePlan PermissionMode = "plan"
+const NoProgressExtractiveNudgeText untyped string = "Stop investigating now and do not run any more commands or tools. Using only the information you have already gathered, write your best final answer to the original task as a direct message now, even if it is incomplete or uncertain — note any gaps briefly. Do not plan further steps; deliver what you have."
+const NoProgressNudgeText untyped string = "Please continue. Make concrete progress on the task using your tools, or — if you are blocked or believe the task is complete — say so explicitly in a short message."
 const ParallelBranchEnd ParallelEventKind = "branch_end"
 const ParallelBranchStart ParallelEventKind = "branch_start"
 const ParallelBranchTool ParallelEventKind = "branch_tool"
@@ -259,6 +264,7 @@ const VerdictDeny ApprovalVerdict = 0
 const VerdictStringAllowAlways untyped string = "allow_always"
 const VerdictStringAllowOnce untyped string = "allow_once"
 const VerdictStringDeny untyped string = "deny"
+func ActivityOf(messages []Message) ActivityState
 func CanonicalNetworkAttempt(in NetworkAttemptPayload, id SessionID, runSerial int64, turn int) (NetworkAttemptPayload, bool)
 func ClampTitle(s string) string
 func CloneMessages(msgs []Message) []Message
@@ -305,6 +311,7 @@ func RepairToolResult(r ToolResult) ToolResult
 func StripProviderState(messages []Message) []Message
 func ToValidUTF8(s string) string
 func ToolBlockText(b Content) string
+func ValidActivity(a ActivityState) ActivityState
 func ValidAuthorizationID(value string) bool
 func ValidWorkspaceEnrollmentToolNames(names []string) bool
 func ValidateJSON(schema json.RawMessage, payload json.RawMessage) error
@@ -316,6 +323,7 @@ func ValidateToolPairing(msgs []Message) error
 func ValidateToolResultParts(parts []Content) error
 func VerdictString(v ApprovalVerdict) string
 func WithPrincipal(ctx context.Context, p *Principal) context.Context
+type ActivityState string
 type ApprovalOrigin string
 type ApprovalPayload struct{AskID string; Verdict string; Tool string; Call ToolCallID; AllowAlways bool; Origin ApprovalOrigin}
 type ApprovalVerdict int
@@ -356,7 +364,7 @@ type PendingWorkspaceEnrollment struct{ID WorkspaceEnrollmentID; RequiredService
 type PermissionMode string
 type PlacementMetadata struct{Kind string "json:\"kind,omitempty\""; Label string "json:\"label,omitempty\""; Branch string "json:\"branch,omitempty\""; Revision string "json:\"revision,omitempty\""}
 type Principal struct{Issuer string; Subject string; GrantType GrantType; Name string}
-type RequestManifestPayload struct{Provider string "json:\"provider,omitempty\""; Model string "json:\"model,omitempty\""; ReasoningEffort string "json:\"reasoning_effort,omitempty\""; ContextWindow int "json:\"context_window,omitempty\""; ToolNames []string "json:\"tool_names\""; ToolDecisions []RequestToolDecision "json:\"tool_decisions\""; MessageCount int "json:\"message_count\""; MessageBytes int "json:\"message_bytes\""; Prompt []RequestPromptComponent "json:\"prompt\""}
+type RequestManifestPayload struct{Provider string "json:\"provider,omitempty\""; Model string "json:\"model,omitempty\""; ReasoningEffort string "json:\"reasoning_effort,omitempty\""; ContextWindow int "json:\"context_window,omitempty\""; ToolNames []string "json:\"tool_names\""; ToolDecisions []RequestToolDecision "json:\"tool_decisions\""; AdvertisedToolSchemaBytes int "json:\"advertised_tool_schema_bytes\""; MessageCount int "json:\"message_count\""; MessageBytes int "json:\"message_bytes\""; Prompt []RequestPromptComponent "json:\"prompt\""}
 type RequestPromptComponent struct{Kind string "json:\"kind\""; Provenance string "json:\"provenance\""; Bytes int "json:\"bytes\""}
 type RequestToolDecision struct{Name string "json:\"name\""; Source string "json:\"source\""; Decision string "json:\"decision\""}
 type ResultPayload struct{Stop StopReason; Text string; Usage Usage; Error string; Permanent bool; Disposition RetryDisposition; Progress StreamProgress}
@@ -390,7 +398,7 @@ type Turn struct{Index int; Assistant Message; Results []ToolResult; Usage Usage
 type TurnEndPayload struct{Usage Usage; Estimated bool; DurationMs int64; TTFTMs int64; InterTokenMeanMs int64; InterTokenMaxMs int64}
 type Usage struct{InputTokens int; OutputTokens int; CacheReadTokens int; CacheWriteTokens int; ReasoningTokens int}
 type UsageKind string
-type UserPromptPayload struct{Text string; Parts []Content}
+type UserPromptPayload struct{Text string; Parts []Content; Synthetic bool}
 type WorkspaceEnrollmentID string
 var ErrIllegalTransition error
 var ErrInvalidContent error
