@@ -324,11 +324,17 @@ Failure before kubeconfig creation also fails cleanup without deleting a cluster
 Cleanup is bounded best effort: hard cancellation or runner loss can prevent it.
 Hosted-runner disposal is the fallback, not evidence that cleanup succeeded.
 
-Artifacts are retained for seven days: only a size-bounded `live-summary.json`
-when available and a sanitized `qualification-status.txt`. PKI, kubeconfigs,
-Secret receipts, Helm values, full scratch directories, and transcripts are never
-uploaded by the native job. Check both live and cleanup outcomes before treating
-the recorded commit as qualified.
+Artifacts are retained for seven days: a size-bounded `live-summary.json` when
+available, a sanitized `qualification-status.txt`, and `production-diagnostics.jsonl`
+when production fails and owned-cluster validation succeeds. Cleanup collects the
+production diagnostics before deleting the cluster, with a 60-second bound and
+10-second API request deadlines. The 1 MiB diagnostic file contains only known
+condition/reason classes, deletion and UID-match booleans, known finalizers, Pod
+phases, container exit reasons, lease-expiry status, quota key names, and event
+reason counts. It remains available if cluster deletion subsequently fails.
+PKI, kubeconfigs, Secret receipts, Helm values, full scratch directories, raw
+resource manifests, and transcripts are never uploaded by the native job. Check
+both live and cleanup outcomes before treating the recorded commit as qualified.
 
 ## Limitations
 

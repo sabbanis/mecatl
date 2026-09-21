@@ -17,6 +17,8 @@ import (
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/stacklok/mecatl/internal/adapter/executionclient"
 	"github.com/stacklok/mecatl/internal/executionenv"
@@ -951,7 +953,7 @@ func TestKindExecutionProductionHolderLossFencesActiveOperation(t *testing.T) {
 
 	commandDone := make(chan error, 1)
 	go func() {
-		_, commandErr := holderClient.StartCommand(ctx, executionenv.CommandStartRequest{Context: rc, Command: `nohup sh -c 'sleep 45; kill 1' >/dev/null 2>&1 & i=0; trap '' HUP TERM; while [ $i -lt 90 ]; do i=$((i+1)); printf '%s\n' "$i" > holder-loss-nonce; sleep 1; done`, TimeoutMillis: 110000})
+		_, commandErr := holderClient.StartCommand(ctx, executionenv.CommandStartRequest{Context: rc, Command: `i=0; trap '' HUP TERM; while [ $i -lt 90 ]; do i=$((i+1)); printf '%s\n' "$i" > holder-loss-nonce; sleep 1; done`, TimeoutMillis: 110000})
 		commandDone <- commandErr
 	}()
 	waitActiveOperationOrCommandError(t, ctx, kubeconfig, attached.Environment.ID, commandDone)
@@ -977,7 +979,27 @@ func TestKindExecutionProductionHolderLossFencesActiveOperation(t *testing.T) {
 		// durable operation identity above, not RPC completion, is the proof.
 	}
 
-	waitExecutorTerminal(t, ctx, kubeconfig, attached.Environment.ID)
+	// Exec disconnect cancellation kills the command process group and reaped
+	// descendants, so a child timer cannot reliably terminate PID 1. Only after
+	// proving unresolved ownership above, ask the kubelet to stop this exact Pod.
+	contextName := os.Getenv("MECATL_KUBE_CONTEXT")
+	if contextName == "" {
+		t.Fatal("explicit fixture Kubernetes context required")
+	}
+	config, err := clientcmd.NewNonInteractiveDeferredLoadingClientConfig(&clientcmd.ClientConfigLoadingRules{ExplicitPath: kubeconfig}, &clientcmd.ConfigOverrides{CurrentContext: contextName}).ClientConfig()
+	if err != nil {
+		t.Fatal("load explicit fixture Kubernetes configuration")
+	}
+	config.Timeout = 15 * time.Second
+	kube, err := kubernetes.NewForConfig(config)
+	if err != nil {
+		t.Fatal("construct fixture Kubernetes client")
+	}
+	envUID := kubeValue(t, ctx, kubeconfig, "get", "executionenvironment", attached.Environment.ID, "-n", namespace, "-o", "jsonpath={.metadata.uid}")
+	if err := terminateOwnedExecutor(ctx, kube, attached.Environment.ID, envUID, initial.PodUID); err != nil {
+		t.Fatal("exact owned executor termination request failed")
+	}
+	waitExecutorTerminal(ctx, t, kubeconfig, attached.Environment.ID, initial.PodUID)
 	recovery := executionenv.RetireEnvironmentRequest{Environment: attached.Environment, Owner: owner, ExpectedEpoch: initial.Epoch, ExpectedPodUID: initial.PodUID, ExpectedPVCUID: initial.PVCUID, OperationID: "recover-holder-loss"}
 	if err := survivingClient.RecoverEnvironment(ctx, recovery); err != nil {
 		t.Fatalf("recover exact terminal executor: %v", err)
@@ -1000,17 +1022,14 @@ func TestKindExecutionProductionHolderLossFencesActiveOperation(t *testing.T) {
 	release()
 }
 
-func waitExecutorTerminal(t *testing.T, ctx context.Context, kubeconfig, environmentID string) {
+func waitExecutorTerminal(ctx context.Context, t *testing.T, kubeconfig, environmentID, podUID string) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Minute)
 	for time.Now().Before(deadline) {
 		var pods corev1.PodList
 		raw := runKubectl(t, ctx, kubeconfig, "get", "pods", "-n", namespace, "-l", "execution.mecatl.dev/environment="+environmentID, "-o", "json")
-		if json.Unmarshal(raw, &pods) == nil && len(pods.Items) == 1 && (pods.Items[0].Status.Phase == corev1.PodFailed || pods.Items[0].Status.Phase == corev1.PodSucceeded) {
-			terminated := len(pods.Items[0].Status.ContainerStatuses) == 1 && pods.Items[0].Status.ContainerStatuses[0].State.Terminated != nil
-			if terminated {
-				return
-			}
+		if json.Unmarshal(raw, &pods) == nil && len(pods.Items) == 1 && executorTerminalProof(&pods.Items[0], podUID) {
+			return
 		}
 		time.Sleep(time.Second)
 	}
@@ -1462,7 +1481,18 @@ func executionReferences(t *testing.T, ctx context.Context, kubeconfig, environm
 func TestKindExecutionProductionFailureArtifactBoundary(t *testing.T) {
 	state, kubeconfig, ctx, cancel := requireProduction(t)
 	defer cancel()
-	artifact := runKubectl(t, ctx, kubeconfig, "get", "events", "-n", namespace, "-o", "custom-columns=OBJECT:.involvedObject.name,REASON:.reason", "--no-headers")
+	ctx, stop := context.WithTimeout(ctx, time.Minute)
+	defer stop()
+	output := filepath.Join(state, fmt.Sprintf("artifact-boundary-%d.jsonl", time.Now().UnixNano()))
+	cmd := exec.CommandContext(ctx, "sh", "../../deploy/mecatl-execution-kind/collect-failure.sh", kubeconfig, os.Getenv("MECATL_KUBE_CONTEXT"), output)
+	cmd.Env = cleanEnv()
+	if err := cmd.Run(); err != nil {
+		t.Fatal("bounded failure collector failed")
+	}
+	artifact, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal("sanitized failure artifact unavailable")
+	}
 	if len(artifact) > 1<<20 {
 		t.Fatal("sanitized failure artifact exceeds one MiB")
 	}
@@ -1470,8 +1500,5 @@ func TestKindExecutionProductionFailureArtifactBoundary(t *testing.T) {
 		if strings.Contains(string(artifact), forbidden) {
 			t.Fatalf("sanitized failure artifact contains forbidden class %q", forbidden)
 		}
-	}
-	if err := os.WriteFile(filepath.Join(state, "production-failure-artifact.txt"), artifact, 0o600); err != nil {
-		t.Fatal(err)
 	}
 }

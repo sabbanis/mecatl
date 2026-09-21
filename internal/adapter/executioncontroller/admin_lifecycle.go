@@ -295,7 +295,7 @@ func (s *Store) DeleteRetiredEnvironment(ctx context.Context, q adminLifecycleRe
 			return &executionenv.Error{Code: executionenv.CodeConflict, Message: "retained workspace identity changed"}
 		}
 		if existing, found, _ := unstructured.NestedMap(o.Object, "status", "lifecycleOperation"); found {
-			if text(existing, "id") == q.OperationID && text(existing, "type") == "DeleteRetiredEnvironment" {
+			if text(existing, "id") == q.OperationID && text(existing, "type") == deleteRetiredEnvironment {
 				return nil
 			}
 			return &executionenv.Error{Code: executionenv.CodeConflict, Message: "another lifecycle operation is active"}
@@ -304,7 +304,7 @@ func (s *Store) DeleteRetiredEnvironment(ctx context.Context, q adminLifecycleRe
 		if err != nil || len(refs) != 0 || textNested(o.Object, "status", "activeRun", "claimID") != "" || textNested(o.Object, "status", "activeOperation", "id") != "" || !conditionTrue(o, "Retired") || !conditionTrue(o, "ExecutorTerminated") {
 			return &executionenv.Error{Code: executionenv.CodeConflict, Message: "environment is not safely retained and unreferenced"}
 		}
-		return unstructured.SetNestedMap(o.Object, map[string]any{"id": q.OperationID, "type": "DeleteRetiredEnvironment", "phase": "DeletingPVC", "expectedPVCUID": q.ExpectedPVCUID, "createdAt": s.now().Format(time.RFC3339Nano)}, "status", "lifecycleOperation")
+		return unstructured.SetNestedMap(o.Object, map[string]any{"id": q.OperationID, "type": deleteRetiredEnvironment, "phase": "DeletingPVC", "expectedPVCUID": q.ExpectedPVCUID, "createdAt": s.now().Format(time.RFC3339Nano)}, "status", "lifecycleOperation")
 	})
 }
 

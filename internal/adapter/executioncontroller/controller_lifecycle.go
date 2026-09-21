@@ -13,6 +13,8 @@ import (
 	"github.com/stacklok/mecatl/internal/executionenv"
 )
 
+const deleteRetiredEnvironment = "DeleteRetiredEnvironment"
+
 func (r *Reconciler) reconcileLifecycle(ctx context.Context, env *unstructured.Unstructured) error { //nolint:gocyclo // Durable phases are deliberately explicit.
 	op, found, err := unstructured.NestedMap(env.Object, "status", "lifecycleOperation")
 	if err != nil || !found {
@@ -30,7 +32,7 @@ func (r *Reconciler) reconcileLifecycle(ctx context.Context, env *unstructured.U
 	if phase == "CreatingReplacement" {
 		podIdentityMatches = textNested(env.Object, "status", "pod", "uid") == "" && proofMatches
 	}
-	if kind == "DeleteRetiredEnvironment" {
+	if kind == deleteRetiredEnvironment {
 		return r.reconcileRetainedDelete(ctx, env, op, pvcName, pvcUID)
 	}
 	epoch := intNested(op, "expectedEpoch")
@@ -230,11 +232,14 @@ func (r *Reconciler) reconcileRetainedDelete(ctx context.Context, env *unstructu
 	}
 	res := r.dynamic.Resource(ExecutionEnvironmentGVR).Namespace(r.namespace)
 	current, err := res.Get(ctx, env.GetName(), metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
 	if err != nil {
 		return err
 	}
 	currentOp, found, _ := unstructured.NestedMap(current.Object, "status", "lifecycleOperation")
-	if !found || text(currentOp, "id") != text(op, "id") || text(currentOp, "type") != text(op, "type") || text(currentOp, "phase") != "ReleasingSlot" || !runtimeObservationMatches(current, env) {
+	if current.GetUID() != env.GetUID() || !found || text(currentOp, "id") != text(op, "id") || text(currentOp, "type") != text(op, "type") || text(currentOp, "phase") != "ReleasingSlot" || !runtimeObservationMatches(current, env) {
 		return lifecycleConflict()
 	}
 	if err := releaseProfileSlot(ctx, r.kube, r.namespace, textNested(current.Object, "spec", "profile"), current.GetName()); err != nil {
@@ -245,8 +250,8 @@ func (r *Reconciler) reconcileRetainedDelete(ctx context.Context, env *unstructu
 	if err != nil {
 		return err
 	}
-	uid := updated.GetUID()
-	if err := res.Delete(ctx, updated.GetName(), metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid}}); err != nil && !apierrors.IsNotFound(err) {
+	uid, version := updated.GetUID(), updated.GetResourceVersion()
+	if err := res.Delete(ctx, updated.GetName(), metav1.DeleteOptions{Preconditions: &metav1.Preconditions{UID: &uid, ResourceVersion: &version}}); err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
 	return nil

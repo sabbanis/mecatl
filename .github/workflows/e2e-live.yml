@@ -409,6 +409,13 @@ jobs:
           test "$(stat -c '%a' "$kubeconfig")" = 600
           test "$(kubectl --kubeconfig "$kubeconfig" --context "$context" config current-context)" = "$context"
           test "$(docker inspect "${cluster}-control-plane" --format '{{index .Config.Labels "io.x-k8s.kind.cluster"}}')" = "$cluster"
+          if [ "$PRODUCTION_OUTCOME" != success ]; then
+            # Collect before deletion, independently of whether cleanup succeeds.
+            # The helper emits closed-vocabulary JSON only, capped at 1 MiB.
+            timeout --kill-after=5s 60s sh ./deploy/mecatl-execution-kind/collect-failure.sh \
+              "$kubeconfig" "$context" "$NATIVE_CI_DIR/production-diagnostics.jsonl" \
+              || echo '::warning::Bounded production diagnostics incomplete'
+          fi
           kind delete cluster --name "$cluster"
           clusters=$(kind get clusters)
           if printf '%s\n' "$clusters" | grep -Fx -- "$cluster"; then exit 1; fi
@@ -442,6 +449,7 @@ jobs:
           path: |
             ${{ env.NATIVE_CI_DIR }}/live-summary.json
             ${{ env.NATIVE_CI_DIR }}/qualification-status.txt
+            ${{ env.NATIVE_CI_DIR }}/production-diagnostics.jsonl
           include-hidden-files: true
           retention-days: 7
           if-no-files-found: error

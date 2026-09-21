@@ -55,10 +55,8 @@ if [ "${MECATL_EXECUTION_QUAL_CI:-}" = 1 ]; then
     status=$?
     artifact="$state/production-failure-artifact.txt"
     if [ "$status" -ne 0 ]; then
-      kubectl --kubeconfig "$kubeconfig" --context "$context" get events -n execution-qualification \
-        -o 'custom-columns=OBJECT:.involvedObject.name,REASON:.reason' --no-headers >"$artifact" 2>/dev/null || printf 'qualification_setup_failed\n' >"$artifact"
-      head -c 1048576 "$artifact" >"$artifact.bounded"
-      mv "$artifact.bounded" "$artifact"
+      timeout --kill-after=5s 60s sh "$root/deploy/mecatl-execution-kind/collect-failure.sh" \
+        "$kubeconfig" "$context" "$artifact" || printf 'qualification_diagnostics_incomplete\n' >&2
     fi
     kind delete cluster --name "$cluster"
     return "$status"

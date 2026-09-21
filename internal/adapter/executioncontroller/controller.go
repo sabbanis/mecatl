@@ -219,6 +219,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, name string) error {
 	if !ok || p.Digest != textNested(env.Object, "spec", "profileDigest") {
 		return r.setCondition(ctx, env, "Ready", false, "InvalidProfile", "configured profile is unavailable or changed")
 	}
+	// The admitted durable delete owns finalization, including after DELETE has
+	// set deletionTimestamp. A peer must not re-arm the generic finalizer.
+	if textNested(env.Object, "status", "lifecycleOperation", "type") == deleteRetiredEnvironment {
+		return r.reconcileLifecycle(ctx, env)
+	}
 	if env.GetDeletionTimestamp() != nil {
 		return r.reconcileDeletion(ctx, res, env)
 	}

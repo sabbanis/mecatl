@@ -4,7 +4,9 @@ package executioncontroller
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -63,6 +65,10 @@ func SeedLegacyMigrationFixture(ctx context.Context, d dynamic.Interface, kube k
 	return LegacyMigrationSeed{Environment: recognized.ref, Owner: owner, Binding: "legacy-migration-binding", PodUID: recognized.podUID, PVCUID: recognized.pvcUID, Malformed: malformed.ref, MalformedPodUID: malformed.podUID, MalformedPVCUID: malformed.pvcUID, Insecure: insecure.ref, InsecurePodUID: insecure.podUID, InsecurePVCUID: insecure.pvcUID}, nil
 }
 
+// Kubernetes defaults resource-quota usage resync to five minutes. Discovery of
+// a new CRD need not enqueue a quota that has not accounted for that resource.
+const legacyQuotaWait = 6 * time.Minute
+
 type seededLegacyEnvironment struct {
 	ref            executionenv.EnvironmentRef
 	podUID, pvcUID string
@@ -71,23 +77,35 @@ type seededLegacyEnvironment struct {
 func seedOneLegacyEnvironment(ctx context.Context, d dynamic.Interface, kube kubernetes.Interface, namespace string, profile resolvedProfile, owner executionenv.Owner, client, name, binding string, references []any, insecure bool) (seededLegacyEnvironment, error) {
 	// Deployment readiness does not imply that quota admission has initialized
 	// accounting, especially for the freshly installed custom resource.
-	if err := wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 2*time.Minute, true, func(ctx context.Context) (bool, error) {
+	started := time.Now()
+	var missing []string
+	if err := wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, legacyQuotaWait, true, func(ctx context.Context) (bool, error) {
 		quota, err := kube.CoreV1().ResourceQuotas(namespace).Get(ctx, "mecatl-execution", metav1.GetOptions{})
 		if err != nil {
 			return false, err
 		}
+		missing = nil
+		ready := true
 		for name, configured := range quota.Spec.Hard {
-			hard, ok := quota.Status.Hard[name]
-			if !ok || hard.Cmp(configured) != 0 {
-				return false, nil
-			}
-			if _, ok := quota.Status.Used[name]; !ok {
-				return false, nil
+			hard, hasHard := quota.Status.Hard[name]
+			_, hasUsed := quota.Status.Used[name]
+			if !hasHard || hard.Cmp(configured) != 0 || !hasUsed {
+				ready = false
+				switch name {
+				case "pods", "persistentvolumeclaims", "count/executionenvironments.execution.mecatl.dev", "requests.cpu", "requests.memory", "requests.storage", "requests.ephemeral-storage", "limits.cpu", "limits.memory", "limits.ephemeral-storage":
+					missing = append(missing, string(name))
+				}
 			}
 		}
-		return true, nil
+		return ready, nil
 	}); err != nil {
-		return seededLegacyEnvironment{}, fmt.Errorf("wait for legacy fixture quota accounting: %w", err)
+		if errors.Is(err, context.DeadlineExceeded) {
+			err = context.DeadlineExceeded
+		} else if errors.Is(err, context.Canceled) {
+			err = context.Canceled
+		}
+		slices.Sort(missing)
+		return seededLegacyEnvironment{}, fmt.Errorf("wait for legacy fixture quota accounting: missing_or_mismatched_keys=%v elapsed=%s: %w", missing, time.Since(started).Round(time.Millisecond), err)
 	}
 	revision, err := randomID()
 	if err != nil {

@@ -5,6 +5,7 @@ package executioncontroller
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,10 +22,28 @@ import (
 	"github.com/stacklok/mecatl/internal/executionenv"
 )
 
+func TestLegacyQuotaWaitCoversDefaultControllerResync(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	kube := kubefake.NewClientset()
+	kube.PrependReactor("get", "resourcequotas", func(ktesting.Action) (bool, runtime.Object, error) {
+		cancel()
+		return true, nil, context.Canceled
+	})
+	if legacyQuotaWait < 6*time.Minute {
+		t.Fatal("fixture must cover the five-minute quota resync plus margin")
+	}
+	d := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
+	_, err := seedOneLegacyEnvironment(ctx, d, kube, "test", resolvedProfile{}, executionenv.Owner{}, "client", "legacy", "binding", nil, false)
+	if !errors.Is(err, context.Canceled) || len(d.Actions()) != 0 {
+		t.Fatal("cancellation must stop before creating fixtures")
+	}
+}
+
 func TestLegacyFixtureWaitsForQuotaAccountingBeforeCreate(t *testing.T) {
 	for _, mode := range []string{"delayed", "timeout", "cancel", "forbidden"} {
 		t.Run(mode, func(t *testing.T) {
-			quota := &corev1.ResourceQuota{ObjectMeta: metav1.ObjectMeta{Name: "mecatl-execution", Namespace: "test"}, Spec: corev1.ResourceQuotaSpec{Hard: corev1.ResourceList{corev1.ResourceName("count/executionenvironments.execution.mecatl.dev"): resource.MustParse("10"), corev1.ResourcePods: resource.MustParse("10")}}}
+			quota := &corev1.ResourceQuota{ObjectMeta: metav1.ObjectMeta{Name: "mecatl-execution", Namespace: "test"}, Spec: corev1.ResourceQuotaSpec{Hard: corev1.ResourceList{corev1.ResourceName("count/executionenvironments.execution.mecatl.dev"): resource.MustParse("10"), corev1.ResourcePods: resource.MustParse("10"), corev1.ResourceName("private-quota-key"): resource.MustParse("12345")}}}
 			kube := kubefake.NewClientset()
 			reads, creates := 0, 0
 			ctx, cancel := context.WithTimeout(context.Background(), 350*time.Millisecond)
@@ -37,6 +56,9 @@ func TestLegacyFixtureWaitsForQuotaAccountingBeforeCreate(t *testing.T) {
 				// Partially initialized status must not pass: all configured resources matter.
 				quota.Status.Hard = quota.Spec.Hard.DeepCopy()
 				quota.Status.Used = corev1.ResourceList{corev1.ResourcePods: resource.MustParse("0")}
+				if mode == "timeout" {
+					quota.Status.Hard[corev1.ResourcePods] = resource.MustParse("20")
+				}
 				if mode == "delayed" && reads >= 2 {
 					quota.Status.Used = quota.Spec.Hard.DeepCopy()
 				}
@@ -66,6 +88,12 @@ func TestLegacyFixtureWaitsForQuotaAccountingBeforeCreate(t *testing.T) {
 			}
 			switch mode {
 			case "timeout":
+				if strings.Contains(err.Error(), "private-quota-key") || strings.Contains(err.Error(), "12345") || !strings.Contains(err.Error(), "pods") {
+					t.Fatalf("quota diagnostics lost mismatch or leaked data: %v", err)
+				}
+				if !strings.Contains(err.Error(), "count/executionenvironments.execution.mecatl.dev") || !strings.Contains(err.Error(), "elapsed=") {
+					t.Fatalf("missing bounded quota diagnostic: %v", err)
+				}
 				if !errors.Is(err, context.DeadlineExceeded) {
 					t.Fatal(err)
 				}
