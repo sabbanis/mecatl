@@ -303,7 +303,7 @@ jobs:
             echo '::error::Reviewed SHA does not match dispatch SHA'
             exit 1
           fi
-          printf '## Native execution qualification\n\nCommit: `%s`\n' "$actual" >> "$GITHUB_STEP_SUMMARY"
+          printf '## Native execution qualification\n\nCommit: %s\n' "$actual" >> "$GITHUB_STEP_SUMMARY"
           umask 077
           mkdir -p .scratch
           mkdir -m 700 "$NATIVE_CI_DIR"
