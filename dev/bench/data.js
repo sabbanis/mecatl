@@ -228930,6 +228930,40 @@ window.BENCHMARK_DATA = {
         },
         "date": 1790008737260,
         "tool": "customBiggerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "joe@stacklok.com",
+            "name": "Joe Beda",
+            "username": "jbeda"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1b2b9f12393e4488e8ea864b51a0ad1f61ce5a71",
+          "message": "ci: gate landed acceptance proof traces (#1737)\n\nCo-authored-by: mecatl <noreply@mecatl.dev>",
+          "timestamp": "2026-09-21T12:55:07-07:00",
+          "tree_id": "36cae74bb229bb11930ea8dddfb3348c52a08530",
+          "url": "https://github.com/stacklok/mecatl/commit/1b2b9f12393e4488e8ea864b51a0ad1f61ce5a71"
+        },
+        "date": 1790021173906,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
       }
     ],
     "mecatl scenarios (render allocs, advisory)": [
@@ -332398,6 +332432,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1790021171056,
+  "lastUpdate": 1790021174840,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
