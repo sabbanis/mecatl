@@ -110,7 +110,9 @@ Persisted prototype resources use an explicit administrator migration. Normal
 operations reject schema versions other than 2. `MigrateEnvironment` accepts
 only recognized versions 0 and 1, verifies the exact live Pod and PVC identities,
 and requires a healthy, idle environment. Unknown or malformed state is retained
-unchanged rather than reset.
+unchanged rather than reset. Completed migration receipts expire when executor
+replacement publishes a new Pod identity. After replacement, retrying the old
+migration operation returns a conflict with either the original or replacement UID.
 
 ### Production security material
 

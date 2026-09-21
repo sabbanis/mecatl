@@ -192,6 +192,80 @@ func TestOldSchemaFailsClosedAndExplicitMigrationConvertsReferences(t *testing.T
 	}
 }
 
+func TestMigrationReceiptExpiresAfterReconciledReplacement(t *testing.T) {
+	for name, schema := range map[string]int64{"legacy": 0, "prototype": 1} {
+		t.Run(name, func(t *testing.T) {
+			env := lifecycleAdminEnvironment(schema, []any{"session-a"})
+			pod, pvc := terminalExecutor(), retainedPVC()
+			pod.Name, pvc.Name = resourceName("executor", "env"), resourceName("workspace", "env")
+			pod.Spec.Volumes[0].PersistentVolumeClaim.ClaimName = pvc.Name
+			_ = unstructured.SetNestedField(env.Object, pod.Name, "status", "pod", "name")
+			_ = unstructured.SetNestedField(env.Object, pvc.Name, "status", "pvc", "name")
+			d := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), env)
+			k := kubefake.NewSimpleClientset(pod, pvc)
+			// The fake API must retain a finalizer-protected Pod until the real
+			// reconciler has recorded terminal proof and removed its finalizer.
+			k.PrependReactor("delete", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+				obj, err := k.Tracker().Get(corev1.SchemeGroupVersion.WithResource("pods"), "ns", action.(k8stesting.DeleteAction).GetName())
+				if err != nil {
+					return true, nil, err
+				}
+				return len(obj.(*corev1.Pod).Finalizers) != 0, nil, nil
+			})
+			k.PrependReactor("create", "pods", func(action k8stesting.Action) (bool, runtime.Object, error) {
+				created := action.(k8stesting.CreateAction).GetObject().(*corev1.Pod)
+				created.UID = "replacement-pod"
+				created.Status = replacementExecutor(true).Status
+				return false, nil, nil
+			})
+			store := NewStore(d, "ns", testProfiles(), nil).WithKubeClient(k)
+			q := adminRequestFixture()
+			q.ExpectedSchema = schema
+			if err := store.MigrateEnvironment(t.Context(), q); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.MigrateEnvironment(t.Context(), q); err != nil {
+				t.Fatalf("exact receipt replay before replacement: %v", err)
+			}
+			replace := q
+			replace.OperationID = "replace-after-migration"
+			replace.ExpectedEpoch++
+			if err := store.ReplaceExecutor(t.Context(), replace); err != nil {
+				t.Fatal(err)
+			}
+			r := NewReconciler(d, k, "ns", testProfiles())
+			t.Cleanup(r.queue.ShutDown)
+			// Drive every replacement phase, then an ordinary ready reconcile.
+			for range 8 {
+				if err := r.Reconcile(t.Context(), "env"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := d.Resource(ExecutionEnvironmentGVR).Namespace("ns").Get(t.Context(), "env", metav1.GetOptions{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !conditionTrue(got, "Ready") || textNested(got.Object, "status", "pod", "uid") != "replacement-pod" || textNested(got.Object, "status", "pvc", "uid") != q.ExpectedPVCUID || intNested(got.Object, "status", "epoch") != 6 {
+				t.Fatalf("replacement did not complete normally: %v", got.Object["status"])
+			}
+			changed := q
+			changed.ExpectedPodUID = "replacement-pod"
+			for _, replay := range []adminLifecycleRequest{changed, q} {
+				var controlled *executionenv.Error
+				if err := store.MigrateEnvironment(t.Context(), replay); !errors.As(err, &controlled) || controlled.Code != executionenv.CodeConflict {
+					t.Fatalf("expired migration replay with Pod %q: %v", replay.ExpectedPodUID, err)
+				}
+			}
+			if textNested(got.Object, "status", "lastMigrationOperationID") != "" {
+				t.Fatal("replacement retained migration operation receipt")
+			}
+			if _, found, err := unstructured.NestedInt64(got.Object, "status", "lastMigrationFromSchema"); err != nil || found {
+				t.Fatal("replacement retained migration source schema receipt")
+			}
+		})
+	}
+}
+
 func TestInsecurePrototypeMigrationRejectedWithoutRewrite(t *testing.T) {
 	env := lifecycleAdminEnvironment(1, []any{"session-a"})
 	pod := terminalExecutor()

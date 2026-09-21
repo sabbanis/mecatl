@@ -369,7 +369,7 @@ func TestScopedAdminMigrationReceiptRetainsUIDPreconditions(t *testing.T) {
 }
 
 func TestMigrationCompletedCASReplayRequiresExactSourceSchema(t *testing.T) {
-	for _, receipt := range []string{"exact", "changed", "absent"} {
+	for _, receipt := range []string{"exact", "changed", "absent", "expired"} {
 		t.Run(receipt, func(t *testing.T) {
 			f := newAdminScopeFixture(t, "migrate", scopeAdmin)
 			f.policy(t, true, []string{scopeCreator})
@@ -385,6 +385,9 @@ func TestMigrationCompletedCASReplayRequiresExactSourceSchema(t *testing.T) {
 				case "changed":
 					_ = unstructured.SetNestedField(completed.Object, int64(0), "status", "lastMigrationFromSchema")
 				case "absent":
+					unstructured.RemoveNestedField(completed.Object, "status", "lastMigrationFromSchema")
+				case "expired":
+					unstructured.RemoveNestedField(completed.Object, "status", "lastMigrationOperationID")
 					unstructured.RemoveNestedField(completed.Object, "status", "lastMigrationFromSchema")
 				}
 				if err := f.dynamic.Tracker().Update(ExecutionEnvironmentGVR, completed, "ns"); err != nil {
