@@ -621,14 +621,15 @@ func readExecutionStatus(t *testing.T, ctx context.Context, kubeconfig, name str
 func waitExecutionStatus(t *testing.T, ctx context.Context, kubeconfig, name string, accept func(executionStatus) bool) executionStatus {
 	t.Helper()
 	deadline := time.Now().Add(4 * time.Minute)
+	var last executionStatus
 	for time.Now().Before(deadline) {
-		s := readExecutionStatus(t, ctx, kubeconfig, name)
-		if accept(s) {
-			return s
+		last = readExecutionStatus(t, ctx, kubeconfig, name)
+		if accept(last) {
+			return last
 		}
 		time.Sleep(time.Second)
 	}
-	t.Fatal("execution status did not reach required lifecycle state")
+	t.Fatalf("execution status did not reach required lifecycle state: environment=%q ready=%t ready_reason=%q fence_state=%q active_operation=%t", name, last.Ready, last.ReadyReason, last.FenceState, last.ActiveOperationID != "")
 	return executionStatus{}
 }
 
@@ -911,7 +912,8 @@ func TestKindExecutionProductionPendingDeleteOutageRecovery(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatal("pending-delete intent was not durable across provider outage")
+		exact, exactErr := client.FindReferenceIntent(ctx, owner, attached.Environment, binding)
+		t.Fatalf("pending-delete intent was not durable across provider outage: listed=%d exact_code=%s exact_state=%q exact_operation_match=%t", len(intents), remoteErrorCode(exactErr), exact.State, exact.OperationID == request.OperationID)
 	}
 	intruderTLS := loadTLS(t, filepath.Join(state, "pki"), "intruder", "mecatl-execution.execution-qualification.svc.cluster.local")
 	forward := portForward(t, ctx, kubeconfig, "service/mecatl-execution", 8443)

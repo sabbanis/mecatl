@@ -324,14 +324,17 @@ func acquireRun(t *testing.T, ctx context.Context, c *executionclient.Client, ow
 func waitReady(t *testing.T, ctx context.Context, c *executionclient.Client, owner executionenv.Owner, binding string, ref executionenv.EnvironmentRef) executionenv.AttachEnvironmentResponse {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Minute)
+	lastCode := "none"
+	lastReady := false
 	for time.Now().Before(deadline) {
 		out, err := c.Attach(ctx, executionenv.AttachEnvironmentRequest{Context: executionenv.RequestContext{Environment: ref, Owner: owner, BindingID: binding}, Purpose: executionenv.PurposeSession})
+		lastCode, lastReady = remoteErrorCode(err), out.Ready
 		if err == nil && out.Ready {
 			return out
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
-	t.Fatal("execution environment did not become ready")
+	t.Fatalf("execution environment %q did not become ready: last_code=%s last_ready=%t", ref.ID, lastCode, lastReady)
 	return executionenv.AttachEnvironmentResponse{}
 }
 func isRemoteCode(err error, code executionenv.ErrorCode) bool {

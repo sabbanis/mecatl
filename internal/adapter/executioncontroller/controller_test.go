@@ -16,6 +16,8 @@ import (
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	kubefake "k8s.io/client-go/kubernetes/fake"
 	k8stesting "k8s.io/client-go/testing"
+	"k8s.io/client-go/util/workqueue"
+	clocktesting "k8s.io/utils/clock/testing"
 )
 
 func TestReconcileRefusesForeignExistingPVCWithoutPersistingUID(t *testing.T) {
@@ -175,6 +177,114 @@ func TestRepeatedReconcileDoesNotRewriteUnchangedStatus(t *testing.T) {
 	if statusUpdateCount(d.Actions()) != writes+1 {
 		t.Fatalf("status writes=%d, want %d", statusUpdateCount(d.Actions()), writes+1)
 	}
+}
+
+func TestActiveOperationExpiryRequeuesWithoutAnotherEvent(t *testing.T) {
+	ctx := t.Context()
+	env := testEnvironment()
+	env.SetFinalizers([]string{environmentFinalizer})
+	dynamicClient := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), env)
+	kubeClient := kubefake.NewSimpleClientset()
+	r := NewReconciler(dynamicClient, kubeClient, "ns", testProfiles())
+	initialQueue := r.queue
+	t.Cleanup(initialQueue.ShutDown)
+
+	// Establish a fully reconciled, ready environment so only operation expiry can
+	// cause the transition below.
+	if err := r.Reconcile(ctx, env.GetName()); err != nil {
+		t.Fatal(err)
+	}
+	pod, err := kubeClient.CoreV1().Pods("ns").Get(ctx, "executor-test", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+	if _, err := kubeClient.CoreV1().Pods("ns").UpdateStatus(ctx, pod, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Reconcile(ctx, env.GetName()); err != nil {
+		t.Fatal(err)
+	}
+	initialQueue.ShutDown()
+
+	now := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
+	deadline := now.Add(100 * time.Millisecond)
+	current, err := dynamicClient.Resource(ExecutionEnvironmentGVR).Namespace("ns").Get(ctx, env.GetName(), metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := unstructured.SetNestedMap(current.Object, map[string]any{
+		"id": "operation", "expiresAt": deadline.Format(time.RFC3339Nano),
+	}, "status", "activeOperation"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := dynamicClient.Resource(ExecutionEnvironmentGVR).Namespace("ns").UpdateStatus(ctx, current, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	fakeClock := clocktesting.NewFakeClock(now)
+	delayingQueue := workqueue.NewTypedDelayingQueueWithConfig[string](workqueue.TypedDelayingQueueConfig[string]{Clock: fakeClock})
+	replacementQueue := workqueue.NewTypedRateLimitingQueueWithConfig(
+		workqueue.DefaultTypedControllerRateLimiter[string](),
+		workqueue.TypedRateLimitingQueueConfig[string]{DelayingQueue: delayingQueue},
+	)
+	t.Cleanup(replacementQueue.ShutDown)
+	r.queue = replacementQueue
+	r.now = fakeClock.Now
+	if err := r.Reconcile(ctx, env.GetName()); err != nil {
+		t.Fatal(err)
+	}
+	beforeExpiry, err := dynamicClient.Resource(ExecutionEnvironmentGVR).Namespace("ns").Get(ctx, env.GetName(), metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !conditionTrue(beforeExpiry, "Ready") || textNested(beforeExpiry.Object, "status", "fenceState") != fenceHealthy {
+		t.Fatalf("future operation lease disturbed ready state: %v", beforeExpiry.Object["status"])
+	}
+
+	waitUntil := time.Now().Add(time.Second)
+	for fakeClock.Waiters() < 2 && time.Now().Before(waitUntil) {
+		time.Sleep(time.Millisecond)
+	}
+	if fakeClock.Waiters() < 2 {
+		t.Fatal("reconcile did not register the operation-expiry deadline with the delayed queue")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		r.worker(ctx)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		replacementQueue.ShutDown()
+		<-done
+	})
+
+	fakeClock.Step(99 * time.Millisecond)
+	preDeadline, err := dynamicClient.Resource(ExecutionEnvironmentGVR).Namespace("ns").Get(ctx, env.GetName(), metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !conditionTrue(preDeadline, "Ready") || textNested(preDeadline.Object, "status", "fenceState") != fenceHealthy {
+		t.Fatalf("operation fenced before its deadline: %v", preDeadline.Object["status"])
+	}
+
+	fakeClock.Step(time.Millisecond)
+	workerDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(workerDeadline) {
+		got, getErr := dynamicClient.Resource(ExecutionEnvironmentGVR).Namespace("ns").Get(ctx, env.GetName(), metav1.GetOptions{})
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		if textNested(got.Object, "status", "fenceState") == "FenceUnknown" {
+			if textNested(got.Object, "status", "activeOperation", "id") != "operation" || conditionTrue(got, "Ready") {
+				t.Fatalf("expiry did not retain unresolved operation identity and clear readiness: %v", got.Object["status"])
+			}
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("worker did not reconcile the active-operation deadline without another Kubernetes event")
 }
 
 func TestRuntimeAndRelevantStatusUpdatesEnqueue(t *testing.T) {

@@ -208,9 +208,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, name string) error {
 	}
 	if expires := textNested(env.Object, "status", "activeOperation", "expiresAt"); expires != "" {
 		deadline, parseErr := time.Parse(time.RFC3339Nano, expires)
-		if parseErr != nil || !r.now().Before(deadline) {
+		now := r.now()
+		if parseErr != nil || !now.Before(deadline) {
 			return r.setFenceUnknown(ctx, env, "operation holder lease expired; operation identity retained for recovery")
 		}
+		r.queue.AddAfter(name, deadline.Sub(now))
 	}
 	profileName := textNested(env.Object, "spec", "profile")
 	p, ok := r.profiles.get(profileName)
