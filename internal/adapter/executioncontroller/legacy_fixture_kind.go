@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 
@@ -68,6 +69,26 @@ type seededLegacyEnvironment struct {
 }
 
 func seedOneLegacyEnvironment(ctx context.Context, d dynamic.Interface, kube kubernetes.Interface, namespace string, profile resolvedProfile, owner executionenv.Owner, client, name, binding string, references []any, insecure bool) (seededLegacyEnvironment, error) {
+	// Deployment readiness does not imply that quota admission has initialized
+	// accounting, especially for the freshly installed custom resource.
+	if err := wait.PollUntilContextTimeout(ctx, 100*time.Millisecond, 2*time.Minute, true, func(ctx context.Context) (bool, error) {
+		quota, err := kube.CoreV1().ResourceQuotas(namespace).Get(ctx, "mecatl-execution", metav1.GetOptions{})
+		if err != nil {
+			return false, err
+		}
+		for name, configured := range quota.Spec.Hard {
+			hard, ok := quota.Status.Hard[name]
+			if !ok || hard.Cmp(configured) != 0 {
+				return false, nil
+			}
+			if _, ok := quota.Status.Used[name]; !ok {
+				return false, nil
+			}
+		}
+		return true, nil
+	}); err != nil {
+		return seededLegacyEnvironment{}, fmt.Errorf("wait for legacy fixture quota accounting: %w", err)
+	}
 	revision, err := randomID()
 	if err != nil {
 		return seededLegacyEnvironment{}, err

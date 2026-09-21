@@ -84,6 +84,16 @@ using a local workspace.
 is intended for an operator-controlled cluster and foreground commands only.
 It has no force-takeover recovery and is not a hostile multi-tenancy boundary.
 
+Remote deployments retain operator-global rules and skills. Local project trust
+cannot admit host-local AGENTS.md, rules, skills, commands, or Git context into a
+remote session. Command discovery and slash-command expansion are unavailable
+for remote sessions. Explicit `no-fs` sessions keep their file-less catalog and
+allocate no execution environment.
+
+The remote filesystem preserves the existing Read/Edit/Write version checks and
+non-clobbering Copy/Move behavior. Copy, Move, and Remove do not require prior
+content reads; Remove remains non-recursive.
+
 The optional Kubernetes execution provider stores environment ownership in a
 namespaced `ExecutionEnvironment`. Provider replicas coordinate through
 Kubernetes resource-version compare-and-swap; a replica restart does not clear

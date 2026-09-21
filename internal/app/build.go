@@ -3255,7 +3255,7 @@ func sessionEngineFactoryWithTools(
 		learningCfg.automaticAdmissionLedger = assets.automaticAdmissionLedger
 		learningCfg.learningSourceStore = store
 		deps := engineDepsForProvider(cfg, resolvedProvider, resolvedModel, windowFn, store, sessionPolicy, hooks, mcpProvider, sessionInstructions)
-		deps.PromptConfig = applyRemoteExecutionPosture(deps.PromptConfig, remote)
+		deps = applyRemoteExecutionPosture(deps, remote)
 		attachOperatorProfile(&deps, assets.userModelStore)
 		deps.LearningMode = learningCfg.LearningMode
 		deps.LearningObserver = bindMaterializationLifecycle(buildReflectionObserver(learningCfg, resolvedProvider, learningCfg.Model, assets.userModelStore, assets.memStore, assets.reflectionRepository, assets.reflectionCoordinator, assets.learningAdmission, buildProcedureProcessor(learningCfg, assets)), assets.reflectionLifecycle)
@@ -4132,9 +4132,14 @@ func buildEngine(ctx context.Context, cfg Config, reg *providerRegistry, provide
 	// the tier-0 project MemoryIndexAssembler. Operator facts no longer ride a
 	// turn-0 user fragment; the same user store is loaded per request into the
 	// volatile system-prompt suffix below.
+	remoteRules := prompt.RulesSource(nil)
+	if cfg.RemoteExecution {
+		// Project admission is off for this deployment; retain user-tier rules.
+		remoteRules = rulesSrc
+	}
 	instructions := sessionInstructionSet{
 		standard: buildInstructionAssembler(rulesSrc, soulSrc, memStore, userModelStore, !projectIngestionAdmitted(cfg)),
-		remote:   buildInstructionAssembler(nil, soulSrc, memStore, userModelStore, true),
+		remote:   buildInstructionAssembler(remoteRules, soulSrc, memStore, userModelStore, true),
 	}
 
 	// Guardrails decorate the ordinary hook chain. Completion learning has its own
@@ -4689,6 +4694,9 @@ func buildCommandExpander(cfg Config, mcpProvider mcp.Provider) prompt.CommandEx
 // and exactly reattaches the owned session, this lister opens a fresh osfs Workspace
 // at that provider-verified private root so discovery reflects current command files.
 func buildCommandLister(cfg Config, mcpProvider mcp.Provider) server.CommandLister {
+	if cfg.RemoteExecution {
+		return nil
+	}
 	exp := buildCommandExpander(cfg, mcpProvider)
 	lister, ok := exp.(prompt.CommandLister)
 	if !ok {
@@ -8238,16 +8246,18 @@ const workspaceRootForPrompt = "/workspace"
 
 const remoteExecutionPostureNote = "This session uses a persistent remote Kubernetes workspace. Use the filesystem tools and foreground Shell for work in /workspace. Local project instructions, rules, project-scoped skills, commands, schedules, SkillDraft, Parallel, Team, and Subagent delegation are unavailable; operator-global skills, MCP, memory, and web tools remain available. Never assume harness-local files are part of this workspace."
 
-func applyRemoteExecutionPosture(pc prompt.Config, enabled bool) prompt.Config {
+func applyRemoteExecutionPosture(deps agent.Deps, enabled bool) agent.Deps {
 	if !enabled {
-		return pc
+		return deps
 	}
+	deps.CommandExpander = prompt.NoopExpander{}
+	pc := &deps.PromptConfig
 	pc.Env.Cwd, pc.Env.Shell, pc.Env.GitStatus = workspaceRootForPrompt, "remote foreground shell", ""
 	if pc.Role == "" {
 		pc.Role = prompt.DefaultRole()
 	}
 	pc.Role += "\n\n" + remoteExecutionPostureNote
-	return pc
+	return deps
 }
 
 func applyDebugSessionPosture(pc prompt.Config, target session.SessionID, selectedServers []string) prompt.Config {

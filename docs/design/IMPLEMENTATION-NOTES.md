@@ -6566,7 +6566,12 @@ has no service-account token and contains the fixed helper built by
 fail closed before the external authority evaluator runs; there is no lexical
 client-side substitute.
 
-Composition selects this path only when `Config.RemoteExecution` is set. The
+Composition selects this path only when `Config.RemoteExecution` is set.
+`internal/app/project_ingestion.go` (`projectIngestionAdmitted`) rejects host-project
+steering for remote deployments even when that local root is trusted. The remote
+instruction variant retains user-tier rules; command listing never opens a local
+workspace and the remote engine uses the no-op command expander. Operator-global
+skills remain available. The
 remote catalog excludes local project ingestion, schedules, SkillDraft,
 Parallel, and Team, while explicit `profile:"no-fs"` still selects the existing
 no-FS placement. The `mecatl-execution` and `mecak8s` charts remain independent. Run claims,

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -87,9 +88,10 @@ func TestServiceUsesRealMTLSProviderStoreAndReleasesOnlyAfterDrain(t *testing.T)
 	}
 	catalog := tool.NewCatalog()
 	catalog.MustRegister(adaptertools.ReadTool{})
-	catalog.MustRegister(adaptertools.NewShellTool())
+	catalog.MustRegister(agent.NewShellTool())
 	llm := mockllm.New(
 		mockllm.ToolCallTurn(session.NewToolCall("read", "Read", json.RawMessage(`{"path":"main.go"}`))),
+		mockllm.ToolCallTurn(session.NewToolCall("background", "Shell", json.RawMessage(`{"command":"touch background-leak","background":true}`))),
 		mockllm.ToolCallTurn(session.NewToolCall("shell", "Shell", json.RawMessage(`{"command":"true"}`))),
 		mockllm.TextTurn("done"),
 		mockllm.TextTurn("continued"),
@@ -114,7 +116,14 @@ func TestServiceUsesRealMTLSProviderStoreAndReleasesOnlyAfterDrain(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for range run.Events() {
+	backgroundRejected := false
+	for event := range run.Events() {
+		if result := event.ToolResult; result != nil && result.CallID == "background" {
+			backgroundRejected = result.IsError && strings.Contains(result.Content, "not supported by this command runner")
+		}
+	}
+	if !backgroundRejected {
+		t.Fatal("remote background Shell did not return the named capability error")
 	}
 	if executor.calls.Load() != 3 {
 		t.Fatalf("executor calls=%d, want authority+read+shell", executor.calls.Load())

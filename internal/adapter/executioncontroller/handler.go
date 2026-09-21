@@ -870,7 +870,7 @@ func wireError(code executionenv.ErrorCode, retry bool) error {
 		grpcCode = codes.NotFound
 	case executionenv.CodeAlreadyExists:
 		grpcCode = codes.AlreadyExists
-	case executionenv.CodeConflict, executionenv.CodeVersionMismatch:
+	case executionenv.CodeConflict, executionenv.CodeVersionMismatch, executionenv.CodeDirectoryNotEmpty:
 		grpcCode = codes.Aborted
 	case executionenv.CodeNotReady:
 		grpcCode = codes.Unavailable

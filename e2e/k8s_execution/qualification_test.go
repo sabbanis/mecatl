@@ -165,6 +165,7 @@ func TestKindExecutionQualification(t *testing.T) {
 		t.Fatalf("independent go test proof failed: err=%v state=%s", err, verification.State)
 	}
 	releaseVerification()
+	qualifyRemoteFileTools(t, ctx, providerClient, owner, sessionID, lookup)
 	if status := getSession(t, ctx, agentForward.addr, sessionID, bob); status != http.StatusNotFound {
 		t.Fatalf("different OIDC owner read status = %d, want 404", status)
 	}

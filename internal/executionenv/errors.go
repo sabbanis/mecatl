@@ -20,6 +20,7 @@ const (
 	CodeAlreadyExists     ErrorCode = "already_exists"
 	CodeConflict          ErrorCode = "conflict"
 	CodeVersionMismatch   ErrorCode = "version_mismatch"
+	CodeDirectoryNotEmpty ErrorCode = "directory_not_empty"
 	CodeNotReady          ErrorCode = "not_ready"
 	CodeFenceUnknown      ErrorCode = "fence_unknown"
 	CodeResourceExhausted ErrorCode = "resource_exhausted"
@@ -30,7 +31,7 @@ const (
 func (c ErrorCode) Valid() bool {
 	switch c {
 	case CodeInvalidArgument, CodeUnauthenticated, CodePermissionDenied, CodeNotFound,
-		CodeAlreadyExists, CodeConflict, CodeVersionMismatch, CodeNotReady, CodeFenceUnknown,
+		CodeAlreadyExists, CodeConflict, CodeVersionMismatch, CodeDirectoryNotEmpty, CodeNotReady, CodeFenceUnknown,
 		CodeResourceExhausted, CodeInternal:
 		return true
 	default:

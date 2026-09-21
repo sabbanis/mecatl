@@ -239,7 +239,7 @@ func mapErr(err error) error {
 	case errors.Is(err, fs.ErrExist):
 		return coded(executionenv.CodeAlreadyExists, "destination already exists")
 	case errors.Is(err, tool.ErrDirectoryNotEmpty):
-		return coded(executionenv.CodeConflict, "directory is not empty")
+		return coded(executionenv.CodeDirectoryNotEmpty, "directory is not empty")
 	case errors.Is(err, osfs.ErrPathEscape):
 		return coded(executionenv.CodePermissionDenied, "path is outside workspace")
 	default:

@@ -350,7 +350,7 @@ func grpcCodeForError(code executionenv.ErrorCode) codes.Code {
 		return codes.NotFound
 	case executionenv.CodeAlreadyExists:
 		return codes.AlreadyExists
-	case executionenv.CodeConflict, executionenv.CodeVersionMismatch:
+	case executionenv.CodeConflict, executionenv.CodeVersionMismatch, executionenv.CodeDirectoryNotEmpty:
 		return codes.Aborted
 	case executionenv.CodeNotReady:
 		return codes.Unavailable
@@ -870,7 +870,7 @@ func mapPlacementError(err error) error {
 		switch remote.Code {
 		case executionenv.CodeNotFound, executionenv.CodePermissionDenied, executionenv.CodeUnauthenticated:
 			return server.ErrPlacementNotFound
-		case executionenv.CodeConflict, executionenv.CodeVersionMismatch:
+		case executionenv.CodeConflict, executionenv.CodeVersionMismatch, executionenv.CodeDirectoryNotEmpty:
 			return server.ErrPlacementChanged
 		case executionenv.CodeInvalidArgument:
 			return server.ErrInvalidPlacementSelection
@@ -1030,6 +1030,9 @@ func (w *workspace) CreateFile(ctx context.Context, path string, data []byte) (t
 func (w *workspace) ReplaceFile(ctx context.Context, path string, old tool.FileVersion, data []byte) (tool.FileVersion, error) {
 	v, e := tool.EncodeFileVersion(old)
 	if e != nil {
+		if _, statErr := w.Stat(ctx, path); statErr != nil {
+			return tool.FileVersion{}, statErr
+		}
 		return tool.FileVersion{}, e
 	}
 	r, e := w.call(ctx, executionenv.OpFileReplace, path, "", "", data, v)
@@ -1095,6 +1098,8 @@ func mapFileError(path string, err error) error {
 			return fmt.Errorf("%s: %w", path, fs.ErrExist)
 		case executionenv.CodeVersionMismatch:
 			return &tool.VersionMismatchError{Path: path}
+		case executionenv.CodeDirectoryNotEmpty:
+			return fmt.Errorf("%s: %w", path, tool.ErrDirectoryNotEmpty)
 		}
 	}
 	return err
