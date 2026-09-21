@@ -272,6 +272,54 @@ successful `go test` independently through the typed gRPC execution service.
 Finally it restores the mock deployment and removes only its run-scoped Secret;
 the owned cluster and execution workspaces remain for inspection.
 
+### Run the native qualification in GitHub Actions
+
+After independent review of the exact candidate, a maintainer can dispatch the
+existing `e2e-live.yml` workflow in `stacklok/mecatl`:
+
+```sh
+gh workflow run e2e-live.yml --repo stacklok/mecatl --ref <REVIEWED_BRANCH_OR_TAG> \
+  -f native_execution=true -f expected_sha=<FULL_REVIEWED_COMMIT_SHA>
+```
+
+`native_execution` defaults to `false`. Setting it to `true` runs only the native
+job, avoiding duplicate paid inference in the ordinary live jobs. Schedules and
+labelled PR runs retain their ordinary behavior and never select this job.
+`expected_sha` is optional, but supply it for reviewed qualification: checkout
+uses the dispatch event SHA, verifies exact equality before credential staging,
+and records that SHA in the job summary. A moved branch fails the check.
+
+The trust gates are maintainer dispatch, the `stacklok/mecatl` repository check,
+and access to the existing `OPENROUTER_API_KEY` repository secret. There is no
+GitHub environment-approval gate. Review the workflow and all executed source
+before dispatch; the SHA check establishes identity, not code safety. Checkout
+retains no Git credentials, the token has read-only contents access, and the
+native job uses no build cache.
+
+The same runner first completes the production Kind+Calico qualification without
+a provider key or automatic cluster deletion. Only a successful production step
+allows credential staging; a production ownership record alone is insufficient.
+The workflow stages the key in a new 0700 CI directory and 0600 file, then removes
+it from the environment before `live.sh` validates the retained owned state,
+reruns mock qualification, and invokes the trusted credential loader. A missing
+secret fails qualification rather than skipping successfully. The 100-minute job
+bound includes builds, the 45-minute production test bound, 15-minute mock rerun,
+10-minute live smoke, and cleanup; token limits are not a hard dollar cap.
+
+The live script restores mock configuration and deletes its Secret by recorded
+UID using an independent cleanup context. Failures fail qualification. An always-run
+workflow step removes only the CI-created credential file and deletes only the
+recorded cluster after validating its owner, name, namespace, profile, container
+label, private kubeconfig, and context. Ownership drift fails cleanup without
+selecting another cluster. Runner disposal is a last resort, not evidence that
+cleanup succeeded.
+
+Artifacts are retained for seven days: only a size-bounded `live-summary.json`
+when available and a sanitized `qualification-status.txt`. PKI, kubeconfigs,
+Secret receipts, Helm values, full scratch directories, and transcripts are never
+uploaded by the native job. Check both live and cleanup outcomes before treating
+the recorded commit as qualified.
+
 ## Limitations
 
 - No-FS sessions cannot use local file tools, shell commands, workspace forks,

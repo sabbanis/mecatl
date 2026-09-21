@@ -306,9 +306,28 @@ func TestKindExecutionProductionSecurityRotation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer postRestartClient.Close()
-	if _, err := postRestartClient.File(ctx, executionenv.FileRequest{Context: newRun, Operation: executionenv.OpFileRead, Path: "rotation-sentinel.txt"}); err == nil {
-		t.Fatal("revoked generation became usable after provider restart")
+	postRestartAttached := waitReady(t, ctx, postRestartClient, owner, binding, attached.Environment)
+	if postRestartAttached.GrantGeneration != generation || generation != newAttached.GrantGeneration+1 {
+		t.Fatalf("persisted revocation generation=%d want=%d", postRestartAttached.GrantGeneration, generation)
 	}
+	replayed, err = postRestartClient.RevokeEnvironment(ctx, attached.Environment, owner, newAttached.GrantGeneration, "rotation-revoke-replay")
+	if err != nil || replayed != generation {
+		t.Fatalf("post-restart revoke receipt generation=%d want=%d code=%s", replayed, generation, remoteErrorCode(err))
+	}
+	currentRun, releaseCurrent := acquireRun(t, ctx, postRestartClient, owner, binding, postRestartAttached, "rotation-post-restart")
+	defer releaseCurrent()
+	if currentRun.GrantGeneration != generation {
+		t.Fatalf("post-restart claim generation=%d want=%d", currentRun.GrantGeneration, generation)
+	}
+	// Keep the live claim's identity and lifetime, signing with the trusted k2.
+	// Only the generation is stale: neither a released claim nor retired k1 can
+	// explain the denial. Successful reads bracket the probe on this connection.
+	stale := resignFixtureGrant(t, currentRun, filepath.Join(rotationDir, "grant-k2.pem"), "k2", newAttached.GrantGeneration)
+	waitFileContent(t, ctx, postRestartClient, currentRun, "rotation-sentinel.txt", "old-authority\n", "post-restart revocation positive control")
+	if _, err := postRestartClient.File(ctx, executionenv.FileRequest{Context: stale, Operation: executionenv.OpFileRead, Path: "rotation-sentinel.txt"}); !isRemoteCode(err, executionenv.CodeConflict) {
+		t.Fatalf("revoked claim generation rejection: code=%s, want conflict", remoteErrorCode(err))
+	}
+	waitFileContent(t, ctx, postRestartClient, currentRun, "rotation-sentinel.txt", "old-authority\n", "post-restart revocation positive control after probe")
 	// Restore fixture client compatibility through a higher generation; this is
 	// another forward rotation, never a high-water-mark rollback.
 	restoreFixtureSecurity(t, ctx, kubeconfig, rotationDir)

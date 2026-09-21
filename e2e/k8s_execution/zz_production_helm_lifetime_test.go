@@ -255,6 +255,17 @@ func TestKindExecutionProductionHelmLifetime(t *testing.T) {
 // and stale epochs cannot masquerade as durable authority rejection.
 func assertRetiredFixtureKeyDenied(ctx context.Context, t *testing.T, client *executionclient.Client, state string, rc executionenv.RequestContext, path, want string) {
 	t.Helper()
+	old := resignFixtureGrant(t, rc, filepath.Join(state, "pki", "grant-key.pem"), "k1", rc.GrantGeneration)
+	waitFileContent(t, ctx, client, rc, path, want, "current authority before retired-key probe")
+	if _, err := client.File(ctx, executionenv.FileRequest{Context: old, Operation: executionenv.OpFileRead, Path: path}); !isRemoteCode(err, executionenv.CodePermissionDenied) {
+		var remote *executionenv.Error
+		t.Fatalf("retired signing authority rejection: errorCode=%s retryable=%t", remoteErrorCode(err), errors.As(err, &remote) && remote.Retryable)
+	}
+	waitFileContent(t, ctx, client, rc, path, want, "current authority after retired-key probe")
+}
+
+func resignFixtureGrant(t *testing.T, rc executionenv.RequestContext, keyPath, keyID string, generation uint64) executionenv.RequestContext {
+	t.Helper()
 	parts := strings.Split(rc.Grant, ".")
 	if len(parts) != 3 {
 		t.Fatal("invalid current fixture grant")
@@ -267,9 +278,9 @@ func assertRetiredFixtureKeyDenied(ctx context.Context, t *testing.T, client *ex
 	if err := json.Unmarshal(payload, &claims); err != nil {
 		t.Fatal("decode current fixture claims")
 	}
-	material, err := os.ReadFile(filepath.Join(state, "pki", "grant-key.pem"))
+	material, err := os.ReadFile(keyPath)
 	if err != nil {
-		t.Fatal("read test-owned retired signing key")
+		t.Fatal("read test-owned signing key")
 	}
 	block, _ := pem.Decode(material)
 	if block == nil {
@@ -283,22 +294,55 @@ func assertRetiredFixtureKeyDenied(ctx context.Context, t *testing.T, client *ex
 	if !ok {
 		t.Fatal("fixture signing key is not Ed25519")
 	}
-	claims.KeyID = "k1"
-	old := rc
-	old.Grant, err = executionenv.SignGrant(private, claims)
+	claims.KeyID = keyID
+	claims.GrantGeneration = generation
+	probe := rc
+	probe.GrantGeneration = generation
+	probe.Grant, err = executionenv.SignGrant(private, claims)
 	if err != nil {
-		t.Fatal("sign retired-authority fixture grant")
+		t.Fatal("sign fixture grant")
 	}
-	verifier := executionenv.GrantVerifier{Keys: map[string]ed25519.PublicKey{"k1": private.Public().(ed25519.PublicKey)}, Issuer: claims.Issuer, Audience: claims.Audience, MaxLifetime: time.Minute}
-	if _, err := verifier.Verify(old.Grant, executionenv.GrantExpectation{Client: claims.Client, OwnerHash: claims.OwnerHash, BindingID: rc.BindingID, RunID: rc.RunID, ClaimID: rc.ClaimID, Environment: rc.Environment, Epoch: rc.Epoch, GrantGeneration: rc.GrantGeneration, Operation: executionenv.OpFileRead}); err != nil {
-		t.Fatal("retired-authority control is not cryptographically valid and current")
+	verifier := executionenv.GrantVerifier{Keys: map[string]ed25519.PublicKey{keyID: private.Public().(ed25519.PublicKey)}, Issuer: claims.Issuer, Audience: claims.Audience, MaxLifetime: time.Minute}
+	if _, err := verifier.Verify(probe.Grant, executionenv.GrantExpectation{Client: claims.Client, OwnerHash: claims.OwnerHash, BindingID: rc.BindingID, RunID: rc.RunID, ClaimID: rc.ClaimID, Environment: rc.Environment, Epoch: rc.Epoch, GrantGeneration: generation, Operation: executionenv.OpFileRead}); err != nil {
+		t.Fatal("fixture probe is not cryptographically valid and current")
 	}
-	waitFileContent(t, ctx, client, rc, path, want, "current authority before retired-key probe")
-	if _, err := client.File(ctx, executionenv.FileRequest{Context: old, Operation: executionenv.OpFileRead, Path: path}); !isRemoteCode(err, executionenv.CodePermissionDenied) {
-		var remote *executionenv.Error
-		t.Fatalf("retired signing authority rejection: errorCode=%s retryable=%t", remoteErrorCode(err), errors.As(err, &remote) && remote.Retryable)
+	return probe
+}
+
+func TestResignFixtureGrantChangesOnlyRequestedAuthority(t *testing.T) {
+	key := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize))
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatal("marshal synthetic signing key")
 	}
-	waitFileContent(t, ctx, client, rc, path, want, "current authority after retired-key probe")
+	keyPath := filepath.Join(t.TempDir(), "synthetic.pem")
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600); err != nil {
+		t.Fatal("write synthetic signing key")
+	}
+	now := time.Now().UTC().Truncate(time.Second)
+	claims := executionenv.GrantClaims{KeyID: "k2", Issuer: "fixture", Audience: "fixture", Client: "fixture-client", OwnerHash: "fixture-owner", BindingID: "binding", RunID: "run", ClaimID: "claim", Environment: executionenv.EnvironmentRef{ID: "env", Revision: "rev"}, Epoch: 3, GrantGeneration: 2, Operations: []executionenv.Operation{executionenv.OpFileRead}, NotBefore: now.Add(-time.Second), ExpiresAt: now.Add(30 * time.Second), Nonce: "fixture-nonce"}
+	grant, err := executionenv.SignGrant(key, claims)
+	if err != nil {
+		t.Fatal("sign synthetic control")
+	}
+	rc := executionenv.RequestContext{Environment: claims.Environment, Owner: executionenv.Owner{Issuer: "issuer", Subject: "subject"}, BindingID: claims.BindingID, RunID: claims.RunID, ClaimID: claims.ClaimID, Epoch: claims.Epoch, GrantGeneration: claims.GrantGeneration, Grant: grant}
+	for _, probe := range []struct {
+		keyID      string
+		generation uint64
+	}{{"k2", 1}, {"k1", 2}} {
+		resigned := resignFixtureGrant(t, rc, keyPath, probe.keyID, probe.generation)
+		verifier := executionenv.GrantVerifier{Keys: map[string]ed25519.PublicKey{probe.keyID: key.Public().(ed25519.PublicKey)}, Issuer: claims.Issuer, Audience: claims.Audience, MaxLifetime: time.Minute}
+		got, err := verifier.Verify(resigned.Grant, executionenv.GrantExpectation{Client: claims.Client, OwnerHash: claims.OwnerHash, BindingID: rc.BindingID, RunID: rc.RunID, ClaimID: rc.ClaimID, Environment: rc.Environment, Epoch: rc.Epoch, GrantGeneration: probe.generation, Operation: executionenv.OpFileRead})
+		want := claims
+		want.KeyID, want.GrantGeneration = probe.keyID, probe.generation
+		if err != nil || !reflect.DeepEqual(got, want) {
+			t.Fatal("probe changed claims beyond key ID and generation")
+		}
+		resigned.Grant, resigned.GrantGeneration = rc.Grant, rc.GrantGeneration
+		if resigned != rc {
+			t.Fatal("probe changed request identity")
+		}
+	}
 }
 
 func requireOwnedHelmFixture(t *testing.T, state, kubeconfig string) {
