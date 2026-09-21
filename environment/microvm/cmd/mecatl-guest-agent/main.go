@@ -24,7 +24,7 @@ import (
 
 type repositoryBootConfig struct {
 	Owner, RepositoryKey, VMID, Endpoint string
-	Generation                           uint32
+	Generation, PlacementGeneration      uint32
 }
 
 type bootConfig struct {
@@ -80,7 +80,7 @@ func run(configPath string) error { //nolint:gocyclo // explicit legacy/reposito
 	if cfg.Repository != nil {
 		repositoryServer, serverErr := guestagent.NewRepositoryServer(guestagent.RepositoryServerConfig{
 			Owner: cfg.Repository.Owner, RepositoryKey: cfg.Repository.RepositoryKey, VMID: cfg.Repository.VMID, Endpoint: cfg.Repository.Endpoint,
-			Generation: cfg.Repository.Generation, AuthorityKey: key, ExecLimits: guestexec.Limits{MaxFrameBytes: cfg.MaxMessageBytes}, Shell: "/bin/sh",
+			Generation: cfg.Repository.Generation, PlacementGeneration: cfg.Repository.PlacementGeneration, AuthorityKey: key, ExecLimits: guestexec.Limits{MaxFrameBytes: cfg.MaxMessageBytes}, Shell: "/bin/sh",
 			WorkloadIdentity: guestexec.DefaultWorkloadIdentity(), RuntimeContract: guestexec.DefaultRuntimeContract(),
 		})
 		err = serverErr
@@ -236,7 +236,7 @@ func loadConfig(path string) (bootConfig, error) {
 		return bootConfig{}, fmt.Errorf("decode guest preboot config: %w", err)
 	}
 	if cfg.CapabilityKey == "" || cfg.MaxMessageBytes == 0 || (cfg.Repository == nil && cfg.Binding.Ref == "") ||
-		(cfg.Repository != nil && (cfg.Repository.Owner == "" || cfg.Repository.RepositoryKey == "" || cfg.Repository.VMID == "" || cfg.Repository.Endpoint == "" || cfg.Repository.Generation == 0)) {
+		(cfg.Repository != nil && (cfg.Repository.Owner == "" || cfg.Repository.RepositoryKey == "" || cfg.Repository.VMID == "" || cfg.Repository.Endpoint == "" || cfg.Repository.Generation == 0 || cfg.Repository.PlacementGeneration == 0)) {
 		return bootConfig{}, errors.New("guest preboot config is incomplete")
 	}
 	return cfg, nil

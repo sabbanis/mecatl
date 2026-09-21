@@ -68,6 +68,15 @@ valid="$root/acceptance/valid-v1.md"
 write_plan "$valid"
 bash "$checker" "$valid" >/dev/null
 
+large_interface="$root/acceptance/large-interface-v1.md"
+awk '
+  { print }
+  /^- \*\*Compatibility \/ migration:\*\*/ {
+    for (i = 0; i < 20000; i++) print "Interface detail padding " i
+  }
+' "$valid" >"$large_interface"
+bash "$checker" "$large_interface" >/dev/null
+
 bounded_valid="$root/acceptance/valid-bounded-v2.md"
 cp "$valid" "$bounded_valid"
 sed_in_place 's/human-reviewed\/v1/human-reviewed\/v2/' "$bounded_valid"

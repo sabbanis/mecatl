@@ -533,7 +533,7 @@ func (r *fakeRepositoryVMRuntime) Start(_ context.Context, record RepositoryVMRe
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.starts++
-	status := RuntimeStatus{Live: true, Generation: record.Generation, VMID: record.VMID, PID: 4000 + r.starts, ProcessIdentity: "boot-identity-" + record.VMID, Endpoint: record.Endpoint}
+	status := RuntimeStatus{Live: true, Generation: record.Boot.Generation, VMID: record.VMID, PID: 4000 + r.starts, ProcessIdentity: "boot-identity-" + record.VMID, Endpoint: record.Endpoint}
 	r.statuses[record.VMID] = status
 	r.authorities[record.VMID] = authority
 	return status, nil

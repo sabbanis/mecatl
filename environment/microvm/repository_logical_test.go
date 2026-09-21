@@ -381,7 +381,7 @@ func (g *testRepositoryGuest) Register(ctx context.Context, record RepositoryVMR
 		contract.Identity = identity
 		var err error
 		server, err = guestagent.NewRepositoryServer(guestagent.RepositoryServerConfig{
-			Owner: record.Owner, Generation: record.Generation, AuthorityKey: key,
+			Owner: record.Owner, Generation: record.Boot.Generation, PlacementGeneration: record.Generation, AuthorityKey: key,
 			WorkloadIdentity: identity, RuntimeContract: contract,
 			ResolveRoot: func(guestRoot string) (string, error) {
 				root := g.mounts[guestRoot]

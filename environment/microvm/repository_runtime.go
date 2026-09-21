@@ -2,6 +2,8 @@ package microvm
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -26,17 +28,25 @@ const (
 	RepositoryGuestMountRoot = "/run/mecatl/repositories"
 )
 
+// RepositoryLaunchReconciler proves historical launch attempts dead before replacement.
+type RepositoryLaunchReconciler interface {
+	Reconcile(context.Context, string) (LaunchReconcileResult, error)
+}
+
 // RepositoryRuntimeConfig wires the repository-scoped production adapters to
 // the lowest hypervisor and guest-transport seams.
 type RepositoryRuntimeConfig struct {
-	Backend      GoMicroVMBackend
-	DialGuest    GuestDialer
-	DialControl  GuestDialer
-	UnixEndpoint bool
-	EndpointRoot string
-	Network      *NetworkController
-	GuestEgress  GuestEgressPolicy
-	Observer     *OperationsObserver
+	Backend          GoMicroVMBackend
+	DialGuest        GuestDialer
+	DialControl      GuestDialer
+	UnixEndpoint     bool
+	EndpointRoot     string
+	Network          *NetworkController
+	GuestEgress      GuestEgressPolicy
+	ArtifactPolicy   string
+	Artifacts        map[ArtifactKind]ArtifactRequest
+	LaunchReconciler RepositoryLaunchReconciler
+	Observer         *OperationsObserver
 }
 
 type repositoryRuntimeGeneration struct {
@@ -46,6 +56,17 @@ type repositoryRuntimeGeneration struct {
 	authorityKey   []byte
 	network        NetworkHandle
 	objectSnapshot string
+	controlMu      sync.Mutex
+	nextSequence   uint64
+	pending        *guestagent.RepositoryControlRequest
+	registrations  map[string]*repositoryHostRegistration
+}
+
+type repositoryHostRegistration struct {
+	binding     control.Binding
+	incarnation string
+	registered  bool
+	tearingDown bool
 }
 
 type repositoryRuntimeAttacher interface {
@@ -59,17 +80,18 @@ type repositoryRuntimeAborter interface {
 // RepositoryRuntime is both the concrete singleton VM runtime and logical guest
 // registrar used by production microvmd composition.
 type RepositoryRuntime struct {
-	backend         GoMicroVMBackend
-	dial            GuestDialer
-	controlDial     GuestDialer
-	unixEndpoint    bool
-	network         *NetworkController
-	guestEgress     GuestEgressPolicy
-	observer        *OperationsObserver
-	rollbackTimeout time.Duration
-	mu              sync.Mutex
-	vms             map[string]*repositoryRuntimeGeneration
-	listeners       map[string]*net.UnixListener
+	backend          GoMicroVMBackend
+	dial             GuestDialer
+	controlDial      GuestDialer
+	unixEndpoint     bool
+	network          *NetworkController
+	guestEgress      GuestEgressPolicy
+	observer         *OperationsObserver
+	launchReconciler RepositoryLaunchReconciler
+	rollbackTimeout  time.Duration
+	mu               sync.Mutex
+	vms              map[string]*repositoryRuntimeGeneration
+	listeners        map[string]*net.UnixListener
 }
 
 // NewRepositoryRuntime constructs the production repository adapters. There is
@@ -78,7 +100,13 @@ func NewRepositoryRuntime(cfg RepositoryRuntimeConfig) (*RepositoryRuntime, erro
 	if cfg.Backend == nil || cfg.Network == nil || (cfg.UnixEndpoint && (cfg.DialGuest != nil || cfg.DialControl != nil)) || (!cfg.UnixEndpoint && (cfg.DialGuest == nil || cfg.DialControl == nil)) {
 		return nil, errors.New("repository microvm runtime is not fully configured")
 	}
-	runtime := &RepositoryRuntime{backend: cfg.Backend, dial: cfg.DialGuest, controlDial: cfg.DialControl, unixEndpoint: cfg.UnixEndpoint, network: cfg.Network, guestEgress: cfg.GuestEgress, observer: cfg.Observer, rollbackTimeout: repositoryRollbackTimeout, vms: make(map[string]*repositoryRuntimeGeneration), listeners: make(map[string]*net.UnixListener)}
+	if backend, ok := cfg.Backend.(*LibkrunBackend); ok && (backend == nil || backend.launchOwnership == nil) {
+		return nil, ErrLaunchOwnershipUnsupported
+	}
+	if cfg.LaunchReconciler == nil {
+		cfg.LaunchReconciler, _ = cfg.Backend.(RepositoryLaunchReconciler)
+	}
+	runtime := &RepositoryRuntime{backend: cfg.Backend, dial: cfg.DialGuest, controlDial: cfg.DialControl, unixEndpoint: cfg.UnixEndpoint, network: cfg.Network, guestEgress: cloneGuestEgressPolicy(cfg.GuestEgress), observer: cfg.Observer, launchReconciler: cfg.LaunchReconciler, rollbackTimeout: repositoryRollbackTimeout, vms: make(map[string]*repositoryRuntimeGeneration), listeners: make(map[string]*net.UnixListener)}
 	if cfg.UnixEndpoint {
 		runtime.dial = runtime.acceptGuest
 		runtime.controlDial = runtime.acceptGuest
@@ -102,7 +130,7 @@ func (r *RepositoryRuntime) Start(ctx context.Context, record RepositoryVMRecord
 	networkDirOwned := false
 	var network NetworkHandle
 	var instance GoMicroVMInstance
-	owned := &repositoryRuntimeGeneration{record: record, authorityKey: authority.bytes()}
+	owned := &repositoryRuntimeGeneration{record: record, authorityKey: authority.bytes(), nextSequence: 1, registrations: make(map[string]*repositoryHostRegistration)}
 	committed := false
 	defer func() {
 		if committed {
@@ -130,7 +158,7 @@ func (r *RepositoryRuntime) Start(ctx context.Context, record RepositoryVMRecord
 		r.observer.trackEgressDenials(record.VMID, source)
 	}
 	launch := GoMicroVMLaunch{
-		EnvironmentID: record.VMID, VMID: record.VMID, Endpoint: record.Endpoint, Generation: record.Generation,
+		EnvironmentID: repositoryLaunchEnvironmentID(record.RepositoryKey), VMID: record.VMID, Endpoint: record.Endpoint, Generation: record.bootGeneration(), PlacementGeneration: record.Generation,
 		RepositoryOwner: record.Owner, RepositoryKey: record.RepositoryKey,
 		RuntimePath: verified.Runtime.Path, FirmwarePath: verified.Firmware.Path, ImagePath: record.RootFSPath,
 		Network: network.Provider, NetworkSocket: network.SocketPath,
@@ -201,25 +229,24 @@ func (r *RepositoryRuntime) rollback(parent context.Context, record RepositoryVM
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), timeout)
 	defer cancel()
 
-	var stopErr, removeErr error
+	var stopErr, cleanupBootErr error
 	if owned.instance != nil {
 		if err := owned.instance.Stop(ctx); err != nil {
 			stopErr = fmt.Errorf("stop repository VM during rollback: %w", err)
-		}
-		if err := owned.instance.Remove(ctx); err != nil {
-			removeErr = fmt.Errorf("remove repository VM during rollback: %w", err)
+		} else if err := owned.instance.CleanupBoot(ctx); err != nil {
+			cleanupBootErr = fmt.Errorf("clean repository VM boot data during rollback: %w", err)
 		}
 	}
-	if removeErr != nil {
+	if stopErr != nil || cleanupBootErr != nil {
 		r.mu.Lock()
 		existing := r.vms[record.VMID]
 		if existing == nil {
 			r.vms[record.VMID] = owned
 		} else if existing != owned {
-			removeErr = errors.Join(removeErr, ErrRepositoryVMInconsistent)
+			cleanupBootErr = errors.Join(cleanupBootErr, ErrRepositoryVMInconsistent)
 		}
 		r.mu.Unlock()
-		return errors.Join(stopErr, removeErr)
+		return errors.Join(stopErr, cleanupBootErr)
 	}
 
 	r.mu.Lock()
@@ -266,22 +293,13 @@ func (r *RepositoryRuntime) Abort(ctx context.Context, record RepositoryVMRecord
 
 // Health performs guest-origin proof of the host's unpredictable challenge.
 func (r *RepositoryRuntime) Health(ctx context.Context, record RepositoryVMRecord, challenge RepositoryHealthChallenge) (RepositoryHealthResponse, error) {
-	if r.unixEndpoint {
-		r.mu.Lock()
-		listener := r.listeners[record.Endpoint]
-		r.mu.Unlock()
-		if listener == nil {
-			if err := removeIfExists(record.Endpoint); err != nil {
-				return RepositoryHealthResponse{}, err
-			}
-			if err := r.listenGuest(record.Endpoint); err != nil {
-				return RepositoryHealthResponse{}, err
-			}
-		}
-	}
 	r.mu.Lock()
 	generation := r.vms[record.VMID]
+	listener := r.listeners[record.Endpoint]
 	r.mu.Unlock()
+	if r.unixEndpoint && listener == nil {
+		return RepositoryHealthResponse{}, errors.New("repository guest listener is not owned by this daemon process")
+	}
 	if generation == nil || generation.instance == nil || generation.network.Provider == nil || generation.network.SocketPath == "" {
 		return RepositoryHealthResponse{}, errors.New("repository network backend is not live in this daemon process")
 	}
@@ -320,8 +338,8 @@ func (r *RepositoryRuntime) AttachRepository(record RepositoryVMRecord, authorit
 	return nil
 }
 
-// Register authenticates one logical binding, sends only its guest-visible root
-// to the guest, then opens the separately authenticated data-plane connection.
+// Register installs one boot-scoped registration transactionally through the
+// separately authenticated data-plane connection.
 func (r *RepositoryRuntime) Register(ctx context.Context, record RepositoryVMRecord, binding control.Binding, mount RepositoryGuestMount) (*guestagent.Services, error) {
 	expectedHostRoot := filepath.Join(filepath.Dir(record.RootFSPath), "logical", filepath.FromSlash(strings.TrimPrefix(binding.AssignedRoot, RepositoryGuestMountRoot+"/")))
 	if mount.HostPath == "" || mount.GuestPath != binding.AssignedRoot || !filepath.IsAbs(mount.HostPath) || filepath.Clean(mount.HostPath) != expectedHostRoot || !guestLogicalRoot(binding.AssignedRoot) {
@@ -331,40 +349,132 @@ func (r *RepositoryRuntime) Register(ctx context.Context, record RepositoryVMRec
 	if err != nil {
 		return nil, err
 	}
-	registration, err := generation.issuer.Issue(binding)
-	if err != nil {
-		return nil, err
+	generation.controlMu.Lock()
+	defer generation.controlMu.Unlock()
+	registration := generation.registrations[binding.Ref]
+	if registration != nil && registration.binding != binding {
+		return nil, control.ErrBindingMismatch
 	}
-	if _, err := r.control(ctx, record, guestagent.RepositoryControlRequest{Operation: guestagent.RepositoryRegister, Binding: binding, Capability: registration}); err != nil {
-		return nil, err
+	if registration != nil && registration.tearingDown {
+		if err := r.unregisterLocked(ctx, record, generation, registration); err != nil {
+			return nil, err
+		}
+		registration = nil
 	}
-	capability, err := generation.issuer.Issue(binding)
-	if err != nil {
-		return nil, err
+	if registration == nil {
+		incarnation, err := randomRegistrationIncarnation()
+		if err != nil {
+			return nil, err
+		}
+		registration = &repositoryHostRegistration{binding: binding, incarnation: incarnation}
+		generation.registrations[binding.Ref] = registration
+	}
+	if !registration.registered {
+		request := guestagent.RepositoryControlRequest{Operation: guestagent.RepositoryRegister, Binding: binding, Incarnation: registration.incarnation}
+		if err := r.mutateLocked(ctx, record, generation, request); err != nil {
+			return nil, err
+		}
 	}
 	stream, err := r.authenticatedGuest(ctx, record, guestagent.RepositoryChannelData)
-	if err != nil {
-		return nil, err
-	}
-	services, err := guestagent.Connect(ctx, stream, binding, capability)
-	if err != nil {
+	if err == nil {
+		var services *guestagent.Services
+		services, err = guestagent.ConnectRepository(ctx, stream, binding, registration.incarnation)
+		if err == nil {
+			return services, nil
+		}
 		_ = stream.Close()
 	}
-	return services, err
+	registration.tearingDown = true
+	rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.cleanupTimeout())
+	rollbackErr := r.unregisterLocked(rollbackCtx, record, generation, registration)
+	cancel()
+	return nil, errors.Join(err, rollbackErr)
 }
 
-// Unregister generation/ref/root-authenticates removal in the guest.
+// Unregister retries the exact pending teardown and is idempotent after a
+// confirmed removal.
 func (r *RepositoryRuntime) Unregister(ctx context.Context, record RepositoryVMRecord, binding control.Binding) error {
 	generation, err := r.generation(record)
 	if err != nil {
 		return err
 	}
-	capability, err := generation.issuer.Issue(binding)
-	if err != nil {
-		return err
+	generation.controlMu.Lock()
+	defer generation.controlMu.Unlock()
+	registration := generation.registrations[binding.Ref]
+	if registration == nil {
+		return nil
 	}
-	_, err = r.control(ctx, record, guestagent.RepositoryControlRequest{Operation: guestagent.RepositoryUnregister, Binding: binding, Capability: capability})
+	if registration.binding != binding {
+		return control.ErrBindingMismatch
+	}
+	registration.tearingDown = true
+	return r.unregisterLocked(ctx, record, generation, registration)
+}
+
+func (r *RepositoryRuntime) unregisterLocked(ctx context.Context, record RepositoryVMRecord, generation *repositoryRuntimeGeneration, registration *repositoryHostRegistration) error {
+	request := guestagent.RepositoryControlRequest{Operation: guestagent.RepositoryUnregister, Binding: registration.binding, Incarnation: registration.incarnation}
+	return r.mutateLocked(ctx, record, generation, request)
+}
+
+func applyRepositoryMutationAcknowledgement(generation *repositoryRuntimeGeneration, request guestagent.RepositoryControlRequest, succeeded bool) {
+	registration := generation.registrations[request.Binding.Ref]
+	if registration == nil || registration.binding != request.Binding || registration.incarnation != request.Incarnation {
+		return
+	}
+	switch request.Operation {
+	case guestagent.RepositoryRegister:
+		registration.registered = succeeded
+	case guestagent.RepositoryUnregister:
+		if succeeded {
+			delete(generation.registrations, request.Binding.Ref)
+		}
+	}
+}
+
+func (r *RepositoryRuntime) mutateLocked(ctx context.Context, record RepositoryVMRecord, generation *repositoryRuntimeGeneration, request guestagent.RepositoryControlRequest) error {
+	if generation.pending != nil {
+		pending := *generation.pending
+		if pending.Operation != request.Operation || pending.Binding != request.Binding || pending.Incarnation != request.Incarnation {
+			response, err := r.control(ctx, record, pending)
+			if response.Sequence == pending.Sequence {
+				applyRepositoryMutationAcknowledgement(generation, pending, err == nil)
+				generation.pending = nil
+				generation.nextSequence++
+			}
+			if err != nil {
+				return err
+			}
+		} else {
+			request = pending
+		}
+	}
+	if request.Sequence == 0 {
+		request.Sequence = generation.nextSequence
+		copyRequest := request
+		generation.pending = &copyRequest
+	}
+	response, err := r.control(ctx, record, request)
+	if response.Sequence == request.Sequence {
+		applyRepositoryMutationAcknowledgement(generation, request, err == nil)
+		generation.pending = nil
+		generation.nextSequence++
+	}
 	return err
+}
+
+func (r *RepositoryRuntime) cleanupTimeout() time.Duration {
+	if r.rollbackTimeout > 0 {
+		return r.rollbackTimeout
+	}
+	return repositoryRollbackTimeout
+}
+
+func randomRegistrationIncarnation() (string, error) {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", fmt.Errorf("allocate repository registration incarnation: %w", err)
+	}
+	return hex.EncodeToString(value[:]), nil
 }
 
 func (r *RepositoryRuntime) generation(record RepositoryVMRecord) (*repositoryRuntimeGeneration, error) {
@@ -391,11 +501,14 @@ func (r *RepositoryRuntime) control(ctx context.Context, record RepositoryVMReco
 	if err := codec.Read(stream, &response); err != nil {
 		return guestagent.RepositoryControlResponse{}, err
 	}
+	if request.Sequence != 0 && response.Sequence != request.Sequence {
+		return guestagent.RepositoryControlResponse{}, errors.New("repository guest control response sequence mismatch")
+	}
 	if response.ErrorCode != "" {
 		if response.ErrorCode == "logical_root_unavailable" {
-			return guestagent.RepositoryControlResponse{}, ErrRepositoryLogicalRootUnavailable
+			return response, ErrRepositoryLogicalRootUnavailable
 		}
-		return guestagent.RepositoryControlResponse{}, fmt.Errorf("repository guest control rejected: %s", response.ErrorCode)
+		return response, fmt.Errorf("repository guest control rejected: %s", response.ErrorCode)
 	}
 	return response, nil
 }
@@ -418,7 +531,7 @@ func (r *RepositoryRuntime) authenticatedGuest(ctx context.Context, record Repos
 		if dialErr != nil {
 			return nil, dialErr
 		}
-		authErr := guestagent.AuthenticateHostRepositoryChannel(ctx, stream, authorityKey, record.Owner, record.RepositoryKey, record.VMID, record.Generation, purpose)
+		authErr := guestagent.AuthenticateHostRepositoryChannel(ctx, stream, authorityKey, record.Owner, record.RepositoryKey, record.VMID, record.bootGeneration(), purpose)
 		if authErr == nil {
 			return stream, nil
 		}
@@ -442,6 +555,9 @@ func (r *RepositoryRuntime) listenGuest(endpoint string) error {
 	defer r.mu.Unlock()
 	if r.listeners[endpoint] != nil {
 		return ErrRepositoryVMInconsistent
+	}
+	if err := os.Remove(endpoint); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove stale repository guest endpoint: %w", err)
 	}
 	listener, err := net.ListenUnix("unix", &net.UnixAddr{Name: endpoint, Net: "unix"})
 	if err != nil {
@@ -490,6 +606,66 @@ func (r *RepositoryRuntime) acceptGuest(ctx context.Context, endpoint string) (i
 			return nil, err
 		}
 	}
+}
+
+func repositoryLaunchEnvironmentID(repositoryKey string) string {
+	return "repository-" + repositoryKey
+}
+
+// Reconcile proves that every historical runner for this stable repository is
+// dead before the registry rotates boot authority and starts a replacement.
+func (r *RepositoryRuntime) Reconcile(ctx context.Context, record RepositoryVMRecord) error {
+	r.mu.Lock()
+	for _, generation := range r.vms {
+		if generation != nil && generation.record.RepositoryKey == record.RepositoryKey {
+			r.mu.Unlock()
+			return ErrLaunchOwnershipUncertain
+		}
+	}
+	r.mu.Unlock()
+	if r.launchReconciler == nil {
+		return ErrLaunchOwnershipUnsupported
+	}
+	_, err := r.launchReconciler.Reconcile(ctx, repositoryLaunchEnvironmentID(record.RepositoryKey))
+	return err
+}
+
+// Shutdown stops process-local VM and network resources while retaining every
+// repository rootfs, logical worktree, attachment, and launch record.
+func (r *RepositoryRuntime) Shutdown(ctx context.Context) error {
+	r.mu.Lock()
+	generations := make([]*repositoryRuntimeGeneration, 0, len(r.vms))
+	for _, generation := range r.vms {
+		generations = append(generations, generation)
+	}
+	r.mu.Unlock()
+	var result error
+	for _, generation := range generations {
+		if generation == nil {
+			continue
+		}
+		if generation.instance != nil {
+			if err := generation.instance.Stop(ctx); err != nil {
+				result = errors.Join(result, err)
+				continue
+			}
+			if err := generation.instance.CleanupBoot(ctx); err != nil {
+				result = errors.Join(result, err)
+				continue
+			}
+		}
+		if generation.network.Provider != nil {
+			generation.network.Provider.Stop()
+		}
+		if generation.objectSnapshot != "" {
+			result = errors.Join(result, removeObjectSnapshot(generation.objectSnapshot))
+		}
+		r.closeGuestListener(generation.record.Endpoint)
+		r.mu.Lock()
+		delete(r.vms, generation.record.VMID)
+		r.mu.Unlock()
+	}
+	return result
 }
 
 func guestLogicalRoot(root string) bool {

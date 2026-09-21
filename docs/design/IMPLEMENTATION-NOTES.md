@@ -90,15 +90,24 @@ in-process `toolhive-core/container/verifier`, the one-shot rootfs materializer,
 repository-scoped lifecycle, logical worktree attachment, and the Linux amd64 MVP journey.
 
 The MVP key is `(authenticated local operator, canonical Git common directory)`. An
-inter-process-locked durable registry admits one VM generation and one rootfs materializer
+inter-process-locked durable registry admits one stable placement generation and one rootfs
 for that key. Different keys do not share rootfs, packages, guest home, or declared caches.
-Exact reattachment is allowed only while every owned dependency remains live in-process.
-Daemon restart loses the in-process hosted network provider, so readiness and resolve fail
-promptly with a named phase while preserving the durable record, rootfs, and worktrees; no
-replacement or destructive reconciliation occurs. The registry layer itself does not
-multiplex guest environments. Selecting the backend at service startup performs no Bind and
-allocates no logical attachment. `EnsureReady` runs only when an actual default MicroVM session
-is created; no-FS bypasses it, and readiness failure occurs before session persistence with no
+The placement generation remains in every logical ref across daemon and host restart.
+Replaceable boot state carries a separate generation, VM ID, endpoint, runner identity, and
+fresh authority. Under the repository lock, `RepositoryVMRegistry.Ensure` validates retained
+state and artifact/policy identities, invokes `LaunchOwnership.Reconcile` for the stable
+repository launch identity, writes a fresh boot intent, and starts hosted networking and a VM
+around the existing rootfs. Reconciliation validates the host boot ID, receipt, process start,
+executable identity, inherited lock fd, and pidfd before signaling an exact prior runner. A
+pending receipt is retryable; uncertain identity blocks replacement. The daemon holds one
+owner-only service flock for its complete lifetime and acquires it before socket cleanup or
+repository-runtime construction. Competing manager launches therefore wait for the same owner
+instead of unlinking its socket or entering service. First admission materializes into a recorded,
+host-only staging directory and atomically publishes `rootfs`; a retry can rebuild only that
+never-published staging transaction or finish a publication whose rootfs is already present. The
+registry never replays an interrupted command, rematerializes a published rootfs, creates empty
+user state, or falls back to host execution. `EnsureReady` runs only when an actual default MicroVM session is
+created; no-FS bypasses it, and readiness failure occurs before session persistence with no
 host-local fallback.
 
 The daemon creates and registers one distinct Git worktree for each session or isolated
@@ -144,8 +153,9 @@ disables IPv6, and is fail-closed. Linux amd64 KVM is the sole live claim. Quali
 OpenRouter `openai/gpt-5-mini` through the public HTTP create/prompt path and observed normal
 Write, Read, and Bash in the Wolfi guest as UID 65532, source isolation, exact same-session
 reattachment after only mecated restarted, and healthy doctor/status results. Microvmd remained
-alive throughout the harness restart, so this evidence does not widen the documented fail-closed
-microvmd-restart boundary.
+alive throughout that manual qualification. Offline composition and launch-ownership tests
+separately cover daemon restart, cold-host-boot equivalence, retained mutable state, and exact
+runner reconciliation.
 
 Two defects found during qualification are fixed at their owning seams. The development descriptor
 check in `internal/adapter/microvmmanager/development_release_microvm_dev.go`
@@ -158,8 +168,7 @@ the actionable diagnostic and reject empty, absolute, NUL-containing, and escapi
 paths.
 
 Status uses deterministic owner-scoped pages of at most 64 entries with opaque continuation
-tokens. Explicit deferrals are repository-VM deletion UX,
-sophisticated retention, crash-orphan reconciliation beyond safe loud failure,
+tokens. Explicit deferrals are repository-VM deletion UX, sophisticated retention,
 crash-durable/cross-process merge, Linux arm64 and macOS live support, upstream Brood
 signing, independent refresh channels, per-session fairness/quotas, dashboards, and
 exhaustive cache-poisoning controls.
@@ -220,9 +229,12 @@ revision, sorted profiles, and socket only after Unix peer authentication.
 `internal/adapter/microvmmanager/manager.go` (`EnsureReady`) serializes all callers with the manager lock. It installs and starts only a
 genuinely fresh repository-scoped runtime; subsequent sessions and host processes reuse only
 a serving daemon whose persisted desired release/policy, installed binary/config, protocol,
-profile set, and socket identities all match. Conflicts or unhealthy state fail without stop,
-config rewrite, cache/state deletion, or runtime replacement. The exact `Stop` operation remains
-internal for explicit lifecycle cleanup and is never called by ordinary readiness. Before any
+profile set, and socket identities all match. A compatible configured daemon that is no longer
+serving is started again under the same lock. `DefaultOperations.Start` first checks the durable
+process receipt and refuses a duplicate when the prior exact daemon is live or its identity is
+uncertain. Configuration conflicts still fail without rewriting config, cache, or state. The
+exact `Stop` operation remains internal for explicit lifecycle cleanup and is never called by
+ordinary readiness. Before any
 download or repository provisioning, `internal/adapter/microvmmanager/default_operations.go`
 (`Preflight`) checks Git,
 Python 3, KVM, and actual ephemeral unprivileged-user-namespace creation; disabled controls
@@ -239,15 +251,16 @@ macOS have compile/static release coverage only; live support, schedules, remote
 placement, non-Git sources, and unified host+guest egress are explicit limits.
 
 Artifact launch no longer treats `flock` as a security boundary. After revalidating all
-three cache entries, `environment/microvm/artifact.go` (`LockAndValidate`) copies their
-exact tree identities into one private per-launch snapshot and returns replacement
-`VerifiedArtifacts`; lifecycle and the direct provisioner launcher pass the replacements,
-not the published cache paths, to runtime. A digest check over each completed copy rejects
-a source race. Because go-microvm starts its runner asynchronously, the concrete backend
-copies runtime and firmware once more into generation-owned executable daemon state before
-returning from `Start`; rootfs is already a generation-owned clone. The launch snapshot can
-then be removed without racing the runner's firmware load, while deletion/reconciliation
-remove the owned copies. Release manifest v2
+four cache entries, `environment/microvm/artifact.go` (`LockAndValidate`) copies their exact
+tree identities into one private launch snapshot. First repository admission copies that
+verified set once more into the host-only repository state and records each digest, platform,
+and policy revision. Recovery rehashes those retained immutable copies and compares current
+configured identities before launch, so it does not require a network fetch and cannot silently
+upgrade an artifact or weaken policy. The mutable rootfs is retained separately and only its
+safety-critical guest-agent path is validated. Because go-microvm starts its runner
+asynchronously, the concrete backend copies runtime and firmware into boot-owned executable
+daemon state before returning from `Start`; rootfs is already repository-owned. Release
+manifest v2
 uses the same `ArtifactTreeDigest` subjects independently for runtime, firmware, and the
 execution image. Because Brood Box does not publish a signed immutable base, the
 release workflow builds its base recipe directly from the pinned upstream commit,

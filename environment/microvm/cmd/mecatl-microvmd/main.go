@@ -48,6 +48,8 @@ type daemonConfig struct {
 
 type profileConfig struct{}
 
+var daemonAfterOwnership func()
+
 type artifactConfig struct {
 	Kind               microvm.ArtifactKind `json:"kind"`
 	Reference          string               `json:"reference"`
@@ -100,6 +102,13 @@ func (stderrDiagnostics) Log(_ context.Context, level port.Level, msg string, ar
 func (d stderrDiagnostics) With(...any) port.Diagnostics { return d }
 
 func main() {
+	if handled, err := microvm.RunLaunchOwnerChild(os.Args[1:]); handled {
+		if err != nil {
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	stateDir := flag.String("state-dir", "", "private absolute daemon state directory")
 	socketPath := flag.String("socket", "", "private absolute lifecycle Unix socket")
 	configPath := flag.String("config", "", "operator-owned artifact and network configuration")
@@ -128,6 +137,17 @@ func run(stateDir, socketPath, configPath string) error { //nolint:gocyclo // ex
 	if !filepath.IsAbs(stateDir) || !filepath.IsAbs(socketPath) || !filepath.IsAbs(configPath) {
 		return errors.New("state-dir, socket, and config must be absolute")
 	}
+	if err := os.MkdirAll(stateDir, 0o700); err != nil { // #nosec G703 -- absolute operator-configured private state root validated above.
+		return err
+	}
+	ownershipLock, err := acquireDaemonOwnership(stateDir)
+	if err != nil {
+		return err
+	}
+	defer ownershipLock.close()
+	if daemonAfterOwnership != nil {
+		daemonAfterOwnership()
+	}
 	_, _ = fmt.Fprintf(os.Stderr, "microvmd process identity uid=%d euid=%d gid=%d egid=%d\n", os.Getuid(), os.Geteuid(), os.Getgid(), os.Getegid())
 	cfg, resolver, policy, err := loadDaemonConfig(configPath)
 	if err != nil {
@@ -139,9 +159,6 @@ func run(stateDir, socketPath, configPath string) error { //nolint:gocyclo // ex
 	}
 	if cfg.BinaryIdentity != info.BinaryIdentity {
 		return errors.New("running microvmd binary does not match configured binary identity")
-	}
-	if err := os.MkdirAll(stateDir, 0o700); err != nil {
-		return err
 	}
 	uid := os.Getuid()
 	if uid < 0 || uint64(uid) > uint64(^uint32(0)) {
@@ -159,7 +176,7 @@ func run(stateDir, socketPath, configPath string) error { //nolint:gocyclo // ex
 	}
 	runtimeArtifactDir := filepath.Join(stateDir, "runtime-artifacts")
 	for _, dir := range []string{runtimeDir, runtimeArtifactDir} {
-		if err := os.MkdirAll(dir, 0o700); err != nil {
+		if err := os.MkdirAll(dir, 0o700); err != nil { // #nosec G703 -- derived from the validated state root or validated absolute runtime_dir.
 			return err
 		}
 	}
@@ -176,10 +193,24 @@ func run(stateDir, socketPath, configPath string) error { //nolint:gocyclo // ex
 	resolver.configureOCI(filepath.Join(artifactCache, "oci"))
 	observer := microvm.NewOperationsObserver(stderrDiagnostics{})
 	artifactVerifier := microvm.NewProvisioner(microvm.NewVerifiedCache(artifactCache), resolver, policy, nil, nil, observer)
-	backend := microvm.NewLibkrunBackend(runtimeArtifactDir)
+	launcherPath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve microvmd launcher: %w", err)
+	}
+	ownership, err := microvm.NewLaunchOwnership(microvm.LaunchOwnershipConfig{
+		Root: filepath.Join(stateDir, "launch-attempts"), LauncherPath: launcherPath,
+	})
+	if err != nil {
+		return fmt.Errorf("configure runner launch ownership: %w", err)
+	}
+	backend, err := microvm.NewLibkrunBackend(runtimeArtifactDir, ownership)
+	if err != nil {
+		return fmt.Errorf("configure repository libkrun backend: %w", err)
+	}
 	network := microvm.NewHostedBootNetworkController()
 	repositories, err := microvm.NewRepositoryComposition(filepath.Join(stateDir, "repositories"), microvm.RepositoryRuntimeConfig{
-		Backend: backend, Network: network, GuestEgress: cfg.GuestEgress, Observer: observer, UnixEndpoint: true, EndpointRoot: runtimeDir,
+		Backend: backend, Network: network, GuestEgress: cfg.GuestEgress, ArtifactPolicy: policy.Revision,
+		Artifacts: artifactRequests, LaunchReconciler: ownership, Observer: observer, UnixEndpoint: true, EndpointRoot: runtimeDir,
 	})
 	if err != nil {
 		return err
@@ -210,7 +241,7 @@ func run(stateDir, socketPath, configPath string) error { //nolint:gocyclo // ex
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil { // #nosec G703 -- socketPath is an absolute operator-configured daemon endpoint.
 		return err
 	}
 	if err := removeExistingSocket(socketPath); err != nil {
@@ -221,10 +252,10 @@ func run(stateDir, socketPath, configPath string) error { //nolint:gocyclo // ex
 		return err
 	}
 	defer func() { _ = listener.Close() }()
-	if err := os.Chmod(socketPath, 0o600); err != nil {
+	if err := os.Chmod(socketPath, 0o600); err != nil { // #nosec G703 -- socketPath is the validated absolute daemon endpoint.
 		return err
 	}
-	defer func() { _ = os.Remove(socketPath) }()
+	defer func() { _ = os.Remove(socketPath) }() // #nosec G703 -- removes only the validated endpoint this process bound.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	return root.Serve(ctx, listener)
@@ -477,7 +508,7 @@ func fileIdentity(path string) (string, error) {
 }
 
 func removeExistingSocket(path string) error {
-	info, err := os.Lstat(path)
+	info, err := os.Lstat(path) // #nosec G703 -- caller supplies the validated absolute daemon socket path.
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -487,7 +518,7 @@ func removeExistingSocket(path string) error {
 	if info.Mode()&os.ModeSocket == 0 {
 		return errors.New("refusing to replace non-socket microvmd endpoint")
 	}
-	return os.Remove(path)
+	return os.Remove(path) // #nosec G703 -- removes only a socket at the validated absolute daemon endpoint.
 }
 
 func validDaemonTrustPolicy(cfg daemonConfig) bool {
@@ -534,7 +565,7 @@ func decodeDaemonConfig(data []byte) (daemonConfig, error) {
 }
 
 func loadDaemonConfig(path string) (daemonConfig, *configuredResolver, microvm.TrustPolicy, error) {
-	data, err := os.ReadFile(path) // #nosec G304 -- explicit operator-owned absolute configuration path.
+	data, err := os.ReadFile(path) // #nosec G304,G703 -- explicit operator-owned absolute configuration path.
 	if err != nil {
 		return daemonConfig{}, nil, microvm.TrustPolicy{}, err
 	}

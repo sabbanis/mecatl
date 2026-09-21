@@ -296,11 +296,11 @@ func TestRepositoryArtifactSnapshotFactoryWithProductionProvisioner(t *testing.T
 			t.Fatalf("post-acquire failure = %v, starts = %d", err, runtime.starts)
 		}
 		for _, path := range runtime.snapshotPaths {
-			if !strings.Contains(path, string(filepath.Separator)+"staging"+string(filepath.Separator)+"launch-") {
-				t.Fatalf("runtime consumed non-private artifact path %q", path)
+			if !strings.Contains(path, string(filepath.Separator)+"launch-artifacts"+string(filepath.Separator)) {
+				t.Fatalf("runtime did not consume repository-private retained artifact %q", path)
 			}
-			if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
-				t.Fatalf("failed generation retained private snapshot %q: %v", path, statErr)
+			if _, statErr := os.Stat(path); statErr != nil {
+				t.Fatalf("failed generation lost retained artifact %q: %v", path, statErr)
 			}
 		}
 	})
@@ -491,7 +491,7 @@ func (r *repositoryFactoryRuntime) Start(_ context.Context, record microvm.Repos
 	if r.startErr != nil {
 		return microvm.RuntimeStatus{}, r.startErr
 	}
-	r.status = microvm.RuntimeStatus{Live: true, Generation: record.Generation, VMID: record.VMID, PID: 4242, ProcessIdentity: "test-process", Endpoint: record.Endpoint}
+	r.status = microvm.RuntimeStatus{Live: true, Generation: record.Boot.Generation, VMID: record.VMID, PID: 4242, ProcessIdentity: "test-process", Endpoint: record.Endpoint}
 	return r.status, nil
 }
 

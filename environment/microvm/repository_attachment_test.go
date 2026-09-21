@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 
@@ -81,7 +82,7 @@ func TestMicroVMMVP_Scenario2_DurableSingletonRegistryReattachesOrFailsLoudly(t 
 	}
 
 	production := newRepositoryAttachmentFixture(t)
-	attached := production.attach(t)
+	attached := production.attachPersisted(t)
 	ref, worktree := attached.Environment.Ref(), attached.Logical.WorktreePath
 	rootfs := attached.Logical.Repository.RootFSPath
 	if err := production.composition.Attachments.Detach(ref); err != nil {
@@ -91,11 +92,16 @@ func TestMicroVMMVP_Scenario2_DurableSingletonRegistryReattachesOrFailsLoudly(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := restartedComposition.Attachments.Reattach(t.Context(), LogicalEnvironmentRequest{Owner: "operator", Checkout: worktree}, ref); !errors.Is(err, ErrRepositoryVMInconsistent) {
-		t.Fatalf("daemon restart without live network backend = %v, want inconsistent generation", err)
+	recovered, err := restartedComposition.Attachments.Reattach(t.Context(), LogicalEnvironmentRequest{Owner: "operator", Checkout: worktree}, ref)
+	if err != nil {
+		t.Fatalf("daemon restart did not recover retained repository: %v", err)
 	}
-	if production.backend.starts != 1 {
-		t.Fatalf("failed restart minted a replacement generation: starts=%d", production.backend.starts)
+	defer recovered.Logical.Detach()
+	if recovered.Environment.Ref() != ref || recovered.Logical.Repository.Generation != attached.Logical.Repository.Generation || recovered.Logical.Repository.Boot.Generation == attached.Logical.Repository.Boot.Generation {
+		t.Fatalf("recovery changed logical placement or reused boot authority: old=%+v new=%+v", attached.Logical.Repository, recovered.Logical.Repository)
+	}
+	if production.backend.starts != 2 {
+		t.Fatalf("daemon restart boots = %d, want one replacement", production.backend.starts)
 	}
 	for _, retained := range []string{worktree, rootfs} {
 		if _, err := os.Stat(retained); err != nil {
@@ -104,11 +110,225 @@ func TestMicroVMMVP_Scenario2_DurableSingletonRegistryReattachesOrFailsLoudly(t 
 	}
 }
 
+func TestRepositoryRecoveryPreservesExactPlacementAndMutableState(t *testing.T) {
+	fixture := newRepositoryAttachmentFixture(t)
+	attachment := fixture.attachPersisted(t)
+	ref := attachment.Environment.Ref()
+	oldRecord := attachment.Logical.Repository
+	tracked := filepath.Join(attachment.Logical.WorktreePath, "tracked.txt")
+	untracked := filepath.Join(attachment.Logical.WorktreePath, "untracked.txt")
+	if err := os.WriteFile(tracked, []byte("staged after boot\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := gitexecForLogicalTest(t.Context(), attachment.Logical.WorktreePath, "add", "tracked.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(untracked, []byte("untracked after boot\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rootMarkers := map[string]string{
+		filepath.Join(oldRecord.RootFSPath, "home", "guest", "recovery-home"):            "home-state",
+		filepath.Join(oldRecord.RootFSPath, "home", "guest", ".cache", "recovery-cache"): "cache-state",
+	}
+	for path, value := range rootMarkers {
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(value), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := fixture.composition.Attachments.Detach(ref); err != nil {
+		t.Fatal(err)
+	}
+
+	restarted, err := NewRepositoryComposition(fixture.stateRoot, fixture.runtimeConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := restarted.Attachments.Reattach(t.Context(), LogicalEnvironmentRequest{Owner: "operator", Checkout: fixture.repository}, ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer recovered.Logical.Detach()
+	newRecord := recovered.Logical.Repository
+	if recovered.Environment.Ref() != ref || newRecord.Generation != oldRecord.Generation || newRecord.RootFSPath != oldRecord.RootFSPath {
+		t.Fatalf("recovery changed durable placement: ref=%+v record=%+v", recovered.Environment.Ref(), newRecord)
+	}
+	if newRecord.Boot.Generation == oldRecord.Boot.Generation || newRecord.VMID == oldRecord.VMID || newRecord.AuthorityDigest == oldRecord.AuthorityDigest {
+		t.Fatalf("recovery reused replaceable boot identity: old=%+v new=%+v", oldRecord.Boot, newRecord.Boot)
+	}
+	status, err := gitexecForLogicalTest(t.Context(), recovered.Logical.WorktreePath, "status", "--porcelain", "--untracked-files=all")
+	if err != nil || !strings.Contains(string(status), "M  tracked.txt") || !strings.Contains(string(status), "?? untracked.txt") {
+		t.Fatalf("recovered Git index/worktree state = %q, %v", status, err)
+	}
+	for path, value := range rootMarkers {
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != value {
+			t.Fatalf("recovered rootfs marker %q = %q, %v", path, got, err)
+		}
+	}
+	if fixture.backend.starts != 2 {
+		t.Fatalf("recovery starts = %d, want exactly one replacement", fixture.backend.starts)
+	}
+}
+
+func TestRepositoryReattachRejectsCallerSelectedDifferentRepository(t *testing.T) {
+	fixture := newRepositoryAttachmentFixture(t)
+	attachment := fixture.attachPersisted(t)
+	ref := attachment.Environment.Ref()
+	marker := filepath.Join(attachment.Logical.WorktreePath, "reattach-marker")
+	if err := os.WriteFile(marker, []byte("preserve"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.composition.Attachments.Detach(ref); err != nil {
+		t.Fatal(err)
+	}
+	other, _, _ := repositoryIdentityFixture(t, t.TempDir(), "other-repository")
+	starts := fixture.backend.starts
+	if _, err := fixture.composition.Attachments.Reattach(t.Context(), LogicalEnvironmentRequest{Owner: "operator", Checkout: other}, ref); err == nil {
+		t.Fatal("reattach accepted caller-selected different repository")
+	}
+	if fixture.backend.starts != starts {
+		t.Fatalf("forged reattach started a different repository: starts=%d want=%d", fixture.backend.starts, starts)
+	}
+	if got, err := os.ReadFile(marker); err != nil || string(got) != "preserve" {
+		t.Fatalf("forged reattach changed retained state: %q, %v", got, err)
+	}
+}
+
+func TestRepositoryRecoveryRejectsPolicyDriftWithoutMutatingState(t *testing.T) {
+	fixture := newRepositoryAttachmentFixture(t)
+	attachment := fixture.attachPersisted(t)
+	ref := attachment.Environment.Ref()
+	marker := filepath.Join(attachment.Logical.WorktreePath, "policy-drift-marker")
+	if err := os.WriteFile(marker, []byte("preserve"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.composition.Attachments.Detach(ref); err != nil {
+		t.Fatal(err)
+	}
+	changed := fixture.runtimeConfig
+	changed.GuestEgress = GuestEgressPolicy{Mode: EgressPermissive}
+	restarted, err := NewRepositoryComposition(fixture.stateRoot, changed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restarted.Attachments.Reattach(t.Context(), LogicalEnvironmentRequest{Owner: "operator", Checkout: fixture.repository}, ref); !errors.Is(err, ErrRepositoryVMInconsistent) {
+		t.Fatalf("policy drift recovery error = %v", err)
+	}
+	if fixture.backend.starts != 1 {
+		t.Fatalf("policy drift started replacement runtime: starts=%d", fixture.backend.starts)
+	}
+	if got, err := os.ReadFile(marker); err != nil || string(got) != "preserve" {
+		t.Fatalf("policy drift changed retained state: %q, %v", got, err)
+	}
+}
+
+func TestRepositoryRecoveryConcurrentEnsureStartsOneBoot(t *testing.T) {
+	fixture := newRepositoryAttachmentFixture(t)
+	attachment := fixture.attachPersisted(t)
+	stableGeneration := attachment.Logical.Repository.Generation
+	if err := fixture.composition.Attachments.Detach(attachment.Environment.Ref()); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewRepositoryComposition(fixture.stateRoot, fixture.runtimeConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const callers = 8
+	records := make(chan RepositoryVMRecord, callers)
+	errs := make(chan error, callers)
+	var wait sync.WaitGroup
+	for range callers {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			result, err := restarted.Registry.Ensure(t.Context(), RepositoryVMRequest{Owner: "operator", Checkout: fixture.repository})
+			if err != nil {
+				errs <- err
+				return
+			}
+			records <- result.Record
+		}()
+	}
+	wait.Wait()
+	close(records)
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	var first RepositoryVMRecord
+	for record := range records {
+		if first.Generation == 0 {
+			first = record
+		}
+		if record != first || record.Generation != stableGeneration {
+			t.Fatalf("concurrent recovery diverged: first=%+v record=%+v", first, record)
+		}
+	}
+	if fixture.backend.starts != 2 {
+		t.Fatalf("concurrent recovery starts = %d, want one replacement", fixture.backend.starts)
+	}
+}
+
+func TestRepositoryRecoveryRejectsCorruptRetainedArtifact(t *testing.T) {
+	fixture := newRepositoryAttachmentFixture(t)
+	attachment := fixture.attachPersisted(t)
+	ref := attachment.Environment.Ref()
+	artifactFile := filepath.Join(attachment.Logical.Repository.Artifacts.Runtime.Path, "artifact")
+	if err := os.WriteFile(artifactFile, []byte("corrupt"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixture.composition.Attachments.Detach(ref); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewRepositoryComposition(fixture.stateRoot, fixture.runtimeConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restarted.Attachments.Reattach(t.Context(), LogicalEnvironmentRequest{Owner: "operator", Checkout: fixture.repository}, ref); !errors.Is(err, ErrRepositoryVMInconsistent) {
+		t.Fatalf("corrupt artifact recovery error = %v", err)
+	}
+	if fixture.backend.starts != 1 {
+		t.Fatalf("corrupt artifact started replacement runtime: starts=%d", fixture.backend.starts)
+	}
+	if got, err := os.ReadFile(artifactFile); err != nil || string(got) != "corrupt" {
+		t.Fatalf("corrupt artifact was replaced: %q, %v", got, err)
+	}
+}
+
+func TestRepositoryRecoveryRetriesFailedReplacementBoot(t *testing.T) {
+	fixture := newRepositoryAttachmentFixture(t)
+	attachment := fixture.attachPersisted(t)
+	ref := attachment.Environment.Ref()
+	stableGeneration := attachment.Logical.Repository.Generation
+	if err := fixture.composition.Attachments.Detach(ref); err != nil {
+		t.Fatal(err)
+	}
+	fixture.backend.failStart = 1
+	restarted, err := NewRepositoryComposition(fixture.stateRoot, fixture.runtimeConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restarted.Attachments.Reattach(t.Context(), LogicalEnvironmentRequest{Owner: "operator", Checkout: fixture.repository}, ref); err == nil {
+		t.Fatal("injected replacement boot failure was accepted")
+	}
+	recovered, err := restarted.Attachments.Reattach(t.Context(), LogicalEnvironmentRequest{Owner: "operator", Checkout: fixture.repository}, ref)
+	if err != nil {
+		t.Fatalf("retry replacement boot: %v", err)
+	}
+	defer recovered.Logical.Detach()
+	if recovered.Environment.Ref() != ref || recovered.Logical.Repository.Generation != stableGeneration || fixture.backend.starts != 3 {
+		t.Fatalf("replacement retry changed placement or start count: ref=%+v record=%+v starts=%d", recovered.Environment.Ref(), recovered.Logical.Repository, fixture.backend.starts)
+	}
+}
+
 func TestMicroVMMVP_Scenario5_SessionsAndChildrenReuseRepositoryVM(t *testing.T) {
 	t.Parallel()
 	fixture := newRepositoryAttachmentFixture(t)
-	first := fixture.attach(t)
-	second := fixture.attach(t)
+	first := fixture.attachPersisted(t)
+	second := fixture.attachPersisted(t)
 	defer first.Close()
 	defer second.Close()
 
@@ -142,7 +362,7 @@ func TestMicroVMMVP_Scenario5_SessionsAndChildrenReuseRepositoryVM(t *testing.T)
 
 func TestRepositoryForkCapturesDirtyParentSnapshot(t *testing.T) {
 	fixture := newRepositoryAttachmentFixture(t)
-	parent := fixture.attach(t)
+	parent := fixture.attachPersisted(t)
 	defer parent.Close()
 	parentRoot := parent.Logical.WorktreePath
 	if err := os.WriteFile(filepath.Join(parentRoot, "tracked.txt"), []byte("unstaged parent bytes\n"), 0o600); err != nil {
@@ -177,8 +397,8 @@ func TestRepositoryForkCapturesDirtyParentSnapshot(t *testing.T) {
 func TestMicroVMMVP_Scenario5_CloseDetachesWithoutDestroyingRepositoryVM(t *testing.T) {
 	t.Parallel()
 	fixture := newRepositoryAttachmentFixture(t)
-	first := fixture.attach(t)
-	second := fixture.attach(t)
+	first := fixture.attachPersisted(t)
+	second := fixture.attachPersisted(t)
 	firstWorktree := first.Logical.WorktreePath
 	rootfs := first.Logical.Repository.RootFSPath
 	vmID := first.Logical.Repository.VMID
@@ -212,7 +432,7 @@ func TestMicroVMMVP_Scenario5_CloseDetachesWithoutDestroyingRepositoryVM(t *test
 func TestMicroVMMVP_Scenario5_BasicExistingMergeBehavior(t *testing.T) {
 	t.Parallel()
 	fixture := newRepositoryAttachmentFixture(t)
-	parent := fixture.attach(t)
+	parent := fixture.attachPersisted(t)
 	defer parent.Close()
 
 	child, cleanup, _, err := fixture.composition.Attachments.Fork(t.Context(), parent.Environment, "merge-success")
@@ -276,7 +496,7 @@ func TestMicroVMMVP_Scenario5_BasicExistingMergeBehavior(t *testing.T) {
 
 func TestRepositoryMergeSerializesConcurrentCalls(t *testing.T) {
 	fixture := newRepositoryAttachmentFixture(t)
-	parent := fixture.attach(t)
+	parent := fixture.attachPersisted(t)
 	defer parent.Close()
 	first, cleanupFirst, _, err := fixture.composition.Attachments.Fork(t.Context(), parent.Environment, "serial-first")
 	if err != nil {
@@ -365,6 +585,24 @@ func (f *repositoryAttachmentFixture) attach(t *testing.T) *RepositoryAttachment
 	attachment, err := f.composition.Attachments.Attach(t.Context(), LogicalEnvironmentRequest{Owner: "operator", Checkout: f.repository, Artifacts: testArtifactSnapshot(f.verified)})
 	if err != nil {
 		t.Fatalf("attach repository session: %v", err)
+	}
+	return attachment
+}
+
+func (f *repositoryAttachmentFixture) attachPersisted(t *testing.T) *RepositoryAttachment {
+	t.Helper()
+	attachment := f.attach(t)
+	binding := attachment.Logical.Binding
+	environmentID, generation, err := parseEnvironmentRef(attachment.Logical.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	binding.EnvironmentID = environmentID
+	binding.Generation = generation
+	binding.AssignedRoot = ""
+	if err := f.composition.Attachments.register(binding, attachment); err != nil {
+		_ = attachment.Close()
+		t.Fatalf("persist repository session attachment: %v", err)
 	}
 	return attachment
 }

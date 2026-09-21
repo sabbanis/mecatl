@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	microvmclient "github.com/stacklok/mecatl/internal/adapter/microvm"
 )
@@ -301,7 +302,9 @@ func (m *Manager) EnsureReady(ctx context.Context, request ReadyRequest) (string
 			return "", readinessError(StageDaemon, fmt.Errorf("existing microvmd configuration is incompatible with the requested release or policy; existing runtime was left unchanged: %w", err))
 		}
 		if !running {
-			return "", readinessError(StageDaemon, errors.New("configured microvmd is not serving; refusing to replace or restart existing repository runtime"))
+			if err := m.startAndWait(ctx); err != nil {
+				return "", readinessError(StageDaemon, fmt.Errorf("restart compatible configured microvmd: %w", err))
+			}
 		}
 		expected, err := expectedDaemonInfo(m.paths)
 		if err != nil {
@@ -363,6 +366,25 @@ func (m *Manager) EnsureReady(ctx context.Context, request ReadyRequest) (string
 	}
 	ReportReadinessStage(ctx, StageReady)
 	return "unix://" + m.paths.Socket, nil
+}
+
+func (m *Manager) startAndWait(ctx context.Context) error {
+	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	for {
+		if err := m.ops.Start(waitCtx, m.paths); err != nil {
+			return err
+		}
+		probeCtx, probeCancel := context.WithTimeout(waitCtx, 250*time.Millisecond)
+		err := m.ops.WaitSocket(probeCtx, m.paths.Socket)
+		probeCancel()
+		if err == nil {
+			return nil
+		}
+		if waitCtx.Err() != nil {
+			return waitCtx.Err()
+		}
+	}
 }
 
 // ReadinessError preserves the failed transaction stage for safe public
@@ -564,7 +586,7 @@ func (m *Manager) Status(ctx context.Context, requests ...StatusRequest) (Status
 		return status, fmt.Errorf("inspect configured microVM identity: %w", err)
 	}
 	if !running {
-		return status, errors.New("configured microvmd is not serving")
+		return status, errors.New("configured microvmd is not serving; attachment inventory is unavailable and durable records may still exist")
 	}
 	if _, err := m.ops.Doctor(ctx, m.paths); err != nil {
 		return status, fmt.Errorf("inspect serving microVM health and identity: %w", err)
@@ -594,6 +616,7 @@ func (m *Manager) Doctor(ctx context.Context) (string, error) {
 	var report strings.Builder
 	_, _ = fmt.Fprintln(&report, "scope: current OS principal on this execution host")
 	var failures []error
+	failureNext := "next: inspect and repair the existing local daemon state; ordinary use will preserve incompatible or uncertain state"
 	preflightErr := m.ops.Preflight(ctx, m.paths)
 	if preflightErr != nil {
 		_, _ = fmt.Fprintf(&report, "host preflight: failed: %v\n", preflightErr)
@@ -620,6 +643,7 @@ func (m *Manager) Doctor(ctx context.Context) (string, error) {
 			break
 		}
 		if !running {
+			failureNext = "next: ordinary microvm-local use will restart this compatible configured daemon"
 			_, _ = fmt.Fprintln(&report, "backend: configured; daemon not running")
 			failures = append(failures, errors.New("microVM daemon is not running"))
 			break
@@ -646,7 +670,7 @@ func (m *Manager) Doctor(ctx context.Context) (string, error) {
 	} else if !configured && !running && runningErr == nil {
 		_, _ = fmt.Fprintln(&report, "next: select microvm-local to configure the backend on first use:")
 	} else if len(failures) > 0 {
-		_, _ = fmt.Fprintln(&report, "next: inspect and repair the existing local daemon state; ordinary use will not replace or restart it automatically")
+		_, _ = fmt.Fprintln(&report, failureNext)
 	} else {
 		_, _ = fmt.Fprintln(&report, "next: select microvm-local as the deployment default:")
 	}

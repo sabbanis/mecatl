@@ -76,6 +76,13 @@ type Client struct {
 	once       sync.Once
 }
 
+// OpenBoundClient opens a multiplex client on an already mutually authenticated
+// repository channel. credential is a registration incarnation, not a bearer
+// credential: the surrounding channel authentication supplies peer authority.
+func OpenBoundClient(ctx context.Context, stream io.ReadWriteCloser, binding Binding, credential string, services []ServiceName, maxMessageBytes uint32) (*Client, error) {
+	return OpenClient(ctx, stream, binding, credential, services, maxMessageBytes)
+}
+
 // OpenClient authenticates one host stream and negotiates all requested services once.
 func OpenClient(ctx context.Context, stream io.ReadWriteCloser, binding Binding, capability string, services []ServiceName, maxMessageBytes uint32) (*Client, error) {
 	if err := ctx.Err(); err != nil {
@@ -311,8 +318,11 @@ type Handler func(context.Context, string, json.RawMessage, func(any) error) (an
 
 // ServeMultiplex authenticates one capability, negotiates services, and dispatches request IDs.
 func ServeMultiplex(ctx context.Context, stream io.ReadWriteCloser, expected Binding, verifier *CapabilityVerifier, handlers map[ServiceName]Handler, maxMessageBytes uint32) error {
-	return serveMultiplex(ctx, stream, verifier, maxMessageBytes, func(claim Binding) (Binding, map[ServiceName]Handler, bool) {
-		return expected, handlers, claim == expected
+	if verifier == nil {
+		return ErrUnauthenticatedCapability
+	}
+	return serveMultiplex(ctx, stream, maxMessageBytes, func(claim Binding, credential string) (Binding, map[ServiceName]Handler, bool) {
+		return expected, handlers, claim == expected && verifier.Verify(credential, expected) == nil
 	})
 }
 
@@ -322,17 +332,34 @@ type RegisteredHandlerResolver func(Binding) (map[ServiceName]Handler, bool)
 // ServeRegisteredMultiplex authenticates a logical binding before selecting any
 // assigned-root handler. Each connection remains bound to that exact tuple.
 func ServeRegisteredMultiplex(ctx context.Context, stream io.ReadWriteCloser, verifier *CapabilityVerifier, resolve RegisteredHandlerResolver, maxMessageBytes uint32) error {
+	if resolve == nil || verifier == nil {
+		return ErrUnauthenticatedCapability
+	}
+	return serveMultiplex(ctx, stream, maxMessageBytes, func(claim Binding, credential string) (Binding, map[ServiceName]Handler, bool) {
+		handlers, ok := resolve(claim)
+		return claim, handlers, ok && verifier.Verify(credential, claim) == nil
+	})
+}
+
+// BoundHandlerResolver consumes one registration incarnation while resolving a
+// repository binding on an already mutually authenticated boot channel.
+type BoundHandlerResolver func(Binding, string) (map[ServiceName]Handler, bool)
+
+// ServeBoundRegisteredMultiplex serves repository data without the generic
+// transferable-capability replay table. The resolver must consume the
+// registration incarnation exactly once.
+func ServeBoundRegisteredMultiplex(ctx context.Context, stream io.ReadWriteCloser, resolve BoundHandlerResolver, maxMessageBytes uint32) error {
 	if resolve == nil {
 		return ErrUnauthenticatedCapability
 	}
-	return serveMultiplex(ctx, stream, verifier, maxMessageBytes, func(claim Binding) (Binding, map[ServiceName]Handler, bool) {
-		handlers, ok := resolve(claim)
+	return serveMultiplex(ctx, stream, maxMessageBytes, func(claim Binding, credential string) (Binding, map[ServiceName]Handler, bool) {
+		handlers, ok := resolve(claim, credential)
 		return claim, handlers, ok
 	})
 }
 
-func serveMultiplex(ctx context.Context, stream io.ReadWriteCloser, verifier *CapabilityVerifier, maxMessageBytes uint32, resolve func(Binding) (Binding, map[ServiceName]Handler, bool)) error { //nolint:gocyclo // explicit bounded connection state machine
-	if stream == nil || verifier == nil || resolve == nil {
+func serveMultiplex(ctx context.Context, stream io.ReadWriteCloser, maxMessageBytes uint32, resolve func(Binding, string) (Binding, map[ServiceName]Handler, bool)) error { //nolint:gocyclo // explicit bounded connection state machine
+	if stream == nil || resolve == nil {
 		return ErrUnauthenticatedCapability
 	}
 	if maxMessageBytes == 0 || maxMessageBytes > DefaultMaxMessageBytes {
@@ -343,7 +370,7 @@ func serveMultiplex(ctx context.Context, stream io.ReadWriteCloser, verifier *Ca
 	if err := handshakeCodec.Read(stream, &hello); err != nil {
 		return err
 	}
-	expected, handlers, registered := resolve(hello.Binding)
+	expected, handlers, authenticated := resolve(hello.Binding, hello.Capability)
 	agreement := Agreement{
 		Version: ProtocolVersion, Capabilities: RequiredCapabilities(),
 		MaxMessageBytes: min(hello.MaxMessageBytes, maxMessageBytes),
@@ -354,7 +381,7 @@ func serveMultiplex(ctx context.Context, stream io.ReadWriteCloser, verifier *Ca
 	case hello.Version != ProtocolVersion:
 		negotiationErr = ErrProtocolVersion
 		reply.ErrorCode = "protocol_version"
-	case !registered || expected.validate() != nil || hello.Binding != expected:
+	case !authenticated || expected.validate() != nil || hello.Binding != expected:
 		negotiationErr = ErrUnauthenticatedCapability
 		reply.ErrorCode = "unauthenticated"
 	case hello.MaxMessageBytes == 0:
@@ -366,9 +393,6 @@ func serveMultiplex(ctx context.Context, stream io.ReadWriteCloser, verifier *Ca
 	case validateAgreement(agreement, hello.Version, hello.Capabilities, hello.MaxMessageBytes) != nil:
 		negotiationErr = ErrCapabilityMismatch
 		reply.ErrorCode = "capability_mismatch"
-	case verifier.Verify(hello.Capability, expected) != nil:
-		negotiationErr = ErrUnauthenticatedCapability
-		reply.ErrorCode = "unauthenticated"
 	}
 	if err := handshakeCodec.Write(stream, reply); err != nil {
 		return err

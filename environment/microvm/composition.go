@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"time"
 
 	"github.com/stacklok/mecatl/environment/microvm/control"
 )
@@ -41,10 +42,15 @@ func NewRuntimeDaemon(cfg RuntimeDaemonConfig) (*RuntimeDaemon, error) {
 }
 
 // Serve accepts authenticated local management connections until cancellation.
-func (d *RuntimeDaemon) Serve(ctx context.Context, listener net.Listener) error {
+func (d *RuntimeDaemon) Serve(ctx context.Context, listener net.Listener) (retErr error) {
 	if d == nil || d.Daemon == nil || d.Repository == nil || listener == nil {
 		return errors.New("repository microvmd server is not configured")
 	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		retErr = errors.Join(retErr, d.Repository.Runtime.Shutdown(shutdownCtx))
+	}()
 	go func() {
 		<-ctx.Done()
 		_ = listener.Close()

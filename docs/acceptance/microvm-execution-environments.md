@@ -50,8 +50,8 @@ logical guest multiplexing, worktree routing, deletion UX, or retention policy.
 
 - AC2.1: Canonically equivalent checkouts for one local operator resolve to one repository identity and one VM generation, while a different Git common directory or operator resolves to a different durable registry entry.
   - verify: `TestMicroVMMVP_Scenario2_CanonicalRepositoryIdentitySelectsSingletonVM`
-- AC2.2: Concurrent first use durably converges on one VM/rootfs record for the canonical key; an exact healthy generation reattaches only while every owned dependency remains live in-process, while daemon restart or other missing/inconsistent runtime state fails loudly without minting a replacement and preserves the durable record/rootfs/worktrees.
-  - verify: `TestMicroVMMVP_Scenario2_DurableSingletonRegistryReattachesOrFailsLoudly`
+- AC2.2: Concurrent first use and concurrent restart recovery converge on one stable placement generation and one rootfs. A healthy current-daemon boot is reused. Daemon restart or cold-host-reboot equivalent reconciles the prior exact launch owner, rotates boot authority, and starts one replacement boot around retained artifacts and mutable state without changing logical refs. Missing, corrupt, policy-incompatible, pending, or uncertain state fails without empty replacement, deletion, or host fallback.
+  - verify: `TestMicroVMMVP_Scenario2_DurableSingletonRegistryReattachesOrFailsLoudly`, `TestRepositoryRecoveryPreservesExactPlacementAndMutableState`, `TestRepositoryRecoveryConcurrentEnsureStartsOneBoot`, `TestRepositoryRecoveryRejectsPolicyDriftWithoutMutatingState`, `TestRepositoryRecoveryRejectsCorruptRetainedArtifact`, `TestRepositoryRecoveryRetriesFailedReplacementBoot`, `TestLaunchOwnershipReconcileTerminatesOnlyExactOwnedRunner`, `TestLaunchOwnershipFreeLockRecoversAcrossBootIDChange`
 - AC2.3: Repository-controlled names, symlinks, linked-worktree metadata, and hostile path components cannot collide registry identities or escape the owner-scoped state root.
   - verify: `TestMicroVMMVP_Scenario2_RepositoryIdentityIsCanonicalAndConfined`
 
@@ -162,15 +162,14 @@ automated gate and is not evidence for microvmd restart recovery.
 
 **Acceptance:**
 
-- AC7.1: Linux amd64 KVM enters through production profile/session composition and proves ordinary first use, direct admitted Brood consumption with in-process verification, one guest-backed session, confined filesystem/Bash execution, and source-checkout isolation. Deterministic production-composition tests separately prove two-session logical-worktree isolation, exact harness-restart reattachment, fail-closed daemon-state loss, and direct-write versus isolated-child routing. Repository-VM/rootfs singleton, networking, close-detach, and merge/conflict behavior remain proven by their focused AC2–AC6 tests; the live journey does not overclaim those observations.
+- AC7.1: Linux amd64 KVM enters through production profile/session composition and proves ordinary first use, direct admitted Brood consumption with in-process verification, one guest-backed session, confined filesystem/Bash execution, and source-checkout isolation. Deterministic production-composition tests separately prove two-session logical-worktree isolation, exact harness-restart reattachment, microvmd restart recovery around retained state, and direct-write versus isolated-child routing. Repository-VM/rootfs singleton, networking, close-detach, and merge/conflict behavior remain proven by their focused AC2–AC6 tests; the live journey does not overclaim those observations.
   - verify: `task e2e:microvm` runs `TestMicroVMDefaultPlacementDailyHarnessJourney` plus `TestMicroVMOperatorJourneyIsLazyIsolatedAndRestartExact`; focused evidence is listed by AC2–AC6
-- AC7.2: Concise architecture, operator, and public documentation describes profile selection, the repository sharing boundary, distinct worktrees, direct Brood admission, Linux ownership, permissive networking, optional tightening, restart failure behavior, and the deferred surfaces without claiming Linux arm64 or macOS live support.
+- AC7.2: Concise architecture, operator, and public documentation describes profile selection, the repository sharing boundary, distinct worktrees, direct Brood admission, Linux ownership, permissive networking, optional tightening, automatic restart recovery, fail-closed uncertainty, and the deferred surfaces without claiming Linux arm64 or macOS live support.
   - verify: inspection — `task docs` and `task site:build` prove the linked documentation surfaces build
 
 ## Out of scope — explicitly deferred
 
 - repository-VM deletion UX and sophisticated retention policy;
-- crash-orphan reconciliation beyond an actionable, safe, loud failure;
 - crash-durable merge recovery and cross-process/multi-client merge proofs;
 - macOS live ownership parity and Linux arm64 live support;
 - upstream Brood signing and independent artifact/config refresh channels;

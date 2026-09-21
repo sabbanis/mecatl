@@ -19,8 +19,8 @@ type RepositoryAttachment struct {
 	Environment tool.Environment
 
 	manager *RepositoryAttachmentManager
-	once    sync.Once
-	err     error
+	mu      sync.Mutex
+	closed  bool
 }
 
 // Close detaches only this logical environment and its process-local handles.
@@ -28,25 +28,29 @@ func (a *RepositoryAttachment) Close() error {
 	if a == nil {
 		return nil
 	}
-	a.once.Do(func() {
-		var record *repositoryAttachmentRecord
-		if a.manager != nil {
-			a.manager.mu.Lock()
-			delete(a.manager.active, a.Environment.Ref())
-			record = a.manager.records[a.Environment.Ref().ID]
-			a.manager.mu.Unlock()
-		}
-		a.err = a.Logical.Close()
-		if a.manager != nil {
-			a.manager.mu.Lock()
-			if record != nil {
-				a.err = errors.Join(a.err, removeRepositoryAttachmentRecord(record))
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.closed {
+		return nil
+	}
+	if err := a.Logical.Close(); err != nil {
+		return err
+	}
+	if a.manager != nil {
+		a.manager.mu.Lock()
+		record := a.manager.records[a.Environment.Ref().ID]
+		if record != nil {
+			if err := removeRepositoryAttachmentRecord(record); err != nil {
+				a.manager.mu.Unlock()
+				return err
 			}
-			delete(a.manager.records, a.Environment.Ref().ID)
-			a.manager.mu.Unlock()
 		}
-	})
-	return a.err
+		delete(a.manager.active, a.Environment.Ref())
+		delete(a.manager.records, a.Environment.Ref().ID)
+		a.manager.mu.Unlock()
+	}
+	a.closed = true
+	return nil
 }
 
 type repositoryChildAttachment struct {
@@ -125,13 +129,32 @@ func (m *RepositoryAttachmentManager) Attach(ctx context.Context, request Logica
 
 // Reattach restores the exact persisted logical ref after authenticating the
 // repository generation and retained worktree.
-func (m *RepositoryAttachmentManager) Reattach(ctx context.Context, request LogicalEnvironmentRequest, ref session.EnvironmentRef) (*RepositoryAttachment, error) {
-	if m == nil || m.logical == nil {
+func (m *RepositoryAttachmentManager) Reattach(ctx context.Context, request LogicalEnvironmentRequest, ref session.EnvironmentRef) (*RepositoryAttachment, error) { //nolint:gocyclo // exact persisted authorization and post-resolution checks stay together
+	if m == nil || m.logical == nil || m.logical.registry == nil {
 		return nil, ErrEnvironmentUnavailable
 	}
-	logical, err := m.logical.Reattach(ctx, request, EnvironmentRef{Kind: string(ref.Kind), ID: ref.ID})
+	m.mu.Lock()
+	record := m.records[ref.ID]
+	if string(ref.Kind) != Kind || record == nil || record.deleted || record.binding.Ref != ref.ID || record.binding.Owner != request.Owner {
+		m.mu.Unlock()
+		return nil, control.ErrBindingMismatch
+	}
+	persisted := *record
+	m.mu.Unlock()
+	if request.Checkout != "" {
+		requested, err := ResolveRepositoryIdentity(ctx, request.Owner, request.Checkout, m.logical.registry.stateRoot)
+		if err != nil || requested.Key != persisted.repository.RepositoryKey || requested.GitCommonDirectory != persisted.repository.GitCommonDirectory {
+			return nil, control.ErrBindingMismatch
+		}
+	}
+	logical, err := m.logical.reattach(ctx, LogicalEnvironmentRequest{Owner: request.Owner, Checkout: persisted.sourceRoot}, EnvironmentRef{Kind: string(ref.Kind), ID: ref.ID}, &persisted.binding)
 	if err != nil {
 		return nil, err
+	}
+	if logical.Repository.Owner != persisted.repository.Owner || logical.Repository.RepositoryKey != persisted.repository.RepositoryKey || logical.Repository.Generation != persisted.repository.Generation ||
+		logical.WorktreePath != persisted.worktreePath || logical.SourceRoot != persisted.sourceRoot || logical.MetadataPath != persisted.metadataPath || logical.Branch != persisted.branch {
+		_ = logical.Detach()
+		return nil, ErrRepositoryVMInconsistent
 	}
 	environment, err := tool.NewEnvironment(ref, logical.Workspace, memledger.New(), logical.Runner)
 	if err != nil {
@@ -156,10 +179,13 @@ func (m *RepositoryAttachmentManager) Detach(ref session.EnvironmentRef) error {
 	if entry == nil {
 		return ErrEnvironmentUnavailable
 	}
+	if err := entry.attachment.Logical.Detach(); err != nil {
+		return err
+	}
 	m.mu.Lock()
 	delete(m.active, ref)
 	m.mu.Unlock()
-	return entry.attachment.Logical.Detach()
+	return nil
 }
 
 // Fork captures the parent's exact Git tree, then attaches a distinct logical

@@ -60,10 +60,8 @@ func TestMicroVMDefaultPlacementDailyHarnessJourney(t *testing.T) {
 	source := filepath.Join(root, "source")
 	initE2ERepository(t, source)
 	ready, paths := prepareManagedRelease(t, ctx, root)
-	manager, endpoint, err := microvmmanager.DefaultLocal()
-	if err != nil {
-		t.Fatal(err)
-	}
+	manager := microvmmanager.New(paths, &microvmmanager.DefaultOperations{})
+	endpoint := "unix://" + paths.Socket
 	t.Cleanup(func() { stopManagedDaemon(t, paths) })
 	if _, err := manager.EnsureReady(ctx, ready); err != nil {
 		t.Fatalf("prepare microVM deployment default: %v", err)
@@ -134,6 +132,32 @@ func TestMicroVMDefaultPlacementDailyHarnessJourney(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(source, "journey.txt")); !errors.Is(err, fs.ErrNotExist) {
 		t.Fatalf("guest change escaped its isolated worktree into the source checkout: %v", err)
 	}
+	mustGuestRun(t, ctx, binding.Environment.CommandRunner(), "printf '\\ndirty-after-restart' >> tracked.txt && printf staged-after-restart > staged.txt && git add staged.txt && printf untracked-after-restart > untracked.txt && mkdir -p /home/guest && printf rootfs-after-restart > /home/guest/restart-marker")
+	beforeRestart := readOnlyRepositoryBootRecord(t, paths.StateDir)
+	if err := (&microvmmanager.DefaultOperations{}).Stop(ctx, paths); err != nil {
+		t.Fatalf("stop managed microvmd for restart qualification: %v", err)
+	}
+	if _, err := manager.EnsureReady(ctx, ready); err != nil {
+		t.Fatalf("restart managed microvmd over retained state: %v", err)
+	}
+	restarted, err := placement.Reattach(ctx, server.PlacementReattachRequest{Ref: sess.EnvironmentRef, Principal: sess.Owner, Scope: scope})
+	if err != nil {
+		t.Fatalf("reattach exact placement after actual microvmd restart: %v", err)
+	}
+	if restarted.Environment.Ref() != sess.EnvironmentRef {
+		t.Fatalf("restart changed exact environment ref: got %+v want %+v", restarted.Environment.Ref(), sess.EnvironmentRef)
+	}
+	status := mustGuestRun(t, ctx, restarted.Environment.CommandRunner(), "git status --porcelain=v1 && printf '\\n--tracked--\\n' && cat tracked.txt && printf '\\n--staged--\\n' && cat staged.txt && printf '\\n--untracked--\\n' && cat untracked.txt && printf '\\n--rootfs--\\n' && cat /home/guest/restart-marker").Stdout
+	for _, preserved := range []string{" M tracked.txt", "A  staged.txt", "?? untracked.txt", "dirty-after-restart", "staged-after-restart", "untracked-after-restart", "rootfs-after-restart"} {
+		if !strings.Contains(status, preserved) {
+			t.Fatalf("microvmd restart did not preserve %q in guest state:\n%s", preserved, status)
+		}
+	}
+	afterRestart := readOnlyRepositoryBootRecord(t, paths.StateDir)
+	if afterRestart.Generation <= beforeRestart.Generation || afterRestart.AuthorityDigest == beforeRestart.AuthorityDigest || afterRestart.AuthorityDigest == "" {
+		t.Fatalf("restart did not establish new boot authority: before=%+v after=%+v", beforeRestart, afterRestart)
+	}
+	binding = restarted
 	pwd := mustGuestRun(t, ctx, binding.Environment.CommandRunner(), "pwd").Stdout
 	if !strings.HasPrefix(strings.TrimSpace(pwd), "/run/mecatl/repositories/") {
 		t.Fatalf("guest command ran outside its isolated repository worktree: %q", pwd)
@@ -194,10 +218,11 @@ func prepareManagedRelease(t *testing.T, ctx context.Context, root string) (micr
 	ready.Policy.PublicKeyIdentity = fmt.Sprintf("sha256:%x", identity)
 
 	home := filepath.Join(root, "home")
+	runtimeID := sha256.Sum256([]byte(root))
 	for key, value := range map[string]string{
 		"HOME": home, "XDG_CONFIG_HOME": filepath.Join(home, ".config"),
 		"XDG_DATA_HOME": filepath.Join(home, ".local", "share"), "XDG_STATE_HOME": filepath.Join(home, ".local", "state"),
-		"XDG_RUNTIME_DIR": filepath.Join(requiredAbsoluteEnv(t, "MECATL_MICROVM_E2E_SOCKET_ROOT"), "daily-"+fmt.Sprint(os.Getpid())),
+		"XDG_RUNTIME_DIR": filepath.Join(requiredAbsoluteEnv(t, "MECATL_MICROVM_E2E_SOCKET_ROOT"), fmt.Sprintf("mve-%x", runtimeID[:4])),
 		"SSL_CERT_FILE":   certificate,
 	} {
 		t.Setenv(key, value)
@@ -206,6 +231,8 @@ func prepareManagedRelease(t *testing.T, ctx context.Context, root string) (micr
 	if err != nil {
 		t.Fatal(err)
 	}
+	paths.RuntimeDir = filepath.Join(requiredAbsoluteEnv(t, "MECATL_MICROVM_E2E_SOCKET_ROOT"), fmt.Sprintf("m%x", runtimeID[:4]))
+	paths.Socket = filepath.Join(paths.RuntimeDir, "microvmd.sock")
 	_ = ctx // keeps preparation explicitly tied to the caller's bounded lifecycle
 	return ready, paths
 }
@@ -217,6 +244,47 @@ func requiredAbsoluteEnv(t *testing.T, name string) string {
 		t.Fatalf("%s must be an absolute path", name)
 	}
 	return value
+}
+
+type e2eRepositoryBootRecord struct {
+	Generation      uint32 `json:"generation"`
+	AuthorityDigest string `json:"authority_digest"`
+}
+
+func readOnlyRepositoryBootRecord(t *testing.T, stateDir string) e2eRepositoryBootRecord {
+	t.Helper()
+	var records []string
+	err := filepath.WalkDir(filepath.Join(stateDir, "repositories"), func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !entry.IsDir() && entry.Name() == "registry.json" {
+			records = append(records, path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("inspect repository boot record: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("repository boot record count = %d, want 1: %v", len(records), records)
+	}
+	data, err := os.ReadFile(records[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document struct {
+		Record struct {
+			Boot e2eRepositoryBootRecord `json:"boot"`
+		} `json:"record"`
+	}
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatalf("decode repository boot record: %v", err)
+	}
+	if document.Record.Boot.Generation == 0 || document.Record.Boot.AuthorityDigest == "" {
+		t.Fatalf("incomplete repository boot record: %+v", document.Record.Boot)
+	}
+	return document.Record.Boot
 }
 
 func assertKVMAccess(t *testing.T) {

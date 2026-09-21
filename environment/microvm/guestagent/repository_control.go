@@ -46,14 +46,17 @@ type RepositoryHealthStatus struct {
 // RepositoryControlRequest carries no host path. Binding.AssignedRoot is the
 // path already mounted and visible inside the guest.
 type RepositoryControlRequest struct {
-	Operation  RepositoryControlOperation `json:"operation"`
-	Binding    control.Binding            `json:"binding"`
-	Capability string                     `json:"capability"`
-	Health     *RepositoryHealthChallenge `json:"health,omitempty"`
+	Operation   RepositoryControlOperation `json:"operation"`
+	Sequence    uint64                     `json:"sequence,omitempty"`
+	Incarnation string                     `json:"incarnation,omitempty"`
+	Binding     control.Binding            `json:"binding"`
+	Capability  string                     `json:"capability,omitempty"`
+	Health      *RepositoryHealthChallenge `json:"health,omitempty"`
 }
 
 // RepositoryControlResponse is the bounded control acknowledgement.
 type RepositoryControlResponse struct {
+	Sequence  uint64            `json:"sequence,omitempty"`
 	ErrorCode string            `json:"error_code,omitempty"`
 	HealthMAC [sha256.Size]byte `json:"health_mac,omitempty"`
 }
@@ -79,7 +82,7 @@ func (s *RepositoryServer) ServeAuthenticated(ctx context.Context, stream io.Rea
 		default:
 			return errors.New("repository logical connection capacity exhausted")
 		}
-		return s.Serve(ctx, stream)
+		return s.ServeBound(ctx, stream)
 	default:
 		return ErrUnauthenticatedRepositoryChannel
 	}
@@ -97,12 +100,16 @@ func (s *RepositoryServer) ServeControl(ctx context.Context, stream io.ReadWrite
 		return err
 	}
 	var err error
-	response := RepositoryControlResponse{}
+	response := RepositoryControlResponse{Sequence: request.Sequence}
 	switch request.Operation {
-	case RepositoryRegister:
-		err = s.Register(ctx, request.Capability, request.Binding)
-	case RepositoryUnregister:
-		err = s.Unregister(request.Capability, request.Binding)
+	case RepositoryRegister, RepositoryUnregister:
+		if request.Sequence != 0 {
+			response, err = s.mutate(ctx, request)
+		} else if request.Operation == RepositoryRegister {
+			err = s.Register(ctx, request.Capability, request.Binding)
+		} else {
+			err = s.Unregister(request.Capability, request.Binding)
+		}
 	case RepositoryHealth:
 		if request.Health == nil {
 			err = control.ErrBindingMismatch
@@ -123,6 +130,41 @@ func (s *RepositoryServer) ServeControl(ctx context.Context, stream io.ReadWrite
 		return writeErr
 	}
 	return err
+}
+
+func (s *RepositoryServer) mutate(ctx context.Context, request RepositoryControlRequest) (RepositoryControlResponse, error) {
+	s.controlMu.Lock()
+	defer s.controlMu.Unlock()
+	if s.lastMutation != nil && request.Sequence == s.nextSequence-1 && sameMutation(*s.lastMutation, request) {
+		return s.lastResponse, nil
+	}
+	if request.Sequence != s.nextSequence || request.Incarnation == "" || request.Capability != "" || request.Health != nil {
+		return RepositoryControlResponse{}, control.ErrUnauthenticatedCapability
+	}
+	var err error
+	if request.Operation == RepositoryRegister {
+		err = s.register(ctx, request.Binding, request.Incarnation)
+	} else {
+		err = s.unregister(request.Binding, request.Incarnation)
+	}
+	response := RepositoryControlResponse{Sequence: request.Sequence}
+	if err != nil {
+		if errors.Is(err, ErrLogicalRootUnavailable) {
+			response.ErrorCode = "logical_root_unavailable"
+		} else {
+			response.ErrorCode = "unauthenticated"
+		}
+	}
+	copyRequest := request
+	s.lastMutation = &copyRequest
+	s.lastResponse = response
+	s.nextSequence++
+	return response, err
+}
+
+func sameMutation(a, b RepositoryControlRequest) bool {
+	return a.Operation == b.Operation && a.Sequence == b.Sequence && a.Incarnation == b.Incarnation &&
+		a.Binding == b.Binding && a.Capability == b.Capability && a.Health == nil && b.Health == nil
 }
 
 func (s *RepositoryServer) healthMAC(challenge RepositoryHealthChallenge) ([sha256.Size]byte, error) {

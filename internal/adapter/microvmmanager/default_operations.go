@@ -451,6 +451,18 @@ func (*DefaultOperations) DaemonInfo(ctx context.Context, paths Paths) (DaemonIn
 
 // Start launches the installed daemon with absolute manager paths.
 func (*DefaultOperations) Start(_ context.Context, paths Paths) error {
+	held, err := daemonOwnershipHeld(paths.StateDir)
+	if err != nil {
+		return err
+	}
+	if held {
+		// The owner may still be before socket publication. EnsureReady's bounded
+		// WaitSocket observes that launch instead of creating a competitor.
+		return nil
+	}
+	if err := ensureNoLiveManagedDaemon(paths); err != nil {
+		return err
+	}
 	if !regularFile(paths.DaemonBinary) {
 		return errors.New("verified mecatl-microvmd binary is missing")
 	}
@@ -599,6 +611,40 @@ func (*DefaultOperations) Stop(ctx context.Context, paths Paths) error {
 		case <-ticker.C:
 		}
 	}
+}
+
+func ensureNoLiveManagedDaemon(paths Paths) error {
+	data, err := os.ReadFile(filepath.Join(paths.StateDir, "microvmd.process.json"))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect prior managed daemon identity: %w", err)
+	}
+	var record managedProcessRecord
+	if err := json.Unmarshal(data, &record); err != nil || record.Schema != managedProcessSchema || record.PID <= 1 {
+		return errors.New("prior managed daemon identity is invalid; refusing to start a possible duplicate")
+	}
+	identity, err := processStartIdentity(record.PID)
+	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("prior managed daemon liveness is uncertain; refusing to start a possible duplicate: %w", err)
+	}
+	if identity != record.ProcessIdentity {
+		return nil
+	}
+	if err := validateManagedProcess(record, paths); err != nil {
+		// Validation can fail because its installed executable path changed while
+		// the exact recorded process remains alive. Re-probe that process rather
+		// than treating validation's wrapped ENOENT as proof it exited.
+		if _, probeErr := processStartIdentity(record.PID); errors.Is(probeErr, fs.ErrNotExist) || errors.Is(probeErr, syscall.ESRCH) {
+			return nil
+		}
+		return fmt.Errorf("prior managed daemon process identity is uncertain; refusing to start a possible duplicate: %w", err)
+	}
+	return errors.New("prior managed daemon process is still running without a healthy control socket; refusing to start a duplicate")
 }
 
 func validateManagedProcess(record managedProcessRecord, paths Paths) error { //nolint:gocyclo // fail-closed cross-platform identity validation is intentionally explicit

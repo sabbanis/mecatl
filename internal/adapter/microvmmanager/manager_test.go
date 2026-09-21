@@ -283,8 +283,8 @@ func TestReadinessStageProjectionIsClosedAndUnknownIsSilent(t *testing.T) {
 	}
 }
 
-func TestEnsureReadyRefusesUnsafeExistingRuntimeBranchesWithoutMutation(t *testing.T) {
-	t.Run("configured but stopped", func(t *testing.T) {
+func TestEnsureReadyRecoversCompatibleStoppedDaemonAndRefusesUnsafeRuntimeBranches(t *testing.T) {
+	t.Run("configured but stopped restarts", func(t *testing.T) {
 		root := t.TempDir()
 		paths := testPaths(root)
 		ops := &fakeOps{}
@@ -295,10 +295,12 @@ func TestEnsureReadyRefusesUnsafeExistingRuntimeBranchesWithoutMutation(t *testi
 		ops.running = false
 		ops.calls = nil
 		_, err := New(paths, ops).EnsureReady(t.Context(), request)
-		if err == nil || !strings.Contains(err.Error(), "configured microvmd is not serving") {
-			t.Fatalf("stopped configured runtime error = %v", err)
+		if err != nil {
+			t.Fatalf("restart configured runtime: %v", err)
 		}
-		assertNoReadinessMutation(t, ops.calls)
+		if !reflect.DeepEqual(ops.calls, []string{"preflight", "start", "wait", "info", "wait", "doctor"}) {
+			t.Fatalf("configured restart calls = %v", ops.calls)
+		}
 	})
 
 	t.Run("serving without manager config", func(t *testing.T) {
@@ -423,7 +425,7 @@ func TestDoctorReportsFreshAndFailureStatesWithoutMutation(t *testing.T) {
 		want       []string
 	}{
 		{name: "fresh home", ops: &fakeOps{}, want: []string{"host preflight: passed", "backend: ready to configure on first use", "select microvm-local to configure", "default_placement: microvm-local", "guest IPv4 egress defaults to permissive", "doctor is read-only"}},
-		{name: "daemon stopped", configured: true, ops: &fakeOps{}, want: []string{"host preflight: passed", "backend: configured; daemon not running", "ordinary use will not replace or restart"}},
+		{name: "daemon stopped", configured: true, ops: &fakeOps{}, want: []string{"host preflight: passed", "backend: configured; daemon not running", "ordinary microvm-local use will restart"}},
 		{name: "healthy", configured: true, ops: &fakeOps{running: true}, want: []string{"host preflight: passed", "backend: healthy", "PASS hypervisor ready"}},
 		{name: "daemon unhealthy", configured: true, ops: &fakeOps{running: true, doctorErr: errors.New("guest transport unavailable")}, want: []string{"backend: unhealthy", "guest transport unavailable"}},
 		{name: "host preflight failed", ops: &fakeOps{failAt: "preflight"}, want: []string{"host preflight: failed", "backend: ready to configure on first use"}},

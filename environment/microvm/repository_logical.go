@@ -63,27 +63,46 @@ type LogicalEnvironment struct {
 	guest      RepositoryGuestRegistrar
 	prepared   *worktree.Prepared
 	preparer   *worktree.Preparer
-	detachOnce sync.Once
-	detachErr  error
-	closeOnce  sync.Once
-	closeErr   error
+	detachMu   sync.Mutex
+	remoteDone bool
+	localDone  bool
+	closeMu    sync.Mutex
+	closed     bool
 }
 
-// Detach closes this process's guest registration and data-plane handles while
-// preserving the logical worktree for exact session reattachment.
+// Detach closes process-local streams independently and retries remote teardown
+// until the guest confirms it.
 func (e *LogicalEnvironment) Detach() error {
+	ctx, cancel := context.WithTimeout(context.Background(), repositoryRollbackTimeout)
+	defer cancel()
+	return e.DetachContext(ctx)
+}
+
+// DetachContext performs retryable, serialized remote teardown.
+func (e *LogicalEnvironment) DetachContext(ctx context.Context) error {
 	if e == nil {
 		return nil
 	}
-	e.detachOnce.Do(func() {
-		if e.guest != nil {
-			e.detachErr = e.guest.Unregister(context.Background(), e.Repository, e.Binding)
+	e.detachMu.Lock()
+	defer e.detachMu.Unlock()
+	var localErr error
+	if !e.localDone && e.services != nil {
+		localErr = e.services.Close()
+		if localErr == nil {
+			e.localDone = true
 		}
-		if e.services != nil {
-			e.detachErr = errors.Join(e.detachErr, e.services.Close())
+	} else {
+		e.localDone = true
+	}
+	if !e.remoteDone && e.guest != nil {
+		if err := e.guest.Unregister(ctx, e.Repository, e.Binding); err != nil {
+			return errors.Join(localErr, err)
 		}
-	})
-	return e.detachErr
+		e.remoteDone = true
+	} else if e.guest == nil {
+		e.remoteDone = true
+	}
+	return localErr
 }
 
 // DeletePreservingDirty detaches the logical environment and removes only a clean
@@ -92,7 +111,7 @@ func (e *LogicalEnvironment) DeletePreservingDirty(ctx context.Context) (bool, e
 	if e == nil {
 		return false, nil
 	}
-	if err := e.Detach(); err != nil {
+	if err := e.DetachContext(ctx); err != nil {
 		return false, err
 	}
 	status, err := gitexec.Run(ctx, e.WorktreePath, nil, "status", "--porcelain", "--untracked-files=all")
@@ -121,13 +140,24 @@ func (e *LogicalEnvironment) Close() error {
 	if e == nil {
 		return nil
 	}
-	e.closeOnce.Do(func() {
-		e.closeErr = e.Detach()
-		if e.preparer != nil && e.prepared != nil {
-			e.closeErr = errors.Join(e.closeErr, e.preparer.Cleanup(context.Background(), e.prepared))
+	e.closeMu.Lock()
+	defer e.closeMu.Unlock()
+	if e.closed {
+		return nil
+	}
+	if err := e.Detach(); err != nil {
+		return err
+	}
+	if e.preparer != nil && e.prepared != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), repositoryRollbackTimeout)
+		err := e.preparer.Cleanup(ctx, e.prepared)
+		cancel()
+		if err != nil {
+			return err
 		}
-	})
-	return e.closeErr
+	}
+	e.closed = true
+	return nil
 }
 
 type repositoryLogicalStage string
@@ -202,7 +232,9 @@ func (m *RepositoryLogicalManager) Create(ctx context.Context, request LogicalEn
 	}
 	defer func() {
 		if retErr != nil {
-			_ = m.preparer.Cleanup(context.Background(), prepared)
+			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), repositoryRollbackTimeout)
+			defer cancel()
+			_ = m.preparer.Cleanup(cleanupCtx, prepared)
 		}
 	}()
 	ref := EnvironmentRef{Kind: Kind, ID: "logical-" + logicalID + "@" + fmt.Sprint(result.Record.Generation)}
@@ -228,6 +260,10 @@ func (m *RepositoryLogicalManager) Create(ctx context.Context, request LogicalEn
 // It first authenticates the recorded repository generation through Ensure and
 // never creates a replacement when that health check fails.
 func (m *RepositoryLogicalManager) Reattach(ctx context.Context, request LogicalEnvironmentRequest, ref EnvironmentRef) (*LogicalEnvironment, error) {
+	return m.reattach(ctx, request, ref, nil)
+}
+
+func (m *RepositoryLogicalManager) reattach(ctx context.Context, request LogicalEnvironmentRequest, ref EnvironmentRef, persistedBinding *control.Binding) (*LogicalEnvironment, error) {
 	result, err := m.registry.Ensure(ctx, RepositoryVMRequest{Owner: request.Owner, Checkout: request.Checkout})
 	if err != nil {
 		return nil, err
@@ -255,6 +291,13 @@ func (m *RepositoryLogicalManager) Reattach(ctx context.Context, request Logical
 	binding := control.Binding{
 		Owner: request.Owner, SessionID: logicalID, EnvironmentID: logicalID,
 		Ref: ref.ID, Generation: generation, AssignedRoot: guestRoot,
+	}
+	if persistedBinding != nil {
+		binding = *persistedBinding
+		if binding.Owner != request.Owner || binding.Ref != ref.ID || binding.Generation != generation {
+			return nil, control.ErrBindingMismatch
+		}
+		binding.AssignedRoot = guestRoot
 	}
 	services, err := m.guest.Register(ctx, result.Record, binding, RepositoryGuestMount{HostPath: worktreePath, GuestPath: guestRoot})
 	if err != nil {

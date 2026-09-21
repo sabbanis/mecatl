@@ -21,8 +21,11 @@ import (
 )
 
 const (
-	repositoryRegistryVersion = 1
+	repositoryRegistryVersion = 3
 	repositoryHealthTimeout   = 10 * time.Second
+
+	repositoryRootFSStaging   = "staging"
+	repositoryRootFSPublished = "published"
 )
 
 var (
@@ -178,20 +181,96 @@ type RepositoryVMRuntime interface {
 	Health(context.Context, RepositoryVMRecord, RepositoryHealthChallenge) (RepositoryHealthResponse, error)
 }
 
+type repositoryRuntimeReconciler interface {
+	Reconcile(context.Context, RepositoryVMRecord) error
+}
+
+// RepositoryArtifactIdentity is the durable immutable identity of one admitted
+// launch artifact. Path points at the repository-private retained copy.
+type RepositoryArtifactIdentity struct {
+	Kind               ArtifactKind `json:"kind"`
+	Digest             string       `json:"digest"`
+	ManifestDigest     string       `json:"manifest_digest,omitempty"`
+	DiscoveryReference string       `json:"discovery_reference,omitempty"`
+	ResolutionEvidence string       `json:"resolution_evidence,omitempty"`
+	Platform           string       `json:"platform,omitempty"`
+	Path               string       `json:"path"`
+}
+
+// RepositoryArtifactSet is the complete durable admitted launch set.
+type RepositoryArtifactSet struct {
+	Runtime        RepositoryArtifactIdentity `json:"runtime"`
+	Firmware       RepositoryArtifactIdentity `json:"firmware"`
+	ExecutionImage RepositoryArtifactIdentity `json:"execution_image"`
+	GuestAgent     RepositoryArtifactIdentity `json:"guest_agent"`
+}
+
+// ByKind returns the retained identity for kind, or its zero value.
+func (s RepositoryArtifactSet) ByKind(kind ArtifactKind) RepositoryArtifactIdentity {
+	switch kind {
+	case ArtifactRuntime:
+		return s.Runtime
+	case ArtifactFirmware:
+		return s.Firmware
+	case ArtifactExecutionImage:
+		return s.ExecutionImage
+	case ArtifactGuestAgent:
+		return s.GuestAgent
+	default:
+		return RepositoryArtifactIdentity{}
+	}
+}
+
+func (s RepositoryArtifactSet) complete() bool {
+	return s.Runtime.Kind == ArtifactRuntime && s.Firmware.Kind == ArtifactFirmware && s.ExecutionImage.Kind == ArtifactExecutionImage && s.GuestAgent.Kind == ArtifactGuestAgent
+}
+
+// RepositoryBootRecord is replaceable runtime state for one boot of a stable
+// repository placement.
+type RepositoryBootRecord struct {
+	Generation      uint32 `json:"generation"`
+	VMID            string `json:"vm_id"`
+	Endpoint        string `json:"endpoint"`
+	AuthorityDigest string `json:"authority_digest"`
+	RunnerPID       int    `json:"runner_pid,omitempty"`
+	ProcessIdentity string `json:"process_identity,omitempty"`
+}
+
 // RepositoryVMRecord is the durable singleton VM/rootfs identity for one key.
 type RepositoryVMRecord struct {
-	State              EnvironmentState `json:"state"`
-	Owner              string           `json:"owner"`
-	RepositoryKey      string           `json:"repository_key"`
-	GitCommonDirectory string           `json:"git_common_directory"`
-	Generation         uint32           `json:"generation"`
-	VMID               string           `json:"vm_id"`
-	Endpoint           string           `json:"endpoint"`
-	RootFSPath         string           `json:"rootfs_path"`
-	AuthorityDigest    string           `json:"authority_digest"`
-	RunnerPID          int              `json:"runner_pid"`
-	ProcessIdentity    string           `json:"process_identity"`
+	State                    EnvironmentState      `json:"state"`
+	Owner                    string                `json:"owner"`
+	RepositoryKey            string                `json:"repository_key"`
+	GitCommonDirectory       string                `json:"git_common_directory"`
+	Generation               uint32                `json:"generation"`
+	RootFSPath               string                `json:"rootfs_path"`
+	RootFSPhase              string                `json:"rootfs_phase"`
+	RootFSStagingName        string                `json:"rootfs_staging_name,omitempty"`
+	Artifacts                RepositoryArtifactSet `json:"artifacts"`
+	PolicyRevision           string                `json:"policy_revision"`
+	GuestEgressDigest        string                `json:"guest_egress_digest"`
+	GuestAgentExecutableHash string                `json:"guest_agent_executable_hash"`
+	Boot                     RepositoryBootRecord  `json:"boot"`
+
+	// Boot mirrors retained for callers while this unmerged API transitions.
+	VMID            string `json:"-"`
+	Endpoint        string `json:"-"`
+	AuthorityDigest string `json:"-"`
+	RunnerPID       int    `json:"-"`
+	ProcessIdentity string `json:"-"`
 }
+
+func (r *RepositoryVMRecord) syncBootFields() {
+	r.VMID, r.Endpoint, r.AuthorityDigest = r.Boot.VMID, r.Boot.Endpoint, r.Boot.AuthorityDigest
+	r.RunnerPID, r.ProcessIdentity = r.Boot.RunnerPID, r.Boot.ProcessIdentity
+}
+
+func (r RepositoryVMRecord) bootFieldsMatch() bool {
+	return r.VMID == r.Boot.VMID && r.Endpoint == r.Boot.Endpoint && r.AuthorityDigest == r.Boot.AuthorityDigest &&
+		r.RunnerPID == r.Boot.RunnerPID && r.ProcessIdentity == r.Boot.ProcessIdentity
+}
+
+func (r RepositoryVMRecord) bootGeneration() uint32 { return r.Boot.Generation }
 
 type repositoryRegistryDocument struct {
 	Version int                `json:"version"`
@@ -221,10 +300,13 @@ type RepositoryVMResult struct {
 
 // RepositoryVMRegistry owns durable singleton admission under one state root.
 type RepositoryVMRegistry struct {
-	stateRoot    string
-	endpointRoot string
-	runtime      RepositoryVMRuntime
-	writeRecord  func(*repositoryDirectory, RepositoryVMRecord) error
+	stateRoot        string
+	endpointRoot     string
+	runtime          RepositoryVMRuntime
+	artifactPolicy   string
+	artifactRequests map[ArtifactKind]ArtifactRequest
+	guestEgress      GuestEgressPolicy
+	writeRecord      func(*repositoryDirectory, RepositoryVMRecord) error
 }
 
 // OpenRepositoryVMRegistry opens the repository lifecycle registry without
@@ -317,8 +399,11 @@ func (r *RepositoryVMRegistry) Ensure(ctx context.Context, request RepositoryVMR
 		record, readErr := readRepositoryRecord(directory)
 		switch {
 		case readErr == nil:
-			if err := r.reattach(ctx, directory, identity, record); err != nil {
-				return err
+			if err := r.reattach(ctx, directory, identity, record); err == nil {
+				result = RepositoryVMResult{Record: record, Reattached: true}
+				return nil
+			} else if recoverErr := r.recover(ctx, directory, identity, &record); recoverErr != nil {
+				return errors.Join(err, recoverErr)
 			}
 			result = RepositoryVMResult{Record: record, Reattached: true}
 			return nil
@@ -344,35 +429,48 @@ func (r *RepositoryVMRegistry) Ensure(ctx context.Context, request RepositoryVMR
 		if err != nil {
 			return err
 		}
+		bootGeneration, err := randomGeneration()
+		if err != nil {
+			return err
+		}
 		authority, err := newRepositoryBootAuthority()
 		if err != nil {
 			return fmt.Errorf("create repository boot authority: %w", err)
 		}
+		retained, artifactIdentities, err := retainRepositoryArtifacts(directory, verified)
+		if err != nil {
+			return fmt.Errorf("retain admitted repository artifacts: %w", err)
+		}
+		guestAgentHash, err := regularFileSHA256(filepath.Join(retained.GuestAgent.Path, guestAgentArtifactName))
+		if err != nil {
+			return fmt.Errorf("hash retained guest agent: %w", err)
+		}
+		stagingName, err := newRepositoryRootFSStagingName()
+		if err != nil {
+			return err
+		}
 		record = RepositoryVMRecord{
 			State: EnvironmentProvisioning, Owner: identity.Owner, RepositoryKey: identity.Key,
 			GitCommonDirectory: identity.GitCommonDirectory, Generation: generation,
-			VMID:       "repository-" + identity.Key[:16] + fmt.Sprintf("-%08x", generation),
-			Endpoint:   r.repositoryEndpoint(identity, generation),
-			RootFSPath: filepath.Join(identity.StateDirectory, "rootfs"), AuthorityDigest: authority.digest(),
+			RootFSPath: filepath.Join(identity.StateDirectory, "rootfs"), RootFSPhase: repositoryRootFSStaging, RootFSStagingName: stagingName,
+			Artifacts:      artifactIdentities,
+			PolicyRevision: r.artifactPolicy, GuestEgressDigest: guestEgressFingerprint(r.guestEgress), GuestAgentExecutableHash: guestAgentHash,
+			Boot: r.newBootRecord(identity, bootGeneration, authority),
 		}
+		record.syncBootFields()
 		if err := r.writeRecord(directory, record); err != nil {
 			return fmt.Errorf("admit repository generation: %w", err)
 		}
 		if err := writeRepositoryBootAuthority(directory, authority); err != nil {
 			return fmt.Errorf("persist repository boot authority: %w", err)
 		}
-		if info, err := directory.Lstat("rootfs"); err == nil || !errors.Is(err, os.ErrNotExist) {
-			_ = info
-			return fmt.Errorf("%w: private repository rootfs already exists", ErrRepositoryVMInconsistent)
-		}
-		materializer := newRepositoryRootFSMaterializer()
-		if err := materializer.Materialize(verified.ExecutionImage.Path, record.RootFSPath, verified.GuestAgent.Path); err != nil {
-			return fmt.Errorf("materialize repository rootfs: %w", err)
+		if err := r.materializeAndPublishRootFS(directory, &record, retained); err != nil {
+			return err
 		}
 		if err := unix.Mkdirat(int(directory.file.Fd()), "logical", 0o700); err != nil && !errors.Is(err, unix.EEXIST) {
 			return fmt.Errorf("create repository guest mount namespace: %w", err)
 		}
-		status, err := r.runtime.Start(ctx, record, verified, authority)
+		status, err := r.runtime.Start(ctx, record, retained, authority)
 		if err != nil {
 			return fmt.Errorf("start admitted repository generation: %w", err)
 		}
@@ -380,8 +478,9 @@ func (r *RepositoryVMRegistry) Ensure(ctx context.Context, request RepositoryVMR
 			return errors.Join(err, r.abortStartedRuntime(ctx, record))
 		}
 		record.State = EnvironmentReady
-		record.RunnerPID = status.PID
-		record.ProcessIdentity = status.ProcessIdentity
+		record.Boot.RunnerPID = status.PID
+		record.Boot.ProcessIdentity = status.ProcessIdentity
+		record.syncBootFields()
 		if err := r.writeRecord(directory, record); err != nil {
 			return errors.Join(fmt.Errorf("commit ready repository generation: %w", err), r.abortStartedRuntime(ctx, record))
 		}
@@ -389,6 +488,147 @@ func (r *RepositoryVMRegistry) Ensure(ctx context.Context, request RepositoryVMR
 		return nil
 	})
 	return result, err
+}
+
+func (r *RepositoryVMRegistry) recover(ctx context.Context, directory *repositoryDirectory, identity RepositoryIdentity, record *RepositoryVMRecord) error {
+	if err := r.validateRepositoryDurableRecord(identity, *record); err != nil {
+		return err
+	}
+	artifacts, err := loadRepositoryArtifacts(directory, *record)
+	if err != nil {
+		return fmt.Errorf("%w: retained repository artifacts: %v", ErrRepositoryVMInconsistent, err)
+	}
+	if record.State == EnvironmentProvisioning && record.RootFSPhase == repositoryRootFSStaging {
+		if err := r.materializeAndPublishRootFS(directory, record, artifacts); err != nil {
+			return err
+		}
+	}
+	if err := validateRepositoryRootFS(directory, record.GuestAgentExecutableHash); err != nil {
+		return fmt.Errorf("%w: %v", ErrRepositoryVMInconsistent, err)
+	}
+	if err := r.validateRecoveryConfiguration(*record); err != nil {
+		return err
+	}
+	reconciler, ok := r.runtime.(repositoryRuntimeReconciler)
+	if !ok {
+		return fmt.Errorf("%w: repository runtime recovery is unavailable", ErrRepositoryVMInconsistent)
+	}
+	if err := reconciler.Reconcile(ctx, *record); err != nil {
+		return fmt.Errorf("reconcile previous repository boot: %w", err)
+	}
+	bootGeneration, err := randomGeneration()
+	if err != nil {
+		return err
+	}
+	authority, err := newRepositoryBootAuthority()
+	if err != nil {
+		return err
+	}
+	record.State = EnvironmentProvisioning
+	record.Boot = r.newBootRecord(identity, bootGeneration, authority)
+	record.syncBootFields()
+	if err := r.writeRecord(directory, *record); err != nil {
+		return fmt.Errorf("persist replacement repository boot intent: %w", err)
+	}
+	if err := replaceRepositoryBootAuthority(directory, authority); err != nil {
+		return fmt.Errorf("rotate repository boot authority: %w", err)
+	}
+	status, err := r.runtime.Start(ctx, *record, artifacts, authority)
+	if err != nil {
+		return fmt.Errorf("start replacement repository boot: %w", err)
+	}
+	if err := validateProvisionalRuntime(*record, status); err != nil {
+		return errors.Join(err, r.abortStartedRuntime(ctx, *record))
+	}
+	record.State = EnvironmentReady
+	record.Boot.RunnerPID, record.Boot.ProcessIdentity = status.PID, status.ProcessIdentity
+	record.syncBootFields()
+	if err := r.writeRecord(directory, *record); err != nil {
+		return errors.Join(fmt.Errorf("commit replacement repository boot: %w", err), r.abortStartedRuntime(ctx, *record))
+	}
+	return nil
+}
+
+func newRepositoryRootFSStagingName() (string, error) {
+	var random [8]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", err
+	}
+	return ".rootfs-staging-" + hex.EncodeToString(random[:]), nil
+}
+
+func (r *RepositoryVMRegistry) materializeAndPublishRootFS(directory *repositoryDirectory, record *RepositoryVMRecord, artifacts VerifiedArtifacts) error {
+	if record.RootFSPhase != repositoryRootFSStaging || !strings.HasPrefix(record.RootFSStagingName, ".rootfs-staging-") || !validOpaquePathComponent(record.RootFSStagingName) {
+		return fmt.Errorf("%w: invalid repository rootfs publication transaction", ErrRepositoryVMInconsistent)
+	}
+	if info, err := directory.Lstat("rootfs"); err == nil {
+		if !info.IsDir() {
+			return fmt.Errorf("%w: private repository rootfs is not a directory", ErrRepositoryVMInconsistent)
+		}
+		if err := validateRepositoryRootFS(directory, record.GuestAgentExecutableHash); err != nil {
+			return fmt.Errorf("%w: published repository rootfs is invalid: %v", ErrRepositoryVMInconsistent, err)
+		}
+		record.RootFSPhase = repositoryRootFSPublished
+		record.RootFSStagingName = ""
+		if err := r.writeRecord(directory, *record); err != nil {
+			return fmt.Errorf("commit published repository rootfs: %w", err)
+		}
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect private repository rootfs: %w", err)
+	}
+
+	stagingPath := filepath.Join(directory.path, record.RootFSStagingName)
+	if info, err := os.Lstat(stagingPath); err == nil {
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%w: repository rootfs staging path is invalid", ErrRepositoryVMInconsistent)
+		}
+		if err := os.RemoveAll(stagingPath); err != nil {
+			return fmt.Errorf("reset incomplete repository rootfs staging transaction: %w", err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect repository rootfs staging transaction: %w", err)
+	}
+	materializer := newRepositoryRootFSMaterializer()
+	if err := materializer.Materialize(artifacts.ExecutionImage.Path, stagingPath, artifacts.GuestAgent.Path); err != nil {
+		return fmt.Errorf("materialize staged repository rootfs: %w", err)
+	}
+	if err := unix.Renameat2(int(directory.file.Fd()), record.RootFSStagingName, int(directory.file.Fd()), "rootfs", unix.RENAME_NOREPLACE); err != nil {
+		return fmt.Errorf("publish repository rootfs without overwrite: %w", err)
+	}
+	if err := directory.file.Sync(); err != nil {
+		return fmt.Errorf("sync published repository rootfs: %w", err)
+	}
+	record.RootFSPhase = repositoryRootFSPublished
+	record.RootFSStagingName = ""
+	if err := r.writeRecord(directory, *record); err != nil {
+		return fmt.Errorf("commit published repository rootfs: %w", err)
+	}
+	return nil
+}
+
+func (r *RepositoryVMRegistry) newBootRecord(identity RepositoryIdentity, generation uint32, authority RepositoryBootAuthority) RepositoryBootRecord {
+	return RepositoryBootRecord{
+		Generation: generation,
+		VMID:       "repository-" + identity.Key[:16] + fmt.Sprintf("-%08x", generation),
+		Endpoint:   r.repositoryEndpoint(identity, generation), AuthorityDigest: authority.digest(),
+	}
+}
+
+func (r *RepositoryVMRegistry) validateRecoveryConfiguration(record RepositoryVMRecord) error {
+	if r.artifactPolicy != "" && record.PolicyRevision != r.artifactPolicy {
+		return fmt.Errorf("%w: configured artifact policy differs from admitted repository policy", ErrRepositoryVMInconsistent)
+	}
+	for kind, request := range r.artifactRequests {
+		stored := record.Artifacts.ByKind(kind)
+		if stored.Kind != kind || stored.Digest != request.Digest || stored.ManifestDigest != request.ManifestDigest || stored.Platform != request.Platform || stored.DiscoveryReference != request.DiscoveryReference || stored.ResolutionEvidence != request.ResolutionEvidence {
+			return fmt.Errorf("%w: configured %s artifact differs from admitted repository artifact", ErrRepositoryVMInconsistent, kind)
+		}
+	}
+	if record.GuestEgressDigest != guestEgressFingerprint(r.guestEgress) {
+		return fmt.Errorf("%w: configured guest egress differs from admitted repository policy", ErrRepositoryVMInconsistent)
+	}
+	return nil
 }
 
 func (r *RepositoryVMRegistry) abortStartedRuntime(ctx context.Context, record RepositoryVMRecord) error {
@@ -406,7 +646,7 @@ func (r *RepositoryVMRegistry) reattach(ctx context.Context, directory *reposito
 	if err := r.validateRepositoryRecord(identity, record); err != nil {
 		return err
 	}
-	if err := validateRepositoryRootFS(directory); err != nil {
+	if err := validateRepositoryRootFS(directory, record.GuestAgentExecutableHash); err != nil {
 		return fmt.Errorf("%w: %v", ErrRepositoryVMInconsistent, err)
 	}
 	authority, err := readRepositoryBootAuthority(directory)
@@ -585,26 +825,191 @@ func (r *RepositoryVMRegistry) repositoryEndpoint(identity RepositoryIdentity, g
 }
 
 func (r *RepositoryVMRegistry) validateRepositoryRecord(identity RepositoryIdentity, record RepositoryVMRecord) error {
+	if record.State != EnvironmentReady || record.RunnerPID <= 0 || record.ProcessIdentity == "" {
+		return ErrRepositoryVMInconsistent
+	}
+	return r.validateRepositoryDurableRecord(identity, record)
+}
+
+func validRepositoryRootFSState(record RepositoryVMRecord) bool {
+	if record.RootFSPhase == repositoryRootFSPublished {
+		return record.RootFSStagingName == ""
+	}
+	return record.State == EnvironmentProvisioning && record.RootFSPhase == repositoryRootFSStaging &&
+		strings.HasPrefix(record.RootFSStagingName, ".rootfs-staging-") && validOpaquePathComponent(record.RootFSStagingName)
+}
+
+func (r *RepositoryVMRegistry) validateRepositoryDurableRecord(identity RepositoryIdentity, record RepositoryVMRecord) error {
 	expectedRootFS := filepath.Join(identity.StateDirectory, "rootfs")
-	expectedEndpoint := r.repositoryEndpoint(identity, record.Generation)
-	if record.State != EnvironmentReady || record.Owner != identity.Owner || record.RepositoryKey != identity.Key ||
-		record.GitCommonDirectory != identity.GitCommonDirectory || record.Generation == 0 || record.VMID == "" ||
-		record.RootFSPath != expectedRootFS || record.Endpoint != expectedEndpoint || record.AuthorityDigest == "" || record.RunnerPID <= 0 || record.ProcessIdentity == "" {
+	expectedEndpoint := r.repositoryEndpoint(identity, record.bootGeneration())
+	if (record.State != EnvironmentReady && record.State != EnvironmentProvisioning) || record.Owner != identity.Owner || record.RepositoryKey != identity.Key ||
+		record.GitCommonDirectory != identity.GitCommonDirectory || record.Generation == 0 || record.bootGeneration() == 0 || record.VMID == "" ||
+		record.RootFSPath != expectedRootFS || !validRepositoryRootFSState(record) || record.Endpoint != expectedEndpoint || record.AuthorityDigest == "" || !record.Artifacts.complete() || record.GuestEgressDigest == "" || record.GuestAgentExecutableHash == "" {
 		return ErrRepositoryVMInconsistent
 	}
 	return nil
 }
 
 func validateRepositoryArtifacts(verified VerifiedArtifacts) error {
-	if verified.ExecutionImage.Kind != ArtifactExecutionImage || verified.GuestAgent.Kind != ArtifactGuestAgent ||
-		verified.ExecutionImage.Digest == "" || verified.GuestAgent.Digest == "" ||
-		!filepath.IsAbs(verified.ExecutionImage.Path) || !filepath.IsAbs(verified.GuestAgent.Path) {
-		return errors.New("verified Brood and guest-agent artifacts are required for first use")
+	for _, artifact := range verified.All() {
+		if artifact.Kind == "" || artifact.Digest == "" || !filepath.IsAbs(artifact.Path) {
+			return errors.New("complete verified repository artifacts are required")
+		}
 	}
 	return nil
 }
 
-func validateRepositoryRootFS(directory *repositoryDirectory) error {
+func retainRepositoryArtifacts(directory *repositoryDirectory, verified VerifiedArtifacts) (VerifiedArtifacts, RepositoryArtifactSet, error) {
+	if err := validateRepositoryArtifacts(verified); err != nil {
+		return VerifiedArtifacts{}, RepositoryArtifactSet{}, err
+	}
+	final := filepath.Join(directory.path, "launch-artifacts")
+	if info, err := os.Lstat(final); err == nil {
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return VerifiedArtifacts{}, RepositoryArtifactSet{}, errors.New("retained artifact root is invalid")
+		}
+		identities := artifactIdentitiesAt(final, verified)
+		record := RepositoryVMRecord{Artifacts: identities}
+		loaded, loadErr := loadRepositoryArtifacts(directory, record)
+		return loaded, identities, loadErr
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return VerifiedArtifacts{}, RepositoryArtifactSet{}, err
+	}
+	var random [8]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return VerifiedArtifacts{}, RepositoryArtifactSet{}, err
+	}
+	name := ".launch-artifacts-" + hex.EncodeToString(random[:])
+	staging := filepath.Join(directory.path, name)
+	if err := os.Mkdir(staging, 0o700); err != nil {
+		return VerifiedArtifacts{}, RepositoryArtifactSet{}, err
+	}
+	defer func() { _ = os.RemoveAll(staging) }()
+	retained, err := snapshotArtifacts(verified, staging)
+	if err != nil {
+		return VerifiedArtifacts{}, RepositoryArtifactSet{}, err
+	}
+	if err := os.Rename(staging, final); err != nil {
+		return VerifiedArtifacts{}, RepositoryArtifactSet{}, err
+	}
+	if err := directory.file.Sync(); err != nil {
+		return VerifiedArtifacts{}, RepositoryArtifactSet{}, err
+	}
+	identities := artifactIdentitiesAt(final, retained)
+	for _, kind := range []ArtifactKind{ArtifactRuntime, ArtifactFirmware, ArtifactExecutionImage, ArtifactGuestAgent} {
+		identity := identities.ByKind(kind)
+		artifact := retained.ByKind(kind)
+		artifact.Path = identity.Path
+		switch kind {
+		case ArtifactRuntime:
+			retained.Runtime = artifact
+		case ArtifactFirmware:
+			retained.Firmware = artifact
+		case ArtifactExecutionImage:
+			retained.ExecutionImage = artifact
+		case ArtifactGuestAgent:
+			retained.GuestAgent = artifact
+		}
+	}
+	return retained, identities, nil
+}
+
+func artifactIdentitiesAt(root string, artifacts VerifiedArtifacts) RepositoryArtifactSet {
+	var identities RepositoryArtifactSet
+	for _, artifact := range artifacts.All() {
+		identity := RepositoryArtifactIdentity{
+			Kind: artifact.Kind, Digest: artifact.Digest, ManifestDigest: artifact.ManifestDigest,
+			DiscoveryReference: artifact.DiscoveryReference, ResolutionEvidence: artifact.ResolutionEvidence,
+			Platform: artifact.Platform, Path: filepath.Join(root, string(artifact.Kind)),
+		}
+		switch artifact.Kind {
+		case ArtifactRuntime:
+			identities.Runtime = identity
+		case ArtifactFirmware:
+			identities.Firmware = identity
+		case ArtifactExecutionImage:
+			identities.ExecutionImage = identity
+		case ArtifactGuestAgent:
+			identities.GuestAgent = identity
+		}
+	}
+	return identities
+}
+
+func loadRepositoryArtifacts(directory *repositoryDirectory, record RepositoryVMRecord) (VerifiedArtifacts, error) {
+	root := filepath.Join(directory.path, "launch-artifacts")
+	fd, err := openatOpaque(int(directory.file.Fd()), "launch-artifacts", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return VerifiedArtifacts{}, err
+	}
+	_ = unix.Close(fd)
+	var result VerifiedArtifacts
+	for _, kind := range []ArtifactKind{ArtifactRuntime, ArtifactFirmware, ArtifactExecutionImage, ArtifactGuestAgent} {
+		identity := record.Artifacts.ByKind(kind)
+		expectedPath := filepath.Join(root, string(kind))
+		if identity.Kind != kind || identity.Path != expectedPath || identity.Digest == "" {
+			return VerifiedArtifacts{}, errors.New("retained artifact identity is incomplete")
+		}
+		digest, err := digestTree(expectedPath)
+		if err != nil || digest != identity.Digest {
+			return VerifiedArtifacts{}, ErrCorruptCacheEntry
+		}
+		artifact := VerifiedArtifact{Kind: kind, Digest: identity.Digest, ManifestDigest: identity.ManifestDigest, DiscoveryReference: identity.DiscoveryReference, ResolutionEvidence: identity.ResolutionEvidence, Platform: identity.Platform, Path: expectedPath}
+		switch kind {
+		case ArtifactRuntime:
+			result.Runtime = artifact
+		case ArtifactFirmware:
+			result.Firmware = artifact
+		case ArtifactExecutionImage:
+			result.ExecutionImage = artifact
+		case ArtifactGuestAgent:
+			result.GuestAgent = artifact
+		}
+	}
+	return result, nil
+}
+
+func regularFileSHA256(path string) (string, error) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return "", err
+	}
+	file := os.NewFile(uintptr(fd), path)
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return "", errors.New("artifact executable is not a regular file")
+	}
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func cloneArtifactRequests(requests map[ArtifactKind]ArtifactRequest) map[ArtifactKind]ArtifactRequest {
+	if len(requests) == 0 {
+		return nil
+	}
+	cloned := make(map[ArtifactKind]ArtifactRequest, len(requests))
+	for kind, request := range requests {
+		cloned[kind] = request
+	}
+	return cloned
+}
+
+func cloneGuestEgressPolicy(policy GuestEgressPolicy) GuestEgressPolicy {
+	return GuestEgressPolicy{Mode: policy.normalizedMode(), Allow: append([]EgressDestination(nil), policy.Allow...)}
+}
+
+func guestEgressFingerprint(policy GuestEgressPolicy) string {
+	policy = cloneGuestEgressPolicy(policy)
+	encoded, _ := json.Marshal(policy)
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:])
+}
+
+func validateRepositoryRootFS(directory *repositoryDirectory, expectedGuestAgentHash string) error {
 	rootFD, err := openatOpaque(int(directory.file.Fd()), "rootfs", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return errors.New("private repository rootfs is missing or invalid")
@@ -636,11 +1041,15 @@ func validateRepositoryRootFS(directory *repositoryDirectory) error {
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&0o111 == 0 {
 		return errors.New("private repository rootfs has no executable guest agent")
 	}
+	hash := sha256.New()
+	if _, err := io.Copy(hash, current); err != nil || hex.EncodeToString(hash.Sum(nil)) != expectedGuestAgentHash {
+		return errors.New("private repository rootfs guest agent identity changed")
+	}
 	return nil
 }
 
 func validateProvisionalRuntime(record RepositoryVMRecord, status RuntimeStatus) error {
-	if !status.Live || status.Generation != record.Generation || status.VMID != record.VMID || status.Endpoint != record.Endpoint || status.PID <= 0 || status.ProcessIdentity == "" {
+	if !status.Live || status.Generation != record.bootGeneration() || status.VMID != record.VMID || status.Endpoint != record.Endpoint || status.PID <= 0 || status.ProcessIdentity == "" {
 		return ErrRepositoryVMInconsistent
 	}
 	return nil
@@ -703,6 +1112,35 @@ func writeRepositoryBootAuthority(directory *repositoryDirectory, authority Repo
 	return directory.file.Sync()
 }
 
+func replaceRepositoryBootAuthority(directory *repositoryDirectory, authority RepositoryBootAuthority) error {
+	var random [8]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return err
+	}
+	name := ".authority-" + hex.EncodeToString(random[:])
+	fd, err := openatOpaque(int(directory.file.Fd()), name, unix.O_WRONLY|unix.O_CREAT|unix.O_EXCL|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0o600)
+	if err != nil {
+		return err
+	}
+	file := os.NewFile(uintptr(fd), filepath.Join(directory.path, name))
+	defer func() { _ = unix.Unlinkat(int(directory.file.Fd()), name, 0) }()
+	if _, err := file.Write(authority.bytes()); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	if err := unix.Renameat(int(directory.file.Fd()), name, int(directory.file.Fd()), "authority.key"); err != nil {
+		return err
+	}
+	return directory.file.Sync()
+}
+
 func readRepositoryRecord(directory *repositoryDirectory) (RepositoryVMRecord, error) {
 	fd, err := openatOpaque(int(directory.file.Fd()), "registry.json", unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
@@ -721,12 +1159,18 @@ func readRepositoryRecord(directory *repositoryDirectory) (RepositoryVMRecord, e
 		return RepositoryVMRecord{}, fmt.Errorf("decode repository generation registry: %w", err)
 	}
 	if document.Version != repositoryRegistryVersion {
-		return RepositoryVMRecord{}, fmt.Errorf("unsupported repository generation registry version %d", document.Version)
+		return RepositoryVMRecord{}, fmt.Errorf("unsupported repository generation registry version %d; local microVM data was preserved, but this is incompatible local-development state; use the matching build to export needed work before replacing any state", document.Version)
 	}
+	document.Record.syncBootFields()
 	return document.Record, nil
 }
 
 func writeRepositoryRecord(directory *repositoryDirectory, record RepositoryVMRecord) error {
+	// Boot is the sole mutable source of truth. Reject a stale compatibility
+	// mirror instead of silently overwriting either representation.
+	if !record.bootFieldsMatch() {
+		return errors.New("repository boot compatibility fields conflict with the authoritative boot record")
+	}
 	data, err := json.Marshal(repositoryRegistryDocument{Version: repositoryRegistryVersion, Record: record})
 	if err != nil {
 		return err

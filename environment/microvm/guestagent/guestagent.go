@@ -69,12 +69,26 @@ type Services struct {
 	client    *control.Client
 }
 
+// ConnectRepository opens services on an already mutually authenticated
+// repository channel using its one-use registration incarnation.
+func ConnectRepository(ctx context.Context, stream io.ReadWriteCloser, binding control.Binding, incarnation string) (*Services, error) {
+	client, err := control.OpenBoundClient(ctx, stream, binding, incarnation, []control.ServiceName{control.ServiceWorkspace, control.ServiceExec}, control.DefaultMaxMessageBytes)
+	if err != nil {
+		return nil, err
+	}
+	return servicesFromClient(binding, client)
+}
+
 // Connect performs the sole guest handshake and constructs both bound adapters.
 func Connect(ctx context.Context, stream io.ReadWriteCloser, binding control.Binding, capability string) (*Services, error) {
 	client, err := control.OpenClient(ctx, stream, binding, capability, []control.ServiceName{control.ServiceWorkspace, control.ServiceExec}, control.DefaultMaxMessageBytes)
 	if err != nil {
 		return nil, err
 	}
+	return servicesFromClient(binding, client)
+}
+
+func servicesFromClient(binding control.Binding, client *control.Client) (*Services, error) {
 	root := binding.AssignedRoot
 	if root == "" {
 		root = "/workspace"

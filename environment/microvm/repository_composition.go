@@ -35,14 +35,9 @@ func NewRepositoryComposition(stateRoot string, cfg RepositoryRuntimeConfig) (*R
 	if err != nil {
 		return nil, err
 	}
-	restartHealthErr := error(nil)
-	hasRecords, err := registry.HasRecords()
-	if err != nil {
-		return nil, fmt.Errorf("inspect repository restart health phase: %w", err)
-	}
-	if hasRecords {
-		restartHealthErr = fmt.Errorf("%w: repository restart health phase: hosted network backend is not live and cannot be reconstructed safely", ErrRepositoryVMInconsistent)
-	}
+	registry.artifactPolicy = cfg.ArtifactPolicy
+	registry.artifactRequests = cloneArtifactRequests(cfg.Artifacts)
+	registry.guestEgress = cloneGuestEgressPolicy(cfg.GuestEgress)
 	logical, err := NewRepositoryLogicalManager(registry, worktree.New(), runtime)
 	if err != nil {
 		return nil, err
@@ -56,6 +51,6 @@ func NewRepositoryComposition(stateRoot string, cfg RepositoryRuntimeConfig) (*R
 	}
 	return &RepositoryComposition{
 		Runtime: runtime, Registry: registry, Logical: logical,
-		Attachments: attachments, RestartHealthError: restartHealthErr,
+		Attachments: attachments,
 	}, nil
 }

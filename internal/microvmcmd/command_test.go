@@ -52,7 +52,7 @@ func TestStatusJSONKeepsStoppedStateOnError(t *testing.T) {
 	if json.Unmarshal([]byte(out.String()), &got) != nil {
 		t.Fatalf("invalid status JSON: %q", out.String())
 	}
-	if got.State != "stopped" || got.Error != "daemon_not_running" || !strings.Contains(got.Remediation, "mecated microvm doctor") || got.Running {
+	if got.State != "stopped" || got.Error != "daemon_not_running" || !strings.Contains(got.Remediation, "Ordinary microVM use starts") || !strings.Contains(got.Remediation, "records may still exist") || got.Running {
 		t.Fatalf("stopped status = %+v", got)
 	}
 	if strings.Contains(out.String(), "/private/socket") {

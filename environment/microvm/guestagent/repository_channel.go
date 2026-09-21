@@ -28,7 +28,7 @@ const (
 var ErrUnauthenticatedRepositoryChannel = errors.New("repository guest channel is not authenticated")
 
 const (
-	repositoryChannelAuthVersion = 1
+	repositoryChannelAuthVersion = 2
 	repositoryChannelAuthTimeout = 250 * time.Millisecond
 )
 
@@ -43,7 +43,12 @@ type repositoryChannelChallenge struct {
 }
 
 type repositoryChannelResponse struct {
-	MAC [sha256.Size]byte `json:"mac"`
+	GuestMAC  [sha256.Size]byte `json:"guest_mac"`
+	HostNonce [32]byte          `json:"host_nonce"`
+}
+
+type repositoryChannelConfirmation struct {
+	HostMAC [sha256.Size]byte `json:"host_mac"`
 }
 
 // AuthenticateHostRepositoryChannel challenges a newly accepted connection and
@@ -72,8 +77,13 @@ func AuthenticateHostRepositoryChannel(ctx context.Context, stream io.ReadWriteC
 	if err := codec.Read(stream, &response); err != nil {
 		return errors.Join(ErrUnauthenticatedRepositoryChannel, err)
 	}
-	if !hmac.Equal(response.MAC[:], repositoryChannelMAC(key, challenge)) {
+	if !hmac.Equal(response.GuestMAC[:], repositoryChannelMAC(key, "guest", challenge, nil)) {
 		return ErrUnauthenticatedRepositoryChannel
+	}
+	confirmation := repositoryChannelConfirmation{}
+	copy(confirmation.HostMAC[:], repositoryChannelMAC(key, "host", challenge, response.HostNonce[:]))
+	if err := codec.Write(stream, confirmation); err != nil {
+		return errors.Join(ErrUnauthenticatedRepositoryChannel, err)
 	}
 	return nil
 }
@@ -94,9 +104,19 @@ func authenticateGuestRepositoryChannel(ctx context.Context, stream io.ReadWrite
 		return "", ErrUnauthenticatedRepositoryChannel
 	}
 	response := repositoryChannelResponse{}
-	copy(response.MAC[:], repositoryChannelMAC(key, challenge))
+	if _, err := rand.Read(response.HostNonce[:]); err != nil {
+		return "", err
+	}
+	copy(response.GuestMAC[:], repositoryChannelMAC(key, "guest", challenge, nil))
 	if err := codec.Write(stream, response); err != nil {
 		return "", errors.Join(ErrUnauthenticatedRepositoryChannel, err)
+	}
+	var confirmation repositoryChannelConfirmation
+	if err := codec.Read(stream, &confirmation); err != nil {
+		return "", errors.Join(ErrUnauthenticatedRepositoryChannel, err)
+	}
+	if !hmac.Equal(confirmation.HostMAC[:], repositoryChannelMAC(key, "host", challenge, response.HostNonce[:])) {
+		return "", ErrUnauthenticatedRepositoryChannel
 	}
 	return challenge.Purpose, nil
 }
@@ -105,9 +125,10 @@ func validRepositoryChannelPurpose(purpose RepositoryChannelPurpose) bool {
 	return purpose == RepositoryChannelControl || purpose == RepositoryChannelData
 }
 
-func repositoryChannelMAC(key []byte, challenge repositoryChannelChallenge) []byte {
+func repositoryChannelMAC(key []byte, role string, challenge repositoryChannelChallenge, peerNonce []byte) []byte {
 	mac := hmac.New(sha256.New, key)
-	_, _ = mac.Write([]byte("mecatl.repository-channel-auth.v1"))
+	_, _ = mac.Write([]byte("mecatl.repository-channel-auth.v2"))
+	writeChannelAuthString(mac, role)
 	writeChannelAuthString(mac, challenge.Owner)
 	writeChannelAuthString(mac, challenge.RepositoryKey)
 	writeChannelAuthString(mac, challenge.VMID)
@@ -116,6 +137,7 @@ func repositoryChannelMAC(key []byte, challenge repositoryChannelChallenge) []by
 	_, _ = mac.Write(generation[:])
 	writeChannelAuthString(mac, string(challenge.Purpose))
 	_, _ = mac.Write(challenge.Nonce[:])
+	_, _ = mac.Write(peerNonce)
 	return mac.Sum(nil)
 }
 

@@ -25,7 +25,7 @@ import (
 
 type schedulePlacementProvider struct {
 	binds, reattaches, closes, deletes int
-	refs                               []session.EnvironmentRef
+	refs, deletedRefs                  []session.EnvironmentRef
 	retained                           bool
 	deleteErr, closeErr                error
 }
@@ -54,6 +54,7 @@ func (p *schedulePlacementProvider) Reattach(_ context.Context, req server.Place
 
 func (p *schedulePlacementProvider) DeletePlacement(_ context.Context, req server.PlacementDeleteRequest) (server.PlacementDeleteResult, error) {
 	p.deletes++
+	p.deletedRefs = append(p.deletedRefs, req.Ref)
 	if req.Scope != "test" || !req.Ref.Valid() {
 		return server.PlacementDeleteResult{}, server.ErrPlacementNotFound
 	}
@@ -391,5 +392,8 @@ func TestScheduleCreatePersistenceFailureRollsBackOwnedPlacement(t *testing.T) {
 	}
 	if provider.binds != 1 || provider.closes != 1 || provider.deletes != 1 {
 		t.Fatalf("bind/close/delete = %d/%d/%d, want 1/1/1", provider.binds, provider.closes, provider.deletes)
+	}
+	if len(provider.refs) != 1 || len(provider.deletedRefs) != 1 || provider.deletedRefs[0] != provider.refs[0] {
+		t.Fatalf("rollback deleted refs = %+v, want exact provisioned ref %+v", provider.deletedRefs, provider.refs)
 	}
 }

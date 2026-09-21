@@ -164,7 +164,7 @@ func statusSummary(status microvmmanager.Status, err error) (state, errorClass, 
 	remediation = "Run 'mecated microvm doctor', follow its next action, then retry."
 	switch {
 	case status.Configured && !status.Running:
-		return "stopped", "daemon_not_running", remediation
+		return "stopped", "daemon_not_running", "Ordinary microVM use starts a compatible stopped daemon automatically; doctor is optional for diagnosis. Inventory is unavailable while stopped, and durable records may still exist."
 	case !status.Configured && status.Running:
 		return "unhealthy", "unmanaged_daemon", remediation
 	default:
@@ -226,7 +226,8 @@ func writeStatusText(out io.Writer, status microvmmanager.Status) {
 		_, _ = fmt.Fprintln(out, "backend state: not configured; run mecated microvm doctor to check host readiness")
 		writeSelectionExamples(out)
 	} else if !status.Running {
-		_, _ = fmt.Fprintln(out, "backend state: configured; daemon not running")
+		_, _ = fmt.Fprintln(out, "backend state: configured; daemon not running; ordinary microVM use starts a compatible daemon automatically")
+		_, _ = fmt.Fprintln(out, "inventory unavailable while the daemon is stopped; durable attachment records may still exist; doctor is optional for diagnosis")
 		writeSelectionExamples(out)
 	}
 }

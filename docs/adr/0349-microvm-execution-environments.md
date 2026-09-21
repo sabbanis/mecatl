@@ -44,15 +44,21 @@ local operator identity. That tuple is the only repository key. Repository-contr
 display names, linked-worktree paths, symlinks, and path components cannot choose a state
 directory directly.
 
-A durable, inter-process-locked registry admits one VM generation and one private rootfs
-materialization for that key. Concurrent first use converges on that singleton. Exact
-reattachment is allowed only while the VM, capability issuer, guest transport, and hosted
-network provider are all still owned and live in the current daemon process. Daemon restart
-loses the in-process hosted network provider, so readiness and resolve fail promptly with a
-phase-specific inconsistent/unavailable error while preserving the durable record, rootfs,
-and worktrees. Missing, foreign, or otherwise inconsistent runtime state follows the same
-safe behavior: the MVP does not mint an empty replacement, destroy an orphan, or claim
-comprehensive crash reconciliation.
+A durable, inter-process-locked registry admits one stable placement generation and one
+private rootfs materialization for that key. Concurrent first use converges on that singleton.
+The placement generation remains in logical refs and schedules across VM boots. Replaceable
+boot state has a separate generation, VM ID, endpoint, runner identity, and fresh authority.
+
+When the current daemon does not own a healthy runtime, exact admission validates the retained
+rootfs and immutable launch artifacts, requires the configured artifact and egress policies to
+match their admitted identities, and reconciles every prior launch attempt before starting a
+replacement boot. Linux launch ownership combines a durable pre-exec receipt, inherited flock,
+host boot ID, process start token, executable identity, lock-fd identity, and pidfd signaling.
+A pending receipt is retryable; any uncertain live identity blocks replacement. Recovery keeps
+the rootfs, installed packages, home, caches, logical worktrees, Git indexes, dirty and
+untracked data, and exact refs. It does not replay an interrupted command. Missing, foreign,
+corrupt, or incompatible state fails without creating empty state, deleting user data, or
+falling back to host execution.
 
 The repository VM shares its rootfs, package installation, guest home, and declared caches
 among logical environments in that repository. This is an intentional trust boundary.
@@ -104,10 +110,9 @@ created from a session borrows that session's logical worktree and never owns it
 An independently created MicroVM schedule provisions one logical worktree and owns it until
 the first fire claim. Updates preserve the placement and ownership relationship. Each fire
 mints a fresh persisted `sched--` session but reauthorizes and attaches the same exact
-schedule ref; neither a mecated/harness restart while microvmd remains live nor a changed
-deployment default causes rebinding or host fallback. Reattachment succeeds only when that
-exact repository generation and its owned runtime dependencies remain available under the
-general rule above; restarting microvmd itself remains the loud fail-closed case.
+schedule ref; neither a mecated/harness restart, a microvmd restart, nor a changed deployment
+default causes rebinding or host fallback. Reattachment recovers a missing runtime under the
+stable repository placement generation and then registers the same exact schedule ref.
 
 Owned schedule deletion uses an atomic, durable deleting marker. Before any fire claim it
 disables the schedule, removes only the exact schedule-owned logical placement, preserves a
@@ -165,9 +170,9 @@ ordinary use retries it.
 There is no dedicated `--microvm`, required `init`, or `recover`. Existing nonduplicative
 `status`, `doctor`, and `delete` commands remain, but the MVP adds no repository-VM deletion
 UX. Status returns deterministic owner-scoped pages of at most 64 entries and prints an
-opaque continuation token when another page exists. Restart supports exact reattachment only
-for dependencies still live in-process; a daemon restart loses hosted networking and therefore
-returns a loud safe failure without replacing or deleting the preserved generation.
+opaque continuation token when another page exists. Doctor and status remain read-only.
+Ordinary exact admission performs recovery lazily; a compatible configured daemon starts again
+under the manager lock, while a live or uncertain prior daemon blocks a duplicate.
 
 ### 6. Keep source-build release activation developer-only
 
@@ -210,8 +215,8 @@ control, arbitrary URL, or installer override. Preparation and tagged binaries s
   caches, and arbitrary Bash can address sibling guest worktree paths; exhaustive
   cache-poisoning defenses and kernel isolation between same-repository worktrees are not
   claimed.
-- A broken or orphaned recorded generation can require manual intervention because the MVP
-  fails loudly rather than reconciling or deleting it.
+- An uncertain recorded launch blocks replacement until its exact ownership can be proved; the
+  retained user state remains untouched.
 - No new repository-VM deletion UX or sophisticated retention policy ships in the MVP.
 - Merge correctness is the existing single-client behavior, not a crash-durable or
   cross-process transaction.
@@ -224,7 +229,6 @@ control, arbitrary URL, or installer override. Preparation and tagged binaries s
 The following require later ADRs or amendments after MVP evidence:
 
 - repository-VM deletion UX and sophisticated retention;
-- crash-orphan reconciliation beyond loud safe failure;
 - crash-durable merge recovery and cross-process/multi-client merge proofs;
 - macOS live ownership parity and Linux arm64 live support;
 - upstream Brood signing and independent refresh channels;

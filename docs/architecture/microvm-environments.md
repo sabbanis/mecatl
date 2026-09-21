@@ -26,17 +26,20 @@ Canonicalization resolves linked worktrees and symlinks before deriving an opaqu
 owner-confined state identity. Caller-controlled names and paths never become registry
 selectors directly.
 
-Microvmd owns an inter-process-locked durable registry. Each key admits one VM generation
-and one private rootfs materialization. Concurrent first use converges on that record.
-Different operators or Git common directories receive different records and mutable state.
+Microvmd owns an inter-process-locked durable registry. Each key admits one stable placement
+generation and one private rootfs materialization. Concurrent first use converges on that
+record. Different operators or Git common directories receive different records and mutable
+state.
 
-Exact reattachment is permitted only while every owned dependency remains live in the
-current daemon process. The go-microvm hosted network provider is in-process and cannot be
-safely reconstructed after daemon restart, so restart readiness and resolve fail promptly
-with an actionable phase-specific error while preserving the VM record, rootfs, and logical
-worktrees. Missing, foreign, or otherwise inconsistent VM/process/endpoint state follows the
-same fail-closed path. The MVP never silently creates a replacement or destroys an uncertain
-resource.
+The placement generation remains stable across VM boots, so persisted session and schedule
+refs do not change after daemon restart or host reboot. Replaceable boot state has its own
+generation, VM ID, endpoint, runner identity, and fresh authority. Recovery first validates
+the retained rootfs and immutable launch artifacts, confirms that configured artifact and
+egress policy still match the admitted values, and reconciles every historical launch
+attempt through its durable ownership lock and exact process receipt. Only then does it
+publish a new boot intent and start hosted networking and the VM around the retained rootfs.
+A live or uncertain prior runner blocks replacement. Missing, corrupt, or incompatible state
+fails without deleting user data, creating empty state, or falling back to host execution.
 
 The VM's rootfs, installed packages, guest home, and declared caches are deliberately
 shared within the repository key. Code in one session can influence a later same-repository
@@ -173,11 +176,12 @@ repository provisioning, readiness checks Git, Python 3, read-write KVM access, 
 user-namespace controls, and an actual ephemeral namespace creation to detect disabled or
 exhausted quota. Doctor repeats those non-destructive host checks. Neither path changes
 ACLs, groups, sysctls, or quota. The manager lock serializes concurrent startup across
-sessions and host processes. Only genuinely fresh state is installed and started; compatible
-callers reuse the repository daemon. Desired release or egress conflicts and unhealthy or
-incompatible runtime state fail without rewriting active configuration, stopping the daemon,
-deleting state, or replacing repository runtime. There is no dedicated activation flag, init
-command, or recover command.
+sessions and host processes. Only genuinely fresh state is installed. Compatible callers
+reuse the repository daemon. If its configured process has stopped, ordinary readiness starts
+it again under the same manager lock; process identity checks refuse a duplicate while a
+recorded daemon is live or uncertain. Desired release or egress conflicts and unhealthy or
+incompatible retained state fail without rewriting active configuration, deleting state, or
+replacing user data. There is no dedicated activation flag, init command, or recover command.
 
 Status reads the durable repository logical-attachment inventory as the sole `microvm-local`
 inventory authority; it survives daemon restart and shows the shared repository generation with each
@@ -189,10 +193,10 @@ object with `state`, stable `error`, and `remediation` before the command exits 
 attachment, ref, and generation from one owner-scoped status row plus confirmation. It removes
 only that logical attachment and a clean worktree, preserves dirty worktrees, and never deletes
 or resets the repository VM. Doctor, status, and delete are local to the execution host and
-current OS principal; mecatui and remote connect expose no administration surface. A fresh host
-with satisfied prerequisites is successfully reported as ready to configure on first use.
-Same-process reattachment requires every dependency to remain live; daemon
-restart fails loudly and preserves state because hosted networking cannot be reconstructed safely.
+current OS principal; mecatui and remote connect expose no administration surface. Doctor and
+status never boot or repair a repository. A fresh host with satisfied prerequisites is
+successfully reported as ready to configure on first use. Exact admission and reattachment
+perform recovery lazily when a retained runtime is unavailable.
 
 ## Required live journey and limits
 
@@ -204,17 +208,16 @@ checkout. The same session reattached after mecated restarted while microvmd rem
 doctor and status were healthy. No credential, private placement ref, socket, or host path was
 retained in the evidence. This proves first-use readiness, direct artifact admission and in-process verification, guest
 filesystem and Bash execution, source isolation from the guest namespace, and exact harness
-restart reattachment. It does not prove microvmd restart recovery: that remains fail-closed as
-described above. Deterministic composition tests prove repository-VM reuse across multiple
-sessions, daemon-restart failure behavior, and delegation routing. Optional fail-closed network
-tightening is proven by AC6.2's deterministic app/profile and network-enforcement tests rather
-than a second live VM.
+restart reattachment. That manual run did not exercise a microvmd restart. Deterministic
+composition and launch-ownership tests cover retained-state recovery, authority rotation,
+exact process reconciliation, repository-VM reuse across sessions, and delegation routing.
+Optional fail-closed network tightening is proven by AC6.2's deterministic app/profile and
+network-enforcement tests rather than a second live VM.
 
-Deferred after the MVP: repository-VM deletion UX,
-sophisticated retention, crash-orphan reconciliation, crash-durable and cross-process
-merge, Linux arm64 and macOS live support, upstream Brood signing, independent refresh
-channels, per-session fairness and quotas, dashboards, and exhaustive cache-poisoning
-controls. Non-Git, remote, multi-user, and cross-principal placement remain out of scope.
+Deferred after the MVP: repository-VM deletion UX, sophisticated retention,
+crash-durable and cross-process merge, Linux arm64 and macOS live support, upstream Brood
+signing, independent refresh channels, per-session fairness and quotas, dashboards, and
+exhaustive cache-poisoning controls. Non-Git, remote, multi-user, and cross-principal placement remain out of scope.
 Scheduled tasks are supported through the existing server-owned placement contract: origin-backed
 schedules borrow their exact logical attachment, while independent schedules allocate one logical
 attachment and persist a trusted ownership bit. Every fire reattaches that ref. Delete disables

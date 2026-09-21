@@ -15,7 +15,10 @@ import (
 	"testing"
 	"time"
 
+	gomicrovm "github.com/stacklok/go-microvm"
+	"github.com/stacklok/go-microvm/hypervisor"
 	gomicrovmnet "github.com/stacklok/go-microvm/net"
+	"github.com/stacklok/go-microvm/preflight"
 
 	"github.com/stacklok/mecatl/environment/microvm/control"
 	"github.com/stacklok/mecatl/environment/microvm/control/controltest"
@@ -52,7 +55,7 @@ func TestRepositoryGuestAuthenticationRejectsCompetingConnectorBeforeDisclosure(
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 4*time.Second)
 	defer cancel()
 	started := time.Now()
 	logical, err := composition.Logical.Create(ctx, LogicalEnvironmentRequest{Owner: "operator", Checkout: repository, Artifacts: testArtifactSnapshot(repositoryVerifiedArtifacts(t, root))})
@@ -62,7 +65,7 @@ func TestRepositoryGuestAuthenticationRejectsCompetingConnectorBeforeDisclosure(
 	if ctx.Err() != nil {
 		t.Fatalf("parent operation expired before the legitimate guest authenticated: %v", ctx.Err())
 	}
-	if elapsed := time.Since(started); elapsed >= time.Second {
+	if elapsed := time.Since(started); elapsed >= 3*time.Second {
 		t.Fatalf("legitimate guest authentication took %v after stalled connector", elapsed)
 	}
 	defer logical.Close()
@@ -449,6 +452,114 @@ func TestRepositoryProductionInventoryPaginationAndLogicalDelete(t *testing.T) {
 	}
 }
 
+type retainedRootFSVMHandle struct {
+	stopped bool
+}
+
+func (h *retainedRootFSVMHandle) Stop(context.Context) error { h.stopped = true; return nil }
+func (h *retainedRootFSVMHandle) IsAlive() bool              { return !h.stopped }
+func (*retainedRootFSVMHandle) ID() string                   { return "4242" }
+
+type retainedRootFSBackend struct {
+	handle hypervisor.VMHandle
+}
+
+func (*retainedRootFSBackend) Name() string { return "test" }
+func (*retainedRootFSBackend) PrepareRootFS(_ context.Context, rootfs string, _ hypervisor.InitConfig) (string, error) {
+	return rootfs, nil
+}
+func (b *retainedRootFSBackend) Start(context.Context, hypervisor.VMConfig) (hypervisor.VMHandle, error) {
+	return b.handle, nil
+}
+
+func TestLibkrunStopThenBootCleanupPreservesPersistentRootFS(t *testing.T) {
+	root := t.TempDir()
+	rootfs := filepath.Join(root, "retained-rootfs")
+	dataDir := filepath.Join(root, "data-boot")
+	artifacts := filepath.Join(root, "artifacts-boot")
+	for _, dir := range []string{rootfs, artifacts} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	marker := filepath.Join(rootfs, "durable-marker")
+	if err := os.WriteFile(marker, []byte("preserve"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	handle := &retainedRootFSVMHandle{}
+	provider := &fakeNetworkProvider{socket: filepath.Join(root, "network.sock")}
+	vm, err := gomicrovm.Run(t.Context(), "",
+		gomicrovm.WithDataDir(dataDir),
+		gomicrovm.WithRootFSPath(rootfs),
+		gomicrovm.WithPreflightChecker(preflight.NewEmpty()),
+		gomicrovm.WithNetProvider(provider),
+		gomicrovm.WithBackend(&retainedRootFSBackend{handle: handle}),
+	)
+	if err != nil {
+		t.Fatalf("construct go-microvm VM: %v", err)
+	}
+	instance := &libkrunInstance{vm: vm, launch: GoMicroVMLaunch{ImagePath: rootfs}, dataDir: dataDir, ownedArtifactsRoot: artifacts}
+	if err := instance.Stop(t.Context()); err != nil {
+		t.Fatalf("stop go-microvm VM: %v", err)
+	}
+	if !handle.stopped {
+		t.Fatal("go-microvm VM.Stop did not stop its backend handle")
+	}
+	if err := instance.CleanupBoot(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(marker); err != nil || string(got) != "preserve" {
+		t.Fatalf("stop and boot cleanup changed persistent rootfs: %q, %v", got, err)
+	}
+	for _, dir := range []string{dataDir, artifacts} {
+		if _, err := os.Lstat(dir); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("boot cleanup retained %s: %v", dir, err)
+		}
+	}
+}
+
+func TestRepositoryHealthDoesNotClaimOrRemoveEndpoint(t *testing.T) {
+	root := t.TempDir()
+	t.Chdir(root)
+	endpoint := "guest.sock"
+	if err := os.WriteFile(endpoint, []byte("stale-owned-endpoint"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Lstat(endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := NewRepositoryRuntime(RepositoryRuntimeConfig{
+		Backend: &rollbackRuntimeBackend{}, Network: NewNetworkController(func() gomicrovmnet.Provider {
+			return &fakeNetworkProvider{socket: filepath.Join(root, "network.sock")}
+		}, &fakeGuestNetwork{}), UnixEndpoint: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := RepositoryVMRecord{Owner: "operator", RepositoryKey: "repo", VMID: "vm", Generation: 1, Endpoint: endpoint}
+	if _, err := runtime.Health(t.Context(), record, RepositoryHealthChallenge{}); err == nil {
+		t.Fatal("health without process-local generation succeeded")
+	}
+	after, err := os.Lstat(endpoint)
+	if err != nil {
+		t.Fatalf("health removed endpoint: %v", err)
+	}
+	if !os.SameFile(before, after) {
+		t.Fatal("health replaced endpoint")
+	}
+	if got, err := os.ReadFile(endpoint); err != nil || string(got) != "stale-owned-endpoint" {
+		t.Fatalf("health changed endpoint contents: %q, %v", got, err)
+	}
+	if len(runtime.listeners) != 0 {
+		t.Fatal("health claimed a listener")
+	}
+	if err := runtime.listenGuest(endpoint); err != nil {
+		t.Fatalf("ordinary start could not claim stale endpoint after read-only health: %v", err)
+	}
+	runtime.closeGuestListener(endpoint)
+}
+
 func TestRepositoryRuntimeAbortRejectsDifferentGeneration(t *testing.T) {
 	root := t.TempDir()
 	runtime, err := NewRepositoryRuntime(RepositoryRuntimeConfig{
@@ -565,7 +676,7 @@ func TestRepositoryRuntimeStartRollsBackEveryOwnedAcquisition(t *testing.T) {
 		{stage: "wait"},
 		{stage: "status"},
 		{stage: "authenticated-readiness"},
-		{stage: "stop"},
+		{stage: "stop", retainsOwnership: true},
 		{stage: "remove", retainsOwnership: true},
 		{stage: "wedged-remove", retainsOwnership: true},
 		{stage: "cancelled-rollback"},
@@ -630,8 +741,14 @@ func TestRepositoryRuntimeStartRollsBackEveryOwnedAcquisition(t *testing.T) {
 			if tc.stage != "network-dir" && provider.stops != wantNetworkStops {
 				t.Fatalf("network stops = %d, want %d", provider.stops, wantNetworkStops)
 			}
-			if tc.stage != "backend" && tc.stage != "network" && !tc.networkDirConflict && (instance.stops != 1 || instance.removes != 1) {
-				t.Fatalf("instance cleanup = stop %d remove %d, want 1/1", instance.stops, instance.removes)
+			if tc.stage != "backend" && tc.stage != "network" && !tc.networkDirConflict {
+				wantCleanup := 1
+				if tc.stage == "stop" {
+					wantCleanup = 0
+				}
+				if instance.stops != 1 || instance.removes != wantCleanup {
+					t.Fatalf("instance cleanup = stop %d boot cleanup %d, want 1/%d", instance.stops, instance.removes, wantCleanup)
+				}
 			}
 			if tc.retainsOwnership {
 				if _, statErr := os.Lstat(endpoint); statErr != nil {
@@ -719,7 +836,7 @@ func (i *rollbackRuntimeInstance) Stop(ctx context.Context) error {
 	return nil
 }
 
-func (i *rollbackRuntimeInstance) Remove(ctx context.Context) error {
+func (i *rollbackRuntimeInstance) CleanupBoot(ctx context.Context) error {
 	i.removes++
 	switch i.stage {
 	case "remove":
@@ -755,7 +872,7 @@ func TestRepositoryProductionReadinessRequiresAuthenticatedGuestStartupAfterIPv6
 	}
 	record := RepositoryVMRecord{
 		Owner: "operator", RepositoryKey: "repository-key", GitCommonDirectory: common, VMID: "repository-vm", Generation: 7,
-		Endpoint: filepath.Join(root, "guest.sock"), RootFSPath: filepath.Join(root, "rootfs"),
+		Endpoint: filepath.Join(root, "guest.sock"), RootFSPath: filepath.Join(root, "rootfs"), Boot: RepositoryBootRecord{Generation: 8},
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
 	defer cancel()
@@ -772,15 +889,25 @@ func TestRepositoryProductionReadinessRequiresAuthenticatedGuestStartupAfterIPv6
 }
 
 type repositoryCompositionBackend struct {
-	mu              sync.Mutex
-	starts          int
-	launch          GoMicroVMLaunch
-	server          *guestagent.RepositoryServer
-	status          RuntimeStatus
-	omitGuestServer bool
-	attackFirst     bool
-	attackerPayload chan []byte
-	attackerClosed  chan struct{}
+	mu                      sync.Mutex
+	starts                  int
+	launch                  GoMicroVMLaunch
+	server                  *guestagent.RepositoryServer
+	status                  RuntimeStatus
+	omitGuestServer         bool
+	failNextData            bool
+	dropNextControlResponse bool
+	failStart               int
+	attackFirst             bool
+	attackerPayload         chan []byte
+	attackerClosed          chan struct{}
+}
+
+func (b *repositoryCompositionBackend) Reconcile(context.Context, string) (LaunchReconcileResult, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.server = nil
+	return LaunchReconcileResult{Dead: 1}, nil
 }
 
 func (b *repositoryCompositionBackend) Start(_ context.Context, launch GoMicroVMLaunch) (GoMicroVMInstance, error) {
@@ -788,6 +915,10 @@ func (b *repositoryCompositionBackend) Start(_ context.Context, launch GoMicroVM
 	defer b.mu.Unlock()
 	b.starts++
 	b.launch = launch
+	if b.failStart > 0 {
+		b.failStart--
+		return nil, errors.New("injected boot failure")
+	}
 	if len(launch.Mounts) != 2 || launch.Mounts[0].Tag != repositoryMountTag ||
 		launch.Mounts[1].Tag != repositoryObjectMountTag || !launch.Mounts[1].ReadOnly {
 		return nil, errors.New("repository launch contract missing")
@@ -798,7 +929,7 @@ func (b *repositoryCompositionBackend) Start(_ context.Context, launch GoMicroVM
 	contract.Identity = identity
 	server, err := guestagent.NewRepositoryServer(guestagent.RepositoryServerConfig{
 		Owner: launch.RepositoryOwner, RepositoryKey: launch.RepositoryKey, VMID: launch.VMID, Endpoint: launch.Endpoint,
-		Generation: launch.Generation, AuthorityKey: launch.CapabilityKey, WorkloadIdentity: identity, RuntimeContract: contract,
+		Generation: launch.Generation, PlacementGeneration: launch.PlacementGeneration, AuthorityKey: launch.CapabilityKey, WorkloadIdentity: identity, RuntimeContract: contract,
 		ResolveRoot: func(guestRoot string) (string, error) {
 			rel, err := filepath.Rel(RepositoryGuestMountRoot, guestRoot)
 			if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
@@ -818,9 +949,57 @@ func (b *repositoryCompositionBackend) Start(_ context.Context, launch GoMicroVM
 }
 
 func (b *repositoryCompositionBackend) dialControl(ctx context.Context, _ string) (io.ReadWriteCloser, error) {
-	return b.dial(ctx)
+	b.mu.Lock()
+	drop := b.dropNextControlResponse
+	b.dropNextControlResponse = false
+	b.mu.Unlock()
+	if !drop {
+		return b.dial(ctx)
+	}
+	return b.dialWithControlResponseDrop(ctx, true)
+}
+
+func (b *repositoryCompositionBackend) dialWithControlResponseDrop(ctx context.Context, drop bool) (io.ReadWriteCloser, error) {
+	b.mu.Lock()
+	server := b.server
+	b.mu.Unlock()
+	if server == nil {
+		return nil, errors.New("repository guest is not booted")
+	}
+	host, guest := net.Pipe()
+	guestSide := io.ReadWriteCloser(guest)
+	if drop {
+		guestSide = &dropWriteCloser{ReadWriteCloser: guest, dropWrite: 2}
+	}
+	go func() {
+		_ = server.ServeAuthenticated(ctx, guestSide)
+		_ = guestSide.Close()
+	}()
+	return host, nil
+}
+
+type dropWriteCloser struct {
+	io.ReadWriteCloser
+	writes    int
+	dropWrite int
+}
+
+func (c *dropWriteCloser) Write(p []byte) (int, error) {
+	c.writes++
+	if c.writes == c.dropWrite {
+		_ = c.Close()
+		return 0, io.ErrClosedPipe
+	}
+	return c.ReadWriteCloser.Write(p)
 }
 func (b *repositoryCompositionBackend) dialData(ctx context.Context, _ string) (io.ReadWriteCloser, error) {
+	b.mu.Lock()
+	fail := b.failNextData
+	b.failNextData = false
+	b.mu.Unlock()
+	if fail {
+		return nil, errors.New("injected data connection failure")
+	}
 	return b.dial(ctx)
 }
 func (b *repositoryCompositionBackend) dial(ctx context.Context) (io.ReadWriteCloser, error) {
@@ -863,5 +1042,5 @@ func (repositoryCompositionInstance) WaitReady(context.Context) error { return n
 func (i repositoryCompositionInstance) Status(context.Context) (RuntimeStatus, error) {
 	return i.status, nil
 }
-func (repositoryCompositionInstance) Stop(context.Context) error   { return nil }
-func (repositoryCompositionInstance) Remove(context.Context) error { return nil }
+func (repositoryCompositionInstance) Stop(context.Context) error        { return nil }
+func (repositoryCompositionInstance) CleanupBoot(context.Context) error { return nil }

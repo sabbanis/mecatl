@@ -84,8 +84,13 @@ mecatui --resume SESSION_ID
 ```
 
 A microVM session remains on its exact server-owned placement for its lifetime; it is
-never moved to host execution. `mecatui connect ADDRESS` is a pure remote client and never
-resolves, starts, or forwards local MicroVM placement.
+never moved to host execution. If `microvmd` restarts or the host reboots, ordinary session
+resume starts a fresh VM boot around the retained rootfs and logical worktrees. The logical
+`EnvironmentRef`, including its revision, stays unchanged. Installed packages, guest home,
+caches, branches, indexes, and dirty or untracked files remain available. A command that was
+running when the process stopped is interrupted and is never replayed automatically.
+`mecatui connect ADDRESS` is a pure remote client and never resolves, starts, or forwards
+local MicroVM placement.
 
 ## Scheduled tasks
 
@@ -164,10 +169,11 @@ checkout-size guarantee. If creation reports `source capture limit exceeded`, re
 repository or dirty working-tree size (for example, remove unnecessary untracked artifacts)
 and retry; no session placement is registered and temporary capture data is removed.
 Worktrees separate Git state and routing, not mutually hostile processes in the same VM.
-Different repositories receive different VMs. A daemon restart may leave records,
-rootfs, and worktrees intact while live hosted dependencies are unavailable; affected
-sessions report that condition. Mecatl never falls back to host filesystem or shell
-execution and never creates an empty replacement environment.
+Different repositories receive different VMs. Recovery verifies the retained rootfs,
+guest agent, admitted artifacts, release policy, and guest egress policy before it starts a
+replacement boot. Missing or changed retained data fails with the preserved state left in
+place. Mecatl never falls back to host filesystem or shell execution and never creates an
+empty replacement environment.
 
 Use `mecated microvm doctor` and `mecated microvm status` for read-only inspection
 local to the execution host and current OS principal. Status calls daemon rows
@@ -186,7 +192,9 @@ cleanup cannot confirm removal, run `mecated microvm status` first. Delete only 
 row with the command above; do not infer missing identifiers from the failed response.
 Administration exists only in local `mecated`, not mecatui or remote
 connect mode. One repository-scoped daemon is shared across sessions and host processes. First use installs
-and starts only genuinely fresh state. A conflicting requested release or egress policy,
-corrupt configuration, process identity mismatch, stopped daemon, or unhealthy runtime
-fails without restarting the daemon, rewriting active configuration, deleting state, or
-replacing repository runtime.
+and starts only genuinely fresh state. A compatible configured daemon that is stopped starts
+again during ordinary MicroVM use; `microvm doctor` is optional for diagnosis. While the daemon
+is stopped, `microvm status` reports that inventory is unavailable because durable attachment
+records can still exist. A conflicting requested release or egress policy, corrupt
+configuration, live prior daemon with an unavailable socket, or uncertain process identity
+fails without rewriting active configuration, deleting state, or replacing repository data.

@@ -61,7 +61,7 @@ type RepositoryHealthResponse struct {
 }
 
 func (RepositoryBootAuthority) healthChallenge(record RepositoryVMRecord) (RepositoryHealthChallenge, error) {
-	challenge := RepositoryHealthChallenge{Owner: record.Owner, RepositoryKey: record.RepositoryKey, VMID: record.VMID, Generation: record.Generation}
+	challenge := RepositoryHealthChallenge{Owner: record.Owner, RepositoryKey: record.RepositoryKey, VMID: record.VMID, Generation: record.bootGeneration()}
 	if _, err := rand.Read(challenge.Nonce[:]); err != nil {
 		return RepositoryHealthChallenge{}, err
 	}
@@ -70,7 +70,7 @@ func (RepositoryBootAuthority) healthChallenge(record RepositoryVMRecord) (Repos
 
 // HealthResponse signs a challenge and the guest's actual status.
 func (a RepositoryBootAuthority) HealthResponse(record RepositoryVMRecord, challenge RepositoryHealthChallenge, status RuntimeStatus) (RepositoryHealthResponse, error) {
-	if challenge.Owner != record.Owner || challenge.RepositoryKey != record.RepositoryKey || challenge.VMID != record.VMID || challenge.Generation != record.Generation {
+	if challenge.Owner != record.Owner || challenge.RepositoryKey != record.RepositoryKey || challenge.VMID != record.VMID || challenge.Generation != record.bootGeneration() {
 		return RepositoryHealthResponse{}, ErrRepositoryVMInconsistent
 	}
 	response := RepositoryHealthResponse{Status: status}
@@ -81,7 +81,7 @@ func (a RepositoryBootAuthority) HealthResponse(record RepositoryVMRecord, chall
 // VerifyHealth accepts only a response signed by the boot authority over the
 // exact challenge, tuple, and returned health fields.
 func (a RepositoryBootAuthority) VerifyHealth(record RepositoryVMRecord, challenge RepositoryHealthChallenge, response RepositoryHealthResponse) error {
-	if challenge.Owner != record.Owner || challenge.RepositoryKey != record.RepositoryKey || challenge.VMID != record.VMID || challenge.Generation != record.Generation ||
+	if challenge.Owner != record.Owner || challenge.RepositoryKey != record.RepositoryKey || challenge.VMID != record.VMID || challenge.Generation != record.bootGeneration() ||
 		!hmac.Equal(response.MAC[:], a.healthMAC(challenge, response.Status)) {
 		return ErrRepositoryVMInconsistent
 	}
