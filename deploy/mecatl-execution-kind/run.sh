@@ -247,13 +247,6 @@ profiles:
 EOF
   kube apply -f "$root/e2e/k8s_execution/fixture/legacyfixture/crd.yaml"
   kube wait --for=condition=Established crd/executionenvironments.execution.mecatl.dev --timeout=60s
-  dev env KUBECONFIG="$kubeconfig" go run -tags kind_execution_e2e ./e2e/k8s_execution/fixture/legacyfixture execution-qualification "$legacy_profiles" "$state/legacy-migration.json"
-  kube -n execution-qualification wait --for=condition=Ready pod/executor-legacy-migration pod/executor-legacy-migration-malformed pod/executor-legacy-migration-insecure --timeout=3m
-  kube -n execution-qualification exec pod/executor-legacy-migration -- /bin/sh -c 'printf "prototype-data\n" > /workspace/migration-sentinel'
-  # Helm does not upgrade an existing CRD. Upgrade explicitly only after the
-  # API server persisted the legacy string references.
-  kube apply -f "$root/deploy/helm/mecatl-execution/crds/executionenvironment.yaml"
-  kube wait --for=condition=Established crd/executionenvironments.execution.mecatl.dev --timeout=60s
 fi
 
 kube -n execution-qualification create secret generic execution-security \
@@ -318,6 +311,22 @@ helm_kube "$@" \
   --set-string profiles.quota-cas.image="$workload_image" \
   --set-string profiles.quota-kube.image="$workload_image" \
   --wait --timeout=4m
+
+if [ "${MECATL_EXECUTION_QUAL_PROFILE:-development}" = production ]; then
+  # Establish the chart-owned authority before creating retained allocations.
+  # Seed the prototype under the old CRD only while every provider is quiesced.
+  kube -n execution-qualification scale deployment/mecatl-execution --replicas=0
+  kube -n execution-qualification wait --for=delete pod -l app.kubernetes.io/name=mecatl-execution --timeout=2m
+  dev env KUBECONFIG="$kubeconfig" go run -tags kind_execution_e2e ./e2e/k8s_execution/fixture/legacyfixture execution-qualification "$legacy_profiles" "$state/legacy-migration.json"
+  kube -n execution-qualification wait --for=condition=Ready pod/executor-legacy-migration pod/executor-legacy-migration-malformed pod/executor-legacy-migration-insecure --timeout=3m
+  kube -n execution-qualification exec pod/executor-legacy-migration -- /bin/sh -c 'printf "prototype-data\n" > /workspace/migration-sentinel'
+  # Helm does not upgrade existing CRDs. Preserve the stored legacy references
+  # until the explicit CRD upgrade; the first production test then migrates them.
+  kube apply -f "$root/deploy/helm/mecatl-execution/crds/executionenvironment.yaml"
+  kube wait --for=condition=Established crd/executionenvironments.execution.mecatl.dev --timeout=60s
+  kube -n execution-qualification scale deployment/mecatl-execution --replicas=2
+  kube -n execution-qualification rollout status deployment/mecatl-execution --timeout=4m
+fi
 
 kube -n execution-qualification create configmap execution-mock --from-file=mock-script.json="$root/deploy/mecatl-execution-kind/mock-script.json" --dry-run=client -o yaml | kube apply -f -
 helm_kube upgrade --install mecak8s "$root/deploy/helm/mecak8s" \

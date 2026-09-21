@@ -149,7 +149,8 @@ this shape:
     {
       "uri": "spiffe://cluster.example.com/ns/mecatl/sa/execution-admin",
       "mayAttestOwner": false,
-      "administrator": true
+      "administrator": true,
+      "administratorFor": ["spiffe://cluster.example.com/ns/mecatl/sa/mecak8s"]
     }
   ]
 }
@@ -157,6 +158,22 @@ this shape:
 
 The all-zero fingerprint and 2027 dates are non-secret example values. Replace
 them with the public-key fingerprint and a reviewed active window before use.
+
+`administratorFor` permits administration of environments created by the listed
+client URIs, alongside the administrator's own environments. A nonempty list
+requires `administrator: true` and accepts at most 256 unique canonical URIs:
+nonempty scheme and host, lowercase scheme and host, and no userinfo, query,
+fragment, or wildcard. Matching is exact, with no namespace or prefix grant.
+An absent or empty list preserves self-administration only. The creator need
+not remain in the client allowlist.
+
+The scope applies to `RetireEnvironment`, `ReplaceExecutor`, `RecoverEnvironment`,
+`DeleteRetiredEnvironment`, `MigrateEnvironment`, and `RevokeEnvironment`. It
+preserves each operation's exact owner and identity checks and grants no
+`mayAttestOwner`, attach, file, command, run, or reference authority. Scope order
+does not change the authority digest; adding or removing a creator does. Follow
+the [administrative runbook](../building/deployment/mecak8s.md#run-an-administrative-lifecycle-operation)
+for quiesced upgrades and scope removal.
 
 Use only basename file names. The projected Secret keys in this example are
 `grant-k1.pem`, `tls.crt`, `tls.key`, and `clients.pem`; an external secret manager
@@ -198,11 +215,13 @@ name alone as a hostile-workload isolation guarantee. CPU, memory, ephemeral
 storage, and `/tmp` are explicitly bounded per profile. Each profile also requires
 `maxEnvironments`; the namespace quota is the final global bound.
 
-For an existing single-key installation, first create the authority ConfigMap and
-a generation-1 manifest that names the existing TLS and grant files, then upgrade
-the chart. Confirm `/ready` before rotating. Do not reuse the old key ID with new
-key bytes. Schema-2 environment migration is independent of keyring migration:
-complete both before enabling new sessions.
+Preserve the authority ConfigMap and current manifest across upgrades and
+same-release reinstalls. A missing ledger with retained allocations is not a new
+installation: do not bootstrap it at generation 1. See the
+[provider lifecycle procedure](/building/deployment/mecak8s.md#upgrade-uninstall-and-reinstall-the-execution-provider)
+for ownership checks, retained network protection, and quiesced CRD/provider
+upgrade order. Schema-2 environment migration remains an explicit operation;
+complete it before enabling new sessions.
 
 ## Live qualification (experimental)
 

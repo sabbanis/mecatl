@@ -183,6 +183,7 @@ The following profile shows every required chart key. Save it as
 `execution-values.yaml` and replace each placeholder:
 
 ```yaml
+fullnameOverride: mecatl-execution
 provider:
   image: <PROVIDER_IMAGE>@sha256:<PROVIDER_DIGEST>
   imagePullPolicy: IfNotPresent
@@ -218,7 +219,8 @@ provider:
       }, {
         "uri": "spiffe://cluster.example.com/ns/mecatl/sa/execution-admin",
         "mayAttestOwner": false,
-        "administrator": true
+        "administrator": true,
+        "administratorFor": ["spiffe://cluster.example.com/ns/mecatl/sa/mecak8s"]
       }]
     }
   clientIngressSelectors:
@@ -274,10 +276,11 @@ and verification dates with a current, reviewed rotation window. Increase
 `generation` for every authority change, including a CA, client policy,
 issuer/audience, key state, key window, or TLS identity change.
 
-Install the provider chart separately from `mecak8s`:
+Install the provider chart separately from `mecak8s`, before allocating any
+execution environments. Use a namespace dedicated to this provider release:
 
 ```sh
-helm upgrade --install mecatl-execution ./deploy/helm/mecatl-execution \
+helm install mecatl-execution ./deploy/helm/mecatl-execution \
   --namespace <NAMESPACE> \
   --values execution-values.yaml
 kubectl rollout status deployment/mecatl-execution --namespace <NAMESPACE>
@@ -306,6 +309,14 @@ Shell, but do not ingest project instructions, rules, skills, or source from the
 remote PVC. Schedules, SkillDraft, background Shell, and delegated filesystem
 execution are outside this draft.
 
+If allocation reports `Ready=false` with `PVCUnavailable` or
+`ExecutorUnavailable`, inspect the namespace's quota and Kubernetes admission
+failures. Restore the failed prerequisite and wait for `Ready=True`. The
+controller keeps retrying through its rate-limited queue while the allocation
+exists; no reference edit, restart, or manual reconciliation is needed. Missing
+authoritative PVCs or Pods and ownership mismatches remain fail-closed and are
+never repaired by creating a replacement.
+
 Run claims and signed grants renew before the issued grant expiry, including when
 an operator configures a short grant TTL. Renewal operation receipts retain the
 newest 32 identities. Retrying an exact retained identity preserves the claim and
@@ -332,14 +343,107 @@ grpcurl -cacert "$CA_FILE" -cert "$CERT_FILE" -key "$KEY_FILE" \
   "$EXECUTION_ENDPOINT" mecatl.execution.v1.ExecutionProviderService/RecoverEnvironment
 ```
 
+#### Upgrade, uninstall, and reinstall the execution provider
+
+The supported lifecycle keeps the **same Helm release name, namespace, resource
+names, profiles, network policy configuration, and security Secret name**. Keep
+`execution-values.yaml` and the current nonsecret authority manifest in your
+operator configuration store. Retain the operator-owned Secret and its key
+history independently; the chart neither owns nor reads Secret contents.
+
+For a compatible provider upgrade:
+
+1. Stop new client traffic and finish or explicitly fence active work. Stop all
+   provider replicas before Helm reads the ledgers:
+
+   ```sh
+   kubectl --namespace <NAMESPACE> scale deployment/mecatl-execution --replicas=0
+   kubectl --namespace <NAMESPACE> wait --for=delete pod \
+     --selector app.kubernetes.io/name=mecatl-execution --timeout=2m
+   ```
+
+2. Apply the reviewed CRD schema **before** starting the upgraded provider. Helm
+   does not upgrade existing CRDs:
+
+   ```sh
+   kubectl apply -f deploy/helm/mecatl-execution/crds/executionenvironment.yaml
+   kubectl wait --for=condition=Established \
+     crd/executionenvironments.execution.mecatl.dev --timeout=60s
+   ```
+
+3. Upgrade with the preserved lifetime configuration and current authority
+   manifest. Helm reads the existing ConfigMaps and includes their actual ledger
+   data, rather than empty bootstrap data, in the new release:
+
+   ```sh
+   helm upgrade mecatl-execution ./deploy/helm/mecatl-execution \
+     --namespace <NAMESPACE> --values execution-values.yaml --wait --timeout=4m
+   ```
+
+4. Complete any supported, explicit environment-schema migration while client
+   traffic remains quiesced. Verify readiness, exact environment/PVC UIDs, data,
+   and network confinement before resuming traffic. Unknown schema versions and
+   mixed-version provider operation are unsupported.
+
+Default uninstall removes the provider but keeps runtime CRs, PVCs, surviving
+executors, workload default-deny and profile NetworkPolicies, both authority and
+capacity ledgers, and the profile/security-manifest ConfigMaps. Uninstall is not
+executor termination proof or storage disposal:
+
+```sh
+helm uninstall mecatl-execution --namespace <NAMESPACE>
+```
+
+Reinstall with the same identity and preserved values:
+
+```sh
+helm install mecatl-execution ./deploy/helm/mecatl-execution \
+  --namespace <NAMESPACE> --values execution-values.yaml --wait --timeout=4m
+```
+
+Helm adopts retained resources only when their managed-by label and release-name
+and release-namespace annotations match. The chart rejects missing or empty
+ledgers while allocations or capacity reservations survive, and rejects changes
+to its retained lifetime configuration. Profile removal or egress edits are deliberately outside this
+upgrade path: retained allow policies are additive, so leaving an obsolete policy
+could widen access. The provider rejects an older authority manifest against the
+retained high-water generation and key history; never reset that ledger to make
+readiness pass.
+
+Use live Helm install/upgrade for this lifecycle. Offline `helm template` cannot
+perform ownership or history lookups and is not an adoption mechanism. Keep
+provider writers stopped for upgrades; lookup plus apply is not a cross-resource
+transaction. Rendering rejects a nonzero existing provider Deployment or any
+remaining provider Pod, including a terminating Pod. Installations without the retained lifetime configuration/history
+cannot be automatically adopted. Changed release/namespace adoption, chart
+rollback, `--take-ownership`, CRD or namespace deletion with retained resources,
+and force-finalizer cleanup are unsupported. Missing history requires recovery
+from trusted retained state, not a fresh generation-1 authority.
+
 #### Run an administrative lifecycle operation
 
-Administrative RPCs are client-scoped. The administrator certificate must present
-the same canonical URI identity that originated the environment and the request
-must carry the exact owner. You can issue a separate short-lived administrator
-certificate with that URI and mark the URI `administrator: true` during the
-maintenance window. A namespace-wide administrator policy is not part of this
-contract.
+Administrative RPCs require `administrator: true`. For a distinct operations
+identity, set its `administratorFor` list to the canonical URI of each client
+that created the environments it may administer, as in the values example above.
+An absent or empty list permits only self-administration. Keep
+`mayAttestOwner: false` for an operations-only identity; administrative scope
+confers no filesystem, Shell, attach, run, or reference access. See the
+[scope constraints](../../features/execution-environments.md#production-security-material).
+
+Before first publishing `administratorFor`, quiesce client traffic and upgrade
+all provider replicas to a version that understands the field. Older strict
+manifest decoders reject it; mixed-version rolling operation is unsupported.
+Preserve the authority high-water ConfigMap throughout the upgrade. Publish the
+reviewed manifest with a higher `generation`, verify provider readiness, then
+resume client traffic.
+
+Every administrative request still requires the original exact owner and
+revision plus the operation's epoch, UID, schema, or generation preconditions.
+The scope names creators, not owners; it can include a creator whose login has
+been removed. After maintenance, remove its scope entry and increase
+`generation` again. Subsequent requests, including receipt retries on established
+connections, are denied; already admitted lifecycle operations may finish safe
+reconciliation.
 
 First capture the private identity while the environment still has a reference:
 

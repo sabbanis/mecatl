@@ -243,11 +243,11 @@ func (r *Reconciler) Reconcile(ctx context.Context, name string) error {
 	podName := resourceName("executor", name)
 	pvc, err := r.ensurePVC(ctx, env, p, pvcName)
 	if err != nil {
-		return r.setCondition(ctx, env, "Ready", false, "PVCUnavailable", "workspace PVC unavailable")
+		return errors.Join(err, r.setCondition(ctx, env, "Ready", false, "PVCUnavailable", "workspace PVC unavailable"))
 	}
 	pod, err := r.ensurePod(ctx, env, p, podName, pvcName)
 	if err != nil {
-		return r.setCondition(ctx, env, "Ready", false, "ExecutorUnavailable", "executor Pod unavailable")
+		return errors.Join(err, r.setCondition(ctx, env, "Ready", false, "ExecutorUnavailable", "executor Pod unavailable"))
 	}
 	ready := podReady(pod)
 	if err := r.updateRuntimeStatus(ctx, env, pvc, pod, ready); err != nil {
@@ -291,8 +291,10 @@ func (r *Reconciler) ensurePod(ctx context.Context, env *unstructured.Unstructur
 		return nil, err
 	}
 	if textNested(env.Object, "status", "pod", "uid") != "" {
-		_ = r.setFenceUnknown(ctx, env, "previous executor disappearance is not externally fenced")
-		return nil, &executionenv.Error{Code: executionenv.CodeFenceUnknown, Message: "previous executor termination unconfirmed"}
+		return nil, errors.Join(
+			&executionenv.Error{Code: executionenv.CodeFenceUnknown, Message: "previous executor termination unconfirmed"},
+			r.setFenceUnknown(ctx, env, "previous executor disappearance is not externally fenced"),
+		)
 	}
 	cpuReq := p.CPURequest
 	memReq := p.MemoryRequest

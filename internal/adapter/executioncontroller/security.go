@@ -52,9 +52,10 @@ type securityKeyManifest struct {
 }
 
 type securityClientManifest struct {
-	URI            string `json:"uri"`
-	MayAttestOwner bool   `json:"mayAttestOwner"`
-	Administrator  bool   `json:"administrator"`
+	URI              string   `json:"uri"`
+	MayAttestOwner   bool     `json:"mayAttestOwner"`
+	Administrator    bool     `json:"administrator"`
+	AdministratorFor []string `json:"administratorFor,omitempty"`
 }
 
 type securityTLSManifest struct {
@@ -493,7 +494,22 @@ func clientPolicies(entries []securityClientManifest) (map[string]ClientPolicy, 
 		if _, exists := clients[entry.URI]; exists {
 			return nil, errors.New("client URI is duplicated")
 		}
-		clients[entry.URI] = ClientPolicy{MayAttestOwner: entry.MayAttestOwner, Administrator: entry.Administrator}
+		if len(entry.AdministratorFor) > maxSecurityClients || len(entry.AdministratorFor) > 0 && !entry.Administrator {
+			return nil, errors.New("administrator scope requires administrator authority and at most 256 creators")
+		}
+		scope := slices.Clone(entry.AdministratorFor)
+		slices.Sort(scope)
+		for i, creator := range scope {
+			uri, err := url.Parse(creator)
+			if err != nil || strings.ContainsAny(creator, "*?") || strings.ContainsAny(uri.Path, "*?") {
+				return nil, errors.New("administrator creator URI is invalid")
+			}
+			canonical, err := canonicalClientIdentity(&x509.Certificate{URIs: []*url.URL{uri}})
+			if err != nil || canonical != creator || i > 0 && scope[i-1] == creator {
+				return nil, errors.New("administrator creator URI is not canonical or is duplicated")
+			}
+		}
+		clients[entry.URI] = ClientPolicy{MayAttestOwner: entry.MayAttestOwner, Administrator: entry.Administrator, AdministratorFor: scope}
 	}
 	return clients, nil
 }
@@ -502,6 +518,10 @@ func authorityDigest(mf securityManifest, ttl, skew time.Duration, keyFingerprin
 	keys := slices.Clone(mf.Keys)
 	slices.SortFunc(keys, func(a, b securityKeyManifest) int { return strings.Compare(a.ID, b.ID) })
 	clients := slices.Clone(mf.Clients)
+	for i := range clients {
+		clients[i].AdministratorFor = slices.Clone(clients[i].AdministratorFor)
+		slices.Sort(clients[i].AdministratorFor)
+	}
 	slices.SortFunc(clients, func(a, b securityClientManifest) int { return strings.Compare(a.URI, b.URI) })
 	canonical := struct {
 		Version                       int

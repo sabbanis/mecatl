@@ -1,8 +1,9 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "mecatl-execution.fullname" . }}-profiles
+  {{- include "mecatl-execution.retainedMetadata" (dict "root" . "apiVersion" "v1" "kind" "ConfigMap" "name" (printf "%s-profiles" (include "mecatl-execution.fullname" .))) | nindent 2 }}
 data:
+  lifetime.json: {{ include "mecatl-execution.lifetimeConfig" . | quote }}
   profiles.yaml: |
     profiles:
 {{ toYaml .Values.profiles | indent 6 }}
@@ -10,23 +11,19 @@ data:
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "mecatl-execution.fullname" . }}-security-manifest
+  {{- include "mecatl-execution.retainedMetadata" (dict "root" . "apiVersion" "v1" "kind" "ConfigMap" "name" (printf "%s-security-manifest" (include "mecatl-execution.fullname" .))) | nindent 2 }}
 data:
   manifest.json: |
 {{ required "provider.securityManifest is required" .Values.provider.securityManifest | indent 4 }}
 ---
+{{- range $name := list (printf "%s-security-authority" (include "mecatl-execution.fullname" .)) "mecatl-execution-profile-allocations" }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ include "mecatl-execution.fullname" . }}-security-authority
-data: {}
+  {{- include "mecatl-execution.retainedMetadata" (dict "root" $ "apiVersion" "v1" "kind" "ConfigMap" "name" $name) | nindent 2 }}
+data: {{ (lookup "v1" "ConfigMap" $.Release.Namespace $name).data | default dict | toJson }}
 ---
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: mecatl-execution-profile-allocations
-data: {}
----
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

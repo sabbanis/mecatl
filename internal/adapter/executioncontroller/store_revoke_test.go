@@ -22,7 +22,7 @@ func TestRevokeEnvironmentFencesOldClaimWithoutChangingExecutionEpoch(t *testing
 	client := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), env)
 	store := NewStore(client, "ns", testProfiles(), &terminalErrorExecutor{})
 	ref := executionenv.EnvironmentRef{ID: "env", Revision: "rev"}
-	next, err := store.RevokeEnvironment(t.Context(), ref, "client", "owner", 3, "revoke-1")
+	next, err := store.RevokeEnvironment(t.Context(), adminLifecycleRequest{Environment: ref, Client: "client", OwnerHash: "owner", OperationID: "revoke-1"}, 3)
 	if err != nil || next != 4 {
 		t.Fatalf("revoke=(%d,%v)", next, err)
 	}
@@ -42,11 +42,11 @@ func TestRevokeEnvironmentFencesOldClaimWithoutChangingExecutionEpoch(t *testing
 	if _, err := store.RenewRun(t.Context(), ref, "client", "owner", executionenv.RunClaimRequest{Environment: ref, BindingID: "binding", RunID: "run", ClaimID: "claim", Epoch: 7, GrantGeneration: 3, OperationID: "renew", TTL: time.Minute}); !errors.As(err, &controlled) || controlled.Code != executionenv.CodeConflict {
 		t.Fatalf("old renewal error=%v", err)
 	}
-	replayed, err := store.RevokeEnvironment(t.Context(), ref, "client", "owner", 3, "revoke-1")
+	replayed, err := store.RevokeEnvironment(t.Context(), adminLifecycleRequest{Environment: ref, Client: "client", OwnerHash: "owner", OperationID: "revoke-1"}, 3)
 	if err != nil || replayed != 4 {
 		t.Fatalf("replayed revoke=(%d,%v)", replayed, err)
 	}
-	if _, err := store.RevokeEnvironment(t.Context(), ref, "client", "owner", 3, "revoke-2"); !errors.As(err, &controlled) || controlled.Code != executionenv.CodeConflict {
+	if _, err := store.RevokeEnvironment(t.Context(), adminLifecycleRequest{Environment: ref, Client: "client", OwnerHash: "owner", OperationID: "revoke-2"}, 3); !errors.As(err, &controlled) || controlled.Code != executionenv.CodeConflict {
 		t.Fatalf("stale CAS error=%v", err)
 	}
 }
@@ -55,7 +55,7 @@ func TestRevokeEnvironmentOverflowFailsClosed(t *testing.T) {
 	env := runFixtureEnvironment(1, math.MaxInt64)
 	client := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), env)
 	store := NewStore(client, "ns", testProfiles(), nil)
-	if _, err := store.RevokeEnvironment(context.Background(), executionenv.EnvironmentRef{ID: "env", Revision: "rev"}, "client", "owner", math.MaxInt64, "overflow"); err == nil {
+	if _, err := store.RevokeEnvironment(context.Background(), adminLifecycleRequest{Environment: executionenv.EnvironmentRef{ID: "env", Revision: "rev"}, Client: "client", OwnerHash: "owner", OperationID: "overflow"}, math.MaxInt64); err == nil {
 		t.Fatal("overflow accepted")
 	}
 }

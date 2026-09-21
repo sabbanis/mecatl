@@ -28,7 +28,10 @@ import (
 )
 
 // ClientPolicy defines capabilities assigned to an authenticated provider client.
-type ClientPolicy struct{ MayAttestOwner, Administrator bool }
+type ClientPolicy struct {
+	MayAttestOwner, Administrator bool
+	AdministratorFor              []string
+}
 
 // GrantSigner configures short-lived environment grant issuance.
 type GrantSigner struct {
@@ -105,7 +108,7 @@ type adminLifecycleBackend interface {
 	RecoverEnvironment(context.Context, adminLifecycleRequest) error
 	DeleteRetiredEnvironment(context.Context, adminLifecycleRequest) error
 	MigrateEnvironment(context.Context, adminLifecycleRequest) error
-	RevokeEnvironment(context.Context, executionenv.EnvironmentRef, string, string, uint64, string) (uint64, error)
+	RevokeEnvironment(context.Context, adminLifecycleRequest, uint64) (uint64, error)
 }
 
 // Handler is the authenticated private execution-provider gRPC service.
@@ -509,7 +512,7 @@ func (h *Handler) DeleteRetiredEnvironment(ctx context.Context, q *executionv1.D
 	if h.adminLifecycleBackend == nil || !c.policy.Administrator || !ownerOK || !validRef(ref) || !validIdentity(q.GetExpectedPvcUid()) || !validOperationID(q.GetOperationId()) {
 		return nil, wireError(executionenv.CodePermissionDenied, false)
 	}
-	req := adminLifecycleRequest{Environment: ref, OwnerHash: ownerHash(owner), Client: c.id, ExpectedPVCUID: q.GetExpectedPvcUid(), OperationID: q.GetOperationId()}
+	req := adminLifecycleRequest{Environment: ref, OwnerHash: ownerHash(owner), Client: c.id, AdministratorFor: c.policy.AdministratorFor, ExpectedPVCUID: q.GetExpectedPvcUid(), OperationID: q.GetOperationId()}
 	if err := h.adminLifecycleBackend.DeleteRetiredEnvironment(ctx, req); err != nil {
 		return nil, backendError(err)
 	}
@@ -545,7 +548,8 @@ func (h *Handler) RevokeEnvironment(ctx context.Context, q *executionv1.RevokeEn
 	if q.GetExpectedGrantGeneration() == 0 || q.GetExpectedGrantGeneration() > math.MaxInt64 || !validOperationID(q.GetOperationId()) {
 		return nil, wireError(executionenv.CodeInvalidArgument, false)
 	}
-	generation, err := h.adminLifecycleBackend.RevokeEnvironment(ctx, ref, c.id, ownerHash(owner), q.GetExpectedGrantGeneration(), q.GetOperationId())
+	req := adminLifecycleRequest{Environment: ref, OwnerHash: ownerHash(owner), Client: c.id, AdministratorFor: c.policy.AdministratorFor, OperationID: q.GetOperationId()}
+	generation, err := h.adminLifecycleBackend.RevokeEnvironment(ctx, req, q.GetExpectedGrantGeneration())
 	if err != nil {
 		return nil, backendError(err)
 	}
@@ -562,7 +566,7 @@ func (h *Handler) adminRequest(ctx context.Context, pRef *executionv1.Environmen
 	if h.adminLifecycleBackend == nil || !c.policy.Administrator || !ownerOK || !validRef(ref) || epoch == 0 || epoch > math.MaxInt64 || !validIdentity(podUID) || !validIdentity(pvcUID) || !validOperationID(operationID) {
 		return adminLifecycleRequest{}, wireError(executionenv.CodePermissionDenied, false)
 	}
-	return adminLifecycleRequest{Environment: ref, OwnerHash: ownerHash(owner), Client: c.id, ExpectedEpoch: epoch, ExpectedPodUID: podUID, ExpectedPVCUID: pvcUID, OperationID: operationID}, nil
+	return adminLifecycleRequest{Environment: ref, OwnerHash: ownerHash(owner), Client: c.id, AdministratorFor: c.policy.AdministratorFor, ExpectedEpoch: epoch, ExpectedPodUID: podUID, ExpectedPVCUID: pvcUID, OperationID: operationID}, nil
 }
 
 // Files executes one bounded and authorized filesystem operation.

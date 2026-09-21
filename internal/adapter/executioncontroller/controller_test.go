@@ -28,8 +28,8 @@ func TestReconcileRefusesForeignExistingPVCWithoutPersistingUID(t *testing.T) {
 	d := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), env)
 	k := kubefake.NewSimpleClientset(foreign)
 	r := NewReconciler(d, k, "ns", testProfiles())
-	if err := r.Reconcile(ctx, env.GetName()); err != nil {
-		t.Fatal(err)
+	if err := r.Reconcile(ctx, env.GetName()); err == nil {
+		t.Fatal("foreign PVC ownership mismatch was not returned")
 	}
 	got, err := d.Resource(ExecutionEnvironmentGVR).Namespace("ns").Get(ctx, env.GetName(), metav1.GetOptions{})
 	if err != nil {
@@ -108,8 +108,8 @@ func TestTerminatingPodIsUnavailableDuringReconcile(t *testing.T) {
 	if _, err := k.CoreV1().Pods("ns").Update(ctx, pod, metav1.UpdateOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Reconcile(ctx, env.GetName()); err != nil {
-		t.Fatal(err)
+	if err := r.Reconcile(ctx, env.GetName()); err == nil {
+		t.Fatal("terminating Pod was not rejected")
 	}
 	got, err := d.Resource(ExecutionEnvironmentGVR).Namespace("ns").Get(ctx, env.GetName(), metav1.GetOptions{})
 	if err != nil {

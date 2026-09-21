@@ -120,7 +120,7 @@ func (b *adminFakeBackend) MigrateEnvironment(_ context.Context, req adminLifecy
 	b.migratedSchema = req.ExpectedSchema
 	return nil
 }
-func (*adminFakeBackend) RevokeEnvironment(context.Context, executionenv.EnvironmentRef, string, string, uint64, string) (uint64, error) {
+func (*adminFakeBackend) RevokeEnvironment(context.Context, adminLifecycleRequest, uint64) (uint64, error) {
 	return 2, nil
 }
 

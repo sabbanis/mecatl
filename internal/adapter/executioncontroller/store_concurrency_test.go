@@ -214,7 +214,7 @@ func TestAcquireRunAndRevokeUseResourceVersionCAS(t *testing.T) {
 		results <- err
 	}()
 	go func() {
-		_, err := second.RevokeEnvironment(context.Background(), ref, "client", "owner", 1, "revoke")
+		_, err := second.RevokeEnvironment(context.Background(), adminLifecycleRequest{Environment: ref, Client: "client", OwnerHash: "owner", OperationID: "revoke"}, 1)
 		results <- err
 	}()
 	for range 2 {

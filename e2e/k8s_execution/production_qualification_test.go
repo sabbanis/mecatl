@@ -969,6 +969,7 @@ func TestKindExecutionProductionQuotaSaturation(t *testing.T) {
 		t.Fatal("PVC quota admitted more than one additional workspace")
 	}
 	runKubectl(t, ctx, kubeconfig, "patch", "resourcequota/mecatl-execution", "-n", namespace, "--type=merge", "-p", `{"spec":{"hard":{"persistentvolumeclaims":"100"}}}`)
+	waitExecutionStatus(t, ctx, kubeconfig, blocked.out.Environment.ID, func(s executionStatus) bool { return s.Ready })
 
 	all := append(allocations, *accepted)
 	for _, allocation := range all {

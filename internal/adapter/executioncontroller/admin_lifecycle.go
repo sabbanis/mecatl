@@ -14,14 +14,15 @@ import (
 )
 
 type adminLifecycleRequest struct {
-	Environment    executionenv.EnvironmentRef
-	OwnerHash      string
-	Client         string
-	ExpectedEpoch  uint64
-	ExpectedPodUID string
-	ExpectedPVCUID string
-	OperationID    string
-	ExpectedSchema int64
+	Environment      executionenv.EnvironmentRef
+	OwnerHash        string
+	Client           string
+	AdministratorFor []string
+	ExpectedEpoch    uint64
+	ExpectedPodUID   string
+	ExpectedPVCUID   string
+	OperationID      string
+	ExpectedSchema   int64
 }
 
 // ReplaceExecutor starts an exact, crash-recoverable executor replacement.
@@ -41,7 +42,7 @@ func (s *Store) startLifecycle(ctx context.Context, q adminLifecycleRequest, kin
 	if err := s.persistObservedTerminalProof(ctx, q); err != nil {
 		return err
 	}
-	return s.retryUpdateStatus(ctx, q.Environment.ID, func(o *unstructured.Unstructured) error {
+	return s.retryAdminStatus(ctx, q, func(o *unstructured.Unstructured) error {
 		if kind == "ReplaceExecutor" && replacementReceiptMatches(o, q) {
 			return nil
 		}
@@ -102,7 +103,16 @@ func exactTerminationProofOperationMatches(o *unstructured.Unstructured, q admin
 
 func (s *Store) persistObservedTerminalProof(ctx context.Context, q adminLifecycleRequest) error { //nolint:gocyclo // Exact terminal proof deliberately fails closed at every observable mismatch.
 	o, err := s.resources.Get(ctx, q.Environment.ID, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return &executionenv.Error{Code: executionenv.CodeNotFound, Message: environmentNotFoundMessage}
+	}
 	if err != nil {
+		return err
+	}
+	if err := adminSubject(o, q); err != nil {
+		return err
+	}
+	if err := requireCurrentSchema(o); err != nil {
 		return err
 	}
 	if replacementReceiptMatches(o, q) {
@@ -126,7 +136,7 @@ func (s *Store) persistObservedTerminalProof(ctx context.Context, q adminLifecyc
 	if err != nil || string(pvc.UID) != q.ExpectedPVCUID {
 		return &executionenv.Error{Code: executionenv.CodeConflict, Message: "exact workspace identity is unavailable"}
 	}
-	return s.retryUpdateStatus(ctx, q.Environment.ID, func(current *unstructured.Unstructured) error {
+	return s.retryAdminStatus(ctx, q, func(current *unstructured.Unstructured) error {
 		if err := exactAdminSubject(current, q); err != nil {
 			return err
 		}
@@ -140,9 +150,35 @@ func (s *Store) persistObservedTerminalProof(ctx context.Context, q adminLifecyc
 	})
 }
 
-func exactAdminSubject(o *unstructured.Unstructured, q adminLifecycleRequest) error {
-	if textNested(o.Object, "spec", "ownerHash") != q.OwnerHash || textNested(o.Object, "spec", "clientHash") != hashText(q.Client) || textNested(o.Object, "spec", "revision") != q.Environment.Revision {
+// adminSubject uses only the policy captured by authentication for this request.
+// The actor remains distinct from the immutable creator, including on receipt replay.
+func adminSubject(o *unstructured.Unstructured, q adminLifecycleRequest) error {
+	creator := textNested(o.Object, "spec", "clientHash")
+	allowed := creator == hashText(q.Client)
+	for _, uri := range q.AdministratorFor {
+		allowed = allowed || creator == hashText(uri)
+	}
+	if !allowed || textNested(o.Object, "spec", "ownerHash") != q.OwnerHash || textNested(o.Object, "spec", "revision") != q.Environment.Revision {
 		return &executionenv.Error{Code: executionenv.CodeNotFound, Message: environmentNotFoundMessage}
+	}
+	return nil
+}
+
+func (s *Store) retryAdminStatus(ctx context.Context, q adminLifecycleRequest, mutate func(*unstructured.Unstructured) error) error {
+	return s.retryUpdateStatusRaw(ctx, q.Environment.ID, func(o *unstructured.Unstructured) error {
+		if err := adminSubject(o, q); err != nil {
+			return err
+		}
+		if err := requireCurrentSchema(o); err != nil {
+			return err
+		}
+		return mutate(o)
+	})
+}
+
+func exactAdminSubject(o *unstructured.Unstructured, q adminLifecycleRequest) error {
+	if err := adminSubject(o, q); err != nil {
+		return err
 	}
 	if !epochMatches(o, q.ExpectedEpoch) || textNested(o.Object, "status", "pod", "uid") != q.ExpectedPodUID || textNested(o.Object, "status", "pvc", "uid") != q.ExpectedPVCUID {
 		return &executionenv.Error{Code: executionenv.CodeConflict, Message: "environment execution identity changed"}
@@ -156,7 +192,7 @@ func (s *Store) RecoverEnvironment(ctx context.Context, q adminLifecycleRequest)
 		return &executionenv.Error{Code: executionenv.CodeNotReady, Message: "built-in recovery verifier is unavailable"}
 	}
 	podName, pvcName := "", ""
-	if err := s.retryUpdateStatus(ctx, q.Environment.ID, func(o *unstructured.Unstructured) error {
+	if err := s.retryAdminStatus(ctx, q, func(o *unstructured.Unstructured) error {
 		if err := exactAdminSubject(o, q); err != nil {
 			return err
 		}
@@ -182,7 +218,7 @@ func (s *Store) RecoverEnvironment(ctx context.Context, q adminLifecycleRequest)
 	if err != nil || string(pvc.UID) != q.ExpectedPVCUID {
 		return &executionenv.Error{Code: executionenv.CodeFenceUnknown, Message: "workspace identity cannot be verified"}
 	}
-	return s.retryUpdateStatus(ctx, q.Environment.ID, func(o *unstructured.Unstructured) error {
+	return s.retryAdminStatus(ctx, q, func(o *unstructured.Unstructured) error {
 		if err := exactAdminSubject(o, q); err != nil {
 			return err
 		}
@@ -254,10 +290,7 @@ func (s *Store) DeleteRetiredEnvironment(ctx context.Context, q adminLifecycleRe
 	if q.ExpectedPVCUID == "" || q.OperationID == "" {
 		return &executionenv.Error{Code: executionenv.CodeInvalidArgument, Message: "exact retained workspace identity is required"}
 	}
-	return s.retryUpdateStatus(ctx, q.Environment.ID, func(o *unstructured.Unstructured) error {
-		if textNested(o.Object, "spec", "ownerHash") != q.OwnerHash || textNested(o.Object, "spec", "clientHash") != hashText(q.Client) || textNested(o.Object, "spec", "revision") != q.Environment.Revision {
-			return &executionenv.Error{Code: executionenv.CodeNotFound, Message: environmentNotFoundMessage}
-		}
+	return s.retryAdminStatus(ctx, q, func(o *unstructured.Unstructured) error {
 		if textNested(o.Object, "status", "pvc", "uid") != q.ExpectedPVCUID {
 			return &executionenv.Error{Code: executionenv.CodeConflict, Message: "retained workspace identity changed"}
 		}
@@ -281,8 +314,11 @@ func (s *Store) MigrateEnvironment(ctx context.Context, q adminLifecycleRequest)
 		return &executionenv.Error{Code: executionenv.CodeInvalidArgument, Message: "recognized prototype schema and exact runtime identities are required"}
 	}
 	if err := s.retryUpdateStatusRaw(ctx, q.Environment.ID, func(o *unstructured.Unstructured) error {
-		if textNested(o.Object, "spec", "ownerHash") != q.OwnerHash || textNested(o.Object, "spec", "clientHash") != hashText(q.Client) || textNested(o.Object, "spec", "revision") != q.Environment.Revision {
-			return &executionenv.Error{Code: executionenv.CodeNotFound, Message: environmentNotFoundMessage}
+		if err := adminSubject(o, q); err != nil {
+			return err
+		}
+		if textNested(o.Object, "status", "pod", "uid") != q.ExpectedPodUID || textNested(o.Object, "status", "pvc", "uid") != q.ExpectedPVCUID {
+			return &executionenv.Error{Code: executionenv.CodeConflict, Message: "prototype runtime identity mismatch"}
 		}
 		if intNested(o.Object, "spec", "schemaVersion") == currentSchemaVersion && intNested(o.Object, "status", "schemaVersion") == currentSchemaVersion && textNested(o.Object, "status", "lastMigrationOperationID") == q.OperationID {
 			return nil
@@ -295,9 +331,6 @@ func (s *Store) MigrateEnvironment(ctx context.Context, q adminLifecycleRequest)
 		}
 		if intNested(o.Object, "spec", "schemaVersion") != q.ExpectedSchema || intNested(o.Object, "status", "schemaVersion") != q.ExpectedSchema || textNested(o.Object, "status", "activeRun", "claimID") != "" || textNested(o.Object, "status", "activeOperation", "id") != "" || textNested(o.Object, "status", "lifecycleOperation", "id") != "" || textNested(o.Object, "status", "fenceState") != fenceHealthy {
 			return &executionenv.Error{Code: executionenv.CodeConflict, Message: "prototype environment is not eligible for migration"}
-		}
-		if textNested(o.Object, "status", "pod", "uid") != q.ExpectedPodUID || textNested(o.Object, "status", "pvc", "uid") != q.ExpectedPVCUID {
-			return &executionenv.Error{Code: executionenv.CodeConflict, Message: "prototype runtime identity mismatch"}
 		}
 		if err := s.verifyRuntimeUIDs(ctx, o, q); err != nil {
 			return err
@@ -315,7 +348,13 @@ func (s *Store) MigrateEnvironment(ctx context.Context, q adminLifecycleRequest)
 	}
 	for attempt := 0; attempt < 5; attempt++ {
 		o, err := s.resources.Get(ctx, q.Environment.ID, metav1.GetOptions{})
+		if apierrors.IsNotFound(err) {
+			return &executionenv.Error{Code: executionenv.CodeNotFound, Message: environmentNotFoundMessage}
+		}
 		if err != nil {
+			return err
+		}
+		if err := adminSubject(o, q); err != nil {
 			return err
 		}
 		if intNested(o.Object, "spec", "schemaVersion") == currentSchemaVersion {
@@ -334,6 +373,9 @@ func (s *Store) MigrateEnvironment(ctx context.Context, q adminLifecycleRequest)
 		}
 	}
 	return s.retryUpdateStatusRaw(ctx, q.Environment.ID, func(o *unstructured.Unstructured) error {
+		if err := adminSubject(o, q); err != nil {
+			return err
+		}
 		if intNested(o.Object, "spec", "schemaVersion") != currentSchemaVersion || textNested(o.Object, "status", "migrationOperation", "id") != q.OperationID || intNested(o.Object, "status", "schemaVersion") != q.ExpectedSchema {
 			if intNested(o.Object, "status", "schemaVersion") == currentSchemaVersion && textNested(o.Object, "status", "lastMigrationOperationID") == q.OperationID {
 				return nil

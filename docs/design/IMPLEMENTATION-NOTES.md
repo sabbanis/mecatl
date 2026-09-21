@@ -6551,7 +6551,11 @@ uncertain completion `FenceUnknown`.
 
 `internal/adapter/executioncontroller/controller.go` (`Reconciler`) watches the
 namespaced `ExecutionEnvironment` CR and creates a retained PVC plus a
-single executor Pod from an operator-only, digest-pinned profile. The Pod
+single executor Pod from an operator-only, digest-pinned profile. Provisioning
+errors return alongside any condition-write error so the existing rate-limited
+workqueue retries without a finite budget or another Kubernetes event. Repeated
+reconciliation never replaces a missing authoritative PVC/Pod or adopts a foreign
+resource. The Pod
 has no service-account token and contains the fixed helper built by
 `build/execution-workload/Dockerfile`. `internal/executionexecutor/executor.go`
 (`Executor.Execute`) dispatches bounded file operations and foreground Shell in
@@ -6580,6 +6584,16 @@ The controller validates the configured RuntimeClass and StorageClass names
 before readiness, then synchronizes informer caches without clearing peer
 operations. Security reload publishes one immutable TLS/client-policy/grant-key
 snapshot only after matching the durable authority ConfigMap high-water record.
+`internal/adapter/executioncontroller/admin_lifecycle.go` (`adminSubject`) shares
+creator-scope, exact owner, and revision admission across all six administrative
+RPC families, including `internal/adapter/executioncontroller/store_revoke.go`.
+The authenticated request carries `ClientPolicy.AdministratorFor` from the same
+security snapshot that verified its peer; it does not re-read policy or substitute
+the administrator for the immutable creator. Empty scope retains self-administration.
+Sorted creator scopes participate in the authority digest; removal denies subsequent
+requests and receipt replay on existing connections, without cancelling already
+admitted safe lifecycle reconciliation. Data-plane and owner-attestation checks
+are unchanged.
 Unproven executor loss remains `FenceUnknown`; only exact built-in terminal proof
 or an external platform fencing procedure can recover it. Remote project
 sources, background commands, schedules, and delegated filesystem execution

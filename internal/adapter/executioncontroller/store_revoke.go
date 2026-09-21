@@ -13,16 +13,14 @@ import (
 
 // RevokeEnvironment atomically invalidates every issued grant without claiming
 // that an already-dispatched executor operation has stopped.
-func (s *Store) RevokeEnvironment(ctx context.Context, ref executionenv.EnvironmentRef, client, owner string, expected uint64, operationID string) (uint64, error) {
+func (s *Store) RevokeEnvironment(ctx context.Context, q adminLifecycleRequest, expected uint64) (uint64, error) {
+	ref, client, owner, operationID := q.Environment, q.Client, q.OwnerHash, q.OperationID
 	if expected == 0 || expected >= math.MaxInt64 || operationID == "" || len(operationID) > executionenv.MaxIdentityBytes {
 		return 0, &executionenv.Error{Code: executionenv.CodeInvalidArgument, Message: "grant generation or operation identity is invalid"}
 	}
 	requestFingerprint := fingerprint(ref.ID, ref.Revision, client, owner, fmt.Sprint(expected))
 	var next uint64
-	err := s.retryUpdateStatus(ctx, ref.ID, func(o *unstructured.Unstructured) error {
-		if textNested(o.Object, "spec", "ownerHash") != owner || textNested(o.Object, "spec", "clientHash") != hashText(client) || textNested(o.Object, "spec", "revision") != ref.Revision {
-			return &executionenv.Error{Code: executionenv.CodeNotFound, Message: environmentNotFoundMessage}
-		}
+	err := s.retryAdminStatus(ctx, q, func(o *unstructured.Unstructured) error {
 		receipts, found, err := unstructured.NestedSlice(o.Object, "status", "revocationReceipts")
 		if err != nil {
 			return &executionenv.Error{Code: executionenv.CodeConflict, Message: "revocation receipt ledger is invalid"}

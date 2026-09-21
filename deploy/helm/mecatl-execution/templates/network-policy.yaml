@@ -39,7 +39,7 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ include "mecatl-execution.fullname" . }}-workload-default-deny
+  {{- include "mecatl-execution.retainedMetadata" (dict "root" . "apiVersion" "networking.k8s.io/v1" "kind" "NetworkPolicy" "name" (printf "%s-workload-default-deny" (include "mecatl-execution.fullname" .))) | nindent 2 }}
 spec:
   podSelector:
     matchExpressions:
@@ -52,7 +52,7 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: {{ include "mecatl-execution.fullname" $ }}-profile-{{ sha256sum $name | trunc 16 }}
+  {{- include "mecatl-execution.retainedMetadata" (dict "root" $ "apiVersion" "networking.k8s.io/v1" "kind" "NetworkPolicy" "name" (printf "%s-profile-%s" (include "mecatl-execution.fullname" $) (sha256sum $name | trunc 16))) | nindent 2 }}
 spec:
   podSelector:
     matchLabels:
