@@ -2,8 +2,8 @@
 
 package microvm
 
-import "errors"
+import "golang.org/x/sys/unix"
 
-func renameatNoReplace(_ int, _ string, _ int, _ string) error {
-	return errors.New("atomic no-overwrite rename is unsupported on this platform")
+func renameatNoReplace(oldDirFD int, oldPath string, newDirFD int, newPath string) error {
+	return unix.RenameatxNp(oldDirFD, oldPath, newDirFD, newPath, unix.RENAME_EXCL)
 }
