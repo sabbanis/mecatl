@@ -52,6 +52,7 @@ func (s *Server) Execute(ctx context.Context, req *brokerv1.ExecuteRequest) (*br
 	}
 	target := a.tools[call.Name]
 	if target == nil {
+		s.traceUnknownTool(ctx, a, call.Name)
 		s.mu.Unlock()
 		return nil, preDispatchError(invalid("unknown tool"))
 	}

@@ -8,6 +8,9 @@ image:
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 
+logging:
+  level: info
+
 # The public listener is TLS-only. The Secret must contain the selected keys.
 listener:
   publicAddress: 0.0.0.0:8443

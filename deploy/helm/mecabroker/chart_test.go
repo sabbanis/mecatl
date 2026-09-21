@@ -72,6 +72,20 @@ func deploymentFromRender(t *testing.T, rendered string) appsv1.Deployment {
 	return appsv1.Deployment{}
 }
 
+func TestMecabrokerLoggingLevelRendersAndSchemaRejectsInvalidValue(t *testing.T) {
+	defaultDeployment := deploymentFromRender(t, renderChart(t, "template", "production", ".", "-f", "ci/production-values.yaml"))
+	if !slices.Contains(defaultDeployment.Spec.Template.Spec.Containers[0].Args, "--log-level=info") {
+		t.Fatalf("default logging args = %q", defaultDeployment.Spec.Template.Spec.Containers[0].Args)
+	}
+	override := deploymentFromRender(t, renderChart(t, "template", "production", ".", "-f", "ci/production-values.yaml", "--set", "logging.level=debug"))
+	if !slices.Contains(override.Spec.Template.Spec.Containers[0].Args, "--log-level=debug") {
+		t.Fatalf("override logging args = %q", override.Spec.Template.Spec.Containers[0].Args)
+	}
+	if output, err := exec.Command("helm", "template", "production", ".", "-f", "ci/production-values.yaml", "--set", "logging.level=verbose").CombinedOutput(); err == nil {
+		t.Fatalf("invalid logging level rendered:\n%s", output)
+	}
+}
+
 func TestManagedMCPDCRRequiresExplicitOAuth2Endpoints(t *testing.T) {
 	args := []string{"template", "production", ".", "-f", "ci/managed-mcp-values.yaml",
 		"--set", "mcp.servers[0].auth.oauth.client.mode=dcr",
@@ -184,7 +198,7 @@ func TestSingletonBrokerRemediation_Scenario4_SingletonTopologyAndExposure(t *te
 		t.Fatalf("broker containers = %d, want 1", len(pod.Containers))
 	}
 	container := pod.Containers[0]
-	if !slices.Equal(container.Args, []string{"--config=/etc/mecabroker/broker.json"}) || len(container.Ports) < 1 || container.Ports[0].Name != "public" || container.Ports[0].ContainerPort != 8443 {
+	if !slices.Equal(container.Args, []string{"--config=/etc/mecabroker/broker.json", "--log-level=info"}) || len(container.Ports) < 1 || container.Ports[0].Name != "public" || container.Ports[0].ContainerPort != 8443 {
 		t.Fatalf("broker must use only its canonical config argument: args=%q ports=%#v", container.Args, container.Ports)
 	}
 	for _, arg := range container.Args {
@@ -417,7 +431,7 @@ func TestMecabrokerChart_DeploymentSecurityAndShutdownBudget(t *testing.T) {
 		t.Fatalf("pod security context = %#v", pod.SecurityContext)
 	}
 	container := pod.Containers[0]
-	if !slices.Equal(container.Args, []string{"--config=/etc/mecabroker/broker.json"}) || len(container.Ports) < 1 || container.Ports[0].Name != "public" || container.Ports[0].ContainerPort != 8443 {
+	if !slices.Equal(container.Args, []string{"--config=/etc/mecabroker/broker.json", "--log-level=info"}) || len(container.Ports) < 1 || container.Ports[0].Name != "public" || container.Ports[0].ContainerPort != 8443 {
 		t.Fatalf("broker must use only its canonical config argument: args=%q ports=%#v", container.Args, container.Ports)
 	}
 	for _, arg := range container.Args {
@@ -517,7 +531,7 @@ func TestMecabrokerChart_CanonicalConfigAndSecretCustody(t *testing.T) {
 
 	deployment := deploymentFromRender(t, rendered)
 	container := deployment.Spec.Template.Spec.Containers[0]
-	if !slices.Equal(container.Args, []string{"--config=/etc/mecabroker/broker.json"}) || len(container.Env) != 0 {
+	if !slices.Equal(container.Args, []string{"--config=/etc/mecabroker/broker.json", "--log-level=info"}) || len(container.Env) != 0 {
 		t.Fatalf("broker args/env = %q/%#v", container.Args, container.Env)
 	}
 	volumes := map[string]corev1.Volume{}

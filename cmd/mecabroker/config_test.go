@@ -70,6 +70,16 @@ func validBrokerConfig() fileConfig {
 	return cfg
 }
 
+func TestParseFlagsWithLoggingAcceptsInvalidLevelWithWarning(t *testing.T) {
+	original := os.Args
+	t.Cleanup(func() { os.Args = original })
+	os.Args = []string{"mecabroker", "--log-level=verbose"}
+	_, level, warning, err := parseFlagsWithLogging()
+	if err == nil || level.String() != "INFO" || !strings.Contains(warning, "invalid --log-level") {
+		t.Fatalf("invalid log level = level:%s warning:%q error:%v", level, warning, err)
+	}
+}
+
 func TestKubernetesWorkloadJWTBootstrapConfiguration(t *testing.T) {
 	cfg := validBrokerConfig()
 	cfg.Profiles = []fileProfile{{Name: "public", URL: "https://mcp.example", Auth: "none"}}

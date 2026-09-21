@@ -161,6 +161,29 @@ func (*emptyAttachment) CancelAuthorization(context.Context, session.ExternalAut
 	return "", contract.ErrAuthorizationNotFound
 }
 
+type traceTool struct{}
+
+func (traceTool) Spec() tool.ToolSpec {
+	return tool.ToolSpec{Name: "trace_tool", Description: "trace", Schema: []byte(`{}`)}
+}
+func (traceTool) ReadOnly() bool { return true }
+func (traceTool) Execute(_ context.Context, call session.ToolCall, _ tool.Environment) (session.ToolResult, error) {
+	return session.NewToolResult(call.ID, "ok"), nil
+}
+func (traceTool) ExecutionMetadata(session.ToolCall) (contract.ExecutionMetadata, bool) {
+	return contract.ExecutionMetadata{Backend: "trace_backend", OutboundCredentialKind: contract.OutboundCredentialRouteOAuth}, true
+}
+
+type traceAttachment struct{ emptyAttachment }
+
+func (*traceAttachment) Tools() []tool.Tool { return []tool.Tool{traceTool{}} }
+
+type traceService struct{ countingService }
+
+func (s *traceService) AttachSession(context.Context, session.SessionID) (contract.Attachment, contract.AttachOutcome, error) {
+	return &traceAttachment{}, contract.AttachCreated, nil
+}
+
 func startAuthenticatedBroker(t *testing.T, service contract.Service, oidc WorkloadJWTConfig, diag port.Diagnostics, observe func(string, string)) (brokerv1.BrokerServiceClient, *grpc.ClientConn, string) {
 	t.Helper()
 	srv, err := newBrokerHost(t.Context(), hostConfig{Service: service, WorkloadJWT: oidc, Diagnostics: diag, Observe: observe})
@@ -422,6 +445,33 @@ func TestInvariant_initial_broker_observability_is_bounded_and_secret_free(t *te
 		parts := strings.Split(label, ":")
 		if len(parts) != 2 || !allowedOps[parts[0]] || !allowedOutcomes[parts[1]] {
 			t.Fatalf("unbounded metric label %q", label)
+		}
+	}
+}
+
+func TestBrokerRPCTraceCorrelatesAuthenticatedExecuteWithoutArguments(t *testing.T) {
+	issuer := newIdentityFixture(t)
+	registerFixtureKey(issuer)
+	diag := &captureDiagnostics{}
+	client, _, _ := startAuthenticatedBroker(t, &traceService{}, productionOIDC(issuer, time.Minute), diag, nil)
+	token := issuer.token(t, issuer.server.URL, testAudience, time.Now().Add(time.Minute), nil)
+	attached, err := client.Attach(authContext(token), &brokerv1.AttachRequest{SessionId: "trace-session"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Execute(authContext(token), &brokerv1.ExecuteRequest{BrokerIncarnation: attached.GetBrokerIncarnation(), Handle: attached.GetHandle(), Name: "trace_tool", CallId: "call", Args: []byte(`{"password":"never-log","callback":"https://never-log.example"}`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded := fmt.Sprint(diag.records)
+	for _, want := range []string{"principal_subject", "principal_issuer", "trace-session", attached.GetHandle(), "binding", "trace_backend", "route_oauth"} {
+		if !strings.Contains(encoded, want) {
+			t.Fatalf("trace lacks %q: %s", want, encoded)
+		}
+	}
+	for _, forbidden := range []string{"never-log", token, "authorization"} {
+		if strings.Contains(encoded, forbidden) {
+			t.Fatalf("trace leaked %q: %s", forbidden, encoded)
 		}
 	}
 }

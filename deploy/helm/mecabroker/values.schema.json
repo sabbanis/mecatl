@@ -4,6 +4,7 @@
   "additionalProperties": false,
   "required": [
     "image",
+    "logging",
     "listener",
     "workloadJWT",
     "callbackURL",
@@ -55,6 +56,14 @@
             "Never"
           ]
         }
+      }
+    },
+    "logging": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["level"],
+      "properties": {
+        "level": {"type": "string", "enum": ["debug", "info", "warn", "error"]}
       }
     },
     "imagePullSecrets": {

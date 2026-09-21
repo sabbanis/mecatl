@@ -6,13 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/status"
 
+	brokerv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/broker/v1"
 	"github.com/stacklok/mecatl/engine/port"
+	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/internal/adapter/mcpbroker"
 	"github.com/stacklok/mecatl/internal/adapter/mcpbrokergrpc"
 	contract "github.com/stacklok/mecatl/internal/mcpbroker"
@@ -113,6 +118,7 @@ func newBrokerHost(ctx context.Context, cfg hostConfig) (*brokerHost, error) {
 	if diagnostics == nil {
 		diagnostics = port.NopDiagnostics{}
 	}
+	rpc.WithDiagnostics(diagnostics)
 	readyTimeout := cfg.ReadinessTimeout
 	if readyTimeout == 0 {
 		readyTimeout = 2 * time.Second
@@ -156,7 +162,7 @@ func (h *brokerHost) newGRPCServer(tlsConfig *tls.Config) (*grpc.Server, error) 
 	if h.grpcServer != nil {
 		return nil, errors.New("mcpbrokerserver: gRPC server already created")
 	}
-	options := []grpc.ServerOption{grpc.ChainUnaryInterceptor(h.admission.UnaryInterceptor, h.authenticate)}
+	options := []grpc.ServerOption{grpc.ChainUnaryInterceptor(h.admission.UnaryInterceptor, h.authenticate, h.traceRPC)}
 	if tlsConfig != nil {
 		if err := validateTransport("network", tlsConfig); err != nil {
 			return nil, err
@@ -172,7 +178,67 @@ func (h *brokerHost) newGRPCServer(tlsConfig *tls.Config) (*grpc.Server, error) 
 	h.grpcServer = server
 	return server, nil
 }
-func (h *brokerHost) httpHandler() http.Handler      { return h.admission.HTTP(h.mux) }
+func (h *brokerHost) httpHandler() http.Handler { return h.admission.HTTP(h.mux) }
+
+// traceRPC logs only verified workload identities and protocol identifiers; it
+// deliberately never projects request bodies, authorization state, or errors.
+func (h *brokerHost) traceRPC(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+	response, err := handler(ctx, req)
+	outcome := "success"
+	if err != nil {
+		outcome = status.Code(err).String()
+	}
+	fields := []any{"principal_subject", "", "principal_issuer", ""}
+	if principal := session.PrincipalFromContext(ctx); principal != nil {
+		fields[1], fields[3] = boundedDiagnosticName(principal.Subject), auditIssuer(principal.Issuer)
+	}
+	switch r := req.(type) {
+	case *brokerv1.AttachRequest:
+		fields = append(fields, "logical_session", boundedDiagnosticName(r.GetSessionId()))
+	case *brokerv1.DeleteRequest:
+		fields = append(fields, "logical_session", boundedDiagnosticName(r.GetSessionId()), "binding", boundedDiagnosticName(r.GetBinding()))
+	case interface{ GetHandle() string }:
+		fields = append(fields, "handle", boundedDiagnosticName(r.GetHandle()))
+		if trace, ok := h.rpc.TraceAttachment(r.GetHandle()); ok {
+			fields = append(fields, "logical_session", boundedDiagnosticName(trace.LogicalSession), "binding", boundedDiagnosticName(trace.Binding))
+		}
+	}
+	switch r := req.(type) {
+	case interface {
+		GetHandle() string
+		GetName() string
+		GetArgs() []byte
+	}:
+		if trace, ok := h.rpc.TraceExecution(r.GetHandle(), r.GetName(), r.GetArgs()); ok {
+			if trace.Backend != "" {
+				fields = append(fields, "backend", boundedDiagnosticName(trace.Backend), "outbound_credential_kind", trace.OutboundCredentialKind)
+			}
+		}
+	}
+	switch r := req.(type) {
+	case interface{ GetName() string }:
+		fields = append(fields, "tool", boundedDiagnosticName(r.GetName()))
+	}
+	if attached, ok := response.(*brokerv1.AttachResponse); ok {
+		fields = append(fields, "handle", attached.GetHandle(), "binding", attached.GetBinding())
+	}
+	h.rpc.TraceRPC(ctx, operationName(info.FullMethod), outcome, fields...)
+	return response, err
+}
+
+func boundedDiagnosticName(name string) string {
+	const limit = 128
+	if len(name) > limit || !utf8.ValidString(name) || containsSecretMarker(name) {
+		return "[redacted]"
+	}
+	return name
+}
+
+func containsSecretMarker(value string) bool {
+	lower := strings.ToLower(value)
+	return strings.Contains(lower, "secret") || strings.Contains(lower, "token") || strings.Contains(lower, "bearer")
+}
+
 func (h *brokerHost) ready(ctx context.Context) bool { return h.admission.Ready(ctx) }
 func (h *brokerHost) beginDrain()                    { h.admission.BeginDrain() }
 func (h *brokerHost) drain(ctx context.Context, propagation time.Duration) error {

@@ -2,6 +2,7 @@ package mcpbrokerserver
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"strings"
@@ -140,8 +141,9 @@ func (h *brokerHost) authenticate(ctx context.Context, req any, info *grpc.Unary
 		h.record(ctx, operation, "unauthorized")
 		return nil, status.Error(codes.PermissionDenied, "workload is not authorized")
 	}
-	h.record(ctx, operation, "allowed")
-	return handler(session.WithPrincipal(ctx, principal), req)
+	authenticatedCtx := session.WithPrincipal(ctx, principal)
+	h.record(authenticatedCtx, operation, "allowed")
+	return handler(authenticatedCtx, req)
 }
 func operationName(method string) string {
 	switch method {
@@ -177,8 +179,28 @@ func operationName(method string) string {
 		return "unknown"
 	}
 }
+func auditIdentity(value string) string {
+	if len(value) > 256 || containsSecretMarker(value) {
+		return "[redacted]"
+	}
+	return value
+}
+
+func auditIssuer(value string) string {
+	digest := sha256.Sum256([]byte(value))
+	return fmt.Sprintf("sha256:%x", digest[:8])
+}
+
 func (h *brokerHost) record(ctx context.Context, operation, outcome string) {
-	h.diagnostics.Log(ctx, port.LevelInfo, "broker authentication", "operation", operation, "outcome", outcome)
+	level := port.LevelWarn
+	fields := []any{"operation", operation, "outcome", outcome, "inbound_credential_kind", "workload_jwt"}
+	if outcome == "allowed" {
+		level = port.LevelDebug
+		if principal := session.PrincipalFromContext(ctx); principal != nil {
+			fields = append(fields, "principal_subject", auditIdentity(principal.Subject), "principal_issuer", auditIssuer(principal.Issuer))
+		}
+	}
+	h.diagnostics.Log(ctx, level, "broker authentication", fields...)
 	if h.observe != nil {
 		h.observe(operation, outcome)
 	}

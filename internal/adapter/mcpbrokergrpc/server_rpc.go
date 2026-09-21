@@ -60,7 +60,7 @@ func (s *Server) Attach(ctx context.Context, req *brokerv1.AttachRequest) (*brok
 	}
 	_, enrollment := a.(mcpbroker.WorkspaceEnrollmentAttachment)
 	now := time.Now()
-	s.handles[h] = &serverAttachment{attachment: a, principal: principal, logicalID: logicalID, tools: tools, expiresAt: now.Add(s.cfg.HandleIdleTimeout), changed: make(chan struct{}), receipts: make(map[session.ToolCallID]*executeReceipt)}
+	s.handles[h] = &serverAttachment{attachment: a, principal: principal, logicalID: logicalID, binding: string(a.Binding()), tools: tools, expiresAt: now.Add(s.cfg.HandleIdleTimeout), changed: make(chan struct{}), receipts: make(map[session.ToolCallID]*executeReceipt)}
 	attached = true
 	return &brokerv1.AttachResponse{Binding: string(a.Binding()), Handle: h, Outcome: string(outcome), Tools: desc, BrokerIncarnation: s.incarnation, WorkspaceEnrollment: enrollment}, nil
 }

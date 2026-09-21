@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -17,6 +18,7 @@ import (
 	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/internal/adapter/mcpbrokerserver"
 	"github.com/stacklok/mecatl/internal/adapter/slogdiag"
+	"github.com/stacklok/mecatl/internal/cliconfig"
 )
 
 const (
@@ -59,14 +61,16 @@ func main() {
 		return
 	}
 serve:
-	cfg, err := parseFlags()
+	cfg, level, warning, err := parseFlagsWithLogging()
 	if err != nil {
 		reportStartupError(os.Stderr, "configuration", err)
 		os.Exit(1)
 	}
+	logger := cliconfig.NewTextLogger(os.Stderr, level, warning)
+	slog.SetDefault(logger)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	if err := run(ctx, cfg, slogdiag.NewText(os.Stderr)); err != nil {
+	if err := run(ctx, cfg, slogdiag.NewFromLogger(logger)); err != nil {
 		reportStartupError(os.Stderr, "startup or serving", err)
 		os.Exit(1)
 	}

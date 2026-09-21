@@ -4,12 +4,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"google.golang.org/grpc"
 
 	brokerv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/broker/v1"
+	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/internal/mcpbroker"
 )
@@ -18,6 +22,7 @@ import (
 type Server struct {
 	brokerv1.UnimplementedBrokerServiceServer
 	service         mcpbroker.Service
+	diagnostics     port.Diagnostics
 	mu              sync.Mutex
 	handles         map[string]*serverAttachment
 	owners          map[session.SessionID]*sessionOwner
@@ -75,9 +80,52 @@ func NewServerWithConfig(service mcpbroker.Service, cfg Config) (*Server, error)
 		return nil, fmt.Errorf("mcpbrokergrpc: mint broker incarnation: %w", err)
 	}
 	executeCtx, executeStop := context.WithCancel(context.Background())
-	s := &Server{service: service, handles: make(map[string]*serverAttachment), owners: make(map[session.SessionID]*sessionOwner), maxHandles: cfg.MaxHandles, incarnation: incarnation, cfg: cfg, done: make(chan struct{}), stop: make(chan struct{}), executeCtx: executeCtx, executeStop: executeStop}
+	s := &Server{service: service, diagnostics: port.NopDiagnostics{}, handles: make(map[string]*serverAttachment), owners: make(map[session.SessionID]*sessionOwner), maxHandles: cfg.MaxHandles, incarnation: incarnation, cfg: cfg, done: make(chan struct{}), stop: make(chan struct{}), executeCtx: executeCtx, executeStop: executeStop}
 	go s.sweep()
 	return s, nil
+}
+
+// WithDiagnostics injects the server's operational sink without widening the wire transport Config.
+// It must be configured before the server begins accepting RPCs.
+func (s *Server) WithDiagnostics(diagnostics port.Diagnostics) *Server {
+	if diagnostics == nil {
+		diagnostics = port.NopDiagnostics{}
+	}
+	s.diagnostics = diagnostics
+	return s
+}
+
+// TraceRPC records a safe, closed-vocabulary RPC outcome. Authentication has already
+// validated the principal before this method is reached.
+func (s *Server) TraceRPC(ctx context.Context, operation, outcome string, fields ...any) {
+	level := port.LevelDebug
+	if outcome != "success" {
+		level = port.LevelWarn
+	}
+	s.diagnostics.Log(ctx, level, "broker RPC", append([]any{"operation", operation, "outcome", outcome, "inbound_credential_kind", "workload_jwt"}, fields...)...)
+}
+
+func (s *Server) traceUnknownTool(ctx context.Context, a *serverAttachment, requested string) {
+	const previewLimit = 8
+	names := make([]string, 0, len(a.tools))
+	for name := range a.tools {
+		names = append(names, diagnosticToolName(name))
+	}
+	sort.Strings(names)
+	truncated := len(names) > previewLimit
+	if truncated {
+		names = names[:previewLimit]
+	}
+	s.TraceRPC(ctx, "execute", "unknown_tool", "logical_session", a.logicalID, "tool", diagnosticToolName(string(requested)), "registered_tool_count", len(a.tools), "registered_tool_preview", strings.Join(names, ","), "registered_tool_preview_truncated", truncated)
+}
+
+func diagnosticToolName(name string) string {
+	const limit = 128
+	lower := strings.ToLower(name)
+	if len(name) > limit || !utf8.ValidString(name) || strings.Contains(lower, "secret") || strings.Contains(lower, "token") || strings.Contains(lower, "bearer") {
+		return "[redacted]"
+	}
+	return name
 }
 
 // ExecuteDeadline returns the server-side upper bound used for Execute calls.

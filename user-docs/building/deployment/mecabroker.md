@@ -93,6 +93,7 @@ keys.
 | `profiles[]` | Typed upstream profiles: `name`, `url`, `auth: none|oauth`, and, for OAuth, a strict `oauth.client_mode` union: `preregistered` requires `client_id` plus `client_secret_file`, and `dcr` requires `dcr_discovery_url`; CIMD is rejected because mecabroker has no CIMD construction support; each mode rejects the other modes' fields. OAuth profiles may also declare typed `tools`. |
 | `drain.{propagationDelaySeconds,timeoutSeconds,listenerShutdownTimeoutSeconds}` | Bounded singleton shutdown timing. |
 | `transport.*` and `runtime.*` | Explicit RPC, handle, owner, receipt, execute, logical-session, retention, and pending-authorization bounds. |
+| `logging.level` | Minimum broker log level: `debug`, `info` (default), `warn`, or `error`. The Deployment passes it as `--log-level`. |
 | `service.port` | The Service port for the multiplexed public listener. |
 | `rollout.restartToken` | An operator-controlled pod-template change used to restart after external secret rotation. |
 | `networkPolicy.{publicFrom,operatorEgress}` | Standard Kubernetes L3/L4 peers for the public listener and outbound destinations. The broker chart does not add broad outbound allowances. |

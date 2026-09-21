@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/stacklok/mecatl/internal/adapter/mcpbroker"
 	"github.com/stacklok/mecatl/internal/adapter/mcpbrokergrpc"
 	"github.com/stacklok/mecatl/internal/adapter/mcpbrokerserver"
+	"github.com/stacklok/mecatl/internal/cliconfig"
 )
 
 const (
@@ -123,6 +125,18 @@ type fileStatic struct {
 }
 
 func parseFlags() (fileConfig, error) { return parseConfigFlag(flag.CommandLine) }
+
+func parseFlagsWithLogging() (fileConfig, slog.Level, string, error) {
+	flags := flag.NewFlagSet("mecabroker", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	logFlags := cliconfig.RegisterLogLevelFlag(flags)
+	cfg, err := parseConfigFlag(flags)
+	level, warning := logFlags.Resolve()
+	if err != nil {
+		return fileConfig{}, level, warning, err
+	}
+	return cfg, level, warning, nil
+}
 
 func parseConfigFlag(flags *flag.FlagSet) (fileConfig, error) {
 	var path string

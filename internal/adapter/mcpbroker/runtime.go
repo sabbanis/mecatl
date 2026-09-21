@@ -768,6 +768,16 @@ type sessionTool struct {
 func (t *sessionTool) Spec() tool.ToolSpec { return copySpec(t.route.spec) }
 func (t *sessionTool) ReadOnly() bool      { return t.route.readOnly }
 
+func (t *sessionTool) ExecutionMetadata(session.ToolCall) (contract.ExecutionMetadata, bool) {
+	kind := contract.OutboundCredentialNone
+	if t.route.broker {
+		kind = contract.OutboundCredentialBrokerOAuth
+	} else if t.route.oauth != nil {
+		kind = contract.OutboundCredentialRouteOAuth
+	}
+	return contract.ExecutionMetadata{Backend: t.route.backend, OutboundCredentialKind: kind}, t.route.backend != ""
+}
+
 // Execute (sessionTool.Execute) invokes the attachment-bound native tool route.
 func (t *sessionTool) Execute(ctx context.Context, call session.ToolCall, _ tool.Environment) (session.ToolResult, error) {
 	opCtx, done, err := t.attachment.beginOperation(ctx)

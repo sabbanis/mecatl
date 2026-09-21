@@ -43,6 +43,7 @@ type serverAttachment struct {
 	attachment      mcpbroker.Attachment
 	principal       *session.Principal
 	logicalID       session.SessionID
+	binding         string
 	tools           map[string]tool.Tool
 	active          int
 	expiresAt       time.Time

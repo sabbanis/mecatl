@@ -5912,7 +5912,8 @@ callback-body path and retains its longer transport deadline. `internal/adapter/
 registry for both public transports. Readiness checks run under one finite timeout and are
 traffic signals only. Drain closes admission first, waits endpoint propagation, bounds active
 work, cancels the remainder, and only then lets command composition stop listeners and close
-ToolHive resources. Restart interrupts attachments and outer OAuth correlation; none of these
+ToolHive resources. `cmd/mecabroker` owns one text `slog` logger (`--log-level`, default `info`) and installs it as the process default; the same logger is exposed through `slogdiag` to the broker host, gRPC adapter, and ToolHive configuration. The authenticated gRPC interceptor records closed operation/outcome audit fields through `port.Diagnostics`: verified workload subject/issuer, logical session, handle, binding, and bounded tool name where applicable. Unknown Execute requests additionally record a bounded requested name, registered count, and deterministic capped registered-name preview. The optional internal `ExecutionMetadataProvider` adds only backend plus the closed outbound credential kind (`none`, `route_oauth`, or `broker_oauth`); ordinary, protected, broker, and query wrappers preserve it, while absence or invalid metadata simply omits those fields. It records no bearer credential, request arguments, OAuth state/URL/scopes, client secret, raw error, or provider body; successful operations are debug and meaningful failures warn. `mcpbrokergrpc.Server.WithDiagnostics` is deliberately an adapter-local injection seam rather than a transport `Config` field, preserving the wire configuration contract.
+Restart interrupts attachments and outer OAuth correlation; none of these
 controls provides ownership transfer, callback failover, or HA. The complete topology and
 resource ledger are [ADR 0327](../adr/0327-single-replica-mcp-broker-topology.md).
 

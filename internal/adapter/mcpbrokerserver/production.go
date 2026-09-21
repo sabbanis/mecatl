@@ -75,7 +75,9 @@ func NewProduction(ctx context.Context, cfg ProductionConfig) (*Lifecycle, error
 	broker, err := newBrokerHost(ctx, hostConfig{WorkloadJWT: cfg.WorkloadJWT, Diagnostics: cfg.Diagnostics, Transport: transport, Runtime: func(factoryCtx context.Context) (brokerRuntime, error) {
 		options := append([]mcpbroker.Option(nil), cfg.ToolHiveOptions...)
 		options = append(options, mcpbroker.WithLimits(cfg.RuntimeLimits))
-		process, processErr := mcpbroker.NewToolHiveProcess(factoryCtx, cfg.ToolHive, options...)
+		toolHiveConfig := cfg.ToolHive
+		toolHiveConfig.Diagnostics = cfg.Diagnostics
+		process, processErr := mcpbroker.NewToolHiveProcess(factoryCtx, toolHiveConfig, options...)
 		if processErr != nil {
 			return brokerRuntime{}, processErr
 		}
