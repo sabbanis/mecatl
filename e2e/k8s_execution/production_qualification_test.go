@@ -269,9 +269,10 @@ func TestKindExecutionProductionSecurityRotation(t *testing.T) {
 		t.Fatal("grant signed by revoked k1 remained authorized through the new client")
 	}
 	finalAttached := waitReady(t, ctx, newClient, owner, binding, attached.Environment)
-	finalClaim, err := newClient.AcquireRun(ctx, executionenv.RunClaimRequest{Environment: finalAttached.Environment, Owner: owner, BindingID: binding, RunID: "rotation-final-grant", OperationID: "rotation-acquire-final", TTL: time.Minute})
+	finalRequest := executionenv.RunClaimRequest{Environment: finalAttached.Environment, Owner: owner, BindingID: binding, RunID: "rotation-final-grant", OperationID: "rotation-acquire-final", TTL: time.Minute}
+	finalClaim, err := acquireCurrentAuthorityRun(ctx, finalRequest, newClient.AcquireRun, 500*time.Millisecond)
 	if err != nil {
-		t.Fatalf("acquire final-authority claim: code=%s", remoteErrorCode(err))
+		t.Fatalf("acquire final-authority claim: code=%s err=%v", remoteErrorCode(err), err)
 	}
 	finalRun := executionenv.RequestContext{Environment: finalClaim.Environment, Owner: owner, BindingID: binding, RunID: finalClaim.RunID, ClaimID: finalClaim.ClaimID, Epoch: finalClaim.Epoch, GrantGeneration: finalClaim.GrantGeneration, Grant: finalClaim.Grant}
 	if got, err := newClient.File(ctx, executionenv.FileRequest{Context: finalRun, Operation: executionenv.OpFileRead, Path: "rotation-sentinel.txt"}); err != nil || string(got.Data) != "old-authority\n" {
@@ -311,6 +312,120 @@ func TestKindExecutionProductionSecurityRotation(t *testing.T) {
 	// Restore fixture client compatibility through a higher generation; this is
 	// another forward rotation, never a high-water-mark rollback.
 	restoreFixtureSecurity(t, ctx, kubeconfig, rotationDir)
+}
+
+func acquireCurrentAuthorityRun(ctx context.Context, req executionenv.RunClaimRequest, acquire func(context.Context, executionenv.RunClaimRequest) (executionenv.RunClaim, error), retryDelay time.Duration) (executionenv.RunClaim, error) {
+	const maxAttempts = 8
+
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return executionenv.RunClaim{}, err
+		}
+		claim, err := acquire(ctx, req)
+		if err == nil {
+			return claim, nil
+		}
+		if !isRetryableAuthorityConvergence(err) {
+			return executionenv.RunClaim{}, err
+		}
+		lastErr = err
+		if attempt == maxAttempts {
+			break
+		}
+		if retryDelay <= 0 {
+			continue
+		}
+		timer := time.NewTimer(retryDelay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return executionenv.RunClaim{}, ctx.Err()
+		case <-timer.C:
+		}
+	}
+	return executionenv.RunClaim{}, fmt.Errorf("final-authority acquire did not converge after %d attempts: %w", maxAttempts, lastErr)
+}
+
+func isRetryableAuthorityConvergence(err error) bool {
+	var remote *executionenv.Error
+	return errors.As(err, &remote) && remote.Code == executionenv.CodeNotReady && remote.Retryable
+}
+
+func TestAcquireCurrentAuthorityRunRetriesOnlyRetryableNotReady(t *testing.T) {
+	req := executionenv.RunClaimRequest{Environment: executionenv.EnvironmentRef{ID: "environment", Revision: "revision"}, Owner: executionenv.Owner{Issuer: "issuer", Subject: "subject"}, BindingID: "binding", RunID: "run", OperationID: "same-operation", TTL: time.Minute}
+	success := executionenv.RunClaim{Environment: req.Environment, BindingID: req.BindingID, RunID: req.RunID, ClaimID: "claim"}
+
+	for _, tc := range []struct {
+		name      string
+		errs      []error
+		wantCalls int
+		wantErr   bool
+	}{
+		{name: "retryable not ready", errs: []error{&executionenv.Error{Code: executionenv.CodeNotReady, Retryable: true}}, wantCalls: 2},
+		{name: "not ready without retryability", errs: []error{&executionenv.Error{Code: executionenv.CodeNotReady}}, wantCalls: 1, wantErr: true},
+		{name: "retryable unauthenticated", errs: []error{&executionenv.Error{Code: executionenv.CodeUnauthenticated, Retryable: true}}, wantCalls: 1, wantErr: true},
+		{name: "permission denied", errs: []error{&executionenv.Error{Code: executionenv.CodePermissionDenied}}, wantCalls: 1, wantErr: true},
+		{name: "internal", errs: []error{&executionenv.Error{Code: executionenv.CodeInternal}}, wantCalls: 1, wantErr: true},
+		{name: "malformed error", errs: []error{errors.New("unexpected failure")}, wantCalls: 1, wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			claim, err := acquireCurrentAuthorityRun(t.Context(), req, func(_ context.Context, got executionenv.RunClaimRequest) (executionenv.RunClaim, error) {
+				calls++
+				if got != req {
+					t.Fatalf("retry request changed: got %+v want %+v", got, req)
+				}
+				if calls <= len(tc.errs) {
+					return executionenv.RunClaim{}, tc.errs[calls-1]
+				}
+				return success, nil
+			}, 0)
+			if calls != tc.wantCalls {
+				t.Fatalf("calls=%d want=%d", calls, tc.wantCalls)
+			}
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected terminal error")
+				}
+				return
+			}
+			if err != nil || claim != success {
+				t.Fatalf("claim=%+v err=%v, want %+v", claim, err, success)
+			}
+		})
+	}
+}
+
+func TestAcquireCurrentAuthorityRunStopsAtBoundAndHonorsContext(t *testing.T) {
+	req := executionenv.RunClaimRequest{OperationID: "same-operation"}
+	t.Run("bound", func(t *testing.T) {
+		calls := 0
+		_, err := acquireCurrentAuthorityRun(t.Context(), req, func(context.Context, executionenv.RunClaimRequest) (executionenv.RunClaim, error) {
+			calls++
+			return executionenv.RunClaim{}, &executionenv.Error{Code: executionenv.CodeNotReady, Retryable: true}
+		}, 0)
+		if calls != 8 || !isRemoteCode(err, executionenv.CodeNotReady) {
+			t.Fatalf("calls=%d code=%s, want 8/not_ready", calls, remoteErrorCode(err))
+		}
+	})
+	t.Run("cancelled", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		calls := 0
+		_, err := acquireCurrentAuthorityRun(ctx, req, func(context.Context, executionenv.RunClaimRequest) (executionenv.RunClaim, error) {
+			calls++
+			return executionenv.RunClaim{}, nil
+		}, 0)
+		if calls != 0 || !errors.Is(err, context.Canceled) {
+			t.Fatalf("calls=%d err=%v, want 0/context canceled", calls, err)
+		}
+	})
 }
 
 func waitFileContent(t *testing.T, ctx context.Context, client *executionclient.Client, rc executionenv.RequestContext, path, want, proof string) {

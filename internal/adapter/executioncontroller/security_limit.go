@@ -39,7 +39,7 @@ func (l *RPCLimiter) UnaryInterceptor(ctx context.Context, req any, _ *grpc.Unar
 	}
 	id, _, err := l.security.authorize(ctx, chain)
 	if err != nil {
-		return nil, status.Error(codes.Unauthenticated, "execution provider request failed")
+		return nil, securityAuthorizationError(err)
 	}
 	if !l.acquire(id) {
 		return nil, status.Error(codes.ResourceExhausted, "execution provider is at its concurrency limit")

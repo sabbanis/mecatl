@@ -1,6 +1,7 @@
 package executioncontroller
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -10,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"net"
 	"net/url"
@@ -17,22 +19,72 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	grpcpeer "google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	executionv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/execution/v1"
 	"github.com/stacklok/mecatl/internal/executionenv"
 )
+
+type durableClaimBackend struct {
+	*fakeBackend
+	mu                         sync.Mutex
+	acquired, renewed          map[string]executionenv.RunClaim
+	acquireCalls, renewalCalls int
+}
+
+func newDurableClaimBackend() *durableClaimBackend {
+	return &durableClaimBackend{fakeBackend: newFakeBackend(), acquired: make(map[string]executionenv.RunClaim), renewed: make(map[string]executionenv.RunClaim)}
+}
+
+func (b *durableClaimBackend) AcquireRun(_ context.Context, ref executionenv.EnvironmentRef, _ string, _ string, binding, run, operation string, ttl time.Duration) (executionenv.RunClaim, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.acquireCalls++
+	if claim, ok := b.acquired[operation]; ok {
+		return claim, nil
+	}
+	claim := executionenv.RunClaim{Environment: ref, BindingID: binding, RunID: run, ClaimID: "claim-acquire", Epoch: 2, GrantGeneration: 1, ExpiresAt: time.Now().Add(ttl)}
+	b.acquired[operation] = claim
+	return claim, nil
+}
+
+func (b *durableClaimBackend) RenewRun(_ context.Context, _ executionenv.EnvironmentRef, _ string, _ string, req executionenv.RunClaimRequest) (executionenv.RunClaim, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.renewalCalls++
+	if claim, ok := b.renewed[req.OperationID]; ok {
+		return claim, nil
+	}
+	claim := executionenv.RunClaim{Environment: req.Environment, BindingID: req.BindingID, RunID: req.RunID, ClaimID: req.ClaimID, Epoch: req.Epoch, GrantGeneration: req.GrantGeneration + 1, ExpiresAt: time.Now().Add(req.TTL)}
+	b.renewed[req.OperationID] = claim
+	return claim, nil
+}
+
+func (b *durableClaimBackend) claim(operation string, renew bool) (executionenv.RunClaim, int, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if renew {
+		claim, ok := b.renewed[operation]
+		return claim, b.renewalCalls, ok
+	}
+	claim, ok := b.acquired[operation]
+	return claim, b.acquireCalls, ok
+}
 
 func TestSecurityManagerReloadRollbackAndRecovery(t *testing.T) {
 	dir := t.TempDir()
@@ -91,7 +143,7 @@ func TestSecurityManagerReloadRollbackAndRecovery(t *testing.T) {
 	if err := manager.Reload(t.Context()); err != nil || !manager.Ready() {
 		t.Fatalf("recovery reload: ready=%v err=%v", manager.Ready(), err)
 	}
-	firstCertificate := append([]byte(nil), manager.current.Load().tlsConfig.Certificates[0].Certificate[0]...)
+	firstCertificate := append([]byte(nil), manager.state.Load().snapshot.tlsConfig.Certificates[0].Certificate[0]...)
 	cm, err := kube.CoreV1().ConfigMaps("ns").Get(t.Context(), "authority", metav1.GetOptions{})
 	if err != nil {
 		t.Fatal(err)
@@ -126,7 +178,7 @@ func TestSecurityManagerReloadRollbackAndRecovery(t *testing.T) {
 	if err := manager.Reload(t.Context()); err != nil || !manager.Ready() {
 		t.Fatalf("TLS/CA correction did not recover: ready=%v err=%v", manager.Ready(), err)
 	}
-	if string(firstCertificate) == string(manager.current.Load().tlsConfig.Certificates[0].Certificate[0]) {
+	if string(firstCertificate) == string(manager.state.Load().snapshot.tlsConfig.Certificates[0].Certificate[0]) {
 		t.Fatal("TLS identity did not rotate atomically")
 	}
 	manifest.Generation = 4
@@ -143,6 +195,49 @@ func TestSecurityManagerReloadRollbackAndRecovery(t *testing.T) {
 	writeManifest(t, manifestPath, manifest)
 	if err := manager.Reload(t.Context()); err == nil || manager.Ready() {
 		t.Fatal("generation rollback accepted")
+	}
+}
+
+func TestSecurityManagerStaleAuthorityFailureCannotPoisonNewerState(t *testing.T) {
+	now := time.Now().UTC()
+	window := keyValidity{activateAt: now.Add(-time.Minute), verifyUntil: now.Add(time.Hour)}
+	oldSnapshot := &securitySnapshot{generation: 1, digest: "old", activeWindow: window, validUntil: now.Add(time.Hour), fingerprints: map[string]string{"k1:1": "old"}}
+	newSnapshot := &securitySnapshot{generation: 2, digest: "new", activeWindow: window, validUntil: now.Add(time.Hour), fingerprints: map[string]string{"k1:1": "old", "k1:2": "new"}}
+	raw, err := json.Marshal(securityLedger{Generation: newSnapshot.generation, Digest: newSnapshot.digest, Fingerprints: newSnapshot.fingerprints})
+	if err != nil {
+		t.Fatal(err)
+	}
+	kube := fake.NewSimpleClientset(&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "authority", Namespace: "ns"}, Data: map[string]string{securityStateDataKey: string(raw)}})
+	started, release := make(chan struct{}), make(chan struct{})
+	var startOnce sync.Once
+	kube.PrependReactor("get", "configmaps", func(_ k8stesting.Action) (bool, runtime.Object, error) {
+		startOnce.Do(func() { close(started) })
+		<-release
+		return false, nil, nil
+	})
+	manager := NewSecurityManager("", "", "ns", "authority", kube)
+	manager.now = func() time.Time { return now }
+	oldState := &securityState{snapshot: oldSnapshot}
+	manager.state.Store(oldState)
+	done := make(chan error, 1)
+	go func() {
+		_, authErr := manager.authoritative(t.Context())
+		done <- authErr
+	}()
+	<-started
+	newState := &securityState{snapshot: newSnapshot}
+	manager.state.Store(newState)
+	close(release)
+	if err := <-done; !errors.Is(err, errAuthorityUnavailable) {
+		t.Fatalf("stale authority check error=%v", err)
+	}
+	if manager.state.Load() != newState || !manager.Ready() {
+		t.Fatal("stale authority check invalidated the newer published state")
+	}
+
+	manager.invalidateObservedUnlessReplaced(t.Context(), oldState)
+	if manager.state.Load() != newState || !manager.Ready() {
+		t.Fatal("stale reload failure invalidated the newer authoritative state")
 	}
 }
 
@@ -181,7 +276,11 @@ func TestSecurityManagerGuardsEveryRPCOnExistingConnection(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := NewStore(dynamicfake.NewSimpleDynamicClient(runtime.NewScheme()), "ns", testProfiles(), nil)
-	server := grpc.NewServer(grpc.Creds(credentials.NewTLS(manager.TLSConfig())))
+	limiter, err := NewRPCLimiter(manager, 4, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer(grpc.Creds(credentials.NewTLS(manager.TLSConfig())), grpc.UnaryInterceptor(limiter.UnaryInterceptor))
 	executionv1.RegisterExecutionProviderServiceServer(server, NewHandler(HandlerConfig{Security: manager}, store))
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -219,8 +318,10 @@ func TestSecurityManagerGuardsEveryRPCOnExistingConnection(t *testing.T) {
 	if _, err := kube.CoreV1().ConfigMaps("ns").Update(t.Context(), cm, metav1.UpdateOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := call(); status.Code(err) != codes.Unauthenticated || manager.Ready() {
+	if err := call(); status.Code(err) != codes.Unavailable || manager.Ready() {
 		t.Fatalf("old snapshot survived durable authority drift: ready=%v err=%v", manager.Ready(), err)
+	} else if details := status.Convert(err).Details(); len(details) != 1 || details[0].(*executionv1.ErrorDetail).Code != string(executionenv.CodeNotReady) || !details[0].(*executionv1.ErrorDetail).Retryable {
+		t.Fatalf("authority lag was not a structured retryable not_ready: %v", details)
 	}
 	cm, _ = kube.CoreV1().ConfigMaps("ns").Get(t.Context(), "authority", metav1.GetOptions{})
 	cm.Data[securityStateDataKey] = authoritativeState
@@ -265,6 +366,102 @@ func TestSecurityManagerGuardsEveryRPCOnExistingConnection(t *testing.T) {
 	}
 }
 
+func TestRunClaimSigningAuthorityOutageIsRetryableAfterDurableMutation(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().UTC()
+	caPEM, serverPEM, serverKeyPEM, clientCert := rpcSecurityPKI(t, now, "spiffe://example/client")
+	grantPub, grantPriv, _ := ed25519.GenerateKey(rand.Reader)
+	writePKCS8(t, filepath.Join(dir, "grant.pem"), grantPriv)
+	for name, contents := range map[string][]byte{"server.crt": serverPEM, "server.key": serverKeyPEM, "clients.pem": caPEM} {
+		if err := os.WriteFile(filepath.Join(dir, name), contents, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	fp := sha256.Sum256(grantPub)
+	manifest := securityManifest{Version: 1, Generation: 1, Issuer: "issuer", Audience: "audience", ActiveKeyID: "k1", GrantTTLText: "1m", ClockSkewText: "5s", Keys: []securityKeyManifest{{ID: "k1", Version: 1, File: "grant.pem", PublicSHA256: hex.EncodeToString(fp[:]), ActivateAt: now.Add(-time.Minute), VerifyUntil: now.Add(time.Hour), State: "active"}}, TLS: securityTLSManifest{CertificateFile: "server.crt", PrivateKeyFile: "server.key", ClientCAFile: "clients.pem"}, Clients: []securityClientManifest{{URI: "spiffe://example/client", MayAttestOwner: true}}}
+	manifestPath := filepath.Join(dir, "manifest.json")
+	writeManifest(t, manifestPath, manifest)
+	kube := fake.NewSimpleClientset(&corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "authority", Namespace: "ns"}, Data: map[string]string{}})
+	manager := NewSecurityManager(manifestPath, dir, "ns", "authority", kube)
+	manager.now = func() time.Time { return now }
+	if err := manager.Reload(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var reads, failAt atomic.Int64
+	kube.PrependReactor("get", "configmaps", func(_ k8stesting.Action) (bool, runtime.Object, error) {
+		read := reads.Add(1)
+		if target := failAt.Load(); target != 0 && read == target {
+			return true, nil, errors.New("injected authority read outage")
+		}
+		return false, nil, nil
+	})
+	armSigningOutage := func() {
+		reads.Store(0)
+		failAt.Store(2) // Authorization reads first; response signing reads second.
+	}
+	recoverAuthority := func() {
+		failAt.Store(0)
+		if err := manager.Reload(t.Context()); err != nil {
+			t.Fatalf("reload authority: %v", err)
+		}
+	}
+	assertNotReady := func(err error) {
+		t.Helper()
+		st := status.Convert(err)
+		details := st.Details()
+		if st.Code() != codes.Unavailable || len(details) != 1 {
+			t.Fatalf("code=%v details=%v", st.Code(), details)
+		}
+		detail, ok := details[0].(*executionv1.ErrorDetail)
+		if !ok || detail.Code != string(executionenv.CodeNotReady) || !detail.Retryable {
+			t.Fatalf("detail=%v", details)
+		}
+	}
+	leaf, err := x509.ParseCertificate(clientCert.Certificate[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := grpcpeer.NewContext(t.Context(), &grpcpeer.Peer{AuthInfo: credentials.TLSInfo{State: tls.ConnectionState{PeerCertificates: []*x509.Certificate{leaf}, VerifiedChains: [][]*x509.Certificate{{leaf}}}}})
+	backend := newDurableClaimBackend()
+	h := NewHandler(HandlerConfig{Security: manager}, backend)
+	owner := &executionv1.Owner{Issuer: "issuer", Subject: "alice"}
+	ref := &executionv1.EnvironmentRef{Id: "env", Revision: "rev"}
+	acquire := &executionv1.AcquireRunRequest{Environment: ref, Owner: owner, BindingId: "binding", RunId: "run", OperationId: "acquire-op", TtlMillis: time.Minute.Milliseconds()}
+
+	armSigningOutage()
+	_, err = h.AcquireRun(ctx, acquire)
+	assertNotReady(err)
+	storedAcquire, calls, ok := backend.claim(acquire.OperationId, false)
+	if !ok || calls != 1 {
+		t.Fatalf("acquire mutation missing or retried automatically: stored=%t calls=%d", ok, calls)
+	}
+	recoverAuthority()
+	acquired, err := h.AcquireRun(ctx, acquire)
+	if err != nil {
+		t.Fatalf("explicit acquire retry: %v", err)
+	}
+	if callsClaim, retryCalls, ok := backend.claim(acquire.OperationId, false); !ok || retryCalls != 2 || callsClaim.ClaimID != storedAcquire.ClaimID || acquired.ClaimId != storedAcquire.ClaimID {
+		t.Fatalf("acquire retry did not converge: response=%q stored=%+v calls=%d", acquired.GetClaimId(), callsClaim, retryCalls)
+	}
+
+	renew := &executionv1.RenewRunRequest{Environment: acquired.Environment, Owner: owner, BindingId: acquired.BindingId, RunId: acquired.RunId, ClaimId: acquired.ClaimId, Epoch: acquired.Epoch, GrantGeneration: acquired.GrantGeneration, OperationId: "renew-op", TtlMillis: time.Minute.Milliseconds()}
+	armSigningOutage()
+	_, err = h.RenewRun(ctx, renew)
+	assertNotReady(err)
+	storedRenew, calls, ok := backend.claim(renew.OperationId, true)
+	if !ok || calls != 1 {
+		t.Fatalf("renew mutation missing or retried automatically: stored=%t calls=%d", ok, calls)
+	}
+	recoverAuthority()
+	renewed, err := h.RenewRun(ctx, renew)
+	if err != nil {
+		t.Fatalf("explicit renew retry: %v", err)
+	}
+	if callsClaim, retryCalls, ok := backend.claim(renew.OperationId, true); !ok || retryCalls != 2 || callsClaim.ClaimID != storedRenew.ClaimID || callsClaim.GrantGeneration != storedRenew.GrantGeneration || renewed.ClaimId != storedRenew.ClaimID || renewed.GrantGeneration != storedRenew.GrantGeneration {
+		t.Fatalf("renew retry did not converge: response=%q/%d stored=%+v calls=%d", renewed.GetClaimId(), renewed.GetGrantGeneration(), callsClaim, retryCalls)
+	}
+}
+
 func TestSecurityManagerAuthorizesPresentedIntermediateAndRevokesRootOnExistingConnection(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now().UTC()
@@ -287,7 +484,11 @@ func TestSecurityManagerAuthorizesPresentedIntermediateAndRevokesRootOnExistingC
 		t.Fatal(err)
 	}
 	store := NewStore(dynamicfake.NewSimpleDynamicClient(runtime.NewScheme()), "ns", testProfiles(), nil)
-	server := grpc.NewServer(grpc.Creds(credentials.NewTLS(manager.TLSConfig())))
+	limiter, err := NewRPCLimiter(manager, 4, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := grpc.NewServer(grpc.Creds(credentials.NewTLS(manager.TLSConfig())), grpc.UnaryInterceptor(limiter.UnaryInterceptor))
 	executionv1.RegisterExecutionProviderServiceServer(server, NewHandler(HandlerConfig{Security: manager}, store))
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

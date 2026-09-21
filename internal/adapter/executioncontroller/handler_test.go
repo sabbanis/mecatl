@@ -333,6 +333,20 @@ func TestCanonicalClientIdentityRejectsCNAndAmbiguousURIs(t *testing.T) {
 	}
 }
 
+func TestRunClaimResponseKeepsNonAuthoritySigningFailureInternal(t *testing.T) {
+	h := NewHandler(HandlerConfig{Signer: GrantSigner{KeyID: "k1", Issuer: "issuer", Audience: "audience", Lifetime: time.Minute}}, newFakeBackend())
+	claim := executionenv.RunClaim{Environment: executionenv.EnvironmentRef{ID: "env", Revision: "rev"}, BindingID: "binding", RunID: "run", ClaimID: "claim", Epoch: 1, GrantGeneration: 1}
+	_, err := h.runClaimResponse(t.Context(), claim, "spiffe://example/client", "owner")
+	st := status.Convert(err)
+	if st.Code() != codes.Internal {
+		t.Fatalf("code=%v", st.Code())
+	}
+	details := st.Details()
+	if len(details) != 1 || details[0].(*executionv1.ErrorDetail).Code != string(executionenv.CodeInternal) || details[0].(*executionv1.ErrorDetail).Retryable {
+		t.Fatalf("details=%v", details)
+	}
+}
+
 func TestWireErrorDoesNotExposeBackendMessage(t *testing.T) {
 	err := backendError(&executionenv.Error{Code: executionenv.CodeInternal, Message: "kubectl exec --token=secret"})
 	if got := status.Convert(err).Message(); got != "execution provider request failed" {

@@ -102,14 +102,17 @@ type securityLedger struct {
 	Fingerprints map[string]string `json:"fingerprints"`
 }
 
+type securityState struct {
+	snapshot *securitySnapshot
+}
+
 // SecurityManager reloads one immutable, versioned security snapshot from
 // projected files and binds its generation to a durable ConfigMap high-water mark.
 type SecurityManager struct {
 	manifestPath, keyDirectory, namespace, configMap string
 	kube                                             kubernetes.Interface
 	now                                              func() time.Time
-	current                                          atomic.Pointer[securitySnapshot]
-	ready                                            atomic.Bool
+	state                                            atomic.Pointer[securityState]
 }
 
 // NewSecurityManager constructs a fail-closed security material reloader.
@@ -119,9 +122,8 @@ func NewSecurityManager(manifestPath, keyDirectory, namespace, configMap string,
 
 // Ready reports whether the current snapshot is authoritative and unexpired.
 func (m *SecurityManager) Ready() bool {
-	now := m.now()
-	s := m.current.Load()
-	return m.ready.Load() && snapshotValidAt(s, now)
+	state := m.state.Load()
+	return state != nil && snapshotValidAt(state.snapshot, m.now())
 }
 
 // CheckReady verifies that the loaded snapshot still matches durable authority.
@@ -132,18 +134,29 @@ func (m *SecurityManager) CheckReady(ctx context.Context) bool {
 
 // Reload atomically validates and publishes a complete security snapshot.
 func (m *SecurityManager) Reload(ctx context.Context) error {
+	observed := m.state.Load()
 	candidate, err := m.load()
 	if err != nil {
-		m.ready.Store(false)
+		m.invalidateObservedUnlessReplaced(ctx, observed)
 		return err
 	}
 	if err := m.publishGeneration(ctx, candidate); err != nil {
-		m.ready.Store(false)
+		m.invalidateObservedUnlessReplaced(ctx, observed)
 		return err
 	}
-	m.current.Store(candidate)
-	m.ready.Store(true)
-	return nil
+	if err := m.verifyAuthority(ctx, candidate); err != nil {
+		m.invalidateObservedUnlessReplaced(ctx, observed)
+		return err
+	}
+	for {
+		current := m.state.Load()
+		if current != nil && current.snapshot.generation > candidate.generation {
+			return errors.New("security manifest generation rollback rejected")
+		}
+		if m.state.CompareAndSwap(current, &securityState{snapshot: candidate}) {
+			return nil
+		}
+	}
 }
 
 // Run periodically reloads security material until ctx is cancelled.
@@ -169,11 +182,11 @@ func (m *SecurityManager) Run(ctx context.Context, interval time.Duration) {
 // TLSConfig returns a dynamic TLS configuration backed by the current snapshot.
 func (m *SecurityManager) TLSConfig() *tls.Config {
 	return &tls.Config{MinVersion: tls.VersionTLS13, ClientAuth: tls.RequireAnyClientCert, GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
-		s := m.current.Load()
-		if !m.Ready() {
+		state := m.state.Load()
+		if state == nil || !snapshotValidAt(state.snapshot, m.now()) {
 			return nil, errors.New("security material is not ready")
 		}
-		return s.tlsConfig.Clone(), nil
+		return state.snapshot.tlsConfig.Clone(), nil
 	}}
 }
 
@@ -216,22 +229,53 @@ func (m *SecurityManager) authoritative(ctx context.Context) (*securitySnapshot,
 	return m.authoritativeAt(ctx, m.now())
 }
 
+var errAuthorityUnavailable = errors.New("security authority is unavailable")
+
+func authorityUnavailable(err error) error {
+	if err == nil {
+		return errAuthorityUnavailable
+	}
+	return fmt.Errorf("%w: %v", errAuthorityUnavailable, err)
+}
+
 func (m *SecurityManager) authoritativeAt(ctx context.Context, now time.Time) (*securitySnapshot, error) {
-	s := m.current.Load()
-	if !m.ready.Load() || !snapshotValidAt(s, now) || m.kube == nil {
-		return nil, errors.New("security material is not ready")
+	state := m.state.Load()
+	if state == nil || !snapshotValidAt(state.snapshot, now) || m.kube == nil {
+		return nil, authorityUnavailable(nil)
+	}
+	if err := m.verifyAuthority(ctx, state.snapshot); err != nil {
+		m.state.CompareAndSwap(state, nil)
+		return nil, authorityUnavailable(err)
+	}
+	return state.snapshot, nil
+}
+
+func (m *SecurityManager) verifyAuthority(ctx context.Context, snapshot *securitySnapshot) error {
+	if snapshot == nil || m.kube == nil {
+		return errors.New("security material is not ready")
 	}
 	cm, err := m.kube.CoreV1().ConfigMaps(m.namespace).Get(ctx, m.configMap, metav1.GetOptions{})
 	if err != nil {
-		m.ready.Store(false)
-		return nil, err
+		return err
 	}
 	var ledger securityLedger
-	if err := executionenv.DecodeStrict([]byte(cm.Data[securityStateDataKey]), &ledger); err != nil || ledger.Generation != s.generation || ledger.Digest != s.digest || !maps.Equal(ledger.Fingerprints, s.fingerprints) {
-		m.ready.Store(false)
-		return nil, errors.New("loaded security generation is not authoritative")
+	if err := executionenv.DecodeStrict([]byte(cm.Data[securityStateDataKey]), &ledger); err != nil {
+		return err
 	}
-	return s, nil
+	if ledger.Generation != snapshot.generation || ledger.Digest != snapshot.digest || !maps.Equal(ledger.Fingerprints, snapshot.fingerprints) {
+		return errors.New("loaded security generation is not authoritative")
+	}
+	return nil
+}
+
+func (m *SecurityManager) invalidateObservedUnlessReplaced(ctx context.Context, observed *securityState) {
+	if m.state.CompareAndSwap(observed, nil) {
+		return
+	}
+	current := m.state.Load()
+	if current != nil && m.verifyAuthority(ctx, current.snapshot) != nil {
+		m.state.CompareAndSwap(current, nil)
+	}
 }
 
 func snapshotValidAt(s *securitySnapshot, now time.Time) bool {

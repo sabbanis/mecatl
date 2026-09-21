@@ -144,7 +144,7 @@ func (h *Handler) client(ctx context.Context) (authenticatedClient, error) {
 		}
 		id, policy, err := h.cfg.Security.authorize(ctx, chain)
 		if err != nil {
-			return authenticatedClient{}, wireError(executionenv.CodeUnauthenticated, false)
+			return authenticatedClient{}, securityAuthorizationError(err)
 		}
 		return authenticatedClient{id: id, policy: policy}, nil
 	}
@@ -315,6 +315,9 @@ func (h *Handler) runClaimRequest(ctx context.Context, pRef *executionv1.Environ
 func (h *Handler) runClaimResponse(ctx context.Context, claim executionenv.RunClaim, client, owner string) (*executionv1.RunClaimResponse, error) {
 	grant, expiry, err := h.signClaim(ctx, claim, client, owner)
 	if err != nil {
+		if errors.Is(err, errAuthorityUnavailable) {
+			return nil, securityAuthorizationError(err)
+		}
 		return nil, wireError(executionenv.CodeInternal, false)
 	}
 	return &executionv1.RunClaimResponse{Environment: refToProto(claim.Environment), BindingId: valid(claim.BindingID), RunId: valid(claim.RunID), ClaimId: valid(claim.ClaimID), Epoch: claim.Epoch, GrantGeneration: claim.GrantGeneration, Grant: valid(grant), ExpiresAt: timestamppb.New(expiry)}, nil
@@ -831,6 +834,13 @@ func fingerprint(fields ...string) string {
 		_, _ = io.WriteString(h, f)
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+func securityAuthorizationError(err error) error {
+	if errors.Is(err, errAuthorityUnavailable) {
+		return wireError(executionenv.CodeNotReady, true)
+	}
+	return wireError(executionenv.CodeUnauthenticated, false)
 }
 
 func backendError(err error) error {

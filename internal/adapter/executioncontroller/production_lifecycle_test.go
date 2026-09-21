@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 	kubefake "k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 
 	"github.com/stacklok/mecatl/internal/executionenv"
 )
@@ -352,6 +353,121 @@ func TestReplacementPersistsTerminalProofBeforeRemovingPodFinalizer(t *testing.T
 	if textNested(got.Object, "status", "lifecycleOperation", "phase") != "WaitingForPodDeletion" {
 		t.Fatalf("phase=%v", got.Object["status"])
 	}
+}
+
+func replacementExecutor(ready bool) *corev1.Pod {
+	pod := terminalExecutor()
+	pod.UID = types.UID("new-pod")
+	pod.Status = corev1.PodStatus{Phase: corev1.PodRunning}
+	if ready {
+		pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+	}
+	return pod
+}
+
+func replacementLifecycleEnvironment() *unstructured.Unstructured {
+	env := lifecycleAdminEnvironment(2, []any{map[string]any{"bindingID": "binding", "state": "Published", "operationID": "seed", "createdAt": time.Now().UTC().Format(time.RFC3339Nano)}})
+	q := adminRequestFixture()
+	_ = unstructured.SetNestedMap(env.Object, terminationProof(q, terminalExecutor()), "status", "terminationProof")
+	_ = unstructured.SetNestedMap(env.Object, map[string]any{"id": q.OperationID, "type": "ReplaceExecutor", "phase": "CreatingReplacement", "expectedEpoch": int64(4), "expectedPodUID": q.ExpectedPodUID, "expectedPVCUID": q.ExpectedPVCUID, "createdAt": "2026-09-21T00:00:00Z"}, "status", "lifecycleOperation")
+	unstructured.RemoveNestedField(env.Object, "status", "pod")
+	setConditionObject(env, "Ready", false, "ReplacementStarting", "waiting")
+	return env
+}
+
+func TestStaleReplacementObservationCannotOverwriteCompletion(t *testing.T) {
+	stale := replacementLifecycleEnvironment()
+	dynamicClient := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), stale.DeepCopy())
+	kube := kubefake.NewSimpleClientset(replacementExecutor(false), retainedPVC())
+	observed, release := make(chan struct{}), make(chan struct{})
+	kube.PrependReactor("get", "pods", func(k8stesting.Action) (bool, runtime.Object, error) {
+		close(observed)
+		<-release
+		return false, nil, nil
+	})
+	r := NewReconciler(dynamicClient, kube, "ns", testProfiles())
+	done := make(chan error, 1)
+	go func() { done <- r.finishReplacement(t.Context(), stale, adminRequestFixture().OperationID) }()
+	<-observed
+
+	current, err := dynamicClient.Resource(ExecutionEnvironmentGVR).Namespace("ns").Get(t.Context(), "env", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = unstructured.SetNestedField(current.Object, int64(5), "status", "epoch")
+	_ = unstructured.SetNestedMap(current.Object, map[string]any{"name": "executor", "uid": "new-pod"}, "status", "pod")
+	_ = unstructured.SetNestedMap(current.Object, map[string]any{operationIDField: adminRequestFixture().OperationID, "previousPodUID": "pod-uid", "replacementPodUID": "new-pod", "pvcUID": "pvc-uid", "previousEpoch": int64(4), "replacementEpoch": int64(5)}, "status", "lastReplacement")
+	unstructured.RemoveNestedField(current.Object, "status", "lifecycleOperation")
+	setConditionObject(current, "Ready", true, "ReplacementReady", "replacement executor is ready on the retained workspace")
+	if _, err := dynamicClient.Resource(ExecutionEnvironmentGVR).Namespace("ns").UpdateStatus(t.Context(), current, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	var controlled *executionenv.Error
+	if err := <-done; !errors.As(err, &controlled) || controlled.Code != executionenv.CodeConflict {
+		t.Fatalf("stale replacement result=%v", err)
+	}
+	got, _ := dynamicClient.Resource(ExecutionEnvironmentGVR).Namespace("ns").Get(t.Context(), "env", metav1.GetOptions{})
+	if !conditionTrue(got, "Ready") || intNested(got.Object, "status", "epoch") != 5 || textNested(got.Object, "status", "pod", "uid") != "new-pod" {
+		t.Fatalf("stale unready write damaged completion: %v", got.Object["status"])
+	}
+	store := NewStore(dynamicClient, "ns", testProfiles(), nil)
+	if allocation, err := store.Attach(t.Context(), executionenv.EnvironmentRef{ID: "env", Revision: "rev"}, "client", "owner", "binding"); err != nil || !allocation.Ready || allocation.Epoch != 5 {
+		t.Fatalf("attach after completed replacement: allocation=%+v err=%v", allocation, err)
+	}
+}
+
+func TestLifecycleStatusWritersRejectStaleObservations(t *testing.T) {
+	t.Run("phase regression", func(t *testing.T) {
+		stale := replacementLifecycleEnvironment()
+		_ = unstructured.SetNestedField(stale.Object, "Quiescing", "status", "lifecycleOperation", "phase")
+		current := stale.DeepCopy()
+		_ = unstructured.SetNestedField(current.Object, "RemovingPodFinalizer", "status", "lifecycleOperation", "phase")
+		client := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), current)
+		r := NewReconciler(client, kubefake.NewSimpleClientset(), "ns", testProfiles())
+		if err := r.setLifecyclePhase(t.Context(), stale, adminRequestFixture().OperationID, "Quiescing", "WaitingForTermination"); err == nil {
+			t.Fatal("stale phase transition succeeded")
+		}
+		got, _ := client.Resource(ExecutionEnvironmentGVR).Namespace("ns").Get(t.Context(), "env", metav1.GetOptions{})
+		if phase := textNested(got.Object, "status", "lifecycleOperation", "phase"); phase != "RemovingPodFinalizer" {
+			t.Fatalf("phase regressed to %q", phase)
+		}
+	})
+
+	t.Run("waiting and fence writes", func(t *testing.T) {
+		stale := replacementLifecycleEnvironment()
+		_ = unstructured.SetNestedField(stale.Object, "WaitingForTermination", "status", "lifecycleOperation", "phase")
+		current := stale.DeepCopy()
+		_ = unstructured.SetNestedField(current.Object, "RemovingPodFinalizer", "status", "lifecycleOperation", "phase")
+		client := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), current)
+		r := NewReconciler(client, kubefake.NewSimpleClientset(), "ns", testProfiles())
+		if err := r.setLifecycleCondition(t.Context(), stale, "Ready", false, "AwaitingTerminalExecutor", "waiting"); err == nil {
+			t.Fatal("stale waiting condition succeeded")
+		}
+		if err := r.setLifecycleFenceUnknown(t.Context(), stale, "stale failure"); err == nil {
+			t.Fatal("stale fence write succeeded")
+		}
+		got, _ := client.Resource(ExecutionEnvironmentGVR).Namespace("ns").Get(t.Context(), "env", metav1.GetOptions{})
+		if textNested(got.Object, "status", "fenceState") != fenceHealthy || textNested(got.Object, "status", "lifecycleOperation", "phase") != "RemovingPodFinalizer" {
+			t.Fatalf("stale writer changed lifecycle status: %v", got.Object["status"])
+		}
+	})
+
+	t.Run("ordinary reconcile after admission", func(t *testing.T) {
+		stale := lifecycleAdminEnvironment(2, []any{})
+		current := stale.DeepCopy()
+		_ = unstructured.SetNestedMap(current.Object, map[string]any{"id": "replace", "type": "ReplaceExecutor", "phase": "Quiescing", "expectedEpoch": int64(4), "expectedPodUID": "pod-uid", "expectedPVCUID": "pvc-uid", "createdAt": "2026-09-21T00:00:00Z"}, "status", "lifecycleOperation")
+		setConditionObject(current, "Ready", false, "Quiescing", "replacement admitted")
+		client := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), current)
+		r := NewReconciler(client, kubefake.NewSimpleClientset(), "ns", testProfiles())
+		if err := r.updateRuntimeStatus(t.Context(), stale, retainedPVC(), terminalExecutor(), true); err == nil {
+			t.Fatal("ordinary reconcile overwrote lifecycle admission")
+		}
+		got, _ := client.Resource(ExecutionEnvironmentGVR).Namespace("ns").Get(t.Context(), "env", metav1.GetOptions{})
+		if conditionTrue(got, "Ready") || textNested(got.Object, "status", "lifecycleOperation", "id") != "replace" {
+			t.Fatalf("ordinary reconcile damaged lifecycle admission: %v", got.Object["status"])
+		}
+	})
 }
 
 func TestWrongPVCUIDCannotStartRetainedDeletion(t *testing.T) {

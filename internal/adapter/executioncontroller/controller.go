@@ -365,6 +365,9 @@ func (r *Reconciler) reconcileDeletion(ctx context.Context, _ dynamic.ResourceIn
 }
 func (r *Reconciler) updateRuntimeStatus(ctx context.Context, env *unstructured.Unstructured, pvc *corev1.PersistentVolumeClaim, pod *corev1.Pod, ready bool) error {
 	return r.updateStatus(ctx, env, func(o *unstructured.Unstructured) error {
+		if !runtimeObservationMatches(o, env) {
+			return lifecycleConflict()
+		}
 		_ = unstructured.SetNestedMap(o.Object, map[string]any{"name": pvc.Name, "uid": string(pvc.UID)}, "status", "pvc")
 		_ = unstructured.SetNestedMap(o.Object, map[string]any{"name": pod.Name, "uid": string(pod.UID)}, "status", "pod")
 		_ = unstructured.SetNestedField(o.Object, o.GetGeneration(), "status", "observedGeneration")
@@ -374,6 +377,9 @@ func (r *Reconciler) updateRuntimeStatus(ctx context.Context, env *unstructured.
 }
 func (r *Reconciler) setFenceUnknown(ctx context.Context, env *unstructured.Unstructured, msg string) error {
 	return r.updateStatus(ctx, env, func(o *unstructured.Unstructured) error {
+		if !runtimeObservationMatches(o, env) {
+			return lifecycleConflict()
+		}
 		_ = unstructured.SetNestedField(o.Object, "FenceUnknown", "status", "fenceState")
 		setConditionObject(o, "Ready", false, "FenceUnknown", msg)
 		return nil
