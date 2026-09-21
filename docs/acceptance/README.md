@@ -356,6 +356,8 @@ PR after verification. There is no cleanup or status-only PR.
 
 - [Protocol-native prompt-cache breakpoints](unified-prompt-cache-dialect.md) — ask an upstream to cache through the Responses protocol's own `prompt_cache_breakpoint` on every request, so an explicit-ask model caches on any endpoint without mecatl consulting the vendor, plus Messages routing where model ids are shared. Status: proposed.
 
+- [Unified permission mode](unified-permission-mode.md) — collapse the operator posture ladder and the per-session permission mode into one ordered vocabulary (`plan < default < accept-edits < trusted < auto < yolo`) bound at two scopes, an operator ceiling and a session tier clamped to it, plus boot refusals when an allow-all ceiling has no guardrails checker or a headless root names `trusted`. Status: proposed.
+
 ## See also
 
 - [Development process](../development-process.md) — the spine end to end.
