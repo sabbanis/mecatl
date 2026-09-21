@@ -2,6 +2,7 @@ package executioncontroller
 
 import (
 	"errors"
+	"strconv"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -16,12 +17,35 @@ import (
 )
 
 func TestRetainedDeletePeerBetweenFinalizerUpdateAndDelete(t *testing.T) {
-	for _, terminating := range []bool{false, true} {
-		t.Run(map[bool]string{false: "peer-before-delete", true: "already-terminating"}[terminating], func(t *testing.T) {
+	for _, mode := range []string{"peer-before-delete", "already-terminating", "stale-resource-version"} {
+		t.Run(mode, func(t *testing.T) {
 			env := lifecycleAdminEnvironment(2, []any{})
+			env.SetResourceVersion("1")
 			setConditionObject(env, "Retired", true, "WorkspaceRetained", "retained")
 			setConditionObject(env, "ExecutorTerminated", true, "TerminalPodProof", "proved")
 			d := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme(), env)
+			// The tracker does not implement API-server resource versions or CAS.
+			versionedUpdate := func(a ktesting.Action) (bool, runtime.Object, error) {
+				obj, err := d.Tracker().Get(ExecutionEnvironmentGVR, "ns", "env")
+				if err != nil {
+					return true, nil, err
+				}
+				cur := obj.(*unstructured.Unstructured)
+				next := a.(ktesting.UpdateAction).GetObject().(*unstructured.Unstructured).DeepCopy()
+				version, err := strconv.Atoi(cur.GetResourceVersion())
+				if err != nil || version < 1 || next.GetResourceVersion() == "" {
+					t.Fatal("fixture lost API-server resource version")
+				}
+				if next.GetResourceVersion() != cur.GetResourceVersion() {
+					return true, nil, apierrors.NewConflict(ExecutionEnvironmentGVR.GroupResource(), "env", errors.New("stale update"))
+				}
+				if !contains(cur.GetFinalizers(), environmentFinalizer) && contains(next.GetFinalizers(), environmentFinalizer) {
+					t.Fatal("peer re-added finalizer during admitted retained deletion")
+				}
+				next.SetResourceVersion(strconv.Itoa(version + 1))
+				return true, next, d.Tracker().Update(ExecutionEnvironmentGVR, next, "ns")
+			}
+			d.PrependReactor("update", "executionenvironments", versionedUpdate)
 			k := kubefake.NewSimpleClientset(retainedPVC(), &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: profileAllocationConfigMap, Namespace: "ns"}, Data: map[string]string{profileAllocationKey("go"): `["env"]`}})
 			store := NewStore(d, "ns", testProfiles(), nil).WithKubeClient(k)
 			if err := store.DeleteRetiredEnvironment(t.Context(), adminRequestFixture()); err != nil {
@@ -31,6 +55,7 @@ func TestRetainedDeletePeerBetweenFinalizerUpdateAndDelete(t *testing.T) {
 			// reconcilers observe the same API-server tracker.
 			peerClient := dynamicfake.NewSimpleDynamicClient(runtime.NewScheme())
 			peerClient.PrependReactor("*", "*", ktesting.ObjectReaction(d.Tracker()))
+			peerClient.PrependReactor("update", "executionenvironments", versionedUpdate)
 			peer := NewReconciler(peerClient, k, "ns", testProfiles())
 			r := NewReconciler(d, k, "ns", testProfiles())
 			t.Cleanup(peer.queue.ShutDown)
@@ -44,20 +69,26 @@ func TestRetainedDeletePeerBetweenFinalizerUpdateAndDelete(t *testing.T) {
 				pvcsDeleted++
 				return false, nil, nil
 			})
+			staleDeletes := 0
 			deletion := func(a ktesting.Action) (bool, runtime.Object, error) {
+				opts := a.(ktesting.DeleteAction).GetDeleteOptions()
+				if opts.Preconditions == nil || opts.Preconditions.ResourceVersion == nil || *opts.Preconditions.ResourceVersion == "" {
+					t.Fatal("CR deletion lost nonempty resource version")
+				}
 				obj, err := d.Tracker().Get(ExecutionEnvironmentGVR, "ns", "env")
 				if err != nil {
 					return true, nil, err
 				}
 				cur := obj.(*unstructured.Unstructured)
-				opts := a.(ktesting.DeleteAction).GetDeleteOptions()
-				if opts.Preconditions == nil || opts.Preconditions.UID == nil || *opts.Preconditions.UID != cur.GetUID() {
+				if opts.Preconditions.UID == nil || *opts.Preconditions.UID != cur.GetUID() {
 					t.Fatal("CR deletion lost exact UID")
 				}
+				if *opts.Preconditions.ResourceVersion != cur.GetResourceVersion() {
+					staleDeletes++
+					return true, nil, apierrors.NewConflict(ExecutionEnvironmentGVR.GroupResource(), "env", errors.New("stale delete"))
+				}
 				if contains(cur.GetFinalizers(), environmentFinalizer) {
-					now := metav1.Now()
-					cur.SetDeletionTimestamp(&now)
-					return true, nil, d.Tracker().Update(ExecutionEnvironmentGVR, cur, "ns")
+					t.Fatal("admitted retained deletion re-added finalizer")
 				}
 				envsDeleted++
 				return true, nil, d.Tracker().Delete(ExecutionEnvironmentGVR, "ns", "env")
@@ -67,25 +98,50 @@ func TestRetainedDeletePeerBetweenFinalizerUpdateAndDelete(t *testing.T) {
 			d.PrependReactor("delete", "executionenvironments", func(a ktesting.Action) (bool, runtime.Object, error) {
 				if !interleaved {
 					interleaved = true
-					if err := peer.Reconcile(t.Context(), "env"); err != nil {
+					if mode == "stale-resource-version" {
+						res := peerClient.Resource(ExecutionEnvironmentGVR).Namespace("ns")
+						cur, err := res.Get(t.Context(), "env", metav1.GetOptions{})
+						if err != nil {
+							t.Fatal(err)
+						}
+						cur.SetAnnotations(map[string]string{"peer-observation": "updated"})
+						if _, err := res.Update(t.Context(), cur, metav1.UpdateOptions{}); err != nil {
+							t.Fatal(err)
+						}
+					} else if err := peer.Reconcile(t.Context(), "env"); err != nil {
 						t.Fatal(err)
 					}
 				}
 				return deletion(a)
 			})
-			if terminating {
+			if mode == "already-terminating" {
 				obj, _ := d.Tracker().Get(ExecutionEnvironmentGVR, "ns", "env")
 				cur := obj.(*unstructured.Unstructured)
 				now := metav1.Now()
 				cur.SetDeletionTimestamp(&now)
-				if err := d.Tracker().Update(ExecutionEnvironmentGVR, cur, "ns"); err != nil {
+				if _, err := peerClient.Resource(ExecutionEnvironmentGVR).Namespace("ns").Update(t.Context(), cur, metav1.UpdateOptions{}); err != nil {
 					t.Fatal(err)
 				}
 			}
+			conflicts := 0
 			for range 5 {
 				if err := r.Reconcile(t.Context(), "env"); err != nil {
-					t.Fatal(err)
+					if mode != "stale-resource-version" || !apierrors.IsConflict(err) {
+						t.Fatal(err)
+					}
+					conflicts++
+					cur, getErr := d.Tracker().Get(ExecutionEnvironmentGVR, "ns", "env")
+					if getErr != nil || contains(cur.(*unstructured.Unstructured).GetFinalizers(), environmentFinalizer) || envsDeleted != 0 {
+						t.Fatal("stale deletion must preserve CR without re-adding finalizer")
+					}
 				}
+			}
+			wantConflicts := 0
+			if mode == "stale-resource-version" {
+				wantConflicts = 1
+			}
+			if !interleaved || staleDeletes != wantConflicts || conflicts != wantConflicts {
+				t.Fatalf("interleaved=%v stale deletes=%d returned conflicts=%d", interleaved, staleDeletes, conflicts)
 			}
 			if _, err := d.Tracker().Get(ExecutionEnvironmentGVR, "ns", "env"); !apierrors.IsNotFound(err) {
 				t.Fatalf("authorized deletion stranded: %v", err)

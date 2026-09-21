@@ -5,6 +5,7 @@ package executioncontroller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -41,17 +42,21 @@ func TestLegacyQuotaWaitCoversDefaultControllerResync(t *testing.T) {
 }
 
 func TestLegacyFixtureWaitsForQuotaAccountingBeforeCreate(t *testing.T) {
-	for _, mode := range []string{"delayed", "timeout", "cancel", "forbidden"} {
+	for _, mode := range []string{"delayed", "timeout", "cancel", "forbidden", "api-error"} {
 		t.Run(mode, func(t *testing.T) {
 			quota := &corev1.ResourceQuota{ObjectMeta: metav1.ObjectMeta{Name: "mecatl-execution", Namespace: "test"}, Spec: corev1.ResourceQuotaSpec{Hard: corev1.ResourceList{corev1.ResourceName("count/executionenvironments.execution.mecatl.dev"): resource.MustParse("10"), corev1.ResourcePods: resource.MustParse("10"), corev1.ResourceName("private-quota-key"): resource.MustParse("12345")}}}
 			kube := kubefake.NewClientset()
 			reads, creates := 0, 0
 			ctx, cancel := context.WithTimeout(context.Background(), 350*time.Millisecond)
 			defer cancel()
+			const hostile = "https://sentinel.invalid/private?token=sk-fake-quota-secret"
 			kube.PrependReactor("get", "resourcequotas", func(ktesting.Action) (bool, runtime.Object, error) {
 				reads++
 				if mode == "forbidden" {
-					return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "resourcequotas"}, quota.Name, errors.New("denied"))
+					return true, nil, apierrors.NewForbidden(schema.GroupResource{Resource: "resourcequotas"}, quota.Name, errors.New(hostile))
+				}
+				if mode == "api-error" {
+					return true, nil, apierrors.NewInternalError(errors.New(hostile))
 				}
 				// Partially initialized status must not pass: all configured resources matter.
 				quota.Status.Hard = quota.Spec.Hard.DeepCopy()
@@ -85,6 +90,18 @@ func TestLegacyFixtureWaitsForQuotaAccountingBeforeCreate(t *testing.T) {
 			}
 			if err == nil || creates != 0 {
 				t.Fatalf("creates=%d error=%v", creates, err)
+			}
+			if mode == "forbidden" || mode == "api-error" {
+				var reported strings.Builder
+				fmt.Fprintln(&reported, err) // Same reporting boundary as legacyfixture.fail.
+				for _, secret := range []string{"https://sentinel.invalid", "sk-fake-quota-secret"} {
+					if strings.Contains(err.Error(), secret) || strings.Contains(reported.String(), secret) {
+						t.Fatal("quota error disclosed API response data")
+					}
+				}
+				if reads != 1 {
+					t.Fatalf("API error retried: reads=%d", reads)
+				}
 			}
 			switch mode {
 			case "timeout":

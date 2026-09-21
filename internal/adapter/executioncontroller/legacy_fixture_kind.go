@@ -103,7 +103,12 @@ func seedOneLegacyEnvironment(ctx context.Context, d dynamic.Interface, kube kub
 			err = context.DeadlineExceeded
 		} else if errors.Is(err, context.Canceled) {
 			err = context.Canceled
+		} else if apierrors.IsForbidden(err) {
+			err = &apierrors.StatusError{ErrStatus: metav1.Status{Reason: metav1.StatusReasonForbidden, Code: 403, Message: "forbidden"}}
+		} else {
+			err = errors.New("api_error")
 		}
+		// The fixture CLI prints this diagnostic; never wrap raw API response data.
 		slices.Sort(missing)
 		return seededLegacyEnvironment{}, fmt.Errorf("wait for legacy fixture quota accounting: missing_or_mismatched_keys=%v elapsed=%s: %w", missing, time.Since(started).Round(time.Millisecond), err)
 	}
