@@ -230,6 +230,7 @@ func TestKindExecutionProductionSecurityRotation(t *testing.T) {
 	// The old connection remains usable, while a new-CA client can establish its
 	// own connection and receives grants from k2.
 	applySecurityCandidate(t, ctx, kubeconfig, rotationDir, filepath.Join(rotationDir, "bridge.json"), "bridge")
+	waitSecurityGeneration(ctx, t, kubeconfig, 2)
 	waitProviderReadyReplicas(t, ctx, kubeconfig, 2)
 	newTLS, err := executionclient.LoadTLSConfig(executionclient.TLSFiles{CA: filepath.Join(rotationDir, "client-roots.pem"), Cert: filepath.Join(rotationDir, "mecak8s-new.crt"), Key: filepath.Join(rotationDir, "mecak8s-new.key")})
 	if err != nil {
@@ -250,9 +251,7 @@ func TestKindExecutionProductionSecurityRotation(t *testing.T) {
 		t.Fatalf("acquire bridge-authority claim: code=%s", remoteErrorCode(err))
 	}
 	newRun := executionenv.RequestContext{Environment: renewed.Environment, Owner: owner, BindingID: binding, RunID: renewed.RunID, ClaimID: renewed.ClaimID, Epoch: renewed.Epoch, GrantGeneration: renewed.GrantGeneration, Grant: renewed.Grant}
-	if got, err := newClient.File(ctx, executionenv.FileRequest{Context: newRun, Operation: executionenv.OpFileRead, Path: "rotation-sentinel.txt"}); err != nil || string(got.Data) != "old-authority\n" {
-		t.Fatalf("bridge authority did not authorize preserved data: %v", err)
-	}
+	waitFileContent(t, ctx, newClient, newRun, "rotation-sentinel.txt", "old-authority\n", "bridge authority")
 	if err := newClient.ReleaseRun(ctx, executionenv.RunClaimRequest{Environment: renewed.Environment, Owner: owner, BindingID: binding, RunID: renewed.RunID, ClaimID: renewed.ClaimID, Epoch: renewed.Epoch, GrantGeneration: renewed.GrantGeneration, OperationID: "rotation-release-k2-bridge"}); err != nil {
 		t.Fatalf("release bridge-phase claim: code=%s", remoteErrorCode(err))
 	}
@@ -261,23 +260,24 @@ func TestKindExecutionProductionSecurityRotation(t *testing.T) {
 	// k1. Authorization is checked on every RPC, so the established old-client
 	// HTTP/2 connection is denied rather than passing until reconnect.
 	applySecurityCandidate(t, ctx, kubeconfig, rotationDir, filepath.Join(rotationDir, "final.json"), "final")
+	waitSecurityGeneration(ctx, t, kubeconfig, 3)
 	waitProviderReadyReplicas(t, ctx, kubeconfig, 2)
-	if _, err := oldClient.File(ctx, executionenv.FileRequest{Context: oldRun, Operation: executionenv.OpFileRead, Path: "rotation-sentinel.txt"}); err == nil {
-		t.Fatal("established client signed by the removed CA remained authorized")
-	}
-	if _, err := newClient.File(ctx, executionenv.FileRequest{Context: recoveredRun, Operation: executionenv.OpFileRead, Path: "rotation-sentinel.txt"}); err == nil {
-		t.Fatal("grant signed by revoked k1 remained authorized through the new client")
-	}
 	finalAttached := waitReady(t, ctx, newClient, owner, binding, attached.Environment)
 	finalRequest := executionenv.RunClaimRequest{Environment: finalAttached.Environment, Owner: owner, BindingID: binding, RunID: "rotation-final-grant", OperationID: "rotation-acquire-final", TTL: time.Minute}
 	finalClaim, err := acquireCurrentAuthorityRun(ctx, finalRequest, newClient.AcquireRun, 500*time.Millisecond)
 	if err != nil {
-		t.Fatalf("acquire final-authority claim: code=%s err=%v", remoteErrorCode(err), err)
+		var remote *executionenv.Error
+		t.Fatalf("acquire final-authority claim: errorCode=%s retryable=%t", remoteErrorCode(err), errors.As(err, &remote) && remote.Retryable)
 	}
 	finalRun := executionenv.RequestContext{Environment: finalClaim.Environment, Owner: owner, BindingID: binding, RunID: finalClaim.RunID, ClaimID: finalClaim.ClaimID, Epoch: finalClaim.Epoch, GrantGeneration: finalClaim.GrantGeneration, Grant: finalClaim.Grant}
-	if got, err := newClient.File(ctx, executionenv.FileRequest{Context: finalRun, Operation: executionenv.OpFileRead, Path: "rotation-sentinel.txt"}); err != nil || string(got.Data) != "old-authority\n" {
-		t.Fatalf("new authority did not authorize preserved data: %v", err)
+	waitFileContent(t, ctx, newClient, finalRun, "rotation-sentinel.txt", "old-authority\n", "final authority")
+	// Both fixture certificates attest the same URI. Only the CA differs; the
+	// current claim below has just succeeded and has not been released.
+	if _, err := oldClient.File(ctx, executionenv.FileRequest{Context: finalRun, Operation: executionenv.OpFileRead, Path: "rotation-sentinel.txt"}); !isRemoteCode(err, executionenv.CodeUnauthenticated) {
+		var remote *executionenv.Error
+		t.Fatalf("removed client CA rejection: errorCode=%s retryable=%t", remoteErrorCode(err), errors.As(err, &remote) && remote.Retryable)
 	}
+	assertRetiredFixtureKeyDenied(ctx, t, newClient, state, finalRun, "rotation-sentinel.txt", "old-authority\n")
 	freshClient, err := executionclient.New(forward.addr, newTLS)
 	if err != nil {
 		t.Fatal(err)
@@ -431,34 +431,126 @@ func TestAcquireCurrentAuthorityRunStopsAtBoundAndHonorsContext(t *testing.T) {
 
 func waitFileContent(t *testing.T, ctx context.Context, client *executionclient.Client, rc executionenv.RequestContext, path, want, proof string) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	var lastErr error
-	for time.Now().Before(deadline) {
-		got, err := client.File(ctx, executionenv.FileRequest{Context: rc, Operation: executionenv.OpFileRead, Path: path})
-		if err == nil && string(got.Data) == want {
-			return
-		}
-		lastErr = err
-		time.Sleep(500 * time.Millisecond)
+	if err := readCurrentAuthorityContent(ctx, func(ctx context.Context) (executionenv.FileResponse, error) {
+		return client.File(ctx, executionenv.FileRequest{Context: rc, Operation: executionenv.OpFileRead, Path: path})
+	}, want, 500*time.Millisecond); err != nil {
+		var remote *executionenv.Error
+		retryable := errors.As(err, &remote) && remote.Retryable
+		t.Fatalf("%s did not authorize preserved data: errorCode=%s retryable=%t", proof, remoteErrorCode(err), retryable)
 	}
-	t.Fatalf("%s did not authorize preserved data: %v", proof, lastErr)
+}
+
+func readCurrentAuthorityContent(ctx context.Context, read func(context.Context) (executionenv.FileResponse, error), want string, delay time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	const maxAttempts = 60
+	for attempt := 0; ; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		got, err := read(ctx)
+		if err == nil {
+			if string(got.Data) != want {
+				return errors.New("authority read returned unexpected content")
+			}
+			return nil
+		}
+		if !isRetryableAuthorityConvergence(err) || attempt == maxAttempts-1 {
+			return err
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func TestReadCurrentAuthorityContentRetriesOnlyPreDispatchLag(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		err       error
+		content   string
+		wantCalls int
+		wantErr   bool
+	}{
+		{"success", nil, "sentinel", 1, false},
+		{"authority lag", &executionenv.Error{Code: executionenv.CodeNotReady, Retryable: true}, "", 2, false},
+		{"wrong content", nil, "wrong", 1, true},
+		{"store not ready", &executionenv.Error{Code: executionenv.CodeNotReady}, "", 1, true},
+		{"expired client", &executionenv.Error{Code: executionenv.CodeUnauthenticated, Retryable: true}, "", 1, true},
+		{"revoked key", &executionenv.Error{Code: executionenv.CodePermissionDenied}, "", 1, true},
+		{"unknown error", errors.New("not_ready"), "", 1, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			err := readCurrentAuthorityContent(t.Context(), func(context.Context) (executionenv.FileResponse, error) {
+				calls++
+				if calls == 1 {
+					return executionenv.FileResponse{Data: []byte(tc.content)}, tc.err
+				}
+				return executionenv.FileResponse{Data: []byte("sentinel")}, nil
+			}, "sentinel", 0)
+			if calls != tc.wantCalls || (err != nil) != tc.wantErr {
+				t.Fatalf("calls=%d error=%t", calls, err != nil)
+			}
+		})
+	}
+}
+
+func TestReadCurrentAuthorityContentBoundAndCancellation(t *testing.T) {
+	t.Run("persistent lag", func(t *testing.T) {
+		calls := 0
+		err := readCurrentAuthorityContent(t.Context(), func(context.Context) (executionenv.FileResponse, error) {
+			calls++
+			return executionenv.FileResponse{}, &executionenv.Error{Code: executionenv.CodeNotReady, Retryable: true}
+		}, "sentinel", 0)
+		if calls != 60 || !isRetryableAuthorityConvergence(err) {
+			t.Fatalf("calls=%d errorCode=%s", calls, remoteErrorCode(err))
+		}
+	})
+	for _, cancelInCall := range []bool{false, true} {
+		ctx, cancel := context.WithCancel(t.Context())
+		if !cancelInCall {
+			cancel()
+		}
+		calls := 0
+		err := readCurrentAuthorityContent(ctx, func(ctx context.Context) (executionenv.FileResponse, error) {
+			calls++
+			if _, ok := ctx.Deadline(); !ok {
+				t.Fatal("read has no bounded deadline")
+			}
+			cancel()
+			return executionenv.FileResponse{}, &executionenv.Error{Code: executionenv.CodeNotReady, Retryable: true}
+		}, "sentinel", time.Hour)
+		cancel()
+		wantCalls := 0
+		if cancelInCall {
+			wantCalls = 1
+		}
+		if !errors.Is(err, context.Canceled) || calls != wantCalls {
+			t.Fatalf("calls=%d cancelled=%t", calls, errors.Is(err, context.Canceled))
+		}
+	}
 }
 
 func applySecurityCandidate(t *testing.T, ctx context.Context, kubeconfig, materialDir, manifest, mode string) {
 	t.Helper()
 	pki := filepath.Join(os.Getenv("MECATL_EXECUTION_QUAL_STATE"), "pki")
-	secretArgs := []string{"create", "secret", "generic", "execution-security", "-n", namespace, "--from-file=grant-k1.pem=" + filepath.Join(pki, "grant-key.pem")}
+	// Retain every previously referenced name with its original bytes. Secret
+	// and manifest projections may arrive in either order at each replica.
+	secretArgs := []string{"create", "secret", "generic", "execution-security", "-n", namespace,
+		"--from-file=grant-k1.pem=" + filepath.Join(pki, "grant-key.pem"),
+		"--from-file=tls.crt=" + filepath.Join(pki, "provider.crt"),
+		"--from-file=tls.key=" + filepath.Join(pki, "provider.key"),
+		"--from-file=clients.pem=" + filepath.Join(pki, "ca.crt")}
 	switch mode {
 	case "initial":
-		secretArgs = append(secretArgs, "--from-file=tls.crt="+filepath.Join(pki, "provider.crt"), "--from-file=tls.key="+filepath.Join(pki, "provider.key"), "--from-file=clients.pem="+filepath.Join(pki, "ca.crt"))
-	case "bridge":
-		secretArgs = append(secretArgs, "--from-file=grant-k2.pem="+filepath.Join(materialDir, "grant-k2.pem"), "--from-file=tls.crt="+filepath.Join(pki, "provider.crt"), "--from-file=tls.key="+filepath.Join(pki, "provider.key"), "--from-file=clients.pem="+filepath.Join(materialDir, "bridge-clients.pem"))
-	case "final", "restore":
-		secretArgs = append(secretArgs, "--from-file=grant-k2.pem="+filepath.Join(materialDir, "grant-k2.pem"), "--from-file=tls.crt="+filepath.Join(materialDir, "provider-new.crt"), "--from-file=tls.key="+filepath.Join(materialDir, "provider-new.key"))
-		if mode == "final" {
-			secretArgs = append(secretArgs, "--from-file=clients.pem="+filepath.Join(materialDir, "final-clients.pem"))
-		} else {
-			secretArgs = append(secretArgs, "--from-file=clients.pem="+filepath.Join(materialDir, "bridge-clients.pem"))
+	case "bridge", "final", "restore":
+		for _, name := range []string{"grant-k2.pem", "provider-new.crt", "provider-new.key", "bridge-clients.pem", "final-clients.pem"} {
+			secretArgs = append(secretArgs, "--from-file="+name+"="+filepath.Join(materialDir, name))
 		}
 	default:
 		t.Fatalf("unknown security candidate mode %q", mode)
@@ -472,6 +564,7 @@ func applySecurityCandidate(t *testing.T, ctx context.Context, kubeconfig, mater
 func restoreFixtureSecurity(t *testing.T, ctx context.Context, kubeconfig, rotationDir string) {
 	t.Helper()
 	applySecurityCandidate(t, ctx, kubeconfig, rotationDir, filepath.Join(rotationDir, "restore-fixture-clients.json"), "restore")
+	waitSecurityGeneration(ctx, t, kubeconfig, 4)
 	waitProviderReadyReplicas(t, ctx, kubeconfig, 2)
 
 	pki := filepath.Join(os.Getenv("MECATL_EXECUTION_QUAL_STATE"), "pki")
@@ -495,6 +588,31 @@ func applyKubectlInput(t *testing.T, ctx context.Context, kubeconfig string, inp
 	cmd.Stdin = bytes.NewReader(input)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("kubectl apply synthetic fixture: %v: %s", err, out)
+	}
+}
+
+// PodReady can still describe the prior generation. Observe the nonsecret
+// ledger first; the pinned replica's RPC barrier then proves local convergence.
+func waitSecurityGeneration(ctx context.Context, t *testing.T, kubeconfig string, want uint64) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	for {
+		cm := lifetimeConfigMap(ctx, t, kubeconfig, "mecatl-execution-security-authority")
+		var ledger struct{ Generation uint64 }
+		if err := json.Unmarshal([]byte(cm.Data["state.json"]), &ledger); err != nil || ledger.Generation > want {
+			t.Fatal("unexpected authority ledger generation")
+		}
+		if ledger.Generation == want {
+			return
+		}
+		timer := time.NewTimer(500 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			t.Fatalf("authority ledger did not reach generation %d", want)
+		case <-timer.C:
+		}
 	}
 }
 

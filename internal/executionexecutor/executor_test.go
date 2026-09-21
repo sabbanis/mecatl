@@ -139,6 +139,15 @@ func TestNativeShellCapsCombinedOutputAndRepairsUTF8(t *testing.T) {
 			if !utf8.Valid(result.Stdout) || !utf8.Valid(result.Stderr) {
 				t.Fatal("native command result contains malformed UTF-8")
 			}
+			if strings.HasSuffix(tc.name, "exact-cap-repair") {
+				stream := result.Stdout
+				if tc.wantStderr != 0 {
+					stream = result.Stderr
+				}
+				if !strings.HasSuffix(string(stream), "�a") {
+					t.Fatal("repair-expansion clip did not retain the expected prefix")
+				}
+			}
 			if tc.name == "split-malformed" && (!strings.HasPrefix(string(result.Stdout), "�") || !strings.HasPrefix(string(result.Stderr), "�")) {
 				t.Fatal("malformed stream bytes were not repaired")
 			}

@@ -10,6 +10,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"math/big"
 	"net"
@@ -56,6 +57,25 @@ func TestForwardRestoreTrustBundleSupportsFixtureClient(t *testing.T) {
 		t.Fatal(err)
 	}
 	generate(initial, out)
+	for _, tc := range []struct {
+		file, cert, key, ca string
+	}{
+		{"bridge.json", "tls.crt", "tls.key", "bridge-clients.pem"},
+		{"final.json", "provider-new.crt", "provider-new.key", "final-clients.pem"},
+		{"restore-fixture-clients.json", "provider-new.crt", "provider-new.key", "bridge-clients.pem"},
+	} {
+		var manifest struct {
+			TLS struct {
+				CertificateFile, PrivateKeyFile, ClientCAFile string
+			}
+		}
+		if err := json.Unmarshal(read(filepath.Join(out, tc.file)), &manifest); err != nil {
+			t.Fatal(err)
+		}
+		if manifest.TLS.CertificateFile != tc.cert || manifest.TLS.PrivateKeyFile != tc.key || manifest.TLS.ClientCAFile != tc.ca {
+			t.Errorf("%s must reference immutable material names", tc.file)
+		}
+	}
 
 	clientKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {

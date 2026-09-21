@@ -58,10 +58,10 @@ func generate(initial, out string) {
 		key("k1", 1, "grant-k1.pem", oldGrant.Public().(ed25519.PublicKey), "active", now.Add(5*time.Hour)),
 		key("k2", 2, "grant-k2.pem", pub2, "active", now.Add(5*time.Hour)),
 	}
-	writeManifest(filepath.Join(out, "bridge.json"), manifest(2, "mecatl-execution", "k2", keys, "tls.crt", "tls.key", "clients.pem"))
+	writeManifest(filepath.Join(out, "bridge.json"), manifest(2, "mecatl-execution", "k2", keys, "tls.crt", "tls.key", "bridge-clients.pem"))
 	keys[0].State = "revoked"
-	writeManifest(filepath.Join(out, "final.json"), manifest(3, "mecatl-execution", "k2", keys, "tls.crt", "tls.key", "clients.pem"))
-	writeManifest(filepath.Join(out, "restore-fixture-clients.json"), manifest(4, "mecatl-execution", "k2", keys, "tls.crt", "tls.key", "clients.pem"))
+	writeManifest(filepath.Join(out, "final.json"), manifest(3, "mecatl-execution", "k2", keys, "provider-new.crt", "provider-new.key", "final-clients.pem"))
+	writeManifest(filepath.Join(out, "restore-fixture-clients.json"), manifest(4, "mecatl-execution", "k2", keys, "provider-new.crt", "provider-new.key", "bridge-clients.pem"))
 }
 
 type keyEntry struct {

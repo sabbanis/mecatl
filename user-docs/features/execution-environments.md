@@ -198,8 +198,13 @@ for quiesced upgrades and scope removal.
 Use only basename file names. The projected Secret keys in this example are
 `grant-k1.pem`, `tls.crt`, `tls.key`, and `clients.pem`; an external secret manager
 owns their bytes. Kubernetes projected-volume `..data` symlinks are supported,
-but paths escaping the mounted directory are rejected. Increase `generation` for
-every authority change. Key IDs and `(id, version)` fingerprints cannot be
+but paths escaping the mounted directory are rejected. Keep every referenced
+filename immutable and use a new name for changed signing, TLS, or CA material.
+Stage those files before publishing a higher-generation manifest and retain the
+overlap files. Secret and ConfigMap projections are independent; see the
+[authority rotation procedure](../building/deployment/mecak8s.md#rotate-execution-provider-authority)
+for publication, verification, and recovery from mixed-material digest drift.
+Increase `generation` for every authority change. Key IDs and `(id, version)` fingerprints cannot be
 reused; the provider persists a bounded high-water ledger in its authority
 ConfigMap. Keep retired keys as `verify-only` until all grants expire, then mark
 them `revoked`. Invalid, incomplete, rolled-back, or newly expired material makes

@@ -350,6 +350,40 @@ grpcurl -cacert "$CA_FILE" -cert "$CERT_FILE" -key "$KEY_FILE" \
   "$EXECUTION_ENDPOINT" mecatl.execution.v1.ExecutionProviderService/RecoverEnvironment
 ```
 
+#### Rotate execution-provider authority
+
+Give every changed material file a new, generation-specific basename. This applies
+to signing keys, server certificates, server private keys, and client-CA bundles.
+For example, a second bundle can use `grant-k2.pem`, `server-g2.crt`,
+`server-g2.key`, and `clients-g2.pem`. Keep each name's bytes immutable.
+
+1. Add the new files to the operator-managed security Secret, retaining the files
+   referenced by the current manifest. Stage the material before changing
+   `provider.securityManifest`.
+2. Publish a higher-generation manifest whose existing `file`, `certificateFile`,
+   `privateKeyFile`, and `clientCAFile` fields reference those names. For CA
+   rotation, first publish a separately named overlap bundle, move clients and
+   server trust, then publish another higher generation that removes old trust.
+3. Verify that the authority ConfigMap has reached the intended generation and
+   use a current claim to read known workspace content. Pod readiness alone can
+   still reflect the previous generation. A replica whose snapshot lags the
+   ledger rejects requests before dispatch with structured `not_ready` and
+   `retryable=true`. Bound any read-only verification poll and stop on wrong
+   content, a nonretryable error, or another error code.
+4. Retain overlap files until no live or in-flight manifest references them.
+   Retain verification keys through their grant windows before revoking them.
+   Never reuse a retired name for different bytes.
+
+Kubernetes projects Secret and ConfigMap updates independently. A manifest that
+arrives before its new files fails closed until they arrive; staged files leave
+an older manifest unchanged. Overwriting referenced TLS or CA files can instead
+publish a mixed bundle's digest permanently at the new generation. If that has
+happened, publish a complete, immutable bundle at a **higher** generation.
+Repeated requests or a restart cannot repair same-generation digest drift;
+preserve the authority ledger rather than resetting it. The provider confines
+file access to the mounted security directory, but immutable publication remains
+your secret-management procedure's responsibility.
+
 #### Upgrade, uninstall, and reinstall the execution provider
 
 The supported lifecycle keeps the **same Helm release name, namespace, resource
