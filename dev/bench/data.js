@@ -228602,6 +228602,40 @@ window.BENCHMARK_DATA = {
         },
         "date": 1790005547145,
         "tool": "customBiggerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "danbarr@users.noreply.github.com",
+            "name": "Dan Barr",
+            "username": "danbarr"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "686b5e58e323aa449e8be52b077aaa364c75c52e",
+          "message": "docs: add diagrams to README (#1731)\n\nSigned-off-by: Dan Barr <6922515+danbarr@users.noreply.github.com>\nCo-authored-by: Dan Barr <6922515+danbarr@users.noreply.github.com>",
+          "timestamp": "2026-09-21T12:27:20-04:00",
+          "tree_id": "ca490a45be71543593ed21cb72bd1b482ac80f9c",
+          "url": "https://github.com/stacklok/mecatl/commit/686b5e58e323aa449e8be52b077aaa364c75c52e"
+        },
+        "date": 1790008737260,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
       }
     ],
     "mecatl scenarios (render allocs, advisory)": [
@@ -331917,6 +331951,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1790008734063,
+  "lastUpdate": 1790008738013,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
