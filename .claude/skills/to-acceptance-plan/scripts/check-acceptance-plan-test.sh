@@ -100,6 +100,20 @@ sed_in_place 's/\*\*Expected tasks:\*\* deferred to orchestration/\*\*Expected t
 sed_in_place 's|<!-- combined rationale fixture placeholder -->|**Combined rationale:** The fixture is one indivisible documentation check, so separate plan review adds no value.|' "$combined_valid"
 bash "$checker" "$combined_valid" >/dev/null
 
+# Exceed pipe capacity after the first category: an early-exiting reader must
+# not turn a valid Split or Combined contract into a SIGPIPE failure.
+for source in "$valid" "$combined_valid"; do
+  large="$root/acceptance/large-${source##*/}"
+  awk '
+    { print }
+    /^- \*\*gRPC \/ protobuf:\*\*/ {
+      for (i = 0; i < 16384; i++)
+        print "  Additional interface detail keeps the contract larger than a pipe buffer."
+    }
+  ' "$source" >"$large"
+  bash "$checker" "$large" >/dev/null
+done
+
 for case_name in missing-contract invalid-contract missing-category bare-none placeholder bad-delivery bad-status proposed-unchecked missing-human placeholder-human checked-without-decision; do
   cp "$valid" "$root/acceptance/$case_name.md"
 done
