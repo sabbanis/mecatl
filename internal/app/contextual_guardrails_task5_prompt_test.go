@@ -14,7 +14,7 @@ import (
 	"github.com/stacklok/mecatl/internal/adapter/server"
 )
 
-func TestADR_0342_ContextualGuardrails_Scenario7_FactoryPrompts(t *testing.T) {
+func TestADR_0350_ContextualGuardrails_Scenario7_FactoryPrompts(t *testing.T) {
 	cfg := guardrailE2ECfg(t, true, PostureAuto, "printf task5")
 	var requests []port.LLMRequest
 	provider := mockllm.NewWith([]mockllm.Option{mockllm.WithRequestObserver(func(req port.LLMRequest) { requests = append(requests, req) })},
@@ -169,7 +169,7 @@ func TestContextualWorkerReviewDetailUsesLiveRootOwnership(t *testing.T) {
 	}
 }
 
-func TestADR_0342_ContextualGuardrails_Scenario5_CoverageTruth(t *testing.T) {
+func TestADR_0350_ContextualGuardrails_Scenario5_CoverageTruth(t *testing.T) {
 	cfg := guardrailE2ECfg(t, true, PostureAuto, "printf task5")
 	built, err := Build(context.Background(), cfg)
 	if err != nil {

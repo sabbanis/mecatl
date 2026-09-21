@@ -36,7 +36,7 @@ func (workerAuthorityPolicy) Evaluate(context.Context, session.SessionID, sessio
 }
 func (workerAuthorityPolicy) Learn(session.SessionID, session.ToolCall) {}
 
-func TestADR_0342_ContextualGuardrails_Scenario4_WorkerAuthority(t *testing.T) {
+func TestADR_0350_ContextualGuardrails_Scenario4_WorkerAuthority(t *testing.T) {
 	reviewer := &workerAuthorityReviewer{}
 	root := newReviewRoot(reviewer, nil, nil)
 	cases := []struct {

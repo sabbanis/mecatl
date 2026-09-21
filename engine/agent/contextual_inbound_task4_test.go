@@ -87,7 +87,7 @@ func resolveScoped(t *testing.T, run *agent.Run, ask *session.PendingAsk, verdic
 	return run.ResolveApproval(resolution)
 }
 
-func TestADR_0342_ContextualGuardrails_Scenario2_FailureMatrix(t *testing.T) {
+func TestADR_0350_ContextualGuardrails_Scenario2_FailureMatrix(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		interactive bool
@@ -132,7 +132,7 @@ func TestADR_0342_ContextualGuardrails_Scenario2_FailureMatrix(t *testing.T) {
 	}
 }
 
-func TestADR_0342_ContextualGuardrails_Scenario3_ExactResultRelease(t *testing.T) {
+func TestADR_0350_ContextualGuardrails_Scenario3_ExactResultRelease(t *testing.T) {
 	const secret = "SECRET_SENTINEL"
 	reviewer := &inboundReviewer{}
 	hook := &countingPostHook{}
@@ -197,7 +197,7 @@ func TestADR_0342_ContextualGuardrails_Scenario3_ExactResultRelease(t *testing.T
 	}
 }
 
-func TestADR_0342_ContextualGuardrails_Scenario3_HeldResultCleanup(t *testing.T) {
+func TestADR_0350_ContextualGuardrails_Scenario3_HeldResultCleanup(t *testing.T) {
 	const secret = "NEVER_DELIVER_THIS"
 	reviewer := &inboundReviewer{}
 	hook := &countingPostHook{message: secret}
@@ -226,7 +226,7 @@ func TestADR_0342_ContextualGuardrails_Scenario3_HeldResultCleanup(t *testing.T)
 	}
 }
 
-func TestADR_0342_ContextualGuardrails_Scenario3_ApprovalClassIsolation(t *testing.T) {
+func TestADR_0350_ContextualGuardrails_Scenario3_ApprovalClassIsolation(t *testing.T) {
 	// Exact result release rejects AllowAlways while retaining the item; the valid
 	// follow-up Release once in the exact-release proof succeeds and no permission
 	// learner is called there. This sentinel pins the accepted verdict taxonomy.
@@ -235,7 +235,7 @@ func TestADR_0342_ContextualGuardrails_Scenario3_ApprovalClassIsolation(t *testi
 	}
 }
 
-func TestADR_0342_ContextualGuardrails_Scenario3_ConcurrentInboundReleaseOrdering(t *testing.T) {
+func TestADR_0350_ContextualGuardrails_Scenario3_ConcurrentInboundReleaseOrdering(t *testing.T) {
 	reviewEntered := make(chan session.ToolCallID, 2)
 	reviewRelease := make(chan struct{})
 	reviewer := &inboundReviewer{entered: reviewEntered, release: reviewRelease}

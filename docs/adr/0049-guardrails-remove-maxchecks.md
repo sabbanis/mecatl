@@ -24,7 +24,7 @@ The auto-200 default compounded this: an operator who set only a model — the d
 - `Config.GuardrailsMaxChecks` (`internal/app/build.go`) and `GuardrailsSection.MaxChecks` / its strict-parse entry (`internal/adapter/permconfig/schema.go`) are removed. The operator-tier `guardrails:` YAML subtree is parsed STRICTLY as before; `maxChecks` is now an UNKNOWN key, so a config carrying it fails loud (strict parse) rather than silently ignoring it — an operator who copied an old config is told, not surprised.
 - The build-time `guardrails ACTIVE` posture line (`logGuardrailsPosture`) no longer appends a `maxChecks=<n>` suffix.
 
-The later contextual reviewer removes content-length skips entirely; see [ADR 0342](./0342-contextual-investigative-guardrails.md).
+The later contextual reviewer removes content-length skips entirely; see [ADR 0350](./0350-contextual-investigative-guardrails.md).
 
 ## Consequences
 
@@ -36,7 +36,7 @@ The later contextual reviewer removes content-length skips entirely; see [ADR 03
 
 **Behaviour change (the honest cost):** checker calls are now unbounded per session — deliberately. A long, tool-heavy session with the default advisory rule set (which matches `mcp__*` on both directions) will make one checker call per matched tool boundary, which is exactly the coverage the operator asked for when they configured a checker model. The auto-200 default is gone; an operator relying on it to cap spend must now bound spend at the provider/billing layer (where cost control belongs). The failure mode is NOT unbounded: a sustained checker outage still escalates to the one-time sticky "checker DOWN" WARN (the `failureStreak`), and each checker call is bounded by the 30s-ish per-attempt timeout + the fail-open/closed policy, so a broken checker degrades loudly rather than running away.
 
-**Unchanged at the time:** the engine-layer routing, verdict parse, recursion guard, fail-open/closed posture, operator-tier-only enforcement, and kill switch. Later contextual-review changes are recorded by [ADR 0342](./0342-contextual-investigative-guardrails.md).
+**Unchanged at the time:** the engine-layer routing, verdict parse, recursion guard, fail-open/closed posture, operator-tier-only enforcement, and kill switch. Later contextual-review changes are recorded by [ADR 0350](./0350-contextual-investigative-guardrails.md).
 
 ## See also
 

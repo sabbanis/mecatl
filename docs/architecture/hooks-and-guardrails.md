@@ -108,7 +108,7 @@ Guardrails are operator-tier configuration. The checker provider/model pair is c
 at Build: a scalar `models.slots.guardrail` uses the deployment default provider, while
 the strict object form names both a configured provider and model selector. The same
 applicable rules bind main and worker calls; only the checker engine is inert. See
-[ADR 0342](../adr/0342-contextual-investigative-guardrails.md).
+[ADR 0350](../adr/0350-contextual-investigative-guardrails.md).
 
 ## Prerequisites
 

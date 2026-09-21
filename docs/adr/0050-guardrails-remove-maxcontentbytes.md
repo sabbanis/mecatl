@@ -27,7 +27,7 @@ This is the same class of decision as [ADR 0049](./0049-guardrails-remove-maxche
 - The oversized-content early-return block in `check()` is removed; matched content reaches the checker and errors/timeouts follow the configured posture.
 - The `onContentTooLarge` method is removed entirely. Its advisory-WARN / enforcing-route-to-`onCheckerError` behavior is no longer reachable, because oversized content now reaches the real checker; the enforcing failure mode is reached honestly via a checker timeout/error instead.
 - The `fmt` import is KEPT (`buildCheckPrompt` still uses `fmt.Fprintf`).
-- `maxSanitizedBytes` was a distinct checker-output defense at the time. The later contextual reviewer removes sanitize and the remaining input-length skip; see [ADR 0342](./0342-contextual-investigative-guardrails.md).
+- `maxSanitizedBytes` was a distinct checker-output defense at the time. The later contextual reviewer removes sanitize and the remaining input-length skip; see [ADR 0350](./0350-contextual-investigative-guardrails.md).
 
 **Option A — deterministic compaction of huge content before inspection** (truncate/summarize to a bounded size, then inspect the compacted form) is deferred as a future enhancement. It preserves inspection of the whole payload in spirit but adds a compaction step whose fidelity (does the compacted form still carry the injection?) is its own design question; it is not needed to close the current skip gap, which the removal alone closes.
 
@@ -43,7 +43,7 @@ This is the same class of decision as [ADR 0049](./0049-guardrails-remove-maxche
 
 **Known amplification under concurrent read-batch fan-out:** the agent loop fans out N concurrent read-only tool calls per turn (`read-parallel`), each driving its own checker call. With the size bound removed, a turn with N large results drives N concurrent 30s checker calls. The `failureStreak` breaker does not cap this (it escalates to a one-time WARN after 3 consecutive failures but does not stop calling the checker). This is an accepted trade-off: the inspection guarantee (no evasion by padding) outweighs the amplification, which is bounded per-call by the 30s timeout and bounded overall by the operator's provider/billing layer. A future enhancement (Option A — truncate-with-marker into the checker prompt, or serializing guardrail checks) could bound the fan-out multiplier without reintroducing the skip gap. Separately, MCP tool results are not subject to the harness's `MaxOutputBytes` truncation that every built-in tool applies — a pre-existing ingress gap worth a separate follow-up.
 
-**Unchanged at the time:** verdict parsing, recursion prevention, checker-down posture, operator-tier-only enforcement, and the kill switch. Later contextual-review changes are recorded by [ADR 0342](./0342-contextual-investigative-guardrails.md).
+**Unchanged at the time:** verdict parsing, recursion prevention, checker-down posture, operator-tier-only enforcement, and the kill switch. Later contextual-review changes are recorded by [ADR 0350](./0350-contextual-investigative-guardrails.md).
 
 ## See also
 

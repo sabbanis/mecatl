@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestADR_0342_ContextualGuardrails_Scenario7_ResourceInventory(t *testing.T) {
+func TestADR_0350_ContextualGuardrails_Scenario7_ResourceInventory(t *testing.T) {
 	data, err := os.ReadFile("../adr/0027-cloud-native.md")
 	if err != nil {
 		t.Fatal(err)

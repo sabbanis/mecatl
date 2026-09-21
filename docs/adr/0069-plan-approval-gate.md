@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-21
-- Scope: the plan-approval seam — the `engine/agent` PresentPlan signalling tool + the dispatcher's plan-ask surface, `engine/session` `PendingAsk`/`ApprovalOrigin`/`StopPlanApproved`, `engine/tool.PlanOnly` catalog gate, the `engine/agent.Run.planApprovedTarget` run-scoped flip, and the composition/adapter wiring (`internal/adapter/server.Service.ApprovePlan` + the `ApprovePlan` streaming RPC + `POST /v1/sessions/{id}/plan:approve` + the opt-in `--plan-mode-auto-approve` observer + the mecatui plan-approval modal). ADR 0342 replaced the former provenance booleans with explicit `PendingAsk.Origin` and added approval-origin wire projection.
+- Scope: the plan-approval seam — the `engine/agent` PresentPlan signalling tool + the dispatcher's plan-ask surface, `engine/session` `PendingAsk`/`ApprovalOrigin`/`StopPlanApproved`, `engine/tool.PlanOnly` catalog gate, the `engine/agent.Run.planApprovedTarget` run-scoped flip, and the composition/adapter wiring (`internal/adapter/server.Service.ApprovePlan` + the `ApprovePlan` streaming RPC + `POST /v1/sessions/{id}/plan:approve` + the opt-in `--plan-mode-auto-approve` observer + the mecatui plan-approval modal). ADR 0350 replaced the former provenance booleans with explicit `PendingAsk.Origin` and added approval-origin wire projection.
 - Supersedes: none
 - Superseded by: none
 - Amended: 2026-07-23 — the deny/iterate path described in §3 ("On Deny it synthesizes a

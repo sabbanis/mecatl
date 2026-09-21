@@ -7,7 +7,7 @@ import (
 	"github.com/stacklok/mecatl/engine/session"
 )
 
-func TestADR_0342_ContextualGuardrails_Scenario4_Retention(t *testing.T) {
+func TestADR_0350_ContextualGuardrails_Scenario4_Retention(t *testing.T) {
 	root := newReviewRoot(nil, nil, nil)
 	root.maxFacts = 2
 	root.maxBytes = 256

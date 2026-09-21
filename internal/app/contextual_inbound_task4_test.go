@@ -8,7 +8,7 @@ import (
 	"github.com/stacklok/mecatl/internal/adapter/modelhook"
 )
 
-func TestADR_0342_ContextualGuardrails_Scenario3_DefaultCoverage(t *testing.T) {
+func TestADR_0350_ContextualGuardrails_Scenario3_DefaultCoverage(t *testing.T) {
 	rules, ok := compileGuardrailRules(Config{}, defaultGuardrailSpecs)
 	if !ok {
 		t.Fatal("default guardrail rules did not compile")

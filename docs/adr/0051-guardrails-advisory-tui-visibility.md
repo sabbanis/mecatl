@@ -35,7 +35,7 @@ An operator who has to leave the TUI mid-session and `grep guardrail-finding` a 
 - An MCP-heavy session under the default advisory set fires a finding per `mcp__*` call — the TUI scrollback gets noisier. This is a rendering concern (count badge, collapsible notices) that this ADR does not address; the visibility is the correct behaviour, the rendering can be improved later.
 - The advisory `EvHook` adds one event per finding to the client stream. In headless deployments (no TUI) the event is still emitted but has no consumer beyond the log — the relay is unaffected.
 
-**Unchanged at the time:** the threat model, quarantine, framing discipline, verdict parse, enforcement modes, checker-down posture, and recursion prevention. Later contextual-review changes are recorded by [ADR 0342](./0342-contextual-investigative-guardrails.md).
+**Unchanged at the time:** the threat model, quarantine, framing discipline, verdict parse, enforcement modes, checker-down posture, and recursion prevention. Later contextual-review changes are recorded by [ADR 0350](./0350-contextual-investigative-guardrails.md).
 
 ## See also
 

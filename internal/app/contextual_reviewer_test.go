@@ -38,7 +38,7 @@ func completeReviewRequest() agent.ToolReviewRequest {
 	}
 }
 
-func TestADR_0342_ContextualGuardrails_Scenario6_RubricContract(t *testing.T) {
+func TestADR_0350_ContextualGuardrails_Scenario6_RubricContract(t *testing.T) {
 	var got port.LLMRequest
 	provider := mockllm.NewWith([]mockllm.Option{mockllm.WithRequestObserver(func(req port.LLMRequest) { got = req })},
 		mockllm.TextTurn(`{"assessment":"acceptable","concerns":[],"evidence":[],"missing_evidence":[]}`))
@@ -117,7 +117,7 @@ func TestContextualReviewerFactoryPromptAndJobSeparation(t *testing.T) {
 	}
 }
 
-func TestADR_0342_ContextualGuardrails_Scenario6_AdditiveRulePrompt(t *testing.T) {
+func TestADR_0350_ContextualGuardrails_Scenario6_AdditiveRulePrompt(t *testing.T) {
 	var got port.LLMRequest
 	provider := mockllm.NewWith([]mockllm.Option{mockllm.WithRequestObserver(func(req port.LLMRequest) { got = req })},
 		mockllm.TextTurn(`{"assessment":"acceptable","concerns":[],"evidence":[],"missing_evidence":[]}`))

@@ -27,7 +27,7 @@ func TestPermissionAuthorizationBindingIsExact(t *testing.T) {
 	}
 }
 
-func TestADR_0342_ContextualGuardrails_Scenario6_ImplementationCalibration(t *testing.T) {
+func TestADR_0350_ContextualGuardrails_Scenario6_ImplementationCalibration(t *testing.T) {
 	if defaultReviewEvidenceHandles != 16 || defaultReviewEvidenceBytes != 400_000 || defaultReviewTrajectoryFacts != 256 || defaultReviewTrajectoryBytes != 128_000 || maxHeldResults != 32 || maxHeldResultBytes != 2*1024*1024 {
 		t.Fatalf("private capacities changed without calibration: evidence=%d/%d trajectory=%d/%d held=%d/%d", defaultReviewEvidenceHandles, defaultReviewEvidenceBytes, defaultReviewTrajectoryFacts, defaultReviewTrajectoryBytes, maxHeldResults, maxHeldResultBytes)
 	}

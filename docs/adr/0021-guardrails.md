@@ -142,7 +142,7 @@ A tool with no matching rule is **unchecked** — guardrails are opt-in per tool
 > The per-session `maxChecks`, `minContentBytes`, and `maxContentBytes` input
 > skips described in the original version of this section were removed by
 > [ADR 0049](./0049-guardrails-remove-maxchecks.md),
-> [ADR 0342](./0342-contextual-investigative-guardrails.md), and
+> [ADR 0350](./0350-contextual-investigative-guardrails.md), and
 > [ADR 0050](./0050-guardrails-remove-maxcontentbytes.md), respectively.
 
 Each matched boundary is reviewed; content length is not a reason to skip it. Finite

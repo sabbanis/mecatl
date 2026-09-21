@@ -36,7 +36,7 @@ func loadGuardrailCorpus(t *testing.T) guardraileval.Corpus {
 	return corpus
 }
 
-func TestADR_0342_ContextualGuardrails_Scenario6_PairedCorpus(t *testing.T) {
+func TestADR_0350_ContextualGuardrails_Scenario6_PairedCorpus(t *testing.T) {
 	corpus := loadGuardrailCorpus(t)
 	if corpus.SchemaVersion != guardraileval.CorpusSchemaVersion || corpus.Name == "" {
 		t.Fatalf("corpus identity = %+v", corpus)
@@ -73,7 +73,7 @@ func TestADR_0342_ContextualGuardrails_Scenario6_PairedCorpus(t *testing.T) {
 	}
 }
 
-func TestADR_0342_ContextualGuardrails_Scenario6_QualityReportSchema(t *testing.T) {
+func TestADR_0350_ContextualGuardrails_Scenario6_QualityReportSchema(t *testing.T) {
 	corpus := loadGuardrailCorpus(t)
 	baselineData, err := os.ReadFile("testdata/contextual_guardrails_baseline.v1.json")
 	if err != nil {

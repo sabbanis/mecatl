@@ -22,7 +22,7 @@ func (f *fakeGuardrailClient) GetGuardrailReviewDetail(context.Context, *mecatlv
 	return f.detail, nil
 }
 
-func TestADR_0342_ContextualGuardrails_Scenario7_InterfaceProjectionSafety(t *testing.T) {
+func TestADR_0350_ContextualGuardrails_Scenario7_InterfaceProjectionSafety(t *testing.T) {
 	event := &mecatlv1.Event{Type: "permission.ask", RunId: "run-1", Ask: &mecatlv1.PermissionAsk{AskId: "a", Tool: "Shell", Guardrail: &mecatlv1.GuardrailApprovalScope{ReviewId: "r", Kind: mecatlv1.GuardrailApprovalKind_GUARDRAIL_APPROVAL_KIND_RESULT_RELEASE}}}
 	ask, ok := EventToMsg(event).(PermissionAskMsg)
 	if !ok || ask.ExpectedRunID != "run-1" || ask.Guardrail == nil || ask.Guardrail.Kind != "result_release" || ask.Guardrail.RepeatAvailable {
