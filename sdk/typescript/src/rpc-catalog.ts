@@ -1087,8 +1087,10 @@ const rpcCatalogRows = [
       "/v1/sessions/{id}/mcp-authorizations/{authorization_id}/recheck",
       ["id=session_id", "authorization_id=authorization_id"],
       [],
-      "json",
+      "none",
       "sse",
+      "",
+      "event",
     ),
   }),
   rpc({
@@ -1103,8 +1105,10 @@ const rpcCatalogRows = [
       "/v1/sessions/{id}/mcp-authorizations/{authorization_id}/cancel",
       ["id=session_id", "authorization_id=authorization_id"],
       [],
-      "json",
+      "none",
       "sse",
+      "",
+      "event",
     ),
   }),
   rpc({

@@ -3,8 +3,8 @@
 Each document here is an acceptance plan or completed acceptance record: the smallest set of
 work that makes one **Bounded** or **Architectural** issue/capability demonstrable on the
 running harness. The classifier and routing rules are canonical in
-[`docs/development-process.md`](../development-process.md). Spike and Routine work do not
-create plans. Classification follows the decision and blast radius, not diff size, and
+[`docs/development-process.md`](../development-process.md). Spike, Routine, and Cleanup work do
+not create plans. Classification follows the decision and blast radius, not diff size, and
 workers escalate uncertainty rather than silently downgrading. Plans are organized scenario-first — acceptance is about what the
 harness can show, not which packages exist on disk. A focused issue may use one
 scenario and one orchestration task; plans must not manufacture complexity. Each
@@ -340,6 +340,11 @@ PR after verification. There is no cleanup or status-only PR.
   descriptor-guided Timestamp and Duration decoding for daemon stdlib-JSON responses across unary
   HTTP and SSE, preserving ProtoJSON strings, typed failures, and the registered raw response.
   Status: proposed.
+- [TypeScript SDK malformed-success decoding](sdk-malformed-success-decoding.md) -
+  cause-free protocol errors for malformed successful unary HTTP and ordinary SSE payloads,
+  retaining safe status and request-ID metadata while preserving server, transport, and
+  cancellation causes. Status: in-progress stacked implementation candidate; the local full
+  race suite is host-linker-blocked and remains for CI.
 
 - [Canonical Shell command tool](canonical-shell-command-tool.md) — canonical `Shell`
   and `ShellStatus` model-facing names, safe legacy `Bash` input normalization, and
