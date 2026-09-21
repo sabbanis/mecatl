@@ -175,7 +175,9 @@ func (s *Server) RequestAuthorization(ctx context.Context, req *brokerv1.Request
 	if e != nil {
 		return nil, e
 	}
+	s.mu.Lock()
 	target, ok := a.tools[call.Name].(tool.AuthorizationRequester)
+	s.mu.Unlock()
 	if !ok {
 		return nil, invalid("tool is not authorization-capable")
 	}
@@ -219,11 +221,17 @@ func (s *Server) AbortAuthorization(ctx context.Context, req *brokerv1.AbortAuth
 	if e != nil {
 		return nil, e
 	}
+	s.mu.Lock()
+	targets := make([]tool.AuthorizationRequester, 0, len(a.tools))
 	for _, target := range a.tools {
 		if requester, ok := target.(tool.AuthorizationRequester); ok {
-			if e = requester.AbortAuthorization(ctx, auth); e == nil {
-				return &brokerv1.AbortAuthorizationResponse{}, nil
-			}
+			targets = append(targets, requester)
+		}
+	}
+	s.mu.Unlock()
+	for _, requester := range targets {
+		if e = requester.AbortAuthorization(ctx, auth); e == nil {
+			return &brokerv1.AbortAuthorizationResponse{}, nil
 		}
 	}
 	if e == nil {
@@ -378,10 +386,16 @@ func (s *Server) workspaceResult(ctx context.Context, incarnation, handle string
 	}
 	var desc []*brokerv1.ToolDescriptor
 	if result.Catalogue != nil {
-		desc, _, err = descriptors(result.Catalogue.Tools())
+		var tools map[string]tool.Tool
+		desc, tools, err = descriptors(result.Catalogue.Tools())
 		if err != nil {
 			return workspaceResultWire{}, status.Error(codes.Internal, "invalid workspace catalogue")
 		}
+		// A connected catalogue is the complete frozen set for this enrollment.
+		// Publish its descriptors and executable tools together for this handle.
+		s.mu.Lock()
+		a.tools = tools
+		s.mu.Unlock()
 	}
 	return workspaceResultWire{ref: workspaceRefToWire(result.Ref), status: string(result.Status), tools: desc}, nil
 }
