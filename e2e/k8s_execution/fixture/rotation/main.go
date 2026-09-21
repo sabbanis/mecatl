@@ -82,8 +82,13 @@ func manifest(generation uint64, audience, active string, keys []keyEntry, cert,
 	}
 	return map[string]any{
 		"version": 1, "generation": generation, "issuer": "https://mecatl.execution.test", "audience": audience, "activeKeyID": active, "grantTTL": "1m", "clockSkew": "5s", "keys": entries,
-		"tls":     map[string]any{"certificateFile": cert, "privateKeyFile": privateKey, "clientCAFile": clients},
-		"clients": []any{map[string]any{"uri": "spiffe://mecatl.test/client/mecak8s", "mayAttestOwner": true, "administrator": true}, map[string]any{"uri": "spiffe://mecatl.test/client/intruder", "mayAttestOwner": true, "administrator": false}},
+		"tls": map[string]any{"certificateFile": cert, "privateKeyFile": privateKey, "clientCAFile": clients},
+		"clients": []any{
+			map[string]any{"uri": "spiffe://mecatl.test/client/mecak8s", "mayAttestOwner": true, "administrator": true},
+			map[string]any{"uri": "spiffe://mecatl.test/client/intruder", "mayAttestOwner": true, "administrator": false},
+			map[string]any{"uri": "spiffe://mecatl.test/client/operations", "mayAttestOwner": true, "administrator": true, "administratorFor": []string{"spiffe://mecatl.test/client/mecak8s"}},
+			map[string]any{"uri": "spiffe://mecatl.test/client/wrong-scope", "mayAttestOwner": true, "administrator": true, "administratorFor": []string{"spiffe://mecatl.test/client/intruder"}},
+		},
 	}
 }
 

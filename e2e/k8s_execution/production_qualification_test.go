@@ -312,6 +312,7 @@ func TestKindExecutionProductionSecurityRotation(t *testing.T) {
 	// Restore fixture client compatibility through a higher generation; this is
 	// another forward rotation, never a high-water-mark rollback.
 	restoreFixtureSecurity(t, ctx, kubeconfig, rotationDir)
+	qualifyDistinctAdministrator(t, ctx, state, kubeconfig, "rotated")
 }
 
 func acquireCurrentAuthorityRun(ctx context.Context, req executionenv.RunClaimRequest, acquire func(context.Context, executionenv.RunClaimRequest) (executionenv.RunClaim, error), retryDelay time.Duration) (executionenv.RunClaim, error) {
@@ -1135,6 +1136,20 @@ func runKindExecutionProductionCompatiblePrototypeMigration(t *testing.T) {
 	}
 	if err := client.MigrateEnvironment(ctx, fixture.Environment, fixture.Owner, 1, before.PodUID, before.PVCUID, "migration-compatible-v1"); err != nil {
 		t.Fatalf("migrate compatible prototype: %v", err)
+	}
+	if err := client.MigrateEnvironment(ctx, fixture.Environment, fixture.Owner, 1, before.PodUID, before.PVCUID, "migration-compatible-v1"); err != nil {
+		t.Fatalf("exact migration replay: %v", err)
+	}
+	if err := client.MigrateEnvironment(ctx, fixture.Environment, fixture.Owner, 0, before.PodUID, before.PVCUID, "migration-compatible-v1"); !isRemoteCode(err, executionenv.CodeConflict) {
+		t.Fatal("migration receipt accepted changed source schema:", remoteErrorCode(err))
+	}
+	if got := kubeValue(t, ctx, kubeconfig, "get", "executionenvironment", fixture.Environment.ID, "-n", namespace, "-o", "jsonpath={.status.lastMigrationFromSchema}"); got != "1" {
+		t.Fatal("API server pruned the exact migration receipt")
+	}
+	runKubectl(t, ctx, kubeconfig, "patch", "executionenvironment/"+fixture.Environment.ID, "-n", namespace, "--subresource=status", "--type=merge", "--dry-run=server", "-p", `{"status":{"lastMigrationFromSchema":0}}`)
+	invalid := command(ctx, kubeconfig, "patch", "executionenvironment/"+fixture.Environment.ID, "-n", namespace, "--subresource=status", "--type=merge", "--dry-run=server", "-p", `{"status":{"lastMigrationFromSchema":2}}`)
+	if out, err := invalid.CombinedOutput(); err == nil || !bytes.Contains(out, []byte("lastMigrationFromSchema")) || !bytes.Contains(out, []byte("Unsupported value")) {
+		t.Fatal("API server did not reject an unsupported migration receipt schema")
 	}
 	after := waitExecutionStatus(t, ctx, kubeconfig, fixture.Environment.ID, func(s executionStatus) bool { return s.Ready && s.SpecSchema == 2 && s.StatusSchema == 2 })
 	if after.PodUID != before.PodUID || after.PVCUID != before.PVCUID || after.Epoch != before.Epoch+1 {

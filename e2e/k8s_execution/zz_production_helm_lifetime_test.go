@@ -5,7 +5,11 @@ package k8s_execution_test
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -20,6 +24,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 
+	"github.com/stacklok/mecatl/internal/adapter/executionclient"
 	"github.com/stacklok/mecatl/internal/executionenv"
 )
 
@@ -42,6 +47,7 @@ func TestKindExecutionProductionHelmLifetime(t *testing.T) {
 	if err != nil || built.State != executionenv.CommandSucceeded || built.Result.ExitCode != 0 {
 		t.Fatal("build lifetime probe failed")
 	}
+	assertRetiredFixtureKeyDenied(t, ctx, client, state, rc)
 	release()
 	// Occupy the single-slot profile; its reservation must still constrain Ensure
 	// after adoption, rather than only matching a ConfigMap annotation.
@@ -130,6 +136,17 @@ func TestKindExecutionProductionHelmLifetime(t *testing.T) {
 	if err := json.Unmarshal([]byte(authorityBefore.Data["state.json"]), &priorHistory); err != nil || len(priorHistory.Fingerprints) == 0 {
 		t.Fatal("missing pre-upgrade authority history")
 	}
+	policiesBefore := lifetimePolicies(ctx, t, kubeconfig)
+	liveLedgers := map[string]corev1.ConfigMap{capacityBefore.Name: capacityBefore, authorityBefore.Name: authorityBefore, current.Name: current}
+	liveLedgers["mecatl-execution-profiles"] = lifetimeConfigMap(ctx, t, kubeconfig, "mecatl-execution-profiles")
+	waitProviderReadyReplicas(t, ctx, kubeconfig, 2)
+	if _, err := helmLifetime(ctx, kubeconfig, "upgrade", "mecatl-execution", chart, "-f", valuesPath, "--wait", "--timeout=4m"); !errors.Is(err, errLifetimeNotQuiesced) {
+		t.Fatal("live same-release upgrade did not reject provider writers with the quiescence error")
+	}
+	assertLifetimeRetained(ctx, t, kubeconfig, liveLedgers, policiesBefore)
+	if status := readExecutionStatus(t, ctx, kubeconfig, attached.Environment.ID); status != before || envUID != kubeValue(t, ctx, kubeconfig, "get", "executionenvironment", attached.Environment.ID, "-n", namespace, "-o", "jsonpath={.metadata.uid}") || before.PodUID != kubeValue(t, ctx, kubeconfig, "get", "pod", pod, "-n", namespace, "-o", "jsonpath={.metadata.uid}") || before.PVCUID != kubeValue(t, ctx, kubeconfig, "get", "pvc", "-n", namespace, "-l", "execution.mecatl.dev/environment="+attached.Environment.ID, "-o", "jsonpath={.items[*].metadata.uid}") {
+		t.Fatal("rejected live upgrade changed runtime identity or status")
+	}
 	// Quiesce all writers before lookup snapshots are rendered into the upgrade.
 	if err := restore(ctx); err != nil {
 		t.Fatal("compatible Helm upgrade failed:", err)
@@ -202,6 +219,7 @@ func TestKindExecutionProductionHelmLifetime(t *testing.T) {
 	}
 	rc, release = acquireRun(t, ctx, reattachedClient, owner, binding, reattached, "helm-lifetime-read")
 	waitFileContent(t, ctx, reattachedClient, rc, "helm-sentinel", "retained-helm-data\n", "same-release Helm adoption")
+	assertRetiredFixtureKeyDenied(t, ctx, reattachedClient, state, rc)
 	release()
 	if _, err := reattachedClient.Ensure(ctx, quotaBinding+"-excess", "quota-cas", owner, "ensure-"+quotaBinding+"-excess"); !isRemoteCode(err, executionenv.CodeResourceExhausted) {
 		t.Fatal("retained capacity did not reject excess allocation:", remoteErrorCode(err))
@@ -230,6 +248,56 @@ func TestKindExecutionProductionHelmLifetime(t *testing.T) {
 	waitReady(t, ctx, restoredClient, owner, binding, attached.Environment)
 	// Retain the test's data by default, as the chart does; no forced cleanup or
 	// finalizer removal. The explicit test-cluster owner controls final disposal.
+}
+
+// Quiesced upgrades can outlive a grant/claim. Re-sign the CURRENT claim with
+// the fixture's retired k1, before and after adoption: expiry, released claims,
+// and stale epochs cannot masquerade as durable authority rejection.
+func assertRetiredFixtureKeyDenied(t *testing.T, ctx context.Context, client *executionclient.Client, state string, rc executionenv.RequestContext) {
+	t.Helper()
+	parts := strings.Split(rc.Grant, ".")
+	if len(parts) != 3 {
+		t.Fatal("invalid current fixture grant")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatal("decode current fixture grant")
+	}
+	var claims executionenv.GrantClaims
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		t.Fatal("decode current fixture claims")
+	}
+	material, err := os.ReadFile(filepath.Join(state, "pki", "grant-key.pem"))
+	if err != nil {
+		t.Fatal("read test-owned retired signing key")
+	}
+	block, _ := pem.Decode(material)
+	if block == nil {
+		t.Fatal("decode test-owned signing key")
+	}
+	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if err != nil {
+		t.Fatal("parse test-owned signing key")
+	}
+	private, ok := key.(ed25519.PrivateKey)
+	if !ok {
+		t.Fatal("fixture signing key is not Ed25519")
+	}
+	claims.KeyID = "k1"
+	old := rc
+	old.Grant, err = executionenv.SignGrant(private, claims)
+	if err != nil {
+		t.Fatal("sign retired-authority fixture grant")
+	}
+	verifier := executionenv.GrantVerifier{Keys: map[string]ed25519.PublicKey{"k1": private.Public().(ed25519.PublicKey)}, Issuer: claims.Issuer, Audience: claims.Audience, MaxLifetime: time.Minute}
+	if _, err := verifier.Verify(old.Grant, executionenv.GrantExpectation{Client: claims.Client, OwnerHash: claims.OwnerHash, BindingID: rc.BindingID, RunID: rc.RunID, ClaimID: rc.ClaimID, Environment: rc.Environment, Epoch: rc.Epoch, GrantGeneration: rc.GrantGeneration, Operation: executionenv.OpFileRead}); err != nil {
+		t.Fatal("retired-authority control is not cryptographically valid and current")
+	}
+	waitFileContent(t, ctx, client, rc, "helm-sentinel", "retained-helm-data\n", "current authority before retired-key probe")
+	if _, err := client.File(ctx, executionenv.FileRequest{Context: old, Operation: executionenv.OpFileRead, Path: "helm-sentinel"}); !isRemoteCode(err, executionenv.CodePermissionDenied) {
+		t.Fatal("retired signing authority did not remain denied:", remoteErrorCode(err))
+	}
+	waitFileContent(t, ctx, client, rc, "helm-sentinel", "retained-helm-data\n", "current authority after retired-key probe")
 }
 
 func requireOwnedHelmFixture(t *testing.T, state, kubeconfig string) {
@@ -343,14 +411,19 @@ func quiesceLifetimeProvider(ctx context.Context, kubeconfig string) error {
 	return nil
 }
 
+var errLifetimeNotQuiesced = errors.New("execution provider must be quiesced")
+
 func helmLifetime(ctx context.Context, kubeconfig string, args ...string) ([]byte, error) {
 	full := append([]string{"--kubeconfig", kubeconfig, "--kube-context", os.Getenv("MECATL_KUBE_CONTEXT"), "--namespace", namespace}, args...)
 	cmd := exec.CommandContext(ctx, "helm", full...)
 	cmd.Env = cleanEnv()
-	var out lifetimeOutput
+	var out, stderr lifetimeOutput
 	cmd.Stdout = &out
-	cmd.Stderr = io.Discard
+	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if bytes.Contains(stderr.Bytes(), []byte("quiesce the execution provider (scale to zero and wait for its Pods to disappear) before upgrading")) {
+			return nil, errLifetimeNotQuiesced
+		}
 		return nil, fmt.Errorf("Helm %s failed: %w (output suppressed)", args[0], err)
 	}
 	return out.Bytes(), nil

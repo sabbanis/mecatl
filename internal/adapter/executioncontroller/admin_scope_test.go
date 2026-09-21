@@ -354,9 +354,55 @@ func TestScopedAdminMigrationReceiptRetainsUIDPreconditions(t *testing.T) {
 	if err := callScopedAdmin(t.Context(), f.client, "migrate", q, scopeOwner); err != nil {
 		t.Fatal(err)
 	}
+	if err := callScopedAdmin(t.Context(), f.client, "migrate", q, scopeOwner); err != nil {
+		t.Fatalf("exact migration replay failed: %v", err)
+	}
+	q.ExpectedSchema = 0
+	if err := callScopedAdmin(t.Context(), f.client, "migrate", q, scopeOwner); status.Code(err) != codes.Aborted {
+		t.Fatalf("migration receipt bypassed source schema: %v", err)
+	}
+	q.ExpectedSchema = 1
 	q.ExpectedPVCUID = "stale"
 	if err := callScopedAdmin(t.Context(), f.client, "migrate", q, scopeOwner); status.Code(err) != codes.Aborted {
 		t.Fatalf("migration receipt bypassed UID: %v", err)
+	}
+}
+
+func TestMigrationCompletedCASReplayRequiresExactSourceSchema(t *testing.T) {
+	for _, receipt := range []string{"exact", "changed", "absent"} {
+		t.Run(receipt, func(t *testing.T) {
+			f := newAdminScopeFixture(t, "migrate", scopeAdmin)
+			f.policy(t, true, []string{scopeCreator})
+			var raced bool
+			f.dynamic.PrependReactor("update", "executionenvironments", func(action k8stesting.Action) (bool, runtime.Object, error) {
+				u := action.(k8stesting.UpdateAction).GetObject().(*unstructured.Unstructured)
+				if raced || textNested(u.Object, "status", "lastMigrationOperationID") == "" {
+					return false, nil, nil
+				}
+				raced = true
+				completed := u.DeepCopy()
+				switch receipt {
+				case "changed":
+					_ = unstructured.SetNestedField(completed.Object, int64(0), "status", "lastMigrationFromSchema")
+				case "absent":
+					unstructured.RemoveNestedField(completed.Object, "status", "lastMigrationFromSchema")
+				}
+				if err := f.dynamic.Tracker().Update(ExecutionEnvironmentGVR, completed, "ns"); err != nil {
+					t.Fatal(err)
+				}
+				return true, nil, apierrors.NewConflict(ExecutionEnvironmentGVR.GroupResource(), "env", nil)
+			})
+			q := adminRequestFixture()
+			q.ExpectedSchema = 1
+			err := callScopedAdmin(t.Context(), f.client, "migrate", q, scopeOwner)
+			want := codes.Aborted
+			if receipt == "exact" {
+				want = codes.OK
+			}
+			if !raced || status.Code(err) != want {
+				t.Fatalf("CAS replay raced=%t code=%v, want %v", raced, status.Code(err), want)
+			}
+		})
 	}
 }
 
@@ -374,6 +420,74 @@ func TestScopedAdminEqualGenerationDriftFailsClosed(t *testing.T) {
 	}
 	if err := callScopedAdmin(t.Context(), f.client, "revoke", q, scopeOwner); status.Code(err) != codes.Unavailable {
 		t.Fatalf("stale snapshot admitted RPC: %v", err)
+	}
+}
+
+func TestScopedAdminWithOwnerAttestationCannotUseAnotherCreatorsDataPlane(t *testing.T) {
+	f := newAdminScopeFixture(t, "data", scopeAdmin)
+	f.policy(t, true, []string{scopeCreator})
+	f.manifest.Generation++
+	f.manifest.Clients[0].MayAttestOwner = true
+	writeManifest(t, f.path, f.manifest)
+	if err := f.manager.Reload(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	ref := &executionv1.EnvironmentRef{Id: "env", Revision: "rev"}
+	owner := &executionv1.Owner{Issuer: scopeOwner.Issuer, Subject: scopeOwner.Subject}
+	before, err := f.dynamic.Resource(ExecutionEnvironmentGVR).Namespace("ns").Get(t.Context(), "env", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs, err := referenceRecords(before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refs = append(refs, referenceRecord{BindingID: "pending", State: executionenv.ReferencePendingCreate, OperationID: "pending-op", CreatedAt: time.Now().UTC()})
+	if err := setReferenceRecords(before, refs); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.dynamic.Resource(ExecutionEnvironmentGVR).Namespace("ns").UpdateStatus(t.Context(), before, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	for name, call := range map[string]func() error{
+		"attach": func() error {
+			_, err := f.client.AttachEnvironment(t.Context(), &executionv1.AttachEnvironmentRequest{Context: &executionv1.RequestContext{Environment: ref, Owner: owner, BindingId: "binding"}, Purpose: "session"})
+			return err
+		},
+		"acquire": func() error {
+			_, err := f.client.AcquireRun(t.Context(), &executionv1.AcquireRunRequest{Environment: ref, Owner: owner, BindingId: "binding", RunId: "run", OperationId: "acquire", TtlMillis: 60000})
+			return err
+		},
+		"reference": func() error {
+			_, err := f.client.CommitReference(t.Context(), &executionv1.ReferenceMutationRequest{Environment: ref, Owner: owner, BindingId: "pending", OperationId: "pending-op"})
+			return err
+		},
+		"exact discovery": func() error {
+			_, err := f.client.ListReferenceIntents(t.Context(), &executionv1.ListReferenceIntentsRequest{Environment: ref, Owner: owner, BindingId: "pending"})
+			return err
+		},
+	} {
+		if err := call(); status.Code(err) != codes.NotFound {
+			t.Errorf("%s: expected creator-bound not found, got %v", name, err)
+		}
+	}
+	for _, query := range []*executionv1.ListReferenceIntentsRequest{{Owner: owner}, {}} {
+		list, err := f.client.ListReferenceIntents(t.Context(), query)
+		if err != nil || len(list.GetIntents()) != 0 {
+			t.Fatal("discovery exposed another creator's pending reference")
+		}
+	}
+	after, err := f.dynamic.Resource(ExecutionEnvironmentGVR).Namespace("ns").Get(t.Context(), "env", metav1.GetOptions{})
+	if err != nil || !reflect.DeepEqual(before.Object, after.Object) {
+		t.Fatal("creator-bound denials changed foreign environment")
+	}
+	own, err := f.client.EnsureEnvironment(t.Context(), &executionv1.EnsureEnvironmentRequest{BindingId: "own", Profile: "go", Owner: owner, OperationId: "own-create"})
+	if err != nil || own.GetEnvironment().GetId() == "env" {
+		t.Fatalf("explicit owner attestation did not permit own allocation: %v", err)
+	}
+	list, err := f.client.ListReferenceIntents(t.Context(), &executionv1.ListReferenceIntentsRequest{Owner: owner})
+	if err != nil || len(list.GetIntents()) != 1 || list.Intents[0].GetEnvironment().GetId() != own.GetEnvironment().GetId() {
+		t.Fatal("discovery did not isolate the actor's own pending allocation")
 	}
 }
 

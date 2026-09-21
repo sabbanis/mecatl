@@ -80,6 +80,10 @@ using a local workspace.
 
 ## Native Kubernetes lifecycle and retention
 
+**DRAFT candidate, not released or approved for production.** The native provider
+is intended for an operator-controlled cluster and foreground commands only.
+It has no force-takeover recovery and is not a hostile multi-tenancy boundary.
+
 The optional Kubernetes execution provider stores environment ownership in a
 namespaced `ExecutionEnvironment`. Provider replicas coordinate through
 Kubernetes resource-version compare-and-swap; a replica restart does not clear
@@ -157,7 +161,8 @@ this shape:
 ```
 
 The all-zero fingerprint and 2027 dates are non-secret example values. Replace
-them with the public-key fingerprint and a reviewed active window before use.
+the fingerprint with the lowercase hexadecimal SHA-256 hash of the raw 32-byte
+Ed25519 public key, not PEM text or DER encoding, and use a reviewed active window.
 
 `administratorFor` permits administration of environments created by the listed
 client URIs, alongside the administrator's own environments. A nonempty list

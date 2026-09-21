@@ -153,6 +153,12 @@ shared placement, no-FS, child-environment, and reattachment model.
 
 ### Kubernetes execution provider
 
+**DRAFT candidate, not released or approved for production.** These instructions
+apply to the optional native provider, not to the maturity of `mecak8s` itself.
+Use an operator-controlled cluster. This slice supports foreground commands,
+has no force-takeover recovery, and does not promise hostile multi-tenant
+isolation.
+
 The optional execution provider runs as a separate service and controller with its
 own `mecatl-execution` chart. `mecak8s` remains a client and receives no Pod,
 PVC, custom-resource, or controller management permissions.
@@ -270,8 +276,9 @@ resourceGovernance:
   limitsEphemeralStorage: 80Gi
 ```
 
-Replace the all-zero `publicKeySHA256` with the SHA-256 fingerprint of the
-Ed25519 public key corresponding to `grant-k1.pem`. Replace the sample activation
+Replace the all-zero `publicKeySHA256` with the lowercase hexadecimal SHA-256
+hash of the **raw 32-byte Ed25519 public key** corresponding to `grant-k1.pem`,
+not the PEM text or DER encoding. Replace the sample activation
 and verification dates with a current, reviewed rotation window. Increase
 `generation` for every authority change, including a CA, client policy,
 issuer/audience, key state, key window, or TLS identity change.
@@ -351,6 +358,13 @@ names, profiles, network policy configuration, and security Secret name**. Keep
 operator configuration store. Retain the operator-owned Secret and its key
 history independently; the chart neither owns nor reads Secret contents.
 
+**Before quiescing:** verify that the retained profiles ConfigMap has a nonempty
+`data["lifetime.json"]` and that the authority/capacity ledgers and original
+release ownership are intact. Pre-retention installations without this history
+cannot be automatically adopted. Stop this procedure and recover trusted retained
+history; do not synthesize it from proposed values or reset authority. The chart
+reports missing history separately from an incompatible lifetime configuration.
+
 For a compatible provider upgrade:
 
 1. Stop new client traffic and finish or explicitly fence active work. Stop all
@@ -414,11 +428,17 @@ Use live Helm install/upgrade for this lifecycle. Offline `helm template` cannot
 perform ownership or history lookups and is not an adoption mechanism. Keep
 provider writers stopped for upgrades; lookup plus apply is not a cross-resource
 transaction. Rendering rejects a nonzero existing provider Deployment or any
-remaining provider Pod, including a terminating Pod. Installations without the retained lifetime configuration/history
-cannot be automatically adopted. Changed release/namespace adoption, chart
-rollback, `--take-ownership`, CRD or namespace deletion with retained resources,
-and force-finalizer cleanup are unsupported. Missing history requires recovery
-from trusted retained state, not a fresh generation-1 authority.
+remaining provider Pod, including a terminating Pod. Changed release/namespace
+adoption, chart rollback, `--take-ownership`, CRD or namespace deletion with
+retained resources, and force-finalizer cleanup are unsupported.
+
+Final infrastructure decommission is not automated by this candidate. Supported
+`RetireEnvironment` and `DeleteRetiredEnvironment` operations can terminate and
+dispose of eligible individual environments; they do not remove the retained
+NetworkPolicies, configuration, ledgers, or CRD. There is no supported final
+infrastructure-cleanup procedure here. Manual destructive cleanup is outside the
+supported lifecycle. Keep retention defaults and authority history, and never
+reset ledgers or remove finalizers to bypass a failed safety check.
 
 #### Run an administrative lifecycle operation
 
@@ -444,6 +464,14 @@ been removed. After maintenance, remove its scope entry and increase
 `generation` again. Subsequent requests, including receipt retries on established
 connections, are denied; already admitted lifecycle operations may finish safe
 reconciliation.
+
+An administrative `not_found` response deliberately does not distinguish a
+missing environment from a wrong owner, revision, or creator scope. Check the
+exact environment ID/revision and original owner against your authorized
+operations record, then check that `administratorFor` names the original
+creator's exact canonical client URI. If the scope is wrong, publish a reviewed
+manifest at a higher `generation` and verify readiness before retrying. The RPC
+will not disclose another creator's data to diagnose a scope mismatch.
 
 First capture the private identity while the environment still has a reference:
 

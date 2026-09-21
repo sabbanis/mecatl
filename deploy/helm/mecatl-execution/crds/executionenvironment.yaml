@@ -198,6 +198,7 @@ spec:
                   expectedPodUID: {type: string, minLength: 1, maxLength: 128}
                   expectedPVCUID: {type: string, minLength: 1, maxLength: 128}
               lastMigrationOperationID: {type: string, maxLength: 1024}
+              lastMigrationFromSchema: {type: integer, format: int64, enum: [0, 1]}
               conditions:
                 type: array
                 items:

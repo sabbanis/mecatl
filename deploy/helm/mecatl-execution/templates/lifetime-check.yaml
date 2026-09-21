@@ -6,6 +6,9 @@
 {{- end -}}
 {{- $profiles := lookup "v1" "ConfigMap" .Release.Namespace (printf "%s-profiles" $name) -}}
 {{- if $profiles -}}
+{{- if not (dig "lifetime.json" "" ($profiles.data | default dict)) -}}
+{{- fail "retained execution profiles are missing lifetime.json history; automatic adoption is unsupported, recover trusted retained history before upgrading" -}}
+{{- end -}}
 {{- if ne (dig "lifetime.json" "" ($profiles.data | default dict)) (include "mecatl-execution.lifetimeConfig" .) -}}
 {{- fail "retained execution profiles/network configuration is incompatible; preserve the original lifetime configuration" -}}
 {{- end -}}

@@ -12,15 +12,7 @@ import (
 
 func scopedManifestClient(t *testing.T, uri string, admin bool, scope []string) securityClientManifest {
 	t.Helper()
-	raw, err := json.Marshal(map[string]any{"uri": uri, "administrator": admin, "administratorFor": scope})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var entry securityClientManifest
-	if err := json.Unmarshal(raw, &entry); err != nil {
-		t.Fatal(err)
-	}
-	return entry
+	return securityClientManifest{URI: uri, Administrator: admin, AdministratorFor: scope}
 }
 
 func TestAdministratorScopeManifestValidation(t *testing.T) {

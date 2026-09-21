@@ -320,11 +320,12 @@ func (s *Store) MigrateEnvironment(ctx context.Context, q adminLifecycleRequest)
 		if textNested(o.Object, "status", "pod", "uid") != q.ExpectedPodUID || textNested(o.Object, "status", "pvc", "uid") != q.ExpectedPVCUID {
 			return &executionenv.Error{Code: executionenv.CodeConflict, Message: "prototype runtime identity mismatch"}
 		}
-		if intNested(o.Object, "spec", "schemaVersion") == currentSchemaVersion && intNested(o.Object, "status", "schemaVersion") == currentSchemaVersion && textNested(o.Object, "status", "lastMigrationOperationID") == q.OperationID {
+		if completedMigrationMatches(o, q) {
 			return nil
 		}
 		if migrationID := textNested(o.Object, "status", "migrationOperation", "id"); migrationID != "" {
-			if migrationID != q.OperationID || intNested(o.Object, "status", "migrationOperation", "fromSchema") != q.ExpectedSchema {
+			fromSchema, found, err := unstructured.NestedInt64(o.Object, "status", "migrationOperation", "fromSchema")
+			if migrationID != q.OperationID || err != nil || !found || fromSchema != q.ExpectedSchema {
 				return &executionenv.Error{Code: executionenv.CodeConflict, Message: "another schema migration is active"}
 			}
 			return nil
@@ -376,10 +377,11 @@ func (s *Store) MigrateEnvironment(ctx context.Context, q adminLifecycleRequest)
 		if err := adminSubject(o, q); err != nil {
 			return err
 		}
-		if intNested(o.Object, "spec", "schemaVersion") != currentSchemaVersion || textNested(o.Object, "status", "migrationOperation", "id") != q.OperationID || intNested(o.Object, "status", "schemaVersion") != q.ExpectedSchema {
-			if intNested(o.Object, "status", "schemaVersion") == currentSchemaVersion && textNested(o.Object, "status", "lastMigrationOperationID") == q.OperationID {
-				return nil
-			}
+		if completedMigrationMatches(o, q) {
+			return nil
+		}
+		fromSchema, found, schemaErr := unstructured.NestedInt64(o.Object, "status", "migrationOperation", "fromSchema")
+		if intNested(o.Object, "spec", "schemaVersion") != currentSchemaVersion || textNested(o.Object, "status", "migrationOperation", "id") != q.OperationID || intNested(o.Object, "status", "schemaVersion") != q.ExpectedSchema || schemaErr != nil || !found || fromSchema != q.ExpectedSchema || textNested(o.Object, "status", "pod", "uid") != q.ExpectedPodUID || textNested(o.Object, "status", "pvc", "uid") != q.ExpectedPVCUID {
 			return &executionenv.Error{Code: executionenv.CodeConflict, Message: "schema migration phase mismatch"}
 		}
 		epoch, ok := epochValue(o)
@@ -389,9 +391,20 @@ func (s *Store) MigrateEnvironment(ctx context.Context, q adminLifecycleRequest)
 		_ = unstructured.SetNestedField(o.Object, int64(epoch+1), "status", "epoch") //nolint:gosec // checked above.
 		_ = unstructured.SetNestedField(o.Object, currentSchemaVersion, "status", "schemaVersion")
 		_ = unstructured.SetNestedField(o.Object, q.OperationID, "status", "lastMigrationOperationID")
+		_ = unstructured.SetNestedField(o.Object, q.ExpectedSchema, "status", "lastMigrationFromSchema")
 		unstructured.RemoveNestedField(o.Object, "status", "migrationOperation")
 		return nil
 	})
+}
+
+func completedMigrationMatches(o *unstructured.Unstructured, q adminLifecycleRequest) bool {
+	fromSchema, found, err := unstructured.NestedInt64(o.Object, "status", "lastMigrationFromSchema")
+	return err == nil && found && fromSchema == q.ExpectedSchema &&
+		intNested(o.Object, "spec", "schemaVersion") == currentSchemaVersion &&
+		intNested(o.Object, "status", "schemaVersion") == currentSchemaVersion &&
+		textNested(o.Object, "status", "lastMigrationOperationID") == q.OperationID &&
+		textNested(o.Object, "status", "pod", "uid") == q.ExpectedPodUID &&
+		textNested(o.Object, "status", "pvc", "uid") == q.ExpectedPVCUID
 }
 
 func (s *Store) verifyRuntimeUIDs(ctx context.Context, o *unstructured.Unstructured, q adminLifecycleRequest) error {

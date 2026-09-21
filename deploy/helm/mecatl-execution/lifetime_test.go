@@ -94,7 +94,7 @@ func TestChartRetainedLifetime(t *testing.T) {
 		}, want: "bootstrap is forbidden"},
 		{name: "missing lifetime configuration", mutate: func(m map[string]map[string]any) {
 			delete(m["ConfigMap/test-mecatl-execution-profiles"]["data"].(map[string]any), "lifetime.json")
-		}, want: "configuration is incompatible"},
+		}, want: "missing lifetime.json history"},
 		{name: "missing authority", mutate: func(m map[string]map[string]any) { delete(m, authority) }, want: "bootstrap is forbidden"},
 		{name: "empty authority", mutate: func(m map[string]map[string]any) { m[authority]["data"] = map[string]any{} }, want: "bootstrap is forbidden"},
 		{name: "missing state", mutate: func(m map[string]map[string]any) { m[authority]["data"] = map[string]any{"other": "value"} }, want: "state.json"},
@@ -130,18 +130,14 @@ func TestChartRetainedLifetime(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			data, err := json.Marshal(retained)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var objects map[string]map[string]any
-			if err := json.Unmarshal(data, &objects); err != nil {
-				t.Fatal(err)
+			objects := make(map[string]map[string]any, len(retained))
+			for key, obj := range retained {
+				objects[key] = (&unstructured.Unstructured{Object: obj}).DeepCopy().Object
 			}
 			if tt.mutate != nil {
 				tt.mutate(objects)
 			}
-			_, err = renderLifetime(t, objects, tt.args...)
+			_, err := renderLifetime(t, objects, tt.args...)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("render error=%v, want %q", err, tt.want)
 			}

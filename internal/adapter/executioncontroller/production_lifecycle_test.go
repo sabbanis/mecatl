@@ -179,6 +179,17 @@ func TestOldSchemaFailsClosedAndExplicitMigrationConvertsReferences(t *testing.T
 	if err != nil || len(refs) != 1 || refs[0].BindingID != "session-a" || refs[0].State != executionenv.ReferencePublished {
 		t.Fatalf("migrated refs=%+v err=%v", refs, err)
 	}
+	fromSchema, found, err := unstructured.NestedInt64(got.Object, "status", "lastMigrationFromSchema")
+	if err != nil || !found || fromSchema != 0 {
+		t.Fatal("schema-zero migration lost exact receipt presence")
+	}
+	unstructured.RemoveNestedField(got.Object, "status", "lastMigrationFromSchema")
+	if _, err := dynamicClient.Resource(ExecutionEnvironmentGVR).Namespace("ns").UpdateStatus(t.Context(), got, metav1.UpdateOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MigrateEnvironment(t.Context(), q); !errors.As(err, &controlled) || controlled.Code != executionenv.CodeConflict {
+		t.Fatalf("old receipt without source schema replayed: %v", err)
+	}
 }
 
 func TestInsecurePrototypeMigrationRejectedWithoutRewrite(t *testing.T) {
