@@ -1,15 +1,12 @@
 import { render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ChatInput, ModeSelector } from "./chat-input";
+import { ChatInput } from "./chat-input";
 
 /**
  * The composer's mode-coloured rail and its row policy, proved through the
  * rendered components (the pure tables live in composer-frame.test.ts and
  * lib/permission-mode.test.ts):
  *
- * - The Mode pill carries a filled dot in the box tint's hue for Plan /
- *   Accept edits and none for Manual, so the pill and the rail agree even
- *   where the pill's label collapses to "Mode".
  * - The editor's wrapper carries `--composer-min-rows` only when a caller
  *   sets `rows` or `compact`; otherwise the stylesheet's three-row default
  *   stands alone.
@@ -40,34 +37,6 @@ for (const proto of [Element.prototype, Range.prototype]) {
 
 afterEach(() => {
   vi.restoreAllMocks();
-});
-
-describe("the Mode pill's dot", () => {
-  it("is filled in the info hue for Plan", () => {
-    const { getByRole, getByTestId } = render(
-      <ModeSelector mode="plan" onModeChange={() => {}} />,
-    );
-    const dot = getByTestId("mode-dot");
-    expect(dot.className).toContain("rounded-full");
-    expect(dot.className).toContain("bg-info");
-    expect(dot.getAttribute("aria-hidden")).toBe("true");
-    // The pill stays a labelled control; the dot is decoration only.
-    expect(getByRole("button").textContent).toContain("Plan");
-  });
-
-  it("is filled in the success hue for Accept edits", () => {
-    const { getByTestId } = render(
-      <ModeSelector mode="acceptEdits" onModeChange={() => {}} />,
-    );
-    expect(getByTestId("mode-dot").className).toContain("bg-success");
-  });
-
-  it("is absent for Manual (no colour means ask-me-first)", () => {
-    const { queryByTestId } = render(
-      <ModeSelector mode="default" onModeChange={() => {}} />,
-    );
-    expect(queryByTestId("mode-dot")).toBeNull();
-  });
 });
 
 async function editorWrapper(props: Parameters<typeof ChatInput>[0] = {}) {

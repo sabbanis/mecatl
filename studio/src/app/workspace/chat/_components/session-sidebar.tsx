@@ -913,11 +913,14 @@ function MockProjectItem({ project }: { project: MockProject }) {
         className="group flex items-center gap-2 border-l-[3px] border-transparent py-2 pr-3 pl-3 text-left transition-colors hover:bg-accent"
       >
         {open ? (
-          <FolderOpen className="size-4 shrink-0 text-muted-foreground" />
+          <FolderOpen className="size-4 shrink-0 text-foreground/70" />
         ) : (
-          <FolderClosed className="size-4 shrink-0 text-muted-foreground" />
+          <FolderClosed className="size-4 shrink-0 text-foreground/70" />
         )}
-        <span className="min-w-0 flex-1 truncate text-[0.85rem] font-medium text-muted-foreground select-none group-hover:text-foreground">
+        {/* A project row reads bolder than the chats filed under it (which
+            stay text-muted-foreground), so the folder hierarchy is visible
+            at a glance rather than everything sitting at one flat weight. */}
+        <span className="min-w-0 flex-1 truncate text-[0.85rem] font-semibold text-foreground select-none">
           {project.name}
         </span>
       </button>

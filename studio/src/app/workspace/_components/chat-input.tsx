@@ -254,12 +254,12 @@ interface ChatInputProps {
 }
 
 /**
- * Ghost-style trigger used by dropdowns rendered BELOW the input box
- * (matches the "Build / Claude Opus 5 / Default" reference design).
- * No pill background; subtle hover; small chevron via the trigger itself.
+ * The trigger style for the four controls in the toolbar below the input
+ * box (Mode, Tools, Safety, Model): no outline or fill at rest — only on
+ * hover and while its own menu is open.
  */
 const GHOST_TRIGGER_CLASS =
-  "h-7 gap-1 rounded-full px-2.5 text-sm font-normal text-foreground bg-transparent hover:bg-zinc-200 dark:hover:bg-zinc-700 border-0 shadow-none";
+  "h-7 gap-1 rounded-full border border-transparent bg-transparent px-2.5 text-sm font-normal text-foreground shadow-none hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground";
 
 /** The composer's "+" button: opens the file picker directly to attach files. */
 function FilesDropdown({
@@ -781,9 +781,6 @@ export function ModeSelector({
 }) {
   const label = permissionModeLabel(mode);
   const shown = pending ? `${label} · pending` : label;
-  // Plan / Accept edits carry a filled dot in the box tint's hue (the TUI's
-  // mode-coloured rail), kept visible where the label collapses to "Mode".
-  const dot = modeDotClass(mode);
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -793,13 +790,6 @@ export function ModeSelector({
           disabled={disabled}
           title={`Permission mode: ${label}${pending ? " (pending — applies when the run ends)" : ""} — ⇧Tab cycles`}
         >
-          {dot && (
-            <span
-              aria-hidden
-              data-testid="mode-dot"
-              className={cn("size-2 shrink-0 rounded-full", dot)}
-            />
-          )}
           <span className="max-w-40 truncate @max-md:hidden">
             Mode <span className="text-muted-foreground">{shown}</span>
           </span>
@@ -2592,7 +2582,7 @@ export function ChatInput({
       {/* @container: the Model/Memory pills collapse their value labels via
           container queries when THIS row runs narrow (a ~400px side-panel
           composer), independent of the viewport width. */}
-      <div className="@container -mt-4 pt-5 px-2 pb-1.5 flex items-center gap-1 rounded-b-2xl border border-t-0 border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900 overflow-x-auto hide-scrollbar max-[499px]:hidden">
+      <div className="@container -mt-4 pt-5 px-2 pb-1.5 flex items-center gap-1.5 rounded-b-2xl border border-t-0 border-border bg-muted overflow-x-auto hide-scrollbar max-[499px]:hidden">
         {projects && (
           <ProjectsDropdown
             projects={projects}

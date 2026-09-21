@@ -467,7 +467,10 @@ function DraftView({
           draft-to-chat transition doesn't move the input under your hands. */}
       <div className="relative min-h-0 flex-1">
         <div className="flex h-full flex-col items-center justify-center gap-6 overflow-y-auto px-4 pb-40 max-[499px]:pb-24 lg:px-8">
-          <div className="w-full max-w-xl space-y-4">
+          {/* max-w-[768px] matches the composer's own cap below, so the
+              starter-prompt chips wrap using the same width instead of a
+              narrower centered column. */}
+          <div className="w-full max-w-[768px] space-y-4">
             <DraftGreeting
               showStarterPrompts={showStarterPrompts}
               onPickSeed={onPickSeed}
