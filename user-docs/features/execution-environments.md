@@ -303,16 +303,26 @@ The workflow stages the key in a new 0700 CI directory and 0600 file, then remov
 it from the environment before `live.sh` validates the retained owned state,
 reruns mock qualification, and invokes the trusted credential loader. A missing
 secret fails qualification rather than skipping successfully. The 100-minute job
-bound includes builds, the 45-minute production test bound, 15-minute mock rerun,
-10-minute live smoke, and cleanup; token limits are not a hard dollar cap.
+has explicit step ceilings: setup 9 minutes, production 50, credential staging 1,
+live 25, cleanup 10, and status/artifact reporting 3, leaving 2 minutes of overhead.
+Production and live subprocess groups receive TERM after 49 and 24 minutes,
+respectively, then KILL after a 15-second grace. These stage ceilings are
+intentionally smaller than the sum of all subordinate build, rollout, and test
+bounds. Hitting one fails qualification; it does not prove completion. Per-agent
+token limits remain unchanged and are not a hard dollar cap.
 
-The live script restores mock configuration and deletes its Secret by recorded
-UID using an independent cleanup context. Failures fail qualification. An always-run
-workflow step removes only the CI-created credential file and deletes only the
-recorded cluster after validating its owner, name, namespace, profile, container
-label, private kubeconfig, and context. Ownership drift fails cleanup without
-selecting another cluster. Runner disposal is a last resort, not evidence that
-cleanup succeeded.
+The live script attempts to restore mock configuration and delete its Secret by
+recorded UID using an independent cleanup context. A signal or stage deadline can
+interrupt that attempt. An always-run workflow step has a separate 10-minute
+ceiling to remove the CI-created credential file and delete the owned cluster.
+Production publishes its state path and cluster identity after collision checks
+and before cluster creation; live and cleanup use those fixed step outputs, not
+the mutable local `current` pointer. Cleanup validates the recorded owner, name,
+namespace, profile, container label, private kubeconfig, and context against that
+identity. Ownership drift fails cleanup without selecting another cluster.
+Failure before kubeconfig creation also fails cleanup without deleting a cluster.
+Cleanup is bounded best effort: hard cancellation or runner loss can prevent it.
+Hosted-runner disposal is the fallback, not evidence that cleanup succeeded.
 
 Artifacts are retained for seven days: only a size-bounded `live-summary.json`
 when available and a sanitized `qualification-status.txt`. PKI, kubeconfigs,

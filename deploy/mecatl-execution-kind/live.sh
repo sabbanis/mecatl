@@ -80,14 +80,7 @@ kube_jq() {
 }
 [ "$(kube config current-context)" = "$context" ] || { echo "owned kube context mismatch" >&2; exit 1; }
 build_ko() { package=$1 repo=$2; dev env KIND_EXPERIMENTAL_PROVIDER="${KIND_EXPERIMENTAL_PROVIDER:-}" KO_DOCKER_REPO="$repo" ko build --local --bare "$package" | tail -n 1; }
-pin_loaded() {
-  tagged=$1
-  digest=$($runtime exec "${cluster}-control-plane" ctr -n k8s.io images ls | awk -v ref="$tagged" '$1 == ref {print $3; exit}')
-  [ -n "$digest" ] || { echo "loaded image digest unavailable" >&2; exit 1; }
-  pinned="${tagged%:*}@${digest}"
-  $runtime exec "${cluster}-control-plane" ctr -n k8s.io images tag "$tagged" "$pinned" >/dev/null
-  printf '%s\n' "$pinned"
-}
+. "$root/deploy/mecatl-execution-kind/images.sh"
 load_image() {
   tagged=$1
   archive="$state/images/live-$(printf '%s' "$tagged" | sha256sum | cut -c1-16).tar"
@@ -169,7 +162,9 @@ restore() {
   fi
   exit "$status"
 }
-trap restore EXIT INT TERM
+trap restore EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 dev env -i HOME="$HOME" PATH="$PATH" KUBECONFIG="$kubeconfig" MECATL_KUBE_CONTEXT="$context" MECATL_EXECUTION_CREDENTIAL_FILE="$MECATL_EXECUTION_CREDENTIAL_FILE" \
   go run -tags kind_execution_e2e ./e2e/k8s_execution/fixture/credentialloader stage "$kubeconfig" "$context" "$secret" "$receipt"

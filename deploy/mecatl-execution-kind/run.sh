@@ -9,6 +9,7 @@ if [ "${MECATL_EXECUTION_QUAL_CLEAN_ENV:-}" != 1 ]; then
     DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-}" CONTAINER_HOST="${CONTAINER_HOST:-}" DOCKER_HOST="${DOCKER_HOST:-}" \
     CONTAINER_ENGINE="${CONTAINER_ENGINE:-}" MECATL_EXECUTION_QUAL_CI="${MECATL_EXECUTION_QUAL_CI:-}" MECATL_EXECUTION_QUAL_PROFILE="${MECATL_EXECUTION_QUAL_PROFILE:-}" \
     TOOLBOX_PATH="${TOOLBOX_PATH:-}" MECATL_EXECUTION_DEV_TOOLBOX="${MECATL_EXECUTION_DEV_TOOLBOX:-}" MECATL_EXECUTION_K8S_TOOLBOX="${MECATL_EXECUTION_K8S_TOOLBOX:-}" \
+    MECATL_EXECUTION_QUAL_OUTPUT="${MECATL_EXECUTION_QUAL_OUTPUT:-}" \
     MECATL_EXECUTION_QUAL_CLEAN_ENV=1 "$0" "$@"
 fi
 
@@ -32,17 +33,23 @@ printf 'cluster=%s\ncontext=%s\nkubeconfig=%s\nnamespace=execution-qualification
   "$cluster" "$context" "$kubeconfig" "${USER:-user}" "$runtime" "${MECATL_EXECUTION_QUAL_PROFILE:-development}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >"$state/ownership"
 
 # Refuse collisions; never delete or reuse any cluster.
-if kind get clusters 2>/dev/null | grep -Fx "$cluster" >/dev/null; then
-  echo "qualification cluster already exists: $cluster" >&2
-  exit 1
-fi
-printf '%s\n' "$state" >"$root/.scratch/k8s-execution/current"
-
 if [ "$runtime" = podman ]; then
   export KIND_EXPERIMENTAL_PROVIDER=podman
 else
   unset KIND_EXPERIMENTAL_PROVIDER
 fi
+clusters=$(kind get clusters) || { echo "qualification cluster discovery failed" >&2; exit 1; }
+if printf '%s\n' "$clusters" | grep -Fx "$cluster" >/dev/null; then
+  echo "qualification cluster already exists: $cluster" >&2
+  exit 1
+fi
+# Publish the exact owned identity before creation can partially fail. Downstream
+# CI steps consume these outputs, never the mutable local convenience pointer.
+if [ -n "${MECATL_EXECUTION_QUAL_OUTPUT:-}" ]; then
+  printf 'state=%s\ncluster=%s\n' "$state" "$cluster" >>"$MECATL_EXECUTION_QUAL_OUTPUT"
+fi
+printf '%s\n' "$state" >"$root/.scratch/k8s-execution/current"
+
 if [ "${MECATL_EXECUTION_QUAL_CI:-}" = 1 ]; then
   cleanup_cluster() {
     status=$?
@@ -157,15 +164,7 @@ for item in "$provider_tag" "$agent_tag" "$oidc_tag" "$netprobe_tag" "$workload_
   "$runtime" save "$item" -o "$archive" >/dev/null
   kind load image-archive "$archive" --name "$cluster"
 done
-node="${cluster}-control-plane"
-pin_loaded() {
-  tagged=$1
-  digest=$("$runtime" exec "$node" ctr -n k8s.io images ls | awk -v ref="$tagged" '$1 == ref {print $3; exit}')
-  [ -n "$digest" ] || { echo "loaded image digest unavailable for $tagged" >&2; exit 1; }
-  pinned="${tagged%:*}@${digest}"
-  "$runtime" exec "$node" ctr -n k8s.io images tag "$tagged" "$pinned" >/dev/null
-  printf '%s\n' "$pinned"
-}
+. "$root/deploy/mecatl-execution-kind/images.sh"
 provider_image=$(pin_loaded "$provider_tag")
 agent_image=$(pin_loaded "$agent_tag")
 oidc_image=$(pin_loaded "$oidc_tag")

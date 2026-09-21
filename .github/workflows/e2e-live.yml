@@ -283,11 +283,15 @@ jobs:
     env:
       NATIVE_CI_DIR: ${{ github.workspace }}/.scratch/native-live-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
+      # Step ceilings sum to 98m: setup 9, production 50, credential 1,
+      # live 25, cleanup 10, reporting 3. The job retains 2m overhead.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        timeout-minutes: 1
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
       - name: Verify reviewed commit and reserve private CI directory
+        timeout-minutes: 1
         id: prepare
         env:
           EXPECTED_SHA: ${{ inputs.expected_sha }}
@@ -304,17 +308,21 @@ jobs:
           mkdir -p .scratch
           mkdir -m 700 "$NATIVE_CI_DIR"
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        timeout-minutes: 2
         with:
           go-version-file: go.mod
           cache: false
       - uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
+        timeout-minutes: 1
         with:
           version: 3.x
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        timeout-minutes: 1
         with:
           version: v3.18.4
       - name: Install pinned Kind and ko
+        timeout-minutes: 3
         run: |
           go install sigs.k8s.io/kind@v0.33.0
           go install github.com/google/ko@v0.18.1
@@ -322,12 +330,14 @@ jobs:
       # No provider secret here. run.sh installs pinned Calico and retains the
       # owned cluster; the success dependency, not ownership.profile, admits live.
       - name: Qualify production execution
+        timeout-minutes: 50
         id: production
         env:
           CONTAINER_ENGINE: docker
           MECATL_EXECUTION_QUAL_CI: "0"
-        run: task e2e:k8s:execution:production
+        run: MECATL_EXECUTION_QUAL_OUTPUT="$GITHUB_OUTPUT" timeout --kill-after=15s 49m task e2e:k8s:execution:production
       - name: Stage private provider credential
+        timeout-minutes: 1
         id: credential
         if: success() && steps.production.outcome == 'success'
         env:
@@ -343,20 +353,27 @@ jobs:
           printf '%s' "$OPENROUTER_API_KEY" > "$NATIVE_CI_DIR/provider-key"
           unset OPENROUTER_API_KEY
       - name: Qualify native OpenRouter coding
+        timeout-minutes: 25
         id: live
         if: success() && steps.production.outcome == 'success' && steps.credential.outcome == 'success'
+        env:
+          MECATL_EXECUTION_QUAL_STATE: ${{ steps.production.outputs.state }}
+          NATIVE_CLUSTER: ${{ steps.production.outputs.cluster }}
         run: |
-          IFS= read -r state < .scratch/k8s-execution/current
-          MECATL_EXECUTION_QUAL_STATE="$state" \
+          test -n "$NATIVE_CLUSTER"
+          grep -Fx -- "cluster=$NATIVE_CLUSTER" "$MECATL_EXECUTION_QUAL_STATE/ownership" >/dev/null
           MECATL_EXECUTION_CREDENTIAL_FILE="$NATIVE_CI_DIR/provider-key" \
-            ./deploy/mecatl-execution-kind/live.sh
+            timeout --kill-after=15s 24m ./deploy/mecatl-execution-kind/live.sh
       # Credential removal is independent of cluster availability. Fail closed
       # on ownership drift; runner disposal is a last resort, not cleanup proof.
       - name: Clean up exact owned resources
+        timeout-minutes: 10
         id: cleanup
         if: always() && steps.prepare.outcome == 'success'
         env:
           PRODUCTION_OUTCOME: ${{ steps.production.outcome }}
+          MECATL_EXECUTION_QUAL_STATE: ${{ steps.production.outputs.state }}
+          NATIVE_CLUSTER: ${{ steps.production.outputs.cluster }}
         run: |
           key="$NATIVE_CI_DIR/provider-key"
           if [ -e "$key" ] || [ -L "$key" ]; then
@@ -364,9 +381,9 @@ jobs:
             rm -- "$key"
           fi
           if [ "$PRODUCTION_OUTCOME" = skipped ]; then exit 0; fi
-          pointer="$GITHUB_WORKSPACE/.scratch/k8s-execution/current"
-          test -f "$pointer" && test ! -L "$pointer"
-          IFS= read -r state < "$pointer"
+          trap 'echo "::error::Owned cleanup incomplete; hosted-runner disposal is the fallback, not cleanup proof"' ERR
+          state="$MECATL_EXECUTION_QUAL_STATE"
+          test -n "$state" && test -n "$NATIVE_CLUSTER"
           test ! -L "$state"
           state=$(cd -- "$state" && pwd -P)
           case "$state" in "$GITHUB_WORKSPACE/.scratch/k8s-execution/"*) ;; *) exit 1 ;; esac
@@ -376,6 +393,7 @@ jobs:
             awk -F= -v key="$1" '$1 == key {value=substr($0,length(key)+2); count++} END {if(count != 1 || value == "") exit 1; print value}' "$ownership"
           }
           cluster=$(owned_value cluster)
+          test "$cluster" = "$NATIVE_CLUSTER"
           case "$cluster" in mecatl-execution-qual-*) ;; *) exit 1 ;; esac
           case "$cluster" in *[!a-z0-9-]*) exit 1 ;; esac
           test "${#cluster}" -le 63
@@ -403,6 +421,7 @@ jobs:
             cp -- "$summary" "$NATIVE_CI_DIR/live-summary.json"
           fi
       - name: Record sanitized qualification status
+        timeout-minutes: 1
         if: always() && steps.prepare.outcome == 'success'
         env:
           PRODUCTION_OUTCOME: ${{ steps.production.outcome }}
@@ -415,6 +434,7 @@ jobs:
             > "$NATIVE_CI_DIR/qualification-status.txt"
           cat "$NATIVE_CI_DIR/qualification-status.txt" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload only bounded native qualification evidence
+        timeout-minutes: 2
         if: always() && steps.prepare.outcome == 'success'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

@@ -11,11 +11,12 @@ import (
 )
 
 type workflowStep struct {
-	ID   string            `yaml:"id"`
-	Run  string            `yaml:"run"`
-	If   string            `yaml:"if"`
-	Env  map[string]string `yaml:"env"`
-	With map[string]any    `yaml:"with"`
+	ID      string            `yaml:"id"`
+	Timeout int               `yaml:"timeout-minutes"`
+	Run     string            `yaml:"run"`
+	If      string            `yaml:"if"`
+	Env     map[string]string `yaml:"env"`
+	With    map[string]any    `yaml:"with"`
 }
 
 func nativeSteps(t *testing.T) map[string]workflowStep {
@@ -39,7 +40,12 @@ func nativeSteps(t *testing.T) map[string]workflowStep {
 		t.Fatal("native job must remain explicitly dispatched, repo-gated, and bounded")
 	}
 	steps := make(map[string]workflowStep)
+	total := 0
 	for _, step := range job.Steps {
+		if step.Timeout <= 0 {
+			t.Fatal("every native step needs an explicit ceiling")
+		}
+		total += step.Timeout
 		if step.ID != "" {
 			steps[step.ID] = step
 		}
@@ -48,6 +54,15 @@ func nativeSteps(t *testing.T) map[string]workflowStep {
 		}
 		if step.With["cache"] == true {
 			t.Fatal("native credential job must not save a cache")
+		}
+	}
+	if total > job.Timeout-2 || steps["cleanup"].Timeout < 10 {
+		t.Fatal("stage ceilings must reserve cleanup and job overhead")
+	}
+	for _, id := range []string{"live", "cleanup"} {
+		step := steps[id]
+		if step.Env["MECATL_EXECUTION_QUAL_STATE"] != "${{ steps.production.outputs.state }}" || step.Env["NATIVE_CLUSTER"] != "${{ steps.production.outputs.cluster }}" || strings.Contains(step.Run, "/current") {
+			t.Fatal("downstream ownership must use production outputs, never current")
 		}
 	}
 	if steps["production"].Env["MECATL_EXECUTION_QUAL_CI"] != "0" || len(steps["credential"].Env) != 1 || steps["credential"].Env["OPENROUTER_API_KEY"] != "${{ secrets.OPENROUTER_API_KEY }}" {
@@ -125,7 +140,7 @@ func TestNativeWorkflowCommitAndCredentialBoundary(t *testing.T) {
 
 func TestNativeWorkflowCleanupOwnership(t *testing.T) {
 	steps := nativeSteps(t)
-	for _, fault := range []string{"", "owner", "context", "label", "duplicate", "symlink", "delete", "list"} {
+	for _, fault := range []string{"", "owner", "context", "label", "duplicate", "symlink", "delete", "list", "switched-pointer", "captured-cluster", "missing-kubeconfig", "missing-ownership", "missing-output", "partial-with-kubeconfig"} {
 		t.Run("fault="+fault, func(t *testing.T) {
 			root := t.TempDir()
 			state := filepath.Join(root, ".scratch", "k8s-execution", "owned")
@@ -146,19 +161,38 @@ func TestNativeWorkflowCleanupOwnership(t *testing.T) {
 				context = "ambient"
 			}
 			kubeconfig := filepath.Join(state, "kubeconfig")
-			writeFixture(t, kubeconfig, "synthetic", 0o600)
+			if fault != "missing-kubeconfig" {
+				writeFixture(t, kubeconfig, "synthetic", 0o600)
+			}
 			ownership := "cluster=" + cluster + "\ncontext=" + context + "\nowner=" + owner + "\nruntime=docker\nprofile=production\nnamespace=execution-qualification\nkubeconfig=" + kubeconfig + "\n"
 			if fault == "duplicate" {
 				ownership += "owner=fixture\n"
 			}
-			writeFixture(t, filepath.Join(state, "ownership"), ownership, 0o600)
+			if fault != "missing-ownership" {
+				writeFixture(t, filepath.Join(state, "ownership"), ownership, 0o600)
+			}
 			pointer := filepath.Join(filepath.Dir(state), "current")
-			if fault == "symlink" {
-				if err := os.Symlink(kubeconfig, pointer); err != nil {
+			writeFixture(t, pointer, state+"\n", 0o600)
+			if fault == "switched-pointer" {
+				foreign := filepath.Join(filepath.Dir(state), "foreign")
+				if err := os.Mkdir(foreign, 0o700); err != nil {
 					t.Fatal(err)
 				}
-			} else {
-				writeFixture(t, pointer, state+"\n", 0o600)
+				writeFixture(t, filepath.Join(foreign, "ownership"), strings.ReplaceAll(ownership, cluster, "mecatl-execution-qual-foreign"), 0o600)
+				writeFixture(t, pointer, foreign+"\n", 0o600)
+			}
+			capturedState, capturedCluster := state, cluster
+			if fault == "symlink" {
+				capturedState = filepath.Join(filepath.Dir(state), "alias")
+				if err := os.Symlink(state, capturedState); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if fault == "captured-cluster" {
+				capturedCluster = "mecatl-execution-qual-other"
+			}
+			if fault == "missing-output" {
+				capturedState, capturedCluster = "", ""
 			}
 			writeFixture(t, filepath.Join(dir, "provider-key"), "synthetic", 0o600)
 			writeFixture(t, filepath.Join(state, "live-summary.json"), "{}\n", 0o600)
@@ -166,15 +200,20 @@ func TestNativeWorkflowCleanupOwnership(t *testing.T) {
 			writeFixture(t, filepath.Join(bin, "docker"), "#!/bin/sh\nif [ \"$FAULT\" = label ]; then exit 1; fi\nprintf '%s\\n' '"+cluster+"'\n", 0o700)
 			writeFixture(t, filepath.Join(bin, "kind"), "#!/bin/sh\nif [ \"$1\" = delete ]; then\n  test \"$*\" = 'delete cluster --name "+cluster+"' || exit 1\n  test \"$FAULT\" != delete || exit 1\n  printf deleted > \"$MARKER\"\nelse\n  test \"$FAULT\" != list || exit 1\nfi\n", 0o700)
 			marker := filepath.Join(root, "deleted")
-			out, err := runStep(t, root, steps["cleanup"].Run, "PATH="+bin+":"+os.Getenv("PATH"), "NATIVE_CI_DIR="+dir, "GITHUB_WORKSPACE="+root, "USER=fixture", "PRODUCTION_OUTCOME=success", "FAULT="+fault, "MARKER="+marker)
-			if (err == nil) != (fault == "") {
+			outcome := "success"
+			if strings.HasPrefix(fault, "missing-") || fault == "partial-with-kubeconfig" {
+				outcome = "failure"
+			}
+			out, err := runStep(t, root, steps["cleanup"].Run, "PATH="+bin+":"+os.Getenv("PATH"), "NATIVE_CI_DIR="+dir, "GITHUB_WORKSPACE="+root, "USER=fixture", "PRODUCTION_OUTCOME="+outcome, "MECATL_EXECUTION_QUAL_STATE="+capturedState, "NATIVE_CLUSTER="+capturedCluster, "FAULT="+fault, "MARKER="+marker)
+			wantOK := fault == "" || fault == "switched-pointer" || fault == "partial-with-kubeconfig"
+			if (err == nil) != wantOK {
 				t.Fatalf("cleanup result: %v: %s", err, out)
 			}
 			if _, err := os.Stat(filepath.Join(dir, "provider-key")); !os.IsNotExist(err) {
 				t.Fatal("CI credential was not removed independently")
 			}
 			_, deleted := os.Stat(marker)
-			if (deleted == nil) != (fault == "" || fault == "list") {
+			if (deleted == nil) != (wantOK || fault == "list") {
 				t.Fatal("wrong cluster deletion decision")
 			}
 		})
