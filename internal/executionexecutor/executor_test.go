@@ -120,6 +120,9 @@ func TestNativeShellCapsCombinedOutputAndRepairsUTF8(t *testing.T) {
 		name, command          string
 		wantStdout, wantStderr int
 	}{
+		{"stdout-exact-cap-repair", `i=0; while [ "$i" -lt 1020 ]; do printf x; i=$((i+1)); done; printf '\377abc'`, 1024, 0},
+		{"stderr-exact-cap-repair", `i=0; while [ "$i" -lt 1020 ]; do printf x >&2; i=$((i+1)); done; printf '\377abc' >&2`, 0, 1024},
+		{"combined-exact-cap-repair", `printf xxxx; i=0; while [ "$i" -lt 1016 ]; do printf x >&2; i=$((i+1)); done; printf '\377abc' >&2`, 4, 1020},
 		{"stdout", `i=0; while [ "$i" -lt 2048 ]; do printf x; i=$((i+1)); done`, 1024, 0},
 		{"stderr", `i=0; while [ "$i" -lt 2048 ]; do printf x >&2; i=$((i+1)); done`, 0, 1024},
 		{"split-malformed", `printf '\377'; printf '\376' >&2; i=0; while [ "$i" -lt 700 ]; do printf x; printf y >&2; i=$((i+1)); done`, 703, 321},

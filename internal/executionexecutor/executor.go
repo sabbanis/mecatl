@@ -202,25 +202,23 @@ func (e *Executor) resultLimit(requested int) int {
 	return e.limits.MaxEntries
 }
 func capStreams(stdout, stderr []byte, n int) ([]byte, []byte, bool) {
-	original := len(stdout) + len(stderr)
-	stdout = capOutput(stdout, n)
+	var stdoutClipped, stderrClipped bool
+	stdout, stdoutClipped = capOutput(stdout, n)
 	remaining := n - len(stdout)
-	if remaining < 0 {
-		remaining = 0
-	}
-	stderr = capOutput(stderr, remaining)
-	return stdout, stderr, original > len(stdout)+len(stderr)
+	stderr, stderrClipped = capOutput(stderr, remaining)
+	return stdout, stderr, stdoutClipped || stderrClipped
 }
 
-func capOutput(b []byte, n int) []byte {
+func capOutput(b []byte, n int) ([]byte, bool) {
 	b = []byte(strings.ToValidUTF8(string(b), "�"))
-	if len(b) > n {
+	clipped := len(b) > n
+	if clipped {
 		b = b[:n]
 		for !utf8.Valid(b) {
 			b = b[:len(b)-1]
 		}
 	}
-	return b
+	return b, clipped
 }
 func bad(msg string) error { return coded(executionenv.CodeInvalidArgument, msg) }
 func coded(code executionenv.ErrorCode, msg string) error {
