@@ -209,49 +209,8 @@ func TestReadClientKeymapRejectsMultiDocument(t *testing.T) {
 	}
 }
 
-func TestReadLegacyKeymapToleratesServerSiblingKeys(t *testing.T) {
+func TestClientKeymapAbsent(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	writeSettings(t, "mecatl", "permissions:\n  allow:\n    - Shell(git status)\nguardrails:\n  defaultMode: advisory\nkeymap:\n  Agents: ctrl+f12\n")
-	got, set, err := readLegacyKeymap()
-	if err != nil {
-		t.Fatalf("legacy file with server sibling keys must parse: %v", err)
-	}
-	if !set {
-		t.Error("set = false, want true (the legacy file contributed a keymap)")
-	}
-	want := map[string][]string{"Agents": {"ctrl+f12"}}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("keymap = %v, want %v (only the keymap: key extracted)", got, want)
-	}
-}
-
-// TestReadLegacyKeymapTypeErrorDoesNotLeakValue pins the CWE-209 fix: a
-// legacy keymap: holding a wrong-typed value (a scalar, not a map) produces a
-// *yaml.TypeError that embeds a truncated slice of the offending VALUE. The
-// returned error must NOT wrap it through — the operator needs the line, not
-// the (possibly sensitive) value they wrote.
-func TestReadLegacyKeymapTypeErrorDoesNotLeakValue(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	writeSettings(t, "mecatl", "keymap: SUPER-SECRET-TOKEN-abc123\n")
-	_, _, err := readLegacyKeymap()
-	if err == nil {
-		t.Fatal("a scalar keymap: value must be a parse error")
-	}
-	if strings.Contains(err.Error(), "SUPER-SECRET") || strings.Contains(err.Error(), "abc123") {
-		t.Errorf("error leaks the offending keymap value (CWE-209): %v", err)
-	}
-	// The error must still be actionable: it names the file and the shape.
-	if !strings.Contains(err.Error(), "keymap") {
-		t.Errorf("error should name the keymap: key so the operator can find it: %v", err)
-	}
-}
-
-func TestKeymapReadersAbsentFiles(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	legacy, legacySet, err := readLegacyKeymap()
-	if err != nil || legacy != nil || legacySet {
-		t.Errorf("readLegacyKeymap absent = (%v, %v, %v), want (nil, false, nil)", legacy, legacySet, err)
-	}
 	clientMap, clientSet, err := readClientKeymap()
 	if err != nil || clientMap != nil || clientSet {
 		t.Errorf("readClientKeymap absent = (%v, %v, %v), want (nil, false, nil)", clientMap, clientSet, err)
@@ -270,9 +229,9 @@ func TestSplitChordsByteCompatCommaFormat(t *testing.T) {
 	}
 }
 
-func TestKeymapPrecedenceCLIBeatsClientBeatsLegacy(t *testing.T) {
+func TestKeymapPrecedenceCLIBeatsClient(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	writeSettings(t, "mecatl", "keymap:\n  Agents: ctrl+f1\n  Effort: ctrl+f2\n")
+	writeSettings(t, "mecatl", "keymap:\n  Effort: ctrl+f2\n")
 	writeSettings(t, "mecatui", "keymap:\n  Agents: ctrl+f3\n  ExpandTools: ctrl+f4\n")
 	cfg := config{keymap: &cliconfig.KeyValueList{"Agents": "ctrl+f5"}}
 	var deps ui.Deps
@@ -280,67 +239,11 @@ func TestKeymapPrecedenceCLIBeatsClientBeatsLegacy(t *testing.T) {
 		t.Fatalf("apply: %v", err)
 	}
 	want := map[string][]string{
-		"Agents":      {"ctrl+f5"}, // CLI wins over both files
-		"Effort":      {"ctrl+f2"}, // legacy-only action survives
-		"ExpandTools": {"ctrl+f4"}, // client-only action survives
+		"Agents":      {"ctrl+f5"},
+		"ExpandTools": {"ctrl+f4"},
 	}
 	if !reflect.DeepEqual(deps.KeyOverrides, want) {
 		t.Errorf("merged overrides = %v, want %v", deps.KeyOverrides, want)
-	}
-}
-
-func TestKeymapPrecedenceClientBeatsLegacyPerAction(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	writeSettings(t, "mecatl", "keymap:\n  Agents: ctrl+f1\n  Effort: ctrl+f2\n")
-	writeSettings(t, "mecatui", "keymap:\n  Agents: ctrl+f3\n")
-	var deps ui.Deps
-	if err := applyKeyOverridesToDeps(config{}, &deps); err != nil {
-		t.Fatalf("apply: %v", err)
-	}
-	want := map[string][]string{
-		"Agents": {"ctrl+f3"}, // client wins the shared action
-		"Effort": {"ctrl+f2"}, // per-action merge: the untouched legacy action survives
-	}
-	if !reflect.DeepEqual(deps.KeyOverrides, want) {
-		t.Errorf("merged overrides = %v, want %v", deps.KeyOverrides, want)
-	}
-}
-
-// TestKeymapLegacyOnlyBackCompat is the back-compat regression pin: a
-// legacy-only keymap: with NO client file must merge to EXACTLY today's
-// two-layer output (CLI > legacy) — the new layer contributes nothing when
-// absent.
-func TestKeymapLegacyOnlyBackCompat(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	writeSettings(t, "mecatl", "keymap:\n  Agents: ctrl+f1\n  Effort: ctrl+f2\n")
-	cfg := config{keymap: &cliconfig.KeyValueList{"Agents": "ctrl+f5"}}
-	var deps ui.Deps
-	if err := applyKeyOverridesToDeps(cfg, &deps); err != nil {
-		t.Fatalf("apply: %v", err)
-	}
-	want := map[string][]string{
-		"Agents": {"ctrl+f5"}, // CLI over legacy, as before the split
-		"Effort": {"ctrl+f2"},
-	}
-	if !reflect.DeepEqual(deps.KeyOverrides, want) {
-		t.Errorf("merged overrides = %v, want %v (must equal the pre-split two-layer output)", deps.KeyOverrides, want)
-	}
-}
-
-func TestKeymapDeprecationWarnFiresOnceOnLegacyKeymap(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	writeSettings(t, "mecatl", "keymap:\n  Agents: ctrl+f1\n")
-	var deps ui.Deps
-	out := captureStderr(t, func() {
-		if err := applyKeyOverridesToDeps(config{}, &deps); err != nil {
-			t.Fatalf("apply: %v", err)
-		}
-	})
-	if n := strings.Count(out, "is deprecated"); n != 1 {
-		t.Errorf("deprecation WARN count = %d, want exactly 1; output: %q", n, out)
-	}
-	if !strings.Contains(out, "~/.config/mecatui/settings.yaml") {
-		t.Errorf("WARN must name the client settings file: %q", out)
 	}
 }
 
@@ -352,30 +255,10 @@ func TestCanonicalDebugPrintsKeymapDiagnostics(t *testing.T) {
 			t.Fatalf("apply: %v", err)
 		}
 	})
-	for _, layer := range []string{"legacy YAML", "client YAML", "CLI", "merged"} {
+	for _, layer := range []string{"client YAML", "CLI", "merged"} {
 		if !strings.Contains(out, "mecatui keymap ("+layer+")") {
 			t.Errorf("canonical debug output missing %s layer: %q", layer, out)
 		}
-	}
-}
-
-func TestKeymapDeprecationWarnSilentWithoutLegacyKeymap(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	// A legacy file with server keys but NO keymap: contributes nothing.
-	writeSettings(t, "mecatl", "permissions:\n  allow:\n    - Shell(git status)\n")
-	writeSettings(t, "mecatui", "keymap:\n  Agents: ctrl+f3\n")
-	var deps ui.Deps
-	out := captureStderr(t, func() {
-		if err := applyKeyOverridesToDeps(config{}, &deps); err != nil {
-			t.Fatalf("apply: %v", err)
-		}
-	})
-	if strings.Contains(out, "deprecated") {
-		t.Errorf("no deprecation WARN without a legacy keymap: %q", out)
-	}
-	want := map[string][]string{"Agents": {"ctrl+f3"}}
-	if !reflect.DeepEqual(deps.KeyOverrides, want) {
-		t.Errorf("merged overrides = %v, want %v", deps.KeyOverrides, want)
 	}
 }
 

@@ -60,15 +60,6 @@ export interface Run extends AsyncIterable<Event> {
   readonly id: string;
   readonly sessionId: string;
   /**
-   * Sends a Boolean permission verdict for a `permission.ask` event.
-   *
-   * @param askId - ID carried by the permission ask.
-   * @param allow - Whether to allow the call once.
-   * @returns A promise that resolves after the verdict is sent.
-   * @throws `PermissionAskAlreadyResolvedError` when the ask is no longer pending.
-   */
-  approve(askId: string, allow: boolean): Promise<void>;
-  /**
    * Resolves one pending ask on this run with the server's string verdict vocabulary.
    *
    * @param askId - ID carried by the permission ask.
@@ -144,20 +135,6 @@ export class RunImpl implements Run {
     this.#observe(this.#first);
   }
 
-  async approve(askId: string, allow: boolean): Promise<void> {
-    this.#operations.assertOpen();
-    if (this.#knownAsks.has(askId)) {
-      await this.resolveAsk(askId, allow ? "allow_once" : "deny");
-      return;
-    }
-    this.#send({
-      kind: {
-        case: "resumeApproval",
-        value: { allow, askId, expectedRunId: this.id },
-      },
-    });
-  }
-
   async resolveAsk(askId: string, verdict: PermissionVerdict): Promise<void> {
     this.#operations.assertOpen();
     const pending = this.#pendingAsks.get(askId);
@@ -204,7 +181,6 @@ export class RunImpl implements Run {
       kind: {
         case: "resumeApproval",
         value: {
-          allow: verdict !== "deny",
           askId,
           expectedRunId: this.id,
           verdict: wireVerdict,
@@ -258,7 +234,7 @@ export class RunImpl implements Run {
       sessionId: this.sessionId,
       stopReason: event.payload.stop,
       text: event.payload.text,
-      usage: event.payload.usage ?? event.usage,
+      usage: event.payload.usage,
     };
   }
 

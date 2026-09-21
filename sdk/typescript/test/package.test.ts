@@ -457,11 +457,11 @@ import {
   FireNowRequestSchema,
   ListAgentsRequestSchema,
   ListModelsRequestSchema,
-  PlanSessionMigrationRequestSchema,
+  PlanSessionCleanupRequestSchema,
   type FireNowResponse,
   type ListAgentsResponse,
   type ListModelsResponse,
-  type SessionMigrationPlan,
+  type PlanSessionCleanupResponse,
 } from "@stacklok-oss/mecatl-sdk/gen";
 
 declare const browser: Client;
@@ -549,8 +549,8 @@ const fireResponse: Promise<FireNowResponse> = browser.schedules.fireNow(
   create(FireNowRequestSchema, { name: "nightly" }),
   browserOptions,
 );
-const migrationResponse: Promise<SessionMigrationPlan> = node.storage.planMigration(
-  create(PlanSessionMigrationRequestSchema),
+const cleanupResponse: Promise<PlanSessionCleanupResponse> = node.storage.planCleanup(
+  create(PlanSessionCleanupRequestSchema),
   nodeOptions,
 );
 void [
@@ -563,7 +563,7 @@ void [
   browserResponse,
   nodeResponse,
   fireResponse,
-  migrationResponse,
+  cleanupResponse,
 ];
 `,
   );
