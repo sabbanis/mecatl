@@ -55,14 +55,6 @@ func (r *askRegistry) register(askID string) <-chan approval {
 	return r.registerAsk(session.PendingAsk{AskID: askID, Origin: session.ApprovalOriginPermission})
 }
 
-// resolve delivers a verdict for askID if one is pending. It is non-blocking and
-// idempotent: a second resolution (or one for an unknown ask) is dropped. It
-// removes the ask from the registry so a stale Approve cannot resolve a later,
-// distinct ask that happens to reuse an id.
-func (r *askRegistry) resolve(askID string, v session.ApprovalVerdict) {
-	r.resolveWith(askID, approval{verdict: v})
-}
-
 // resolveOrdinary atomically classifies and resolves askID. Any non-permission
 // ask is deliberately left in the registry for its purpose-specific control.
 func (r *askRegistry) resolveOrdinary(askID string, v session.ApprovalVerdict) AskResolution {
