@@ -84,7 +84,10 @@ using a local workspace.
 is intended for an operator-controlled cluster and foreground commands only.
 It has no force-takeover recovery and is not a hostile multi-tenancy boundary.
 
-Remote deployments retain operator-global rules and skills. Local project trust
+Remote deployments retain operator-global prompt rules and skills. Permission
+rules from enabled user-global settings and explicit permission files also apply,
+including configured Deny and Ask rules under `auto` posture. Project permission
+files are excluded. Local project trust
 cannot admit host-local AGENTS.md, rules, skills, commands, or Git context into a
 remote session. Command discovery and slash-command expansion are unavailable
 for remote sessions. Explicit `no-fs` sessions keep their file-less catalog and

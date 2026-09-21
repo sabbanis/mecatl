@@ -100,12 +100,122 @@ func TestRemoteDeploymentNoFSUsesLocalAttenuationWithoutProviderCall(t *testing.
 	}
 }
 
+type remotePermissionRunner struct {
+	*memfs.CommandRunner
+	root string
+}
+
+func (r remotePermissionRunner) BoundWorkspaceRoot() string { return r.root }
+
+func TestRemoteExecutionPreservesOperatorPermissionsUnderAuto(t *testing.T) {
+	for _, source := range []string{"global", "explicit"} {
+		t.Run(source, func(t *testing.T) {
+			xdg := t.TempDir()
+			fakeRulesEnv(t, xdg, t.TempDir())
+			t.Setenv("XDG_STATE_HOME", t.TempDir())
+			operatorPath := filepath.Join(xdg, "mecatl", "settings.yaml")
+			if source == "explicit" {
+				operatorPath = filepath.Join(t.TempDir(), "operator.yaml")
+			}
+			writeProjectFile(t, operatorPath, "permissions:\n  deny:\n    - 'Shell(echo denied)'\n  ask:\n    - 'Shell(echo asked)'\n")
+			project := t.TempDir()
+			projectRules := "permissions:\n  deny:\n    - 'Shell(echo allowed)'\n  ask:\n    - 'Shell(echo project-ask)'\n  allow:\n    - 'Shell(echo denied)'\n    - 'Shell(echo asked)'\n"
+			mkdirProjectSettings(t, project, projectRules)
+			ws := memfs.NewWorkspace(project)
+			if _, err := ws.CreateFile(t.Context(), ".mecatl/settings.yaml", []byte(projectRules)); err != nil {
+				t.Fatal(err)
+			}
+			runner := memfs.NewCommandRunner()
+			runner.SetResult(&tool.CommandResult{Stdout: "EXECUTED"}, nil)
+			ref := session.EnvironmentRef{Kind: "kubernetes", ID: "permissions", Revision: "v1"}
+			env := tool.MustEnvironment(ref, ws, memledger.New(), remotePermissionRunner{runner, project})
+			llm := mockllm.New(
+				mockllm.ToolCallTurn(
+					session.NewToolCall("denied", "Shell", json.RawMessage(`{"command":"echo denied"}`)),
+					session.NewToolCall("asked", "Shell", json.RawMessage(`{"command":"echo asked"}`)),
+					session.NewToolCall("allowed", "Shell", json.RawMessage(`{"command":"echo allowed"}`)),
+					session.NewToolCall("project-ask", "Shell", json.RawMessage(`{"command":"echo project-ask"}`)),
+				), mockllm.TextTurn("done"))
+			cfg := Config{MockProvider: llm, Workspace: project, Posture: PostureAuto, PermissionsConventional: true, NoSoul: true, RemoteExecution: true, PlacementScope: "remote", PlacementProvider: remoteFactoryPlacement{env: env}}
+			if source == "explicit" {
+				cfg.PermissionConfigs = []string{operatorPath}
+			}
+			built, err := buildIsolated(t, t.Context(), cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer built.Close()
+			ctx := session.WithPrincipal(t.Context(), &session.Principal{Issuer: "issuer", Subject: "alice", GrantType: session.GrantTypeUser})
+			sess, err := built.Service.CreateSession(ctx, session.ModeDefault, session.Limits{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			run, err := built.Service.StartRun(ctx, sess.ID, "check permissions")
+			if err != nil {
+				t.Fatal(err)
+			}
+			asks := 0
+			results := map[session.ToolCallID]session.ToolResult{}
+			for ev := range run.Events() {
+				if ev.Ask != nil {
+					asks++
+					if ev.Ask.Call != "asked" || !ev.Ask.ConfiguredAsk {
+						t.Errorf("unexpected permission ask: %+v", ev.Ask)
+					}
+					if _, err := built.Service.ApproveRun(ctx, sess.ID, ev.Ask.AskID, session.VerdictDeny, ""); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if ev.ToolResult != nil {
+					results[ev.ToolResult.CallID] = *ev.ToolResult
+				}
+			}
+			built.Service.FinishRun(sess.ID, run)
+			if asks != 1 {
+				t.Errorf("configured asks = %d, want 1", asks)
+			}
+			for _, id := range []session.ToolCallID{"denied", "asked", "allowed", "project-ask"} {
+				result, ok := results[id]
+				blocked := id == "denied" || id == "asked"
+				if !ok || result.IsError != blocked || strings.Contains(result.Content, "EXECUTED") == blocked {
+					t.Errorf("%s result = %+v, present=%t, want blocked=%t", id, result, ok, blocked)
+				}
+			}
+		})
+	}
+}
+
 func TestRemoteExecutionRealFactoryCarriesPostureAndAttenuatedCatalog(t *testing.T) {
 	xdg := t.TempDir()
 	fakeRulesEnv(t, xdg, t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	writeUserRule(t, xdg, "operator-rule", "OPERATOR_RULE_MARKER\n")
 	writeSkill(t, filepath.Join(xdg, "mecatl/skills"), "operator-skill", "Operator skill", "OPERATOR_SKILL_BODY")
 	localProject := t.TempDir()
+	initTestRepo(t, localProject)
+	localSnapshotSeen := false
+	localLLM := mockllm.NewWith([]mockllm.Option{mockllm.WithRequestObserver(func(req port.LLMRequest) {
+		localSnapshotSeen = strings.Contains(req.System.Render(), "initial commit") && strings.Contains(req.System.Render(), "<git-status>")
+	})}, mockllm.TextTurn("local done"))
+	local, err := buildIsolated(t, t.Context(), Config{MockProvider: localLLM, Workspace: localProject, TrustProject: true, NoSoul: true, Shell: "/bin/sh"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer local.Close()
+	localSession, err := local.Service.CreateSession(t.Context(), session.ModeDefault, session.Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	localRun, err := local.Service.StartRun(t.Context(), localSession.ID, "inspect local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range localRun.Events() {
+	}
+	local.Service.FinishRun(localSession.ID, localRun)
+	if !localSnapshotSeen {
+		t.Fatal("local factory omitted the test repository's Git snapshot")
+	}
 	ws := memfs.NewWorkspace(localProject)
 	if _, err := ws.CreateFile(context.Background(), "AGENTS.md", []byte("REMOTE_PROJECT_MARKER_DO_NOT_LOAD")); err != nil {
 		t.Fatal(err)
@@ -172,11 +282,14 @@ func TestRemoteExecutionRealFactoryCarriesPostureAndAttenuatedCatalog(t *testing
 	if !strings.Contains(captured.System.StablePrefix, remoteExecutionPostureNote) {
 		t.Fatal("real per-session factory omitted remote execution posture")
 	}
+	if strings.Contains(captured.System.Render(), "<git-status>") {
+		t.Fatal("remote factory ingested the local Git snapshot")
+	}
 	requestJSON, err := json.Marshal(captured)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, marker := range []string{"LOCAL_PROJECT_MARKER", "REMOTE_PROJECT_MARKER", "LOCAL_RULE_MARKER", "LOCAL_SKILL_MARKER", "LOCAL_SKILL_BODY", "LOCAL_COMMAND_MARKER"} {
+	for _, marker := range []string{"LOCAL_PROJECT_MARKER", "REMOTE_PROJECT_MARKER", "LOCAL_RULE_MARKER", "LOCAL_SKILL_MARKER", "LOCAL_SKILL_BODY", "LOCAL_COMMAND_MARKER", "initial commit"} {
 		if strings.Contains(string(requestJSON), marker) {
 			t.Errorf("remote request ingested forbidden project source %s", marker)
 		}

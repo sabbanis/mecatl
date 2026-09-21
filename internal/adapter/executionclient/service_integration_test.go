@@ -5,12 +5,15 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -22,6 +25,7 @@ import (
 	"github.com/stacklok/mecatl/engine/adapter/mockllm"
 	"github.com/stacklok/mecatl/engine/adapter/permpolicy"
 	"github.com/stacklok/mecatl/engine/agent"
+	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/tool"
 	"github.com/stacklok/mecatl/internal/adapter/executioncontroller"
@@ -40,7 +44,7 @@ func (e *recordingExecutor) Execute(_ context.Context, _ string, req executionen
 	case executionenv.OpFileRead:
 		return executionenv.ExecutorResponse{FileResponse: executionenv.FileResponse{Data: []byte("package main\n"), Version: "v1"}}, nil
 	case executionenv.OpCommandStart:
-		return executionenv.ExecutorResponse{Command: &executionenv.CommandStatusResponse{CommandID: req.CommandID, State: executionenv.CommandSucceeded, Stdout: []byte("ok\n"), TerminalReceipt: "complete"}}, nil
+		return executionenv.ExecutorResponse{Command: &executionenv.CommandStatusResponse{CommandID: req.CommandID, State: executionenv.CommandSucceeded, Stdout: []byte("out\xff"), Stderr: []byte("err\xe2"), TerminalReceipt: "complete"}}, nil
 	default:
 		return executionenv.ExecutorResponse{}, &executionenv.Error{Code: executionenv.CodeInvalidArgument, Message: "unsupported test operation"}
 	}
@@ -89,7 +93,14 @@ func TestServiceUsesRealMTLSProviderStoreAndReleasesOnlyAfterDrain(t *testing.T)
 	catalog := tool.NewCatalog()
 	catalog.MustRegister(adaptertools.ReadTool{})
 	catalog.MustRegister(agent.NewShellTool())
-	llm := mockllm.New(
+	var modelShellResult string
+	llm := mockllm.NewWith([]mockllm.Option{mockllm.WithRequestObserver(func(req port.LLMRequest) {
+		for _, message := range req.Messages {
+			if result := message.ToolResult; result != nil && result.CallID == "shell" {
+				modelShellResult = result.Content
+			}
+		}
+	})},
 		mockllm.ToolCallTurn(session.NewToolCall("read", "Read", json.RawMessage(`{"path":"main.go"}`))),
 		mockllm.ToolCallTurn(session.NewToolCall("background", "Shell", json.RawMessage(`{"command":"touch background-leak","background":true}`))),
 		mockllm.ToolCallTurn(session.NewToolCall("shell", "Shell", json.RawMessage(`{"command":"true"}`))),
@@ -117,13 +128,20 @@ func TestServiceUsesRealMTLSProviderStoreAndReleasesOnlyAfterDrain(t *testing.T)
 		t.Fatal(err)
 	}
 	backgroundRejected := false
+	var streamedShellResult string
 	for event := range run.Events() {
+		if result := event.ToolResult; result != nil && result.CallID == "shell" {
+			streamedShellResult = result.Content
+		}
 		if result := event.ToolResult; result != nil && result.CallID == "background" {
 			backgroundRejected = result.IsError && strings.Contains(result.Content, "not supported by this command runner")
 		}
 	}
 	if !backgroundRejected {
 		t.Fatal("remote background Shell did not return the named capability error")
+	}
+	if !utf8.ValidString(streamedShellResult) || !strings.Contains(streamedShellResult, "out�") || !strings.Contains(streamedShellResult, "err�") || modelShellResult != streamedShellResult {
+		t.Fatalf("private protobuf bytes were not repaired identically for client/model: stream=%q model=%q", streamedShellResult, modelShellResult)
 	}
 	if executor.calls.Load() != 3 {
 		t.Fatalf("executor calls=%d, want authority+read+shell", executor.calls.Load())
@@ -145,5 +163,47 @@ func TestServiceUsesRealMTLSProviderStoreAndReleasesOnlyAfterDrain(t *testing.T)
 	}
 	for range continued.Events() {
 	}
+	svc.Persist(ctx, sess.ID)
 	svc.FinishRun(sess.ID, continued)
+
+	stored, err = dyn.Resource(executioncontroller.ExecutionEnvironmentGVR).Namespace("ns").Get(ctx, "env-real", metav1.GetOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := sessions.Load(ctx, sess.ID)
+	if err != nil || len(before.Conversation.Messages) == 0 {
+		t.Fatalf("source history missing: %v", err)
+	}
+	placement := server.SuccessorPlacement{Selector: "unsupported-worktree", SelectorPresent: true}
+	// A well-formed selector and binding ID reach the native provider's unsupported
+	// selection gate, not the Service's malformed-request validation.
+	if _, err := provider.Bind(ctx, server.PlacementBindRequest{Selector: server.SelectWorktree(sess.ID, sess.EnvironmentRef, placement.Selector), BindingID: "unused-destination", Principal: principal}); !errors.Is(err, server.ErrInvalidPlacementSelection) {
+		t.Fatalf("native selector gate: %v", err)
+	}
+	for _, operation := range []string{"clear", "fork"} {
+		t.Run(operation+"-unsupported-selector", func(t *testing.T) {
+			var destination session.SessionID
+			var err error
+			if operation == "clear" {
+				destination, err = svc.ClearSessionSuccessor(ctx, sess.ID, placement)
+			} else {
+				destination, err = svc.ForkSessionSuccessor(ctx, server.ForkSuccessorRequest{Source: sess.ID, Placement: placement})
+			}
+			if !errors.Is(err, server.ErrInvalidPlacementSelection) || destination != "" {
+				t.Fatalf("destination=%q error=%v", destination, err)
+			}
+			after, err := sessions.Load(ctx, sess.ID)
+			if err != nil || after.EnvironmentRef != before.EnvironmentRef || !reflect.DeepEqual(after.Conversation, before.Conversation) {
+				t.Fatalf("unsupported successor changed source ref/history: %v", err)
+			}
+			all, err := svc.ListSessions(ctx)
+			if err != nil || len(all) != 1 || all[0].SessionID != string(sess.ID) {
+				t.Fatalf("unsupported successor published a destination: %+v, %v", all, err)
+			}
+			current, err := dyn.Resource(executioncontroller.ExecutionEnvironmentGVR).Namespace("ns").Get(ctx, "env-real", metav1.GetOptions{})
+			if err != nil || !reflect.DeepEqual(current.Object, stored.Object) {
+				t.Fatalf("unsupported successor mutated provider references: %v", err)
+			}
+		})
+	}
 }

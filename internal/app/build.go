@@ -4176,8 +4176,9 @@ func buildEngine(ctx context.Context, cfg Config, reg *providerRegistry, provide
 	// and the un-knobbed auto stay byte-identical.
 	sharedPolicy := sessionPermissionPolicies{
 		standard: escapePolicyForConfig(cfg, reg, provider, policy),
+		// Pin no workspace: retain operator permissions without project discovery.
 		remote: escapePolicyForConfig(cfg, reg, provider,
-			permpolicy.NewPolicyWithResolver(mainRules(cfg), learned, nil, mainEvaluatorOptions(cfg)...)),
+			permpolicy.NewPolicyWithResolver(mainRules(cfg), learned, childPermResolverFor(cfg, ""), mainEvaluatorOptions(cfg)...)),
 	}
 	var learningAdmission *learningAdmission
 	if cfg.operatorLearningMode != learning.Off {

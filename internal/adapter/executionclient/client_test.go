@@ -70,7 +70,7 @@ func (b *integrationBackend) File(_ context.Context, _, _ string, q executionenv
 	return executionenv.FileResponse{Data: []byte("from-grpc"), Version: string([]byte{0xff, 0, 1})}, nil
 }
 func (*integrationBackend) StartCommand(context.Context, string, string, executionenv.CommandStartRequest) (executionenv.CommandStartResponse, error) {
-	return executionenv.CommandStartResponse{CommandID: "c1", State: executionenv.CommandSucceeded, Result: executionenv.CommandStatusResponse{CommandID: "c1", State: executionenv.CommandSucceeded, Stdout: []byte("ok\n")}}, nil
+	return executionenv.CommandStartResponse{CommandID: "c1", State: executionenv.CommandSucceeded, Result: executionenv.CommandStatusResponse{CommandID: "c1", State: executionenv.CommandSucceeded, Stdout: []byte("ok\n\xff"), Stderr: []byte("err\xe2")}}, nil
 }
 func (*integrationBackend) CommandStatus(context.Context, string, string, executionenv.CommandQueryRequest) (executionenv.CommandStatusResponse, error) {
 	return executionenv.CommandStatusResponse{}, &executionenv.Error{Code: executionenv.CodeInternal, Message: "unimplemented"}
@@ -217,7 +217,7 @@ func TestProviderThroughRealGRPCSignedHandlerRefreshesAndReattachesExactly(t *te
 		t.Fatalf("opaque version=%q err=%v", encoded, err)
 	}
 	result, err := runEnv.CommandRunner().Run(context.Background(), "go test ./...")
-	if err != nil || result.Stdout != "ok\n" {
+	if err != nil || result.Stdout != "ok\n�" || result.Stderr != "err�" {
 		t.Fatalf("result=%+v err=%v", result, err)
 	}
 	if backend.ensureCalls != 1 || backend.attachCalls < 2 || backend.fileCalls != 2 {

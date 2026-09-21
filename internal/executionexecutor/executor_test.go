@@ -8,9 +8,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
+	"github.com/stacklok/mecatl/engine/adapter/fstools"
+	"github.com/stacklok/mecatl/engine/adapter/memledger"
+	"github.com/stacklok/mecatl/engine/session"
+	"github.com/stacklok/mecatl/engine/tool"
 	"github.com/stacklok/mecatl/internal/executionenv"
 )
 
@@ -109,10 +115,67 @@ func TestSuccessfulDetachedChildIsKilledBeforeTerminalReceipt(t *testing.T) {
 	}
 }
 
+func TestNativeShellCapsCombinedOutputAndRepairsUTF8(t *testing.T) {
+	for _, tc := range []struct {
+		name, command          string
+		wantStdout, wantStderr int
+	}{
+		{"stdout", `i=0; while [ "$i" -lt 2048 ]; do printf x; i=$((i+1)); done`, 1024, 0},
+		{"stderr", `i=0; while [ "$i" -lt 2048 ]; do printf x >&2; i=$((i+1)); done`, 0, 1024},
+		{"split-malformed", `printf '\377'; printf '\376' >&2; i=0; while [ "$i" -lt 700 ]; do printf x; printf y >&2; i=$((i+1)); done`, 703, 321},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := runExecutorHelper(t, t.TempDir(), executionenv.ExecutorRequest{Operation: executionenv.OpCommandStart, CommandID: "bounded", Command: tc.command})
+			result := response.Command
+			if result == nil || result.State != executionenv.CommandSucceeded || result.TerminalReceipt == "" {
+				t.Fatalf("native command failed: %+v", response)
+			}
+			if !result.Truncated || len(result.Stdout) != tc.wantStdout || len(result.Stderr) != tc.wantStderr || len(result.Stdout)+len(result.Stderr) > 1024 {
+				t.Fatalf("stdout=%d stderr=%d truncated=%t", len(result.Stdout), len(result.Stderr), result.Truncated)
+			}
+			if !utf8.Valid(result.Stdout) || !utf8.Valid(result.Stderr) {
+				t.Fatal("native command result contains malformed UTF-8")
+			}
+			if tc.name == "split-malformed" && (!strings.HasPrefix(string(result.Stdout), "�") || !strings.HasPrefix(string(result.Stderr), "�")) {
+				t.Fatal("malformed stream bytes were not repaired")
+			}
+		})
+	}
+}
+
+func TestNativeShellWriteInvalidatesRecordedRead(t *testing.T) {
+	root := t.TempDir()
+	x, err := New(root, Limits{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer x.Close()
+	env := tool.MustEnvironment(session.EnvironmentRef{Kind: "kubernetes", ID: "shell-cas", Revision: "v1"}, x.workspace, memledger.New(), nil)
+	if _, err := x.workspace.CreateFile(t.Context(), "file.txt", []byte("before")); err != nil {
+		t.Fatal(err)
+	}
+	read, err := (fstools.ReadTool{}).Execute(t.Context(), session.NewToolCall("read", "Read", json.RawMessage(`{"path":"file.txt"}`)), env)
+	if err != nil || read.IsError {
+		t.Fatalf("record read: %+v, %v", read, err)
+	}
+	response := runExecutorHelper(t, root, executionenv.ExecutorRequest{Operation: executionenv.OpCommandStart, CommandID: "write", Command: "printf shell-change > file.txt"})
+	if response.Command == nil || response.Command.State != executionenv.CommandSucceeded {
+		t.Fatalf("Shell write failed: %+v", response)
+	}
+	edit, err := (fstools.EditTool{}).Execute(t.Context(), session.NewToolCall("edit", "Edit", json.RawMessage(`{"path":"file.txt","old_string":"shell-change","new_string":"lost"}`)), env)
+	if err != nil || !edit.IsError || !strings.Contains(edit.Content, "changed since") {
+		t.Fatalf("Edit must reject the stale recorded version, not an exact-match failure: %+v, %v", edit, err)
+	}
+	data, err := x.workspace.Read(t.Context(), "file.txt")
+	if err != nil || string(data) != "shell-change" {
+		t.Fatalf("Shell change overwritten: %q, %v", data, err)
+	}
+}
+
 func runExecutorHelper(t *testing.T, root string, request executionenv.ExecutorRequest) executionenv.ExecutorResponse {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestExecutorCommandHelper$")
-	cmd.Env = append(os.Environ(), "MECATL_EXECUTOR_TEST_HELPER=1", "MECATL_EXECUTOR_TEST_ROOT="+root)
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "HOME=" + root, "MECATL_EXECUTOR_TEST_HELPER=1", "MECATL_EXECUTOR_TEST_ROOT=" + root}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
