@@ -18,38 +18,41 @@ import (
 	"github.com/stacklok/mecatl/internal/mcpbroker"
 )
 
-// Server adapts one mcpbroker.Service incarnation to the broker RPC service.
+// Server adapts one mcpbroker.Service instance to the broker RPC service.
 type Server struct {
+	// UnimplementedBrokerServiceServer preserves forward compatibility with the generated RPC service.
 	brokerv1.UnimplementedBrokerServiceServer
-	service         mcpbroker.Service
-	diagnostics     port.Diagnostics
+
+	// Immutable dependencies and configuration, set before the server accepts RPCs.
+	service     mcpbroker.Service // Owns the underlying logical broker sessions.
+	diagnostics port.Diagnostics  // Receives safe operational RPC observations.
+	cfg         Config            // Validated deadlines, retention periods, and capacity limits.
+	// instanceID is generated when the Server is constructed. Clients echo it so a
+	// replacement server rejects requests tied to the lost process-local state.
+	instanceID string
+
+	// mu protects the retained registries, their attachment and owner state, the
+	// closed flag, and the execution/control counters below.
 	mu              sync.Mutex
-	handles         map[string]*serverAttachment
-	owners          map[session.SessionID]*sessionOwner
-	maxHandles      int
-	incarnation     string
-	cfg             Config
-	closed          bool
-	done            chan struct{}
-	stop            chan struct{}
-	executeCtx      context.Context
-	executeStop     context.CancelFunc
-	executeWG       sync.WaitGroup
-	activeExecutes  int
-	pendingControls int
+	handles         map[string]*serverAttachment        // Process-local handles retained until expiry or shutdown cleanup.
+	owners          map[session.SessionID]*sessionOwner // Logical-session ownership retained beyond individual handles.
+	closed          bool                                // Rejects new work once Shutdown begins.
+	activeExecutes  int                                 // Dispatched executions counted against cfg.MaxActiveExecutes.
+	pendingControls int                                 // Lifecycle controls awaiting settlement.
+
+	// Shutdown and cancellation machinery.
+	// stop requests sweeper shutdown; done closes after the sweeper exits.
+	stop chan struct{}
+	done chan struct{}
+	// executeCtx is cancelled by executeStop when Shutdown begins.
+	executeCtx  context.Context
+	executeStop context.CancelFunc
+	// executeWG joins dispatched executions before attachment cleanup.
+	executeWG sync.WaitGroup
 }
 
-// NewServer constructs a server with default deadlines and the requested handle bound.
-func NewServer(service mcpbroker.Service, maxHandles int) (*Server, error) {
-	cfg := DefaultConfig()
-	if maxHandles > 0 {
-		cfg.MaxHandles = maxHandles
-	}
-	return NewServerWithConfig(service, cfg)
-}
-
-// NewServerWithConfig constructs one authoritative broker-process incarnation.
-func NewServerWithConfig(service mcpbroker.Service, cfg Config) (*Server, error) {
+// NewServer constructs one authoritative broker-process instance.
+func NewServer(service mcpbroker.Service, cfg Config) (*Server, error) {
 	if service == nil {
 		return nil, errors.New("mcpbrokergrpc: service is required")
 	}
@@ -75,12 +78,12 @@ func NewServerWithConfig(service mcpbroker.Service, cfg Config) (*Server, error)
 	if !cfg.valid() {
 		return nil, errors.New("mcpbrokergrpc: all deadlines and capacities must be positive")
 	}
-	incarnation, err := newHandle()
+	instanceID, err := newHandle()
 	if err != nil {
-		return nil, fmt.Errorf("mcpbrokergrpc: mint broker incarnation: %w", err)
+		return nil, fmt.Errorf("mcpbrokergrpc: mint broker instance ID: %w", err)
 	}
 	executeCtx, executeStop := context.WithCancel(context.Background())
-	s := &Server{service: service, diagnostics: port.NopDiagnostics{}, handles: make(map[string]*serverAttachment), owners: make(map[session.SessionID]*sessionOwner), maxHandles: cfg.MaxHandles, incarnation: incarnation, cfg: cfg, done: make(chan struct{}), stop: make(chan struct{}), executeCtx: executeCtx, executeStop: executeStop}
+	s := &Server{service: service, diagnostics: port.NopDiagnostics{}, cfg: cfg, instanceID: instanceID, handles: make(map[string]*serverAttachment), owners: make(map[session.SessionID]*sessionOwner), done: make(chan struct{}), stop: make(chan struct{}), executeCtx: executeCtx, executeStop: executeStop}
 	go s.sweep()
 	return s, nil
 }
@@ -116,7 +119,7 @@ func (s *Server) traceUnknownTool(ctx context.Context, a *serverAttachment, requ
 	if truncated {
 		names = names[:previewLimit]
 	}
-	s.TraceRPC(ctx, "execute", "unknown_tool", "logical_session", a.logicalID, "tool", diagnosticToolName(string(requested)), "registered_tool_count", len(a.tools), "registered_tool_preview", strings.Join(names, ","), "registered_tool_preview_truncated", truncated)
+	s.TraceRPC(ctx, "execute", "unknown_tool", "logical_session", a.logicalID, "tool", diagnosticToolName(requested), "registered_tool_count", len(a.tools), "registered_tool_preview", strings.Join(names, ","), "registered_tool_preview_truncated", truncated)
 }
 
 func diagnosticToolName(name string) string {
@@ -134,14 +137,6 @@ func (s *Server) ExecuteDeadline() time.Duration { return s.cfg.ExecuteDeadline 
 // RegisterServer registers an explicitly owned server so its cleanup can be joined.
 func RegisterServer(reg grpc.ServiceRegistrar, server *Server) {
 	brokerv1.RegisterBrokerServiceServer(reg, server)
-}
-
-func (s *Server) bounded(ctx context.Context, execute bool) (context.Context, context.CancelFunc) {
-	d := s.cfg.RPCDeadline
-	if execute {
-		d = s.cfg.ExecuteDeadline
-	}
-	return context.WithTimeout(ctx, d)
 }
 
 // Shutdown rejects new operations and bounds closure of every orphaned handle.

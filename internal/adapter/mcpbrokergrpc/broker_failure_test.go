@@ -33,7 +33,7 @@ func TestADR_0304_RemoteAttachmentLifecycle(t *testing.T) {
 	cfg := shortConfig()
 	cfg.HandleIdleTimeout = 15 * time.Millisecond
 	cfg.SweepInterval = 5 * time.Millisecond
-	server, err := mcpbrokergrpc.NewServerWithConfig(local, cfg)
+	server, err := mcpbrokergrpc.NewServer(local, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestInitialProductionMCPBroker_Scenario4_TransientReconnect(t *testing.T) {
 	}
 
 	local := newFailureBroker()
-	brokerServer, err := mcpbrokergrpc.NewServerWithConfig(local, cfg)
+	brokerServer, err := mcpbrokergrpc.NewServer(local, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -252,7 +252,7 @@ func TestInitialProductionMCPBroker_ServerRunDeadlineBoundsBackgroundAndHonorsEa
 			local.blockExecute = make(chan struct{})
 			cfg := shortConfig()
 			cfg.ExecuteDeadline = tc.serverDeadline
-			server, err := mcpbrokergrpc.NewServerWithConfig(local, cfg)
+			server, err := mcpbrokergrpc.NewServer(local, cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -355,7 +355,7 @@ func TestSingletonBrokerRemediation_Scenario1_ConcurrentCancellationAndLifecycle
 
 	shutdownBroker := newFailureBroker()
 	shutdownBroker.blockExecute = make(chan struct{})
-	shutdownServer, err := mcpbrokergrpc.NewServerWithConfig(shutdownBroker, cfg)
+	shutdownServer, err := mcpbrokergrpc.NewServer(shutdownBroker, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -397,7 +397,7 @@ func TestSingletonBrokerRemediation_Scenario1_LifecycleReceiptsAreAbsoluteAndRep
 	cfg := shortConfig()
 	cfg.HandleIdleTimeout = 30 * time.Millisecond
 	cfg.SweepInterval = 5 * time.Millisecond
-	server, err := mcpbrokergrpc.NewServerWithConfig(local, cfg)
+	server, err := mcpbrokergrpc.NewServer(local, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -446,7 +446,7 @@ func TestSingletonBrokerRemediation_Scenario1_LifecycleReceiptsAreAbsoluteAndRep
 
 func TestInitialProductionMCPBroker_ConcurrentCloseRetriesShareOneReceipt(t *testing.T) {
 	local := newFailureBroker()
-	server, err := mcpbrokergrpc.NewServerWithConfig(local, shortConfig())
+	server, err := mcpbrokergrpc.NewServer(local, shortConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -488,7 +488,7 @@ func TestInitialProductionMCPBroker_TerminalLifecycleReceiptErrorSemantics(t *te
 		local := newFailureBroker()
 		local.closeOutcome = mcpbroker.CloseClosed
 		local.closeErr = context.DeadlineExceeded
-		server, err := mcpbrokergrpc.NewServerWithConfig(local, shortConfig())
+		server, err := mcpbrokergrpc.NewServer(local, shortConfig())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -514,7 +514,7 @@ func TestInitialProductionMCPBroker_TerminalLifecycleReceiptErrorSemantics(t *te
 	t.Run("failed abort remains retryable", func(t *testing.T) {
 		local := newFailureBroker()
 		local.abortErr = errors.New("abort failed")
-		server, err := mcpbrokergrpc.NewServerWithConfig(local, shortConfig())
+		server, err := mcpbrokergrpc.NewServer(local, shortConfig())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -746,7 +746,7 @@ func TestSingletonBrokerRemediation_Scenario2_BoundedAdmissionAcrossBrokerRegist
 	t.Run("attachment handles", func(t *testing.T) {
 		cfg := shortConfig()
 		cfg.MaxHandles = 1
-		server, err := mcpbrokergrpc.NewServerWithConfig(newFailureBroker(), cfg)
+		server, err := mcpbrokergrpc.NewServer(newFailureBroker(), cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -763,7 +763,7 @@ func TestSingletonBrokerRemediation_Scenario2_BoundedAdmissionAcrossBrokerRegist
 		cfg := shortConfig()
 		cfg.MaxReceipts = 1
 		local := newFailureBroker()
-		server, err := mcpbrokergrpc.NewServerWithConfig(local, cfg)
+		server, err := mcpbrokergrpc.NewServer(local, cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -794,7 +794,7 @@ func TestSingletonBrokerRemediation_Scenario2_BoundedAdmissionAcrossBrokerRegist
 		local := newFailureBroker()
 		local.blockClose = make(chan struct{})
 		local.closeEntered = make(chan struct{}, 1)
-		server, err := mcpbrokergrpc.NewServerWithConfig(local, cfg)
+		server, err := mcpbrokergrpc.NewServer(local, cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -834,7 +834,7 @@ func TestSingletonBrokerRemediation_OwnershipOutlivesExpiredHandles(t *testing.T
 	cfg.OwnerRetention = 100 * time.Millisecond
 	cfg.SweepInterval = 5 * time.Millisecond
 	local := newFailureBroker()
-	server, err := mcpbrokergrpc.NewServerWithConfig(local, cfg)
+	server, err := mcpbrokergrpc.NewServer(local, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -882,7 +882,7 @@ func TestOwnerRetirementRetriesDeletionBeforeReleasingCapacity(t *testing.T) {
 	cfg.SweepInterval = 5 * time.Millisecond
 	local := newFailureBroker()
 	local.deleteFails.Store(true)
-	server, err := mcpbrokergrpc.NewServerWithConfig(local, cfg)
+	server, err := mcpbrokergrpc.NewServer(local, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -935,7 +935,7 @@ func TestSingletonBrokerRemediation_Scenario2_RetentionAndOwnership(t *testing.T
 	cfg.CleanupTimeout = time.Second
 	local := newFailureBroker()
 	local.blockExecute = make(chan struct{})
-	server, err := mcpbrokergrpc.NewServerWithConfig(local, cfg)
+	server, err := mcpbrokergrpc.NewServer(local, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1055,7 +1055,7 @@ func failureBufServer(t *testing.T, local mcpbroker.Service, interceptor grpc.Un
 	if len(configs) > 0 {
 		cfg = configs[0]
 	}
-	brokerServer, err := mcpbrokergrpc.NewServerWithConfig(local, cfg)
+	brokerServer, err := mcpbrokergrpc.NewServer(local, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

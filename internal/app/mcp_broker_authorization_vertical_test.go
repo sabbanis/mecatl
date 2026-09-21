@@ -361,7 +361,7 @@ func TestInvariant_singleton_broker_named_proofs_use_production_paths(t *testing
 			t.Errorf("%s does not construct the production remote factory in its own body", proof.name)
 		}
 		assertStartedProductionLifecycles(t, proof.name, fn.Body, proof.lifecycles)
-		for _, forbidden := range []string{"grpc.NewServer", "mcpbrokergrpc.NewServer", "mcpbrokergrpc.NewServerWithConfig", "mcpbrokergrpc.RegisterServer"} {
+		for _, forbidden := range []string{"grpc.NewServer", "mcpbrokergrpc.NewServer", "mcpbrokergrpc.RegisterServer"} {
 			if seen[forbidden] {
 				t.Errorf("%s hand-builds broker transport through %s", proof.name, forbidden)
 			}

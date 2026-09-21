@@ -22,7 +22,7 @@ import (
 func TestServerLogicalOwnerCapacityRefusesWithoutTakeover(t *testing.T) {
 	cfg := mcpbrokergrpc.DefaultConfig()
 	cfg.MaxOwners = 1
-	server, err := mcpbrokergrpc.NewServerWithConfig(newBroker(), cfg)
+	server, err := mcpbrokergrpc.NewServer(newBroker(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestHandleCapacityAbortsRejectedCreatedLogicalSession(t *testing.T) {
 	cfg := mcpbrokergrpc.DefaultConfig()
 	cfg.MaxHandles = 1
 	broker := &abortCountingBroker{}
-	server, err := mcpbrokergrpc.NewServerWithConfig(broker, cfg)
+	server, err := mcpbrokergrpc.NewServer(broker, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestRetiredLogicalOwnerReleasesCapacityForDifferentSession(t *testing.T) {
 	cfg.HandleIdleTimeout = 15 * time.Millisecond
 	cfg.OwnerRetention = 30 * time.Millisecond
 	cfg.SweepInterval = 5 * time.Millisecond
-	server, err := mcpbrokergrpc.NewServerWithConfig(newBroker(), cfg)
+	server, err := mcpbrokergrpc.NewServer(newBroker(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestFailedAttachRollsBackNewOwnerAdmission(t *testing.T) {
 	cfg := mcpbrokergrpc.DefaultConfig()
 	cfg.MaxOwners = 1
 	service := &failFirstAttach{delegate: newBroker()}
-	server, err := mcpbrokergrpc.NewServerWithConfig(service, cfg)
+	server, err := mcpbrokergrpc.NewServer(service, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestFailedAttachRollsBackNewOwnerAdmission(t *testing.T) {
 func TestReceiptAggregateByteCapacityRejectsBeforeRetention(t *testing.T) {
 	cfg := mcpbrokergrpc.DefaultConfig()
 	cfg.MaxReceiptBytes = 1
-	server, err := mcpbrokergrpc.NewServerWithConfig(newBroker(), cfg)
+	server, err := mcpbrokergrpc.NewServer(newBroker(), cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +168,7 @@ func TestReceiptReservationAdmissionBoundary(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			cfg := mcpbrokergrpc.DefaultConfig()
 			cfg.MaxReceiptBytes = test.limit
-			server, err := mcpbrokergrpc.NewServerWithConfig(byteExactBroker{}, cfg)
+			server, err := mcpbrokergrpc.NewServer(byteExactBroker{}, cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -194,7 +194,7 @@ func TestReceiptResponseBytesAreBoundedAndIdempotent(t *testing.T) {
 	request := &brokerv1.ExecuteRequest{CallId: "response-cap", Name: "exact", Args: []byte(`{"value":"` + strings.Repeat("x", 2048) + `"}`)}
 	cfg := mcpbrokergrpc.DefaultConfig()
 	cfg.MaxReceiptBytes = invocationBytes(request) + 1024
-	server, err := mcpbrokergrpc.NewServerWithConfig(byteExactBroker{}, cfg)
+	server, err := mcpbrokergrpc.NewServer(byteExactBroker{}, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +217,7 @@ func TestReceiptAggregateCountsTerminalResponses(t *testing.T) {
 	second := &brokerv1.ExecuteRequest{CallId: "near-two", Name: "exact", Args: []byte(`{"value":"` + strings.Repeat("x", 2048) + `"}`)}
 	cfg := mcpbrokergrpc.DefaultConfig()
 	cfg.MaxReceiptBytes = invocationBytes(first) + 1024
-	server, err := mcpbrokergrpc.NewServerWithConfig(byteExactBroker{}, cfg)
+	server, err := mcpbrokergrpc.NewServer(byteExactBroker{}, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,7 +241,7 @@ func TestReceiptBinaryPartBytesAreBounded(t *testing.T) {
 	request := &brokerv1.ExecuteRequest{CallId: "binary-cap", Name: "binary", Args: []byte(`{}`)}
 	cfg := mcpbrokergrpc.DefaultConfig()
 	cfg.MaxReceiptBytes = invocationBytes(request) + 1024
-	server, err := mcpbrokergrpc.NewServerWithConfig(binaryReceiptBroker{}, cfg)
+	server, err := mcpbrokergrpc.NewServer(binaryReceiptBroker{}, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

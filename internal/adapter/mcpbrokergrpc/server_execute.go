@@ -26,7 +26,7 @@ func preDispatchError(err error) error {
 
 // Execute dispatches one tool invocation and retains one immutable bounded receipt.
 func (s *Server) Execute(ctx context.Context, req *brokerv1.ExecuteRequest) (*brokerv1.ExecuteResponse, error) {
-	ctx, cancel := s.bounded(ctx, true)
+	ctx, cancel := context.WithTimeout(ctx, s.cfg.ExecuteDeadline)
 	defer cancel()
 	if err := s.checkIncarnation(req.GetBrokerIncarnation(), false); err != nil {
 		return nil, err
@@ -138,7 +138,7 @@ func (s *Server) executeOwner(a *serverAttachment, receipt *executeReceipt, targ
 		}()
 		ctx, cancel := context.WithTimeout(s.executeCtx, s.cfg.ExecuteDeadline)
 		defer cancel()
-		env := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindNoFS, ID: string(a.logicalID), Revision: s.incarnation}, nofs.New(), memledger.New(), nil)
+		env := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindNoFS, ID: string(a.logicalID), Revision: s.instanceID}, nofs.New(), memledger.New(), nil)
 		result, err := target.Execute(ctx, call, env)
 		switch {
 		case err != nil:

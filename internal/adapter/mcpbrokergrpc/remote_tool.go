@@ -31,7 +31,7 @@ func (t *remoteTool) Execute(ctx context.Context, call session.ToolCall, _ tool.
 	if _, e := callFrom(call.Name, string(call.ID), call.Args, call.ItemID); e != nil {
 		return session.ToolResult{}, e
 	}
-	rpcCtx, cancel := t.client.bounded(ctx, true)
+	rpcCtx, cancel := context.WithTimeout(ctx, t.client.cfg.ExecuteDeadline)
 	defer cancel()
 	r, e := t.client.rpc.Execute(rpcCtx, &brokerv1.ExecuteRequest{Handle: t.handle, Name: call.Name, CallId: string(call.ID), Args: append([]byte(nil), call.Args...), ItemId: call.ItemID, BrokerIncarnation: t.incarnation})
 	if e != nil {
@@ -60,7 +60,7 @@ func (*remoteSerialTool) DispatchSerialTool() {}
 type remoteAuthorizationTool struct{ *remoteTool }
 
 func (t *remoteAuthorizationTool) RequestAuthorization(ctx context.Context, call session.ToolCall) (session.ExternalAuthorization, bool, error) {
-	rpcCtx, cancel := t.client.bounded(ctx, false)
+	rpcCtx, cancel := context.WithTimeout(ctx, t.client.cfg.RPCDeadline)
 	defer cancel()
 	r, e := t.client.rpc.RequestAuthorization(rpcCtx, &brokerv1.RequestAuthorizationRequest{Handle: t.handle, Name: call.Name, CallId: string(call.ID), Args: append([]byte(nil), call.Args...), ItemId: call.ItemID, BrokerIncarnation: t.incarnation})
 	if e != nil {
@@ -76,7 +76,7 @@ func (t *remoteAuthorizationTool) RequestAuthorization(ctx context.Context, call
 	return a, true, e
 }
 func (t *remoteAuthorizationTool) AbortAuthorization(ctx context.Context, a session.ExternalAuthorization) error {
-	rpcCtx, cancel := t.client.bounded(ctx, false)
+	rpcCtx, cancel := context.WithTimeout(ctx, t.client.cfg.RPCDeadline)
 	defer cancel()
 	_, e := t.client.rpc.AbortAuthorization(rpcCtx, &brokerv1.AbortAuthorizationRequest{Handle: t.handle, Authorization: authToWire(a), BrokerIncarnation: t.incarnation})
 	return clientError(e)

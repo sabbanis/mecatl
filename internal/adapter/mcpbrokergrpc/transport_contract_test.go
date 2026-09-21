@@ -43,7 +43,7 @@ func TestSingletonBrokerRemediation_Scenario1_ExecuteReceiptPreventsRedispatch(t
 	cfg := shortConfig()
 	cfg.HandleIdleTimeout = 80 * time.Millisecond
 	cfg.SweepInterval = 5 * time.Millisecond
-	server, err := mcpbrokergrpc.NewServerWithConfig(local, cfg)
+	server, err := mcpbrokergrpc.NewServer(local, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

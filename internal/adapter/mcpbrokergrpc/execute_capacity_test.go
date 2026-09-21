@@ -22,7 +22,7 @@ func TestExecuteCapacityRetainsRejectionAndRecovers(t *testing.T) {
 	service := &executeLimitBroker{gate: gate, started: make(chan struct{})}
 	cfg := mcpbrokergrpc.DefaultConfig()
 	cfg.MaxActiveExecutes = 1
-	server, err := mcpbrokergrpc.NewServerWithConfig(service, cfg)
+	server, err := mcpbrokergrpc.NewServer(service, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestExecuteCapacityReleasedAfterPanic(t *testing.T) {
 	service := &executeLimitBroker{panicFirst: true, gate: closedSignal(), started: make(chan struct{})}
 	cfg := mcpbrokergrpc.DefaultConfig()
 	cfg.MaxActiveExecutes = 1
-	server, err := mcpbrokergrpc.NewServerWithConfig(service, cfg)
+	server, err := mcpbrokergrpc.NewServer(service, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +92,7 @@ func TestExecuteCapacityShutdownCancelsAndJoinsActiveSlot(t *testing.T) {
 	service := &executeLimitBroker{waitForCancel: true, started: make(chan struct{})}
 	cfg := mcpbrokergrpc.DefaultConfig()
 	cfg.MaxActiveExecutes = 1
-	server, err := mcpbrokergrpc.NewServerWithConfig(service, cfg)
+	server, err := mcpbrokergrpc.NewServer(service, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestExecuteReceiptPollingDoesNotExtendAbsoluteHandleExpiry(t *testing.T) {
 	cfg := mcpbrokergrpc.DefaultConfig()
 	cfg.HandleIdleTimeout = 70 * time.Millisecond
 	cfg.SweepInterval = 5 * time.Millisecond
-	server, err := mcpbrokergrpc.NewServerWithConfig(service, cfg)
+	server, err := mcpbrokergrpc.NewServer(service, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

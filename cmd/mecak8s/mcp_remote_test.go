@@ -139,7 +139,7 @@ func TestSingletonBrokerRemediation_Scenario4_ProjectedTokenRotation(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	brokerServer, err := mcpbrokergrpc.NewServer(local, 0)
+	brokerServer, err := mcpbrokergrpc.NewServer(local, mcpbrokergrpc.DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}

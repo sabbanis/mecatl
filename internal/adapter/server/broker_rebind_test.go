@@ -554,7 +554,9 @@ func (c *rebindSwitchConn) NewStream(ctx context.Context, desc *grpc.StreamDesc,
 func serveRebindBroker(t *testing.T, service brokercontract.Service) (grpc.ClientConnInterface, func()) {
 	t.Helper()
 	listener := bufconn.Listen(1 << 20)
-	brokerServer, err := mcpbrokergrpc.NewServer(service, 64)
+	cfg := mcpbrokergrpc.DefaultConfig()
+	cfg.MaxHandles = 64
+	brokerServer, err := mcpbrokergrpc.NewServer(service, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

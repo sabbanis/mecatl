@@ -403,7 +403,7 @@ func newRemote(t *testing.T, local mcpbroker.Service) mcpbroker.Service {
 	t.Helper()
 	listener := bufconn.Listen(1 << 20)
 	server := grpc.NewServer()
-	brokerServer, err := mcpbrokergrpc.NewServer(local, 0)
+	brokerServer, err := mcpbrokergrpc.NewServer(local, mcpbrokergrpc.DefaultConfig())
 	if err != nil {
 		t.Fatal(err)
 	}

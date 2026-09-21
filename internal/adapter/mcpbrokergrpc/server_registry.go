@@ -143,7 +143,7 @@ func (s *Server) checkIncarnation(got string, allowEmpty bool) error {
 	if got == "" && allowEmpty {
 		return nil
 	}
-	if got == "" || got != s.incarnation {
+	if got == "" || got != s.instanceID {
 		return reasonStatus(codes.FailedPrecondition, "broker incarnation mismatch", brokerv1.BrokerErrorReason_BROKER_ERROR_REASON_INCARNATION_LOST, "")
 	}
 	return nil

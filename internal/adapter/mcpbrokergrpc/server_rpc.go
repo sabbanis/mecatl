@@ -16,7 +16,7 @@ import (
 
 // Attach binds an authenticated workload to a logical broker session.
 func (s *Server) Attach(ctx context.Context, req *brokerv1.AttachRequest) (*brokerv1.AttachResponse, error) {
-	ctx, cancel := s.bounded(ctx, false)
+	ctx, cancel := context.WithTimeout(ctx, s.cfg.RPCDeadline)
 	defer cancel()
 	if req.GetSessionId() == "" {
 		return nil, invalid("session_id is required")
@@ -54,7 +54,7 @@ func (s *Server) Attach(ctx context.Context, req *brokerv1.AttachRequest) (*brok
 		s.discardUnpublishedAttachment(a, outcome)
 		return nil, reasonStatus(codes.Unavailable, "broker state unavailable", brokerv1.BrokerErrorReason_BROKER_ERROR_REASON_STATE_UNAVAILABLE, "")
 	}
-	if len(s.handles) >= s.maxHandles {
+	if len(s.handles) >= s.cfg.MaxHandles {
 		s.discardUnpublishedAttachment(a, outcome)
 		return nil, reasonStatus(codes.ResourceExhausted, "attachment handle capacity reached", brokerv1.BrokerErrorReason_BROKER_ERROR_REASON_CAPACITY_REACHED, "")
 	}
@@ -62,7 +62,7 @@ func (s *Server) Attach(ctx context.Context, req *brokerv1.AttachRequest) (*brok
 	now := time.Now()
 	s.handles[h] = &serverAttachment{attachment: a, principal: principal, logicalID: logicalID, binding: string(a.Binding()), tools: tools, expiresAt: now.Add(s.cfg.HandleIdleTimeout), changed: make(chan struct{}), receipts: make(map[session.ToolCallID]*executeReceipt)}
 	attached = true
-	return &brokerv1.AttachResponse{Binding: string(a.Binding()), Handle: h, Outcome: string(outcome), Tools: desc, BrokerIncarnation: s.incarnation, WorkspaceEnrollment: enrollment}, nil
+	return &brokerv1.AttachResponse{Binding: string(a.Binding()), Handle: h, Outcome: string(outcome), Tools: desc, BrokerIncarnation: s.instanceID, WorkspaceEnrollment: enrollment}, nil
 }
 
 func (s *Server) discardUnpublishedAttachment(attachment mcpbroker.Attachment, outcome mcpbroker.AttachOutcome) {
@@ -77,7 +77,7 @@ func (s *Server) discardUnpublishedAttachment(attachment mcpbroker.Attachment, o
 
 // Commit commits the provisional state behind one exact handle.
 func (s *Server) Commit(ctx context.Context, req *brokerv1.CommitRequest) (*brokerv1.CommitResponse, error) {
-	ctx, cancel := s.bounded(ctx, false)
+	ctx, cancel := context.WithTimeout(ctx, s.cfg.RPCDeadline)
 	defer cancel()
 	a, release, e := s.get(ctx, req.GetBrokerIncarnation(), req.GetHandle())
 	if e != nil {
@@ -92,7 +92,7 @@ func (s *Server) Commit(ctx context.Context, req *brokerv1.CommitRequest) (*brok
 
 // Abort aborts and releases one exact handle.
 func (s *Server) Abort(ctx context.Context, req *brokerv1.AbortRequest) (*brokerv1.AbortResponse, error) {
-	ctx, cancel := s.bounded(ctx, false)
+	ctx, cancel := context.WithTimeout(ctx, s.cfg.RPCDeadline)
 	defer cancel()
 	a, _, receipt, e := s.beginLifecycle(ctx, req.GetBrokerIncarnation(), req.GetHandle(), lifecycleAbort)
 	if e != nil {
@@ -111,7 +111,7 @@ func (s *Server) Abort(ctx context.Context, req *brokerv1.AbortRequest) (*broker
 
 // Close releases one exact handle without deleting logical state.
 func (s *Server) Close(ctx context.Context, req *brokerv1.CloseRequest) (*brokerv1.CloseResponse, error) {
-	ctx, cancel := s.bounded(ctx, false)
+	ctx, cancel := context.WithTimeout(ctx, s.cfg.RPCDeadline)
 	defer cancel()
 	a, out, receipt, e := s.beginLifecycle(ctx, req.GetBrokerIncarnation(), req.GetHandle(), lifecycleClose)
 	if e != nil {
@@ -129,9 +129,9 @@ func (s *Server) Close(ctx context.Context, req *brokerv1.CloseRequest) (*broker
 	return &brokerv1.CloseResponse{Outcome: string(out)}, nil
 }
 
-// Delete deletes only the exact logical state in the addressed broker incarnation.
+// Delete deletes only the exact logical state in the addressed broker instance.
 func (s *Server) Delete(ctx context.Context, req *brokerv1.DeleteRequest) (*brokerv1.DeleteResponse, error) {
-	ctx, cancel := s.bounded(ctx, false)
+	ctx, cancel := context.WithTimeout(ctx, s.cfg.RPCDeadline)
 	defer cancel()
 	if req.GetSessionId() == "" {
 		return nil, invalid("session_id is required")
@@ -164,7 +164,7 @@ func (s *Server) Delete(ctx context.Context, req *brokerv1.DeleteRequest) (*brok
 
 // RequestAuthorization begins authorization for one exact invocation.
 func (s *Server) RequestAuthorization(ctx context.Context, req *brokerv1.RequestAuthorizationRequest) (*brokerv1.RequestAuthorizationResponse, error) {
-	ctx, cancel := s.bounded(ctx, false)
+	ctx, cancel := context.WithTimeout(ctx, s.cfg.RPCDeadline)
 	defer cancel()
 	a, release, e := s.get(ctx, req.GetBrokerIncarnation(), req.GetHandle())
 	if e != nil {
@@ -210,7 +210,7 @@ func (s *Server) RequestAuthorization(ctx context.Context, req *brokerv1.Request
 
 // AbortAuthorization aborts one exact tool authorization.
 func (s *Server) AbortAuthorization(ctx context.Context, req *brokerv1.AbortAuthorizationRequest) (*brokerv1.AbortAuthorizationResponse, error) {
-	ctx, cancel := s.bounded(ctx, false)
+	ctx, cancel := context.WithTimeout(ctx, s.cfg.RPCDeadline)
 	defer cancel()
 	a, release, e := s.get(ctx, req.GetBrokerIncarnation(), req.GetHandle())
 	if e != nil {
@@ -242,7 +242,7 @@ func (s *Server) AbortAuthorization(ctx context.Context, req *brokerv1.AbortAuth
 
 // PresentAuthorization returns the ephemeral URL for one exact authorization.
 func (s *Server) PresentAuthorization(ctx context.Context, req *brokerv1.PresentAuthorizationRequest) (*brokerv1.PresentAuthorizationResponse, error) {
-	ctx, cancel := s.bounded(ctx, false)
+	ctx, cancel := context.WithTimeout(ctx, s.cfg.RPCDeadline)
 	defer cancel()
 	a, release, err := s.get(ctx, req.GetBrokerIncarnation(), req.GetHandle())
 	if err != nil {
@@ -265,7 +265,7 @@ func (s *Server) PresentAuthorization(ctx context.Context, req *brokerv1.Present
 
 // AuthorizationStatus observes one exact authorization.
 func (s *Server) AuthorizationStatus(ctx context.Context, req *brokerv1.AuthorizationStatusRequest) (*brokerv1.AuthorizationStatusResponse, error) {
-	ctx, cancel := s.bounded(ctx, false)
+	ctx, cancel := context.WithTimeout(ctx, s.cfg.RPCDeadline)
 	defer cancel()
 	a, release, err := s.get(ctx, req.GetBrokerIncarnation(), req.GetHandle())
 	if err != nil {
@@ -288,7 +288,7 @@ func (s *Server) AuthorizationStatus(ctx context.Context, req *brokerv1.Authoriz
 
 // CancelAuthorization cancels one exact authorization.
 func (s *Server) CancelAuthorization(ctx context.Context, req *brokerv1.CancelAuthorizationRequest) (*brokerv1.CancelAuthorizationResponse, error) {
-	ctx, cancel := s.bounded(ctx, false)
+	ctx, cancel := context.WithTimeout(ctx, s.cfg.RPCDeadline)
 	defer cancel()
 	a, release, err := s.get(ctx, req.GetBrokerIncarnation(), req.GetHandle())
 	if err != nil {
@@ -311,7 +311,7 @@ func (s *Server) CancelAuthorization(ctx context.Context, req *brokerv1.CancelAu
 
 // BeginWorkspaceEnrollment begins a pre-prompt enrollment.
 func (s *Server) BeginWorkspaceEnrollment(ctx context.Context, req *brokerv1.BeginWorkspaceEnrollmentRequest) (*brokerv1.BeginWorkspaceEnrollmentResponse, error) {
-	ctx, cancel := s.bounded(ctx, false)
+	ctx, cancel := context.WithTimeout(ctx, s.cfg.RPCDeadline)
 	defer cancel()
 	a, release, err := s.get(ctx, req.GetBrokerIncarnation(), req.GetHandle())
 	if err != nil {
@@ -357,7 +357,7 @@ type workspaceResultWire struct {
 }
 
 func (s *Server) workspaceResult(ctx context.Context, incarnation, handle string, wireRef *brokerv1.WorkspaceRef, cancel bool) (workspaceResultWire, error) {
-	ctx, stop := s.bounded(ctx, false)
+	ctx, stop := context.WithTimeout(ctx, s.cfg.RPCDeadline)
 	defer stop()
 	a, release, err := s.get(ctx, incarnation, handle)
 	if err != nil {

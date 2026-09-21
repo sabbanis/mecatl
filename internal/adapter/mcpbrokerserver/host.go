@@ -106,7 +106,7 @@ func newBrokerHost(ctx context.Context, cfg hostConfig) (*brokerHost, error) {
 	if transport == (mcpbrokergrpc.Config{}) {
 		transport = mcpbrokergrpc.DefaultConfig()
 	}
-	rpc, err := mcpbrokergrpc.NewServerWithConfig(runtime.Service, transport)
+	rpc, err := mcpbrokergrpc.NewServer(runtime.Service, transport)
 	if err != nil {
 		_ = verifier.Close()
 		if runtime.Close != nil {
