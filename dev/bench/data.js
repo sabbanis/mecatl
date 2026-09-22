@@ -229258,6 +229258,40 @@ window.BENCHMARK_DATA = {
         },
         "date": 1790021173906,
         "tool": "customBiggerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "joe@stacklok.com",
+            "name": "Joe Beda",
+            "username": "jbeda"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8306a8ebdeff928fb35e1501c7bec8193b68b3e7",
+          "message": "feat(mecatui): own configurable terminal titles (#1674)\n\nCo-authored-by: mecatl <noreply@mecatl.dev>",
+          "timestamp": "2026-09-21T17:15:22-07:00",
+          "tree_id": "1248363c2ffce21fd12bac9cec7854f34e958c85",
+          "url": "https://github.com/stacklok/mecatl/commit/8306a8ebdeff928fb35e1501c7bec8193b68b3e7"
+        },
+        "date": 1790036806696,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
       }
     ],
     "mecatl scenarios (render allocs, advisory)": [
@@ -332879,6 +332913,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1790036803825,
+  "lastUpdate": 1790036808259,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
