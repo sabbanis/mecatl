@@ -27,6 +27,45 @@ func TestPermissionAuthorizationBindingIsExact(t *testing.T) {
 	}
 }
 
+func TestReviewTrajectoryFactBytesCountsEveryRetainedString(t *testing.T) {
+	fields := []struct {
+		name string
+		fact ReviewTrajectoryFact
+	}{
+		{"call", ReviewTrajectoryFact{Call: "x"}},
+		{"ref", ReviewTrajectoryFact{Ref: "x"}},
+		{"direction", ReviewTrajectoryFact{Direction: "x"}},
+		{"data class", ReviewTrajectoryFact{DataClass: "x"}},
+		{"target", ReviewTrajectoryFact{TargetID: "x"}},
+		{"decision", ReviewTrajectoryFact{Decision: "x"}},
+		{"session", ReviewTrajectoryFact{SessionID: "x"}},
+		{"tool", ReviewTrajectoryFact{Tool: "x"}},
+		{"approval origin", ReviewTrajectoryFact{ApprovalOrigin: "x"}},
+		{"approval kind", ReviewTrajectoryFact{ApprovalKind: "x"}},
+		{"review", ReviewTrajectoryFact{ReviewID: "x"}},
+	}
+	for _, tc := range fields {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := reviewTrajectoryFactBytes(tc.fact); got != 1 {
+				t.Fatalf("bytes = %d, want 1", got)
+			}
+		})
+	}
+}
+
+func TestReviewTrajectoryAggregateCapacityCountsMetadata(t *testing.T) {
+	root := newReviewRoot(nil, nil, nil)
+	root.maxBytes = 8
+	root.record(ReviewTrajectoryFact{SessionID: "12345678"})
+	root.record(ReviewTrajectoryFact{ReviewID: "x"})
+	if root.bytes > root.maxBytes {
+		t.Fatalf("retained bytes = %d, max = %d", root.bytes, root.maxBytes)
+	}
+	if _, complete := root.snapshot(); complete {
+		t.Fatal("metadata-only overflow left trajectory complete")
+	}
+}
+
 func TestADR_0350_ContextualGuardrails_Scenario6_ImplementationCalibration(t *testing.T) {
 	if defaultReviewEvidenceHandles != 16 || defaultReviewEvidenceBytes != 400_000 || defaultReviewTrajectoryFacts != 256 || defaultReviewTrajectoryBytes != 128_000 || maxHeldResults != 32 || maxHeldResultBytes != 2*1024*1024 {
 		t.Fatalf("private capacities changed without calibration: evidence=%d/%d trajectory=%d/%d held=%d/%d", defaultReviewEvidenceHandles, defaultReviewEvidenceBytes, defaultReviewTrajectoryFacts, defaultReviewTrajectoryBytes, maxHeldResults, maxHeldResultBytes)

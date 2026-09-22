@@ -210,7 +210,9 @@ configure advisory behavior instead. Guardrails remain active in headless
 deployments and are not a replacement for permission rules.
 
 Mecatui's `/guardrails` command shows the active checker and session-specific
-coverage. Action findings offer Run once, an exact session-only repeat grant when
+coverage. `/posture` reports permission posture and checker state separately, including
+off/setup guidance, advisory or enforcing when on, and unknown when an older or
+unavailable server cannot establish status. Action findings offer Run once, an exact session-only repeat grant when
 version-binding is complete, or Cancel. Result findings offer Release once or
 Cancel; release delivers the same held result without rerunning side effects.
 

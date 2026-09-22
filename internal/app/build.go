@@ -768,6 +768,9 @@ type Config struct {
 	// rules when no explicit rules are configured: "block" (default) or "advisory".
 	// An explicit rules list replaces the defaults entirely.
 	GuardrailsDefaultMode string
+	// GuardrailsTaskWindow selects the last K genuine root user prompts supplied to
+	// contextual reviews. Zero defaults to 1; composition clamps all values to 1..3.
+	GuardrailsTaskWindow int
 	// GuardrailsEscape is the ADR-0080 escape knob (operator-tier `guardrails:`
 	// `escape:` key): when true AND a checker model is configured, an out-of-root
 	// FS escape at posture AUTO is routed through the guardrail checker as a
@@ -805,6 +808,7 @@ type Config struct {
 	guardrailConfigured bool
 	guardrailDetails    *server.ReviewDetailRegistry
 	guardrailHealth     *guardrailRouteHealth
+	planApprovals       *planApprovalReceipts
 
 	// Slash commands: directory of <name>.md templates; EnableCommands turns on the
 	// default directories when CommandsDir is empty.
@@ -1714,6 +1718,7 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 	// list comes from YAML (flags cannot express it). This runs after the resolver is
 	// built and before the provider/model fail-fast normalization below.
 	cfg = foldOperatorGuardrails(cfg)
+	cfg.GuardrailsTaskWindow = clampReviewTaskWindow(cfg.GuardrailsTaskWindow)
 
 	// Per-slot models (ADR 0030, Phase 1+2): fold the operator-tier `models:` YAML
 	// subtree (user-global + CLI only — a project file's models: block is handled by
@@ -2023,6 +2028,9 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 	}
 	cfg.guardrailDetails = server.NewReviewDetailRegistry()
 	cfg.guardrailHealth = &guardrailRouteHealth{}
+	if cfg.guardrailConfigured && !cfg.GuardrailsDisabled && cfg.planApprovals == nil {
+		cfg.planApprovals = newPlanApprovalReceipts()
+	}
 	engine, mainMgr, mcpProvider, mcpInventory, sessFactory, learned, policy, assets, scheduleMgr, mcpClose, err := buildEngine(ctx, cfg, reg, provider, store, engineStore, agentReg)
 	if err != nil {
 		childLiveness.Close()
@@ -2212,6 +2220,9 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 		SessionCleared: func(id session.SessionID) {
 			if assets.guardrailGrants != nil {
 				assets.guardrailGrants.ClearSession(string(id))
+			}
+			if cfg.planApprovals != nil {
+				cfg.planApprovals.ClearPlanApprovals(id)
 			}
 		},
 		OwnershipEnforced:                   cfg.OwnershipEnforced,
@@ -2600,7 +2611,12 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 		// pathological long-lived session that never signals end cannot grow it without
 		// bound (each rule still requires a human allow-always approval). TTL/idle
 		// eviction remains a follow-up; see docs/adr/0001-acp-adapter.md.
-		OnCloseSession: learned.Forget,
+		OnCloseSession: func(id session.SessionID) {
+			learned.Forget(id)
+			if cfg.planApprovals != nil {
+				cfg.planApprovals.ClearPlanApprovals(id)
+			}
+		},
 		// Durable event log (cloud-native Phase 3a): the relay Appends every
 		// healthy-path event here. The jsonlstore Store doubles as the EventLog;
 		// the memstore path supplies an in-memory sibling; the gRPC-driver path
@@ -4590,6 +4606,8 @@ func engineDepsForProvider(
 		// plan-approval ask (PresentPlan) even when headless so the Service can
 		// auto-resolve it. Operator-tier only, DEFAULT off.
 		PlanModeAutoApprove: cfg.PlanModeAutoApprove,
+		ReviewTaskWindow:    clampReviewTaskWindow(cfg.GuardrailsTaskWindow),
+		PlanApprovals:       cfg.planApprovals,
 		// Steer (steer-while-running, issue #512): arm the mid-run steer inbox.
 		// DEFAULT ON — the Config knob is the opt-OUT (DisableSteer), so true here
 		// unless the operator disabled it. ServerCapabilities.steer reads the SAME
@@ -5000,8 +5018,11 @@ func normalizeGuardrailsModel(cfg Config) (string, error) {
 func logGuardrailsPosture(cfg Config) {
 	ctx := context.Background()
 	if cfg.GuardrailsDisabled {
-		cfg.diag().Log(ctx, port.LevelInfo,
-			"guardrails: OFF (kill-switch active via --guardrails=off); the LLM content checker is forced off regardless of --guardrails-model / the `guardrail` model slot")
+		message := "guardrails: OFF (kill-switch active via --guardrails=off); the LLM content checker is forced off regardless of --guardrails-model / the `guardrail` model slot"
+		if cfg.Posture == PostureAuto {
+			message += " — UNSUPERVISED: posture auto changes permission defaults but does not enable the independent guardrail checker"
+		}
+		cfg.diag().Log(ctx, port.LevelInfo, message)
 		return
 	}
 	model, src, configured := cfg.guardrailModel, cfg.guardrailSource, cfg.guardrailConfigured
@@ -5009,8 +5030,11 @@ func logGuardrailsPosture(cfg Config) {
 		model, src, configured = resolveGuardrailsCheckerModel(cfg)
 	}
 	if !configured {
-		cfg.diag().Log(ctx, port.LevelInfo,
-			"guardrails: OFF (no checker model configured; bind the `guardrail` model slot or set --guardrails-model to enable)")
+		message := "guardrails: OFF (no checker model configured; bind the `guardrail` model slot or set --guardrails-model to enable)"
+		if cfg.Posture == PostureAuto {
+			message += " — UNSUPERVISED: posture auto changes permission defaults but does not enable the independent guardrail checker"
+		}
+		cfg.diag().Log(ctx, port.LevelInfo, message)
 		return
 	}
 	specs, usedDefaults := effectiveGuardrailSpecs(cfg)

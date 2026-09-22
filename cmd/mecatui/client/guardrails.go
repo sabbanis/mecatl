@@ -22,8 +22,11 @@ type GuardrailCoverageEntry struct {
 
 // GuardrailCoverageMsg carries an asynchronous coverage response.
 type GuardrailCoverageMsg struct {
-	Coverage GuardrailCoverage
-	Err      error
+	Coverage  GuardrailCoverage
+	Err       error
+	SessionID string
+	RequestID uint64
+	Posture   bool
 }
 
 // GuardrailReviewDetail is bounded owner-authorized live display detail.
@@ -66,10 +69,10 @@ type GuardrailClient interface {
 // ListGuardrailCoverageCmd loads coverage without blocking the TUI update loop.
 func ListGuardrailCoverageCmd(ctx context.Context, c interface {
 	ListGuardrailCoverage(context.Context, string) (GuardrailCoverage, error)
-}, sessionID string) tea.Cmd {
+}, sessionID string, requestID uint64, posture bool) tea.Cmd {
 	return func() tea.Msg {
 		coverage, err := c.ListGuardrailCoverage(ctx, sessionID)
-		return GuardrailCoverageMsg{Coverage: coverage, Err: err}
+		return GuardrailCoverageMsg{Coverage: coverage, Err: err, SessionID: sessionID, RequestID: requestID, Posture: posture}
 	}
 }
 

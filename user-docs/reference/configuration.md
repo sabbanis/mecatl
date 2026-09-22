@@ -65,6 +65,7 @@ OPERATOR-TIER LLM content-checker (issue #27). Parsed strictly. A project-tier g
 | `guardrails.disabled` | `bool` | `false` | Disabled is the YAML-level kill switch (the CLI --guardrails=off also sets it). |
 | `guardrails.onCheckerDown` | `string` | `(empty)` | OnCheckerDown sets the global posture when the checker model is unavailable (error/timeout): "fail" (default, fail-closed) or explicit "warn" (continue with an operational warning). Per-rule failClosed overrides: failClosed:true tightens under warn; explicit false loosens under fail. Empty = fail. |
 | `guardrails.defaultMode` | `string` | `(empty)` | DefaultMode sets the enforcement mode for the built-in default rules when no explicit rules are configured: "block" (default) or "advisory". An explicit rules list replaces the defaults entirely (this key is ignored). |
+| `guardrails.taskWindow` | `int` | `1` | TaskWindow selects the last K explicitly authenticated root prompts (default 1, clamped 1..3). |
 | `guardrails.escape` | `bool` | `false` | Escape is the ADR-0080 escape knob: when true AND a checker model is configured, an out-of-root FS escape at posture auto routes through the guardrail checker (an unsafe verdict denies; a checker error fails closed to the write-escape Ask). Default false = the un-routed posture table. |
 | `guardrails.rules` | `[]guardrailrulespec` | `(absent)` | Rules is the guardrail rule list. |
 | `guardrails.rules[].match` | `string` | `(empty)` | Match is the tool-name matcher (exact / "prefix*" / "*"). |

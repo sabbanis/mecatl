@@ -756,6 +756,9 @@ type Model struct {
 	// (all-false) until connect and for an older server. STORED, UNRENDERED in
 	// Phase A — Phase B consumes it.
 	caps client.Capabilities
+	// guardrailStatusRequest invalidates asynchronous /guardrails and /posture
+	// coverage responses when a newer request or session wins.
+	guardrailStatusRequest uint64
 
 	// activeMode is the server-confirmed permission mode for THIS session. It is
 	// initialized from the launch mode and updated only from SessionReady/GetSession/

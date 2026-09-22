@@ -13,6 +13,8 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
 
 ### Added
 
+- **Contextual review task provenance and plan receipts** — adds `session.UserPromptProvenance`, `session.Message.UserPromptProvenance`, `session.UserPromptPayload.Provenance`, `session.Session.RecordPrincipalPromptWithParts`, `session.Session.RecordHarnessPrompt`, `agent.Deps.ReviewTaskWindow`, `agent.Deps.PlanApprovals`, `agent.PlanApprovalReceipt`, and the optional `agent.PlanApprovalStore`. Hosts can preserve fail-closed principal provenance and bounded process-local, single-use plan approval evidence without conflating either with permission learning, result release, durable replay, or guardrail repeat grants. Added (minor).
+
 - **Atomic contextual approval resolution** — adds `agent.ApprovalResolution`,
   `agent.ValidateApprovalResolution`, and `agent.Run.ResolveApproval` so hosts validate
   the exact pending review purpose and submit its verdict under one registry lock. Changes

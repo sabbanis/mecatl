@@ -636,6 +636,22 @@ func (s *Session) RecordUserPrompt(text string, instructions []Message) error {
 // difference is the recorded user message carries Parts. It is legal from any
 // non-terminal state.
 func (s *Session) RecordUserPromptWithParts(text string, parts []Content, instructions []Message) error {
+	return s.recordUserPromptWithParts(text, parts, instructions, UserPromptProvenanceUnknown)
+}
+
+// RecordPrincipalPromptWithParts records a prompt whose principal provenance was
+// authenticated by the root agent ingress. It is intentionally narrower than
+// RecordUserPromptWithParts: arbitrary callers and legacy history remain unknown.
+func (s *Session) RecordPrincipalPromptWithParts(text string, parts []Content, instructions []Message) error {
+	return s.recordUserPromptWithParts(text, parts, instructions, UserPromptProvenancePrincipal)
+}
+
+// RecordHarnessPrompt records a harness-authored user-role continuation.
+func (s *Session) RecordHarnessPrompt(text string) error {
+	return s.recordUserPromptWithParts(text, nil, nil, UserPromptProvenanceHarness)
+}
+
+func (s *Session) recordUserPromptWithParts(text string, parts []Content, instructions []Message, provenance UserPromptProvenance) error {
 	if err := s.rejectWhileWorkspaceEnrollmentPending("RecordUserPrompt"); err != nil {
 		return err
 	}
@@ -645,7 +661,9 @@ func (s *Session) RecordUserPromptWithParts(text string, parts []Content, instru
 	for _, m := range instructions {
 		s.Conversation.Append(m)
 	}
-	s.Conversation.Append(NewUserMessageWithParts(text, parts))
+	message := NewUserMessageWithParts(text, parts)
+	message.UserPromptProvenance = provenance
+	s.Conversation.Append(message)
 	return nil
 }
 

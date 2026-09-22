@@ -13,7 +13,8 @@ func (m Model) runGuardrails() (tea.Model, tea.Cmd) {
 	if m.deps.Guardrails == nil || m.sessionID == "" {
 		return m, nil
 	}
-	return m, client.ListGuardrailCoverageCmd(m.deps.Ctx, m.deps.Guardrails, m.sessionID)
+	m.guardrailStatusRequest++
+	return m, client.ListGuardrailCoverageCmd(m.deps.Ctx, m.deps.Guardrails, m.sessionID, m.guardrailStatusRequest, false)
 }
 
 func guardrailDetailNotice(detail client.GuardrailReviewDetail) string {
@@ -53,6 +54,37 @@ func guardrailHookText(msg client.HookMsg) string {
 	return fmt.Sprintf("Guardrail %s: %s %s · %s%s", label, review.Job, msg.Tool, review.Disposition, route)
 }
 
+func guardrailCoverageCurrent(msg client.GuardrailCoverageMsg, sessionID string, requestID uint64) bool {
+	return msg.SessionID == sessionID && msg.RequestID == requestID
+}
+
+func guardrailPostureSummary(coverage client.GuardrailCoverage) string {
+	if !coverage.Enabled {
+		return "checker off (permission posture is independent); configure models.slots.guardrail or --guardrails-model to enable contextual inspection"
+	}
+	if len(coverage.Entries) == 0 {
+		return fmt.Sprintf("checker configured but no effective rule coverage; use /guardrails and verify rule matches against the session tool catalog · %s/%s", sanitizeTerminal(coverage.CheckerProviderID), sanitizeTerminal(coverage.CheckerModelID))
+	}
+	blocking, advisory := 0, 0
+	for _, entry := range coverage.Entries {
+		if entry.Mode == "block" {
+			blocking++
+		} else {
+			advisory++
+		}
+	}
+	var mode string
+	switch {
+	case blocking > 0 && advisory > 0:
+		mode = fmt.Sprintf("mixed: %d enforcing, %d advisory", blocking, advisory)
+	case blocking > 0:
+		mode = fmt.Sprintf("enforcing: %d", blocking)
+	default:
+		mode = fmt.Sprintf("advisory: %d", advisory)
+	}
+	return fmt.Sprintf("checker on (%s) · %s/%s", mode, sanitizeTerminal(coverage.CheckerProviderID), sanitizeTerminal(coverage.CheckerModelID))
+}
+
 func guardrailCoverageNotice(coverage client.GuardrailCoverage) string {
 	if !coverage.Enabled {
 		return "Guardrails: off for this session. No contextual action or inbound inspection is configured."
@@ -60,7 +92,7 @@ func guardrailCoverageNotice(coverage client.GuardrailCoverage) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Guardrails: on · checker %s/%s\n", sanitizeTerminal(coverage.CheckerProviderID), sanitizeTerminal(coverage.CheckerModelID))
 	if len(coverage.Entries) == 0 {
-		b.WriteString("No effective rules apply to this session's assembled tool catalog.")
+		b.WriteString("No effective rules apply to this session's assembled tool catalog. Check /guardrails and verify configured rule matches against the tool names and phases shown for this session.")
 		return b.String()
 	}
 	for _, entry := range coverage.Entries {

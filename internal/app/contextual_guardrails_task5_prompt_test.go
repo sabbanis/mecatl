@@ -14,6 +14,49 @@ import (
 	"github.com/stacklok/mecatl/internal/adapter/server"
 )
 
+func TestBuildGuardrailsTaskWindowReachesReviewerEnvelope(t *testing.T) {
+	cfg := guardrailE2ECfg(t, true, PostureAuto, "printf window")
+	cfg.GuardrailsTaskWindow = 2
+	var checkerPrompts []string
+	provider := mockllm.NewWith([]mockllm.Option{mockllm.WithRequestObserver(func(req port.LLMRequest) {
+		if strings.Contains(req.System.StablePrefix, "contextual security reviewer") && len(req.Messages) > 0 {
+			checkerPrompts = append(checkerPrompts, req.Messages[len(req.Messages)-1].Text)
+		}
+	})},
+		mockllm.ToolCallTurn(session.NewToolCall("c1", "Shell", json.RawMessage(`{"command":"printf window"}`))),
+		mockllm.TextTurn(`{"assessment":"acceptable","concerns":[],"evidence":[],"missing_evidence":[]}`),
+		mockllm.TextTurn("done one"),
+		mockllm.ToolCallTurn(session.NewToolCall("c2", "Shell", json.RawMessage(`{"command":"printf window"}`))),
+		mockllm.TextTurn(`{"assessment":"acceptable","concerns":[],"evidence":[],"missing_evidence":[]}`),
+		mockllm.TextTurn("done two"),
+	)
+	cfg.providerConstructor = func(_ Config, _, _, _ string) port.LLMProvider { return provider }
+	built, err := Build(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer built.Close()
+	sess, err := built.Service.CreateSession(context.Background(), session.ModeDefault, session.Limits{MaxTurns: 2})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	for _, prompt := range []string{"first root task", "second root task"} {
+		run, runErr := built.Service.StartInteractiveRunContent(context.Background(), sess.ID, prompt, nil)
+		if runErr != nil {
+			t.Fatalf("StartInteractiveRunContent: %v", runErr)
+		}
+		for range run.Events() {
+		}
+		built.Service.FinishRun(sess.ID, run)
+	}
+	if len(checkerPrompts) != 2 {
+		t.Fatalf("checker prompts = %d, want 2", len(checkerPrompts))
+	}
+	if !strings.Contains(checkerPrompts[1], "first root task") || !strings.Contains(checkerPrompts[1], "second root task") {
+		t.Fatalf("second checker envelope did not carry configured two-task window: %s", checkerPrompts[1])
+	}
+}
+
 func TestADR_0350_ContextualGuardrails_Scenario7_FactoryPrompts(t *testing.T) {
 	cfg := guardrailE2ECfg(t, true, PostureAuto, "printf task5")
 	var requests []port.LLMRequest
@@ -81,6 +124,8 @@ func TestContextualMainResultReleaseDetailUsesOwnerAuthorization(t *testing.T) {
 	cfg := guardrailE2ECfg(t, true, PostureAuto, "printf main")
 	cfg.GuardrailsRules = []GuardrailRule{{Match: "Shell", Phases: []string{"post"}, Mode: "block"}}
 	cfg.OwnershipEnforced = true
+	planReceipts := newPlanApprovalReceipts()
+	cfg.planApprovals = planReceipts
 	built, err := Build(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -119,6 +164,9 @@ func TestContextualMainResultReleaseDetailUsesOwnerAuthorization(t *testing.T) {
 	}
 	if _, err := built.Service.GetGuardrailReviewDetail(ownerCtx, sess.ID, reviewID); !errors.Is(err, server.ErrNotFound) {
 		t.Fatalf("main result-release detail survived completion: %v", err)
+	}
+	if _, ok := planReceipts.ConsumePlanApproval(sess.ID); ok {
+		t.Fatal("result release minted plan execution authority")
 	}
 }
 

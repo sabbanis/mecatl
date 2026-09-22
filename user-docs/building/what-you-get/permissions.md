@@ -409,7 +409,10 @@ Loss, timeout, disconnect, unattended enforcement, or restart safely withholds t
 result; there is no re-execution recovery.
 
 `/guardrails` shows the checker route and effective action/inbound rules for the active
-session's assembled tool catalog. Review cards distinguish a prohibited finding, a
+session's assembled tool catalog. `/posture` keeps permission posture separate and adds
+the effective checker state: off includes setup guidance, on says advisory or enforcing,
+and an unavailable or older server is reported as unknown rather than off or healthy.
+Review cards distinguish a prohibited finding, a
 completed unresolved inspection, and an operational checker outage. Human rationale is
 bounded live-only detail: it is owner-authorized, never persisted in session events or
 snapshots, and disappears when the root run is cleaned up.
@@ -451,6 +454,7 @@ tune up from there.
 # ~/.config/mecatl/settings.yaml (user-global only)
 guardrails:
   model: gpt-5-mini # configuring a model is the opt-in; default rules apply
+  taskWindow: 2 # last 1–3 accepted genuine root prompts; default 1
   rules: # an explicit list REPLACES the default set
     - match: 'WebFetch' # inbound injection on fetched pages
       phases: ['post'] # "pre" = outbound args, "post" = inbound result; omit = both
@@ -473,6 +477,11 @@ or action denial/result withholding when unattended. Explicit
 `onCheckerDown: warn` continues with a visible operational warning; it never
 relabels the outage as a prohibited finding. A completed acceptable verdict
 passes.
+
+The operator-only `taskWindow` setting selects the last one to three accepted genuine
+root prompts supplied as task context (default `1`). Prior genuine prompts and accepted
+in-run steers count; harness nudges, summaries, injected fragments, and worker goals do
+not. Values outside the range are clamped.
 
 Unlike the headless-only ask reviewer, guardrails fire on the main loop
 regardless of `--headless`.

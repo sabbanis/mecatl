@@ -4,8 +4,8 @@
 **Work classification:** Architectural — changes guardrail authority, dispatch ordering, public engine/wire surfaces, operator configuration, and main/worker invariants.
 **Decision record:** [ADR 0350](../adr/0350-contextual-investigative-guardrails.md)
 **Phase:** live contextual action and inbound-content review; cross-process held-result recovery and wider cloud-native security state are deferred
-**Status:** in-progress, 2026-09-21. Product choices are approved. The operator explicitly authorized this amendment and continuation of the stacked implementation on PR #1510 over Plan / Interface PR #1455. Implementation must build and validate the quality-measurement and capacity-calibration deliverables before any production-readiness claim; neither requires results before implementation.
-**Delivery:** Split. Merge of a proposed Plan / Interface PR is the implementation authorization; that gate has not been waived.
+**Status:** in-progress, 2026-09-14. The operator explicitly authorized implementation stacked on Plan / Interface PR #1455 at `1a5d7ed19dbe5bcf3f861c6865e1f9d6e15d9dbf` before its merge. On 2026-09-21 the operator explicitly authorized this amendment and continuation of the stacked implementation. Product choices remain unchanged. Measurement and capacity calibration are implementation deliverables; no real-model efficacy or production-readiness claim is made.
+**Delivery:** Split, with operator-authorized stacked implementation before plan merge. The implementation PR targets the plan branch; human merge and all applicable verification remain required.
 **Expected tasks:** deferred to orchestration
 
 This is a plan/interface deliverable only. It does not claim the behavior is shipped and does not authorize production edits, live model calls, commits, or publication.

@@ -547,8 +547,14 @@ func (m Model) runLearningSensitivity() (tea.Model, tea.Cmd) {
 // non-empty. The summary names the four defenses the posture controls so an operator
 // can confirm, e.g., that the child prompt-injection defense is OFF under yolo.
 func (m Model) runPosture() (tea.Model, tea.Cmd) {
-	m.statusMsg = m.deps.Theme.Style("muted").Render(postureSummary(m.caps.Posture))
-	return m, nil
+	base := postureSummary(m.caps.Posture)
+	if m.deps.Guardrails == nil || m.sessionID == "" {
+		m.statusMsg = m.deps.Theme.Style("muted").Render(base + "; checker unknown (server does not expose guardrail coverage)")
+		return m, nil
+	}
+	m.guardrailStatusRequest++
+	m.statusMsg = m.deps.Theme.Style("muted").Render(base + "; checker unknown (loading effective status)")
+	return m, client.ListGuardrailCoverageCmd(m.deps.Ctx, m.deps.Guardrails, m.sessionID, m.guardrailStatusRequest, true)
 }
 
 // debugAskPayloads are the three canned long-args Shell commands /debug-ask

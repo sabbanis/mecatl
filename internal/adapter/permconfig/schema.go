@@ -1700,6 +1700,8 @@ type GuardrailsSection struct {
 	// explicit rules are configured: "block" (default) or "advisory".
 	// An explicit rules list replaces the defaults entirely (this key is ignored).
 	DefaultMode string `yaml:"defaultMode"`
+	// TaskWindow selects the last K explicitly authenticated root prompts (default 1, clamped 1..3).
+	TaskWindow int `yaml:"taskWindow"`
 	// Escape is the ADR-0080 escape knob: when true AND a checker model is
 	// configured, an out-of-root FS escape at posture auto routes through the
 	// guardrail checker (an unsafe verdict denies; a checker error fails closed
@@ -1752,6 +1754,7 @@ func (g *GuardrailsSection) strictFields() map[string]any {
 		"disabled":      &g.Disabled,
 		"onCheckerDown": &g.OnCheckerDown,
 		"defaultMode":   &g.DefaultMode,
+		"taskWindow":    &g.TaskWindow,
 		"escape":        &g.Escape,
 		"rules":         &g.Rules,
 	}

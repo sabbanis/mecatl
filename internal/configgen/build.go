@@ -144,6 +144,8 @@ func guardrailsSubtree(docs Docs) *Subtree {
 				"A configured model with no rules runs the default BLOCK set across Shell, local file mutations and results, web, MCP, and delegation, with the same applicable rules on workers; downgrade via defaultMode: advisory. " +
 				"Leave empty (and pass no --guardrails-model) to keep guardrails OFF."
 			f.ExampleValue = "claude-haiku-4-6"
+		case "taskWindow":
+			f.Default, f.ExampleValue = "1", "1"
 		case "rules":
 			f.Nested = fieldsOf("GuardrailRuleSpec", permconfig.GuardrailRuleSpec{}, docs)
 		}

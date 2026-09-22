@@ -32,13 +32,14 @@ type heldResult struct {
 }
 
 type inboundAssessment struct {
-	request ToolReviewRequest
-	result  ToolReviewResult
-	source  ReviewEvidenceSource
-	close   func()
-	err     error
-	applies bool
-	enforce bool
+	request           ToolReviewRequest
+	result            ToolReviewResult
+	source            ReviewEvidenceSource
+	close             func()
+	err               error
+	applies           bool
+	enforce           bool
+	principalRevision uint64
 }
 
 func reviewPolicy(reviewer ToolReviewer, toolName string, job ReviewJob, operationalFailure bool) (bool, bool) {
@@ -61,7 +62,8 @@ func (e *Engine) prepareInboundAssessment(r *Run, sess *session.Session, env too
 		return assessment
 	}
 	e.establishReviewPrincipal(r)
-	principal, principalComplete := r.reviewRoot.principalSnapshot()
+	principal, principalComplete, principalRevision := r.reviewRoot.principalSnapshotWithRevision()
+	assessment.principalRevision = principalRevision
 	trajectory, trajectoryComplete := r.reviewRoot.snapshot()
 	input, _ := json.Marshal(struct {
 		Args    json.RawMessage `json:"args"`
@@ -228,6 +230,10 @@ func (e *Engine) resolveInbound(ctx context.Context, r *Run, sess *session.Sessi
 	if !assessment.applies {
 		return result, false
 	}
+	if !r.reviewRoot.principalRevisionIs(assessment.principalRevision) {
+		e.emitInboundReview(r, turnIdx, call, assessment, "withhold_result")
+		return session.NewToolError(call.ID, withheldResultText+": root instructions changed during review; retry the action for a fresh assessment"), false
+	}
 	r.publishInboundDetail(ctx, sess.ID, assessment)
 	if !inboundNeedsHold(assessment) {
 		disposition := "release_result"
@@ -262,6 +268,10 @@ func (e *Engine) resolveInbound(ctx context.Context, r *Run, sess *session.Sessi
 	if !paused || !ok {
 		r.reviewRoot.dropHeld(key)
 		return session.NewToolError(call.ID, withheldResultText+": release decision was cancelled"), true
+	}
+	if !r.reviewRoot.principalRevisionIs(assessment.principalRevision) {
+		r.reviewRoot.dropHeld(key)
+		return session.NewToolError(call.ID, withheldResultText+": root instructions changed while release approval was pending; retry the action for a fresh assessment"), false
 	}
 	if answer.verdict == session.VerdictAllowOnce {
 		released, found := r.reviewRoot.consumeHeld(key, ask.AskID)

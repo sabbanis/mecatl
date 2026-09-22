@@ -1002,8 +1002,17 @@ func (m Model) updateLifecycle(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		mm, cmd := m.syncPalette()
 		return mm, cmd, true
 	case client.GuardrailCoverageMsg:
-		if msg.Err != nil {
-			m.conv.addNotice("Guardrails status unavailable; this is an inspection-status failure, not an unsafe finding.")
+		if !guardrailCoverageCurrent(msg, m.sessionID, m.guardrailStatusRequest) {
+			return m, nil, true
+		}
+		if msg.Posture {
+			checker := "checker unknown (status unavailable; do not infer off or healthy)"
+			if msg.Err == nil {
+				checker = guardrailPostureSummary(msg.Coverage)
+			}
+			m.statusMsg = m.deps.Theme.Style("muted").Render(postureSummary(m.caps.Posture) + "; " + checker)
+		} else if msg.Err != nil {
+			m.conv.addNotice("Guardrails status unavailable; checker state is unknown, not off or healthy.")
 		} else {
 			m.conv.addNotice(guardrailCoverageNotice(msg.Coverage))
 		}

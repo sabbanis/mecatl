@@ -22,7 +22,7 @@ Finally, an `EvHook` is observed by the durable relay before live delivery. Chec
 
 ## Proposed decision
 
-The product direction and exact proposed interface live in the [acceptance plan](../acceptance/contextual-guardrails.md). On 2026-09-21 the operator explicitly authorized this amendment and continued stacked implementation on PR #1510 over Plan / Interface PR #1455. Human review and merge remain required. Implementation must build finite capacity calibration and quality-measurement deliverables, while separately authorized release validation supplies any actual checker-model efficacy evidence before a production-readiness claim.
+The product direction and exact interface live in the [acceptance plan](../acceptance/contextual-guardrails.md). Implementation is operator-authorized as a stacked, in-progress change on Plan / Interface PR #1455 while this ADR remains Proposed; on 2026-09-21 the operator explicitly authorized the task-window, scoped approval-evidence, independent posture/checker-status amendment and continued stacked implementation. Human review and merge are still required. Protocol and offline tests do not establish checker-model efficacy, which remains a separately authorized release-validation deliverable.
 
 ### One reviewer, two jobs
 

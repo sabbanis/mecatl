@@ -34,7 +34,9 @@
     method func (*Session).RecordAssistant(m Message) error
     method func (*Session).RecordFailureMetadata(disposition RetryDisposition, progress StreamProgress) error
     method func (*Session).RecordFailurePermanence(permanent bool) error
+    method func (*Session).RecordHarnessPrompt(text string) error
     method func (*Session).RecordLastError(cause string) error
+    method func (*Session).RecordPrincipalPromptWithParts(text string, parts []Content, instructions []Message) error
     method func (*Session).RecordTitleAttempt(attempt TitleAttempt)
     method func (*Session).RecordTitleSourcePrompt(text string)
     method func (*Session).RecordTokenUsage(kind UsageKind, providerID string, modelID string, usage Usage)
@@ -258,6 +260,9 @@ const TitleProvenanceOperator TitleProvenance = "operator"
 const TitleProvenanceUnknown TitleProvenance = ""
 const UsageKindMain UsageKind = "main"
 const UsageKindSessionTitle UsageKind = "session_title"
+const UserPromptProvenanceHarness UserPromptProvenance = "harness"
+const UserPromptProvenancePrincipal UserPromptProvenance = "principal"
+const UserPromptProvenanceUnknown UserPromptProvenance = ""
 const VerdictAllowAlways ApprovalVerdict = 2
 const VerdictAllowOnce ApprovalVerdict = 1
 const VerdictDeny ApprovalVerdict = 0
@@ -353,7 +358,7 @@ type HookPayload struct{Phase string; Tool string; Decision HookDecision; CallID
 type IncarnationID string
 type Limits struct{MaxTurns int; MaxToolCalls int; MaxConsecutiveFailures int}
 type MediaKind string
-type Message struct{Role Role; Text string; ToolCalls []ToolCall; ToolResult *ToolResult; Reasoning string; ProviderPhase string; ReasoningItemID string; Parts []Content}
+type Message struct{Role Role; Text string; ToolCalls []ToolCall; ToolResult *ToolResult; Reasoning string; ProviderPhase string; ReasoningItemID string; Parts []Content; UserPromptProvenance UserPromptProvenance}
 type ModelRetryPayload struct{Disposition RetryDisposition; Progress StreamProgress}
 type NetworkAttemptPayload struct{SessionID SessionID "json:\"session_id\""; RunSerial int64 "json:\"run_serial\""; Turn int "json:\"turn\""; Attempt int "json:\"attempt\""; MaxAttempts int "json:\"max_attempts\""; ElapsedMs int64 "json:\"elapsed_ms\""; RetryDisposition string "json:\"retry_disposition\""; StreamProgress string "json:\"stream_progress\""; Decision string "json:\"decision\""; SuppressionReason string "json:\"suppression_reason,omitempty\""; BackoffMs int64 "json:\"backoff_ms\""; FailureClass string "json:\"failure_class\""; HTTPStatus int "json:\"http_status,omitempty\""; InBandStatus int "json:\"in_band_status,omitempty\""; CorrelationKind string "json:\"correlation_kind,omitempty\""; CorrelationDigest string "json:\"correlation_digest,omitempty\""}
 type ParallelEventKind string
@@ -398,7 +403,8 @@ type Turn struct{Index int; Assistant Message; Results []ToolResult; Usage Usage
 type TurnEndPayload struct{Usage Usage; Estimated bool; DurationMs int64; TTFTMs int64; InterTokenMeanMs int64; InterTokenMaxMs int64}
 type Usage struct{InputTokens int; OutputTokens int; CacheReadTokens int; CacheWriteTokens int; ReasoningTokens int}
 type UsageKind string
-type UserPromptPayload struct{Text string; Parts []Content; Synthetic bool}
+type UserPromptPayload struct{Text string; Parts []Content; Synthetic bool; Provenance UserPromptProvenance}
+type UserPromptProvenance string
 type WorkspaceEnrollmentID string
 var ErrIllegalTransition error
 var ErrInvalidContent error

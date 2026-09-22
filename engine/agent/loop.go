@@ -179,6 +179,11 @@ type Deps struct {
 	ReviewEvidencePreparer ReviewEvidencePreparer
 	// ReviewDetails receives bounded live-only human review detail.
 	ReviewDetails ReviewDetailSink
+	// ReviewTaskWindow selects the last K accepted genuine root prompts supplied as
+	// principal task facts. Values are clamped to 1..3; zero defaults to 1.
+	ReviewTaskWindow int
+	// PlanApprovals owns process-local, single-use plan approval receipts.
+	PlanApprovals PlanApprovalStore
 	// Store persists session state (optional; nil disables persistence).
 	Store port.SessionStore
 	// SessionLiveness is the optional lifecycle-exclusion seam for engine-owned
@@ -737,6 +742,9 @@ type Run struct {
 	// resumed run before runLoop sees it). Set before the run goroutine reaches
 	// terminateComplete and only read after, so it needs no synchronisation.
 	planApprovedTarget session.PermissionMode
+	// planApprovalReceipt is staged only by a validated positive plan callback and
+	// recorded by terminateComplete after SetMode succeeds.
+	planApprovalReceipt PlanApprovalReceipt
 	// planIterateRequested is the run-scoped flag set when the operator DENIES a
 	// plan-approval ask (issue #206): the run terminates CLEANLY with StopPlanIterate
 	// instead of continuing in-turn (the old behaviour kept the model iterating with
@@ -1606,7 +1614,7 @@ func (e *Engine) prepareRun(ctx context.Context, sess *session.Session, req RunR
 		diag: e.bindRunDiag(sess.ID),
 	}
 	if r.reviewRoot == nil && e.deps.ToolReviewer != nil {
-		r.reviewRoot = newReviewRoot(e.deps.ToolReviewer, e.deps.ReviewEvidencePreparer, e.deps.ReviewDetails)
+		r.reviewRoot = newReviewRoot(e.deps.ToolReviewer, e.deps.ReviewEvidencePreparer, e.deps.ReviewDetails, e.deps.ReviewTaskWindow)
 		r.reviewRoot.rootSessionID = sess.ID
 		r.ownsReviewRoot = true
 	}
@@ -2490,12 +2498,32 @@ func (e *Engine) recordPrompt(ctx context.Context, r *Run, sess *session.Session
 	// the persisted history or recreating the compaction-pin ambiguity. Only the
 	// GENUINE prompt (+ media parts) is recorded here; instr is nil (the param stays a
 	// valid seam for callers that DO want to persist instructions, e.g. tests).
-	if rerr := sess.RecordUserPromptWithParts(finalText, parts, nil); rerr != nil {
+	provenance := session.UserPromptProvenanceUnknown
+	if e.deps.Role == "" {
+		provenance = session.UserPromptProvenancePrincipal
+	}
+	var rerr error
+	if provenance == session.UserPromptProvenancePrincipal {
+		rerr = sess.RecordPrincipalPromptWithParts(finalText, parts, nil)
+	} else {
+		rerr = sess.RecordUserPromptWithParts(finalText, parts, nil)
+	}
+	if rerr != nil {
 		return false, "", fmt.Errorf("agent: record user prompt: %w", rerr)
 	}
 	if messages := sess.Conversation.Messages; len(messages) > 0 {
 		owned := learning.NewTrajectory(sess.ID, env.Workspace().Root(), session.StopNone, session.Usage{}, messages[len(messages)-1:])
 		r.currentPrompt = &owned.Messages[0]
+		if e.deps.Role == "" {
+			if r.reviewRoot != nil {
+				r.reviewRoot.refreshTasks(messages)
+			}
+			if e.deps.PlanApprovals != nil && sess.Mode != session.ModePlan {
+				if receipt, found := e.deps.PlanApprovals.ConsumePlanApproval(sess.ID); found && validPlanApprovalReceipt(receipt, sess.ID, sess.Mode) && r.reviewRoot != nil {
+					r.reviewRoot.setPlanApproval(receipt)
+				}
+			}
+		}
 	}
 	// Seed the session Title ONCE from this genuine prompt (set-once guard in
 	// SetTitle: only the first non-empty prompt sticks). The loop calls SetTitle
@@ -2509,8 +2537,15 @@ func (e *Engine) recordPrompt(ctx context.Context, r *Run, sess *session.Session
 	// Emit the durable, log-only EvUserPrompt so the EventLog records WHAT THE USER
 	// ASKED (the relay never re-emits the prompt to the client). Turn 0 — the genuine
 	// prompt opens the run. parts ride verbatim so a fold rebuilds a multimodal prompt.
-	e.emitUserPrompt(r, 0, finalText, parts, false)
+	e.emitUserPrompt(r, 0, finalText, parts, provenance)
 	return true, "", nil
+}
+
+func validPlanApprovalReceipt(receipt PlanApprovalReceipt, sessionID session.SessionID, mode session.PermissionMode) bool {
+	if receipt.Ref == "" || receipt.Call == "" || receipt.SessionID != sessionID || receipt.TargetMode != mode {
+		return false
+	}
+	return mode == session.ModeDefault || mode == session.ModeAccept
 }
 
 // emitUserPrompt emits the log-only EvUserPrompt event carrying a just-recorded
@@ -2520,9 +2555,9 @@ func (e *Engine) recordPrompt(ctx context.Context, r *Run, sess *session.Session
 // nudge, background-completion notice) — so the durable log (and an event-sourced
 // fold) sees a COMPLETE user-turn sequence. The event is log-only: the relay appends
 // it and skips it on the live client wire (the client already holds the prompt).
-func (e *Engine) emitUserPrompt(r *Run, turnIdx int, text string, parts []session.Content, synthetic bool) {
+func (e *Engine) emitUserPrompt(r *Run, turnIdx int, text string, parts []session.Content, provenance session.UserPromptProvenance) {
 	e.emit(r, session.Event{Type: session.EvUserPrompt, Turn: turnIdx,
-		UserPrompt: &session.UserPromptPayload{Text: text, Parts: parts, Synthetic: synthetic}})
+		UserPrompt: &session.UserPromptPayload{Text: text, Parts: parts, Synthetic: provenance == session.UserPromptProvenanceHarness, Provenance: provenance}})
 }
 
 // recordContinuation records a harness-authored synthetic user-role continuation
@@ -2531,10 +2566,10 @@ func (e *Engine) emitUserPrompt(r *Run, turnIdx int, text string, parts []sessio
 // user-message site bypasses the durable record. It mirrors recordPrompt's
 // record-then-emit shape for the non-genuine sites.
 func (e *Engine) recordContinuation(r *Run, sess *session.Session, turnIdx int, text string) error {
-	if err := sess.RecordUserPrompt(text, nil); err != nil {
+	if err := sess.RecordHarnessPrompt(text); err != nil {
 		return err
 	}
-	e.emitUserPrompt(r, turnIdx, text, nil, true)
+	e.emitUserPrompt(r, turnIdx, text, nil, session.UserPromptProvenanceHarness)
 	return nil
 }
 
@@ -3335,8 +3370,12 @@ func (e *Engine) terminateComplete(ctx context.Context, r *Run, sess *session.Se
 	// mode, honestly. Save the flipped mode so a Reopen/restart continues in the
 	// approved posture.
 	if r.planApprovedTarget != "" {
-		_ = sess.SetMode(r.planApprovedTarget)
-		e.save(ctx, r, sess)
+		if err := sess.SetMode(r.planApprovedTarget); err == nil {
+			if e.deps.PlanApprovals != nil && r.planApprovalReceipt.SessionID == sess.ID && r.planApprovalReceipt.TargetMode == r.planApprovedTarget {
+				e.deps.PlanApprovals.RecordPlanApproval(r.planApprovalReceipt)
+			}
+			e.save(ctx, r, sess)
+		}
 	}
 	// Persist the terminal aggregate before a synchronous Observer can block or
 	// perform model work. The result event remains after observation, preserving

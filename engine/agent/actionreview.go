@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -22,7 +23,6 @@ const (
 	defaultReviewTrajectoryFacts = 256
 	defaultReviewTrajectoryBytes = int64(128_000)
 	reviewDirectionAuthorization = "authorization"
-	reviewClassGenuineApproval   = "genuine_approval"
 )
 
 func reviewMachinePayload(reviewer ToolReviewer, req ToolReviewRequest, result ToolReviewResult, reviewErr error, disposition string) *session.GuardrailReviewPayload {
@@ -61,15 +61,29 @@ type reviewRoot struct {
 	reviewer          ToolReviewer
 	preparer          ReviewEvidencePreparer
 	details           ReviewDetailSink
-	principal         []ReviewPrincipalFact
 	principalComplete bool
+	instructions      []ReviewPrincipalFact
+	instructionsSet   bool
+	tasks             []ReviewPrincipalFact
+	taskWindow        int
+	planApproval      *ReviewPrincipalFact
+	principalRevision uint64
 	held              map[heldResultKey]heldResult
 	heldBytes         int64
 	rootSessionID     session.SessionID
 }
 
-func newReviewRoot(reviewer ToolReviewer, preparer ReviewEvidencePreparer, details ReviewDetailSink) *reviewRoot {
-	return &reviewRoot{complete: true, maxFacts: defaultReviewTrajectoryFacts, maxBytes: defaultReviewTrajectoryBytes, reviewer: reviewer, preparer: preparer, details: details}
+func newReviewRoot(reviewer ToolReviewer, preparer ReviewEvidencePreparer, details ReviewDetailSink, configuredWindow ...int) *reviewRoot {
+	taskWindow := 1
+	if len(configuredWindow) > 0 {
+		taskWindow = configuredWindow[0]
+	}
+	if taskWindow < 1 {
+		taskWindow = 1
+	} else if taskWindow > 3 {
+		taskWindow = 3
+	}
+	return &reviewRoot{complete: true, maxFacts: defaultReviewTrajectoryFacts, maxBytes: defaultReviewTrajectoryBytes, reviewer: reviewer, preparer: preparer, details: details, taskWindow: taskWindow}
 }
 
 func (r *reviewRoot) snapshot() ([]ReviewTrajectoryFact, bool) {
@@ -82,26 +96,117 @@ func (r *reviewRoot) snapshot() ([]ReviewTrajectoryFact, bool) {
 }
 
 func (r *reviewRoot) principalSnapshot() ([]ReviewPrincipalFact, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return append([]ReviewPrincipalFact(nil), r.principal...), r.principalComplete
+	facts, complete, _ := r.principalSnapshotWithRevision()
+	return facts, complete
 }
 
-func (r *reviewRoot) establishPrincipal(facts []ReviewPrincipalFact, complete bool) {
+func (r *reviewRoot) principalSnapshotWithRevision() ([]ReviewPrincipalFact, bool, uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.principal != nil || r.principalComplete {
-		return
+	facts := make([]ReviewPrincipalFact, 0, len(r.tasks)+len(r.instructions)+1)
+	facts = append(facts, r.tasks...)
+	facts = append(facts, r.instructions...)
+	if r.planApproval != nil {
+		facts = append(facts, *r.planApproval)
 	}
-	r.principal = append([]ReviewPrincipalFact(nil), facts...)
-	r.principalComplete = complete
+	return facts, r.principalComplete, r.principalRevision
+}
+
+func (r *reviewRoot) principalRevisionIs(revision uint64) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.principalRevision == revision
+}
+
+// admitPrincipalRevision is the action-execution linearization point. A root
+// principal change committed before this short critical section invalidates the
+// assessment; once admitted, the action is in flight and a later change does not
+// retroactively revoke it. Callers must execute without holding r.mu.
+func (r *reviewRoot) admitPrincipalRevision(revision uint64) bool {
+	return r.principalRevisionIs(revision)
+}
+
+// armGrantIfRevision atomically validates the reviewed principal context and
+// publishes its exact grant. publish must be a bounded, non-blocking map update
+// and must not call back into reviewRoot.
+func (r *reviewRoot) armGrantIfRevision(revision uint64, publish func()) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.principalRevision != revision {
+		return false
+	}
+	publish()
+	return true
+}
+
+func (r *reviewRoot) establishInstructions(facts []ReviewPrincipalFact) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.instructionsSet {
+		r.instructions = append([]ReviewPrincipalFact(nil), facts...)
+		r.instructionsSet = true
+		r.principalRevision++
+	}
+}
+
+func (r *reviewRoot) refreshTasks(messages []session.Message) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	tasks := make([]ReviewPrincipalFact, 0, r.taskWindow+1)
+	complete := true
+	unknownProvenance := false
+	for i := len(messages) - 1; i >= 0 && len(tasks) < r.taskWindow; i-- {
+		message := messages[i]
+		if message.Role != session.RoleUser {
+			continue
+		}
+		switch message.UserPromptProvenance {
+		case session.UserPromptProvenancePrincipal:
+			tasks = append(tasks, ReviewPrincipalFact{Kind: "genuine_user_task", Statement: message.Text, PositiveVerdict: true})
+		case session.UserPromptProvenanceHarness:
+			// Explicitly non-principal; it cannot hide a task.
+		default:
+			complete = false
+			unknownProvenance = true
+		}
+	}
+	slices.Reverse(tasks)
+	for i := range tasks {
+		tasks[i].Ref = fmt.Sprintf("root-task-%d", i)
+	}
+	if unknownProvenance {
+		tasks = append(tasks, ReviewPrincipalFact{
+			Kind: "unavailable_task_provenance", Ref: "root-task-provenance",
+			Statement: fmt.Sprintf("At least one candidate in the configured %d-message task window has unavailable legacy provenance. Submit enough genuine root messages to fill that window, or configure taskWindow=1.", r.taskWindow),
+		})
+	}
+	if !slices.Equal(r.tasks, tasks) || r.principalComplete != complete {
+		r.tasks = tasks
+		r.principalComplete = complete
+		r.principalRevision++
+	}
+}
+
+func (r *reviewRoot) setPlanApproval(receipt PlanApprovalReceipt) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	fact := ReviewPrincipalFact{Kind: "genuine_plan_approval", Ref: receipt.Ref, Statement: fmt.Sprintf("operator approved plan call %s for execution mode %s", receipt.Call, receipt.TargetMode), PositiveVerdict: true}
+	if r.planApproval == nil || *r.planApproval != fact {
+		r.planApproval = &fact
+		r.principalRevision++
+	}
+}
+
+func reviewTrajectoryFactBytes(f ReviewTrajectoryFact) int64 {
+	return int64(len(f.Call) + len(f.Ref) + len(f.Direction) + len(f.DataClass) + len(f.TargetID) + len(f.Decision) +
+		len(f.SessionID) + len(f.Tool) + len(f.ApprovalOrigin) + len(f.ApprovalKind) + len(f.ReviewID))
 }
 
 func (r *reviewRoot) record(f ReviewTrajectoryFact) {
 	if r == nil {
 		return
 	}
-	n := int64(len(f.Call) + len(f.Ref) + len(f.Direction) + len(f.DataClass) + len(f.TargetID) + len(f.Decision))
+	n := reviewTrajectoryFactBytes(f)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, old := range r.facts {
@@ -114,8 +219,8 @@ func (r *reviewRoot) record(f ReviewTrajectoryFact) {
 	}
 	if len(r.facts) >= r.maxFacts-1 || n > r.maxBytes-r.bytes {
 		r.complete = false
-		compact := ReviewTrajectoryFact{Direction: f.Direction, DataClass: f.DataClass, TargetID: f.TargetID, Decision: f.Decision}
-		compactBytes := int64(len(compact.Direction) + len(compact.DataClass) + len(compact.TargetID) + len(compact.Decision))
+		compact := ReviewTrajectoryFact{Direction: f.Direction, DataClass: f.DataClass, TargetID: f.TargetID, Decision: f.Decision, SessionID: f.SessionID, Tool: f.Tool, ApprovalOrigin: f.ApprovalOrigin, ApprovalKind: f.ApprovalKind, ReviewID: f.ReviewID}
+		compactBytes := reviewTrajectoryFactBytes(compact)
 		if len(r.facts) < r.maxFacts && compactBytes <= r.maxBytes-r.bytes {
 			r.facts = append(r.facts, compact)
 			r.bytes += compactBytes
@@ -133,37 +238,35 @@ type actionDependency struct {
 }
 
 type actionReview struct {
-	request      ToolReviewRequest
-	dependencies []actionDependency
-	source       ReviewEvidenceSource
-	close        func()
-	digest       string
-	repeat       bool
+	request           ToolReviewRequest
+	dependencies      []actionDependency
+	source            ReviewEvidenceSource
+	close             func()
+	digest            string
+	repeat            bool
+	principalRevision uint64
 }
 
 func (e *Engine) establishReviewPrincipal(r *Run) {
 	if e.deps.Role != "" {
 		return
 	}
-	principal := make([]ReviewPrincipalFact, 0, len(r.fragments)+1)
-	if r.currentPrompt != nil {
-		principal = append(principal, ReviewPrincipalFact{Kind: "genuine_user_task", Ref: "current-user", Statement: r.currentPrompt.Text, PositiveVerdict: true})
-	}
+	instructions := make([]ReviewPrincipalFact, 0, len(r.fragments))
 	for i, fragment := range r.fragments {
 		provenance := prompt.InstructionProvenanceUnknown
 		if i < len(r.fragmentManifest) {
 			provenance = r.fragmentManifest[i].Provenance
 		}
 		positive := provenance == prompt.InstructionProvenanceProject || provenance == prompt.InstructionProvenanceRules
-		principal = append(principal, ReviewPrincipalFact{Kind: "admitted_" + provenance + "_instruction", Ref: fmt.Sprintf("instruction-%d", i), Statement: fragment.Text, PositiveVerdict: positive})
+		instructions = append(instructions, ReviewPrincipalFact{Kind: "admitted_" + provenance + "_instruction", Ref: fmt.Sprintf("instruction-%d", i), Statement: fragment.Text, PositiveVerdict: positive})
 	}
-	r.reviewRoot.establishPrincipal(principal, r.currentPrompt != nil)
+	r.reviewRoot.establishInstructions(instructions)
 }
 
 func (e *Engine) prepareActionReview(ctx context.Context, r *Run, sess *session.Session, env tool.Environment, call session.ToolCall) actionReview {
 	e.establishReviewPrincipal(r)
 	target, paths := reviewTarget(call)
-	facts, complete := r.reviewRoot.principalSnapshot()
+	facts, complete, principalRevision := r.reviewRoot.principalSnapshotWithRevision()
 	facts = append([]ReviewPrincipalFact(nil), facts...)
 	authorizedPaths := make([]string, 0, len(paths))
 	authorityComplete := true
@@ -200,7 +303,7 @@ func (e *Engine) prepareActionReview(ctx context.Context, r *Run, sess *session.
 	}
 	prepared := e.prepareReviewEvidence(ctx, r, sess, env, req, nil)
 	req.Evidence, req.EvidenceComplete = prepared.Evidence, prepared.Complete
-	out := actionReview{request: req, dependencies: deps, source: prepared.Source, close: prepared.Close}
+	out := actionReview{request: req, dependencies: deps, source: prepared.Source, close: prepared.Close, principalRevision: principalRevision}
 	if issuer, ok := r.reviewRoot.reviewer.(ReviewGrantStore); ok {
 		out.digest, out.repeat = issuer.GrantDigest(req)
 	}
@@ -480,6 +583,11 @@ func (e *Engine) resolveActionAssessment(ctx context.Context, r *Run, sess *sess
 	if assessment.action.close != nil {
 		defer assessment.action.close()
 	}
+	if !r.reviewRoot.principalRevisionIs(assessment.action.principalRevision) {
+		res := session.NewToolError(call.ID, "contextual guardrail review context changed during review; retry the action for a fresh assessment")
+		e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
+		return res, false, false, false
+	}
 	if assessment.grantHit {
 		r.reviewRoot.record(reviewFact(call, assessment.action.request.Target, "repeat_grant"))
 		return session.ToolResult{}, false, true, false
@@ -543,6 +651,11 @@ func (e *Engine) resolveActionAsk(ctx context.Context, r *Run, sess *session.Ses
 		res := session.NewToolError(call.ID, reason)
 		e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
 		r.reviewRoot.record(reviewFact(call, assessment.action.request.Target, "denied"))
+		return res, false, false, false
+	}
+	if !r.reviewRoot.principalRevisionIs(assessment.action.principalRevision) {
+		res := session.NewToolError(call.ID, "contextual guardrail review context changed while approval was pending; retry the action for a fresh assessment")
+		e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
 		return res, false, false, false
 	}
 	allowed, cancelled, staleReason := e.reauthorizeAction(ctx, r, sess, env, turnIdx, call, auth)
@@ -634,23 +747,31 @@ func (e *Engine) reviewActionWithTail(ctx context.Context, r *Run, sess *session
 			return res, nil, false, false
 		}
 	}
+	if !r.reviewRoot.admitPrincipalRevision(assessment.action.principalRevision) {
+		res = session.NewToolError(call.ID, "contextual guardrail review context changed before execution; retry the action for a fresh assessment")
+		e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
+		return res, nil, false, false
+	}
 	res, park, cancelled := tail()
 	issuer, hasIssuer := r.reviewRoot.reviewer.(ReviewGrantStore)
 	if armGrant {
-		e.armPostActionGrant(ctx, r, sess, env, call, session.VerdictAllowAlways, assessment.action.repeat, issuer, hasIssuer, res, park, cancelled)
+		e.armPostActionGrant(ctx, r, sess, env, call, assessment.action.repeat, assessment.action.principalRevision, issuer, hasIssuer, res, park, cancelled)
 	}
 	return res, park, cancelled, false
 }
 
-func (e *Engine) armPostActionGrant(ctx context.Context, r *Run, sess *session.Session, env tool.Environment, call session.ToolCall, verdict session.ApprovalVerdict, repeat bool, issuer ReviewGrantStore, hasIssuer bool, result session.ToolResult, park *dispatchPark, cancelled bool) {
-	if verdict != session.VerdictAllowAlways || !repeat || !hasIssuer || park != nil || cancelled || result.IsError {
+func (e *Engine) armPostActionGrant(ctx context.Context, r *Run, sess *session.Session, env tool.Environment, call session.ToolCall, repeat bool, principalRevision uint64, issuer ReviewGrantStore, hasIssuer bool, result session.ToolResult, park *dispatchPark, cancelled bool) {
+	if !repeat || !hasIssuer || park != nil || cancelled || result.IsError {
 		return
 	}
 	post := e.prepareActionReview(ctx, r, sess, env, call)
 	if post.close != nil {
 		defer post.close()
 	}
-	if post.repeat {
-		issuer.ArmGrant(post.digest, post.request.Event.SessionID)
+	if !post.repeat || post.principalRevision != principalRevision {
+		return
 	}
+	r.reviewRoot.armGrantIfRevision(principalRevision, func() {
+		issuer.ArmGrant(post.digest, post.request.Event.SessionID)
+	})
 }

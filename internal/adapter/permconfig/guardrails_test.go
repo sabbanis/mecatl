@@ -107,6 +107,16 @@ guardrails:
 	}
 }
 
+func TestGuardrailsTaskWindowStrictInteger(t *testing.T) {
+	cfg, err := parseYAML([]byte("guardrails:\n  taskWindow: 3\n"))
+	if err != nil || cfg.Guardrails == nil || cfg.Guardrails.TaskWindow != 3 {
+		t.Fatalf("taskWindow parse = %#v, %v", cfg.Guardrails, err)
+	}
+	if _, err := parseYAML([]byte("guardrails:\n  taskWindow: two\n")); err == nil {
+		t.Fatal("non-integer guardrails.taskWindow must be rejected")
+	}
+}
+
 // CLI out-ranks user-global for the guardrails block (first-non-nil keeps CLI, since
 // CLI files are parsed before user-global).
 func TestGuardrailsCLIOutranksUser(t *testing.T) {

@@ -62,8 +62,9 @@ type ReviewCapacity struct {
 
 // ReviewTrajectoryFact carries one harness-established root-run fact.
 type ReviewTrajectoryFact struct {
-	Call                                          session.ToolCallID
-	Ref, Direction, DataClass, TargetID, Decision string
+	Call                                                    session.ToolCallID
+	Ref, Direction, DataClass, TargetID, Decision           string
+	SessionID, Tool, ApprovalOrigin, ApprovalKind, ReviewID string
 }
 
 // ReviewConcern is one validated reviewer finding.
@@ -172,6 +173,9 @@ type ReviewMetadataProvider interface {
 // keyed digest; false means repeat is ineligible. AllowsGrant tests that digest.
 // ArmGrant stores only that digest for the named session and must not widen its
 // scope or persist it beyond the implementation's documented session lifetime.
+// ArmGrant must be a bounded, non-blocking publication and must not call back into
+// the engine; final grant publication may invoke it while the principal-revision
+// mutex is held to make validation and publication atomic.
 type ReviewGrantStore interface {
 	GrantDigest(request ToolReviewRequest) (digest string, eligible bool)
 	AllowsGrant(digest string) bool
@@ -183,6 +187,31 @@ type ReviewGrantStore interface {
 // must fail closed; ordinary provider or transport failures must not use it.
 type GuardrailReviewTerminalFailure interface {
 	GuardrailReviewTerminalFailure() bool
+}
+
+// PlanApprovalReceipt is a bounded process-local capability proving that an
+// operator approved a presented plan and the session successfully transitioned to
+// the exact target mode. It contains no plan body or tool arguments.
+type PlanApprovalReceipt struct {
+	// Ref is the opaque, non-empty receipt identity.
+	Ref string
+	// SessionID binds the receipt to exactly one session.
+	SessionID session.SessionID
+	// Call identifies the PresentPlan call the operator approved.
+	Call session.ToolCallID
+	// TargetMode is the successfully entered execution mode.
+	TargetMode session.PermissionMode
+}
+
+// PlanApprovalStore is the optional composition-owned process-local plan receipt
+// seam. Record is called only after the approved mode transition succeeds.
+// Consume must be synchronized and atomically return and remove at most one exact
+// session receipt for the next accepted root execution prompt. Lifecycle cleanup
+// is caller-owned: composition must discard pending receipts when a session is
+// closed, cleared, or otherwise replaced.
+type PlanApprovalStore interface {
+	RecordPlanApproval(PlanApprovalReceipt)
+	ConsumePlanApproval(session.SessionID) (PlanApprovalReceipt, bool)
 }
 
 // ToolReviewer performs one contextual tool review.

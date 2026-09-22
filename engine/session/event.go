@@ -542,6 +542,9 @@ type UserPromptPayload struct {
 	// Synthetic reports that the harness, rather than the principal, authored this
 	// user-role continuation. False is genuine or legacy-unknown.
 	Synthetic bool
+	// Provenance carries explicit authority provenance. Its zero value is legacy
+	// unknown and must never be upgraded to principal from message text.
+	Provenance UserPromptProvenance
 }
 
 // ModelRetryPayload is the structured durable marker that a failed-step retry

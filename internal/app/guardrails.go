@@ -54,6 +54,10 @@ func foldOperatorGuardrails(cfg Config) Config {
 	if cfg.GuardrailsDefaultMode == "" {
 		cfg.GuardrailsDefaultMode = strings.TrimSpace(g.DefaultMode)
 	}
+	if cfg.GuardrailsTaskWindow == 0 {
+		cfg.GuardrailsTaskWindow = g.TaskWindow
+	}
+	cfg.GuardrailsTaskWindow = clampReviewTaskWindow(cfg.GuardrailsTaskWindow)
 	// Escape knob (ADR 0080): YAML-only (no flag); OR-folded like Disabled.
 	if g.Escape {
 		cfg.GuardrailsEscape = true
@@ -74,6 +78,16 @@ func foldOperatorGuardrails(cfg Config) Config {
 		cfg.GuardrailsRules = rules
 	}
 	return cfg
+}
+
+func clampReviewTaskWindow(value int) int {
+	if value < 1 {
+		return 1
+	}
+	if value > 3 {
+		return 3
+	}
+	return value
 }
 
 // guardrails.go is the composition wiring for contextual action/inbound review.
@@ -241,9 +255,13 @@ func (r *guardrailActionReviewer) GrantDigest(req agent.ToolReviewRequest) (stri
 	if req.Caller.Isolated {
 		isolation = 1
 	}
+	complete := byte(0)
+	if req.PrincipalFactsComplete {
+		complete = 1
+	}
 	parts := [][]byte{
 		[]byte(req.Event.SessionID), []byte(req.Environment.Kind), []byte(req.Environment.ID), []byte(req.Environment.Revision),
-		[]byte(req.Caller.Role), {isolation}, []byte(req.EffectiveCall.Name), req.EffectiveCall.Args,
+		[]byte(req.Caller.Role), {isolation}, {complete}, []byte(req.EffectiveCall.Name), req.EffectiveCall.Args,
 		[]byte(req.Target.Kind), []byte(req.Target.Display), []byte(req.Target.DestinationID),
 	}
 	caps := append([]string(nil), req.Caller.Capabilities...)
@@ -252,9 +270,11 @@ func (r *guardrailActionReviewer) GrantDigest(req agent.ToolReviewRequest) (stri
 		parts = append(parts, []byte(capability))
 	}
 	for _, fact := range req.PrincipalFacts {
-		if fact.Kind == "target_dependency_version" {
-			parts = append(parts, []byte(fact.Ref), []byte(fact.Statement))
+		positive := byte(0)
+		if fact.PositiveVerdict {
+			positive = 1
 		}
+		parts = append(parts, []byte(fact.Kind), []byte(fact.Ref), []byte(fact.Statement), []byte{positive})
 	}
 	digest := r.grants.Digest(parts...)
 	if !r.grants.AllowsDigest(digest) && !r.grants.CanArm(req.Event.SessionID) {

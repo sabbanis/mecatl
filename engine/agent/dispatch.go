@@ -377,6 +377,8 @@ func (e *Engine) runReadBatch(ctx context.Context, r *Run, sess *session.Session
 	}
 	toRun = cleared
 
+	toRun = e.admitReadBatchActions(r, turnIdx, toRun, out)
+
 	// Phase 2: execute, PostToolUse, repair, and inbound-review the cleared
 	// read-only calls concurrently into private indexed records. No final result,
 	// recorder write, aggregate mutation, or release ask occurs in these goroutines.
@@ -415,6 +417,25 @@ func (e *Engine) runReadBatch(ctx context.Context, r *Run, sess *session.Session
 	return out, cancelled
 }
 
+func (e *Engine) admitReadBatchActions(r *Run, turnIdx int, pending []readBatchPending, out map[session.ToolCallID]session.ToolResult) []readBatchPending {
+	// Final admission is the principal-revision linearization point for every
+	// reviewed sibling, including repeat-grant hits. Do not hold the root mutex over
+	// tool execution: once this short admission succeeds the action is in flight;
+	// a steer committed before admission rejects it, while a later steer is not a
+	// retroactive cancellation.
+	admitted := pending[:0]
+	for _, p := range pending {
+		if p.assessment != nil && !r.reviewRoot.admitPrincipalRevision(p.assessment.action.principalRevision) {
+			res := session.NewToolError(p.call.ID, "contextual guardrail review context changed before execution; retry the action for a fresh assessment")
+			out[p.call.ID] = res
+			e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
+			continue
+		}
+		admitted = append(admitted, p)
+	}
+	return admitted
+}
+
 func (e *Engine) armReadBatchGrants(ctx context.Context, r *Run, sess *session.Session, env tool.Environment, pending []readBatchPending, results map[session.ToolCallID]session.ToolResult) {
 	if r.reviewRoot == nil || r.reviewRoot.reviewer == nil {
 		return
@@ -422,7 +443,7 @@ func (e *Engine) armReadBatchGrants(ctx context.Context, r *Run, sess *session.S
 	issuer, hasIssuer := r.reviewRoot.reviewer.(ReviewGrantStore)
 	for _, p := range pending {
 		if p.armGrant && p.assessment != nil {
-			e.armPostActionGrant(ctx, r, sess, env, p.call, session.VerdictAllowAlways, p.assessment.action.repeat, issuer, hasIssuer, results[p.call.ID], nil, false)
+			e.armPostActionGrant(ctx, r, sess, env, p.call, p.assessment.action.repeat, p.assessment.action.principalRevision, issuer, hasIssuer, results[p.call.ID], nil, false)
 		}
 	}
 }
@@ -716,6 +737,7 @@ func (e *Engine) resolvePendingCall(ctx context.Context, r *Run, sess *session.S
 		AllowAlways: verdict == session.VerdictAllowAlways,
 		Origin:      ask.Origin,
 	}})
+	recordValidatedApproval(r, sess.ID, ask, verdict)
 	if verdict == session.VerdictDeny {
 		// PLAN-ORIGINATED resume deny (issue #206): a cross-process resumed plan ask
 		// denied via ResumeApproval must ALSO set r.planIterateRequested so the
@@ -724,7 +746,6 @@ func (e *Engine) resolvePendingCall(ctx context.Context, r *Run, sess *session.S
 		// PlanOriginated marker is the durable signal that this was a plan ask.
 		if ask.Origin == session.ApprovalOriginPlan {
 			r.planIterateRequested = true
-			r.reviewRoot.record(ReviewTrajectoryFact{Call: pendingCall.ID, Ref: string(pendingCall.ID), Direction: reviewDirectionAuthorization, DataClass: reviewClassGenuineApproval, Decision: "denied"})
 		}
 		e.openCard(r, turnIdx, pendingCall)
 		res := denyResult(pendingCall, fmt.Sprintf("denied by user: %s", ask.Reason))
@@ -787,7 +808,6 @@ func (e *Engine) resolvePendingCall(ctx context.Context, r *Run, sess *session.S
 	// nothing to execute). This mirrors surfacePlanAsk's live-path allow tail.
 	if ask.Origin == session.ApprovalOriginPlan {
 		r.planApprovedTarget = planApprovedTargetForVerdict(verdict)
-		r.reviewRoot.record(ReviewTrajectoryFact{Call: pendingCall.ID, Ref: string(pendingCall.ID), Direction: reviewDirectionAuthorization, DataClass: reviewClassGenuineApproval, Decision: "approved"})
 		res := session.NewToolResult(pendingCall.ID, "plan approved by operator: proceeding to execution")
 		e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
 		return res, nil, false
@@ -1000,12 +1020,44 @@ func (e *Engine) surfaceAsk(ctx context.Context, r *Run, sess *session.Session, 
 		AllowAlways: verdictResult.verdict == session.VerdictAllowAlways,
 		Origin:      ask.Origin,
 	}})
+	recordValidatedApproval(r, sess.ID, ask, verdictResult.verdict)
+	return verdictResult, true, true
+}
+
+func recordValidatedApproval(r *Run, sessionID session.SessionID, ask session.PendingAsk, verdict session.ApprovalVerdict) {
+	positive := verdict == session.VerdictAllowOnce || verdict == session.VerdictAllowAlways
+	if positive && ask.Origin == session.ApprovalOriginPlan {
+		r.planApprovalReceipt = PlanApprovalReceipt{Ref: ask.AskID, SessionID: sessionID, Call: ask.Call, TargetMode: planApprovedTargetForVerdict(verdict)}
+	}
+	if r.reviewRoot == nil {
+		return
+	}
 	decision := "denied"
-	if verdictResult.verdict == session.VerdictAllowOnce || verdictResult.verdict == session.VerdictAllowAlways {
+	if positive {
 		decision = "approved"
 	}
-	r.reviewRoot.record(ReviewTrajectoryFact{Call: ask.Call, Ref: string(ask.Call), Direction: reviewDirectionAuthorization, DataClass: reviewClassGenuineApproval, Decision: decision})
-	return verdictResult, true, true
+	dataClass := "approval_unknown"
+	switch ask.Origin {
+	case session.ApprovalOriginPermission:
+		dataClass = "permission_approval"
+	case session.ApprovalOriginPlan:
+		dataClass = "plan_approval"
+	case session.ApprovalOriginHookGuardrail:
+		if ask.Guardrail != nil && ask.Guardrail.Kind == session.GuardrailApprovalResultRelease {
+			dataClass = "result_release"
+		} else {
+			dataClass = "guardrail_action_approval"
+		}
+	}
+	approvalKind, reviewID := "", ""
+	if ask.Guardrail != nil {
+		approvalKind = string(ask.Guardrail.Kind)
+		reviewID = ask.Guardrail.ReviewID
+	}
+	r.reviewRoot.record(ReviewTrajectoryFact{
+		Call: ask.Call, Ref: ask.AskID, Direction: reviewDirectionAuthorization, DataClass: dataClass, Decision: decision,
+		SessionID: string(sessionID), Tool: ask.Tool, ApprovalOrigin: string(ask.Origin), ApprovalKind: approvalKind, ReviewID: reviewID,
+	})
 }
 
 // permissionDecision evaluates normal Shell authority and, only for the declared
@@ -1425,7 +1477,6 @@ func (e *Engine) surfacePlanAsk(ctx context.Context, r *Run, sess *session.Sessi
 		// AllowOnce→ModeDefault) at the terminal boundary; the run ends with
 		// StopPlanApproved and the loop does NOT re-call the model.
 		r.planApprovedTarget = planApprovedTargetForVerdict(verdict)
-		r.reviewRoot.record(ReviewTrajectoryFact{Call: c.ID, Ref: string(c.ID), Direction: reviewDirectionAuthorization, DataClass: reviewClassGenuineApproval, Decision: "approved"})
 		res := session.NewToolResult(c.ID, "plan approved by operator: proceeding to execution")
 		e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
 		return res, false
@@ -1439,7 +1490,6 @@ func (e *Engine) surfacePlanAsk(ctx context.Context, r *Run, sess *session.Sessi
 		// planApprovedTarget != ""). The deny result teaches the model the turn is
 		// pausing for operator feedback.
 		r.planIterateRequested = true
-		r.reviewRoot.record(ReviewTrajectoryFact{Call: c.ID, Ref: string(c.ID), Direction: reviewDirectionAuthorization, DataClass: reviewClassGenuineApproval, Decision: "denied"})
 		res := session.NewToolError(c.ID, "plan not approved by operator: the operator will provide feedback; end this turn and wait for it")
 		e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
 		return res, false
