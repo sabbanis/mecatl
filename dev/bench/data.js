@@ -254607,6 +254607,45 @@ window.BENCHMARK_DATA = {
         },
         "date": 1790038636320,
         "tool": "customSmallerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "aponcedeleonch@stacklok.com",
+            "name": "Alejandro Ponce de Leon",
+            "username": "aponcedeleonch"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c006c99038a9e88618696403074d673a3487aa25",
+          "message": "feat(mecatui): emit agent lifecycle hooks to host editors (#1697)\n\nCo-authored-by: Claude Opus 5 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-09-22T14:09:25+03:00",
+          "tree_id": "62f01e16648d1db5938f25c77852d068149ce2ca",
+          "url": "https://github.com/stacklok/mecatl/commit/c006c99038a9e88618696403074d673a3487aa25"
+        },
+        "date": 1790076025475,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3308,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 99.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1155,
+            "unit": "allocs/op"
+          }
+        ]
       }
     ],
     "mecatl scenarios (smaller-is-better)": [
@@ -333875,6 +333914,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1790076022455,
+  "lastUpdate": 1790076026541,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
