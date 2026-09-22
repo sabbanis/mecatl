@@ -167,8 +167,17 @@ This section is a contract for **changing mecatl's code**. Preserve the document
 
 ## Verification
 
-After changes: `task lint && task test` must be green, and `go run ./cmd/mecademo` must still
-print a full offline session (turn → tool.call → permission.ask + approval → result).
+During iteration, run the smallest test that exercises the changed behavior. Start with
+the affected package and its direct integration boundary; add a focused regression test
+when fixing a defect. Use `-race` for concurrent behavior and before considering a
+concurrency-sensitive change complete. Existing focused targets include
+`task test:race-ui`, `task test:race-root-a`, and `task test:race-root-b`; for other
+packages, run `go test` or `go test -race` from the package's owning module.
+
+Before handoff, review, or an implementation PR, run the full applicable gates on the
+integrated branch: `task lint && task test`. Run `go run ./cmd/mecademo` for runtime
+changes. For documentation-only changes, run `task docs`. CI independently verifies a
+submitted branch; it does not replace focused local verification or these final gates.
 
 ## Workflow
 

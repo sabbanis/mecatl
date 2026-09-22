@@ -142,6 +142,19 @@ The implementation owns tracked feature-scoped cleanup; do not defer it to a fol
 or status-only PR. Only explicitly orchestrator-created successful worktrees are eligible for removal;
 failed, harness-owned, primary, and ambiguous worktrees are retained.
 
+## Iteration verification
+
+Run the smallest test that exercises the changed behavior while implementing. Start
+with the affected package and its direct integration boundary. A defect fix includes a
+focused regression test. Use `-race` for concurrent behavior and before considering a
+concurrency-sensitive change complete.
+
+The full gates are integration evidence, not a per-edit loop. Run `task lint` and
+`task test` once on the integrated branch before handoff, review, or an implementation
+PR. Run `task docs` for documentation changes and `go run ./cmd/mecademo` for runtime
+changes. CI independently verifies the submitted branch; it does not replace focused
+local verification or the final gates.
+
 ## Verification gates
 
 | Gate | What it pins |
