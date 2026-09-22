@@ -358,10 +358,21 @@ func validCallbackPath(path string) bool {
 // is what a DCR client actually registered with the authorization server;
 // PinCallbackPath (fixed path, ephemeral port) is third; a fresh random path with an
 // ephemeral port is the default when none of the above apply.
+//
+// Attempt policy is independent of that priority: only Options.RedirectURL and
+// PinCallbackPath are genuinely PUBLIC, pre-registered routes (attemptFixedRoute —
+// ambient probes never exhaust the attempt budget, since a real client can keep
+// retrying a public path indefinitely). callbackPath and the random default are both
+// unguessable, capability-bearing paths — a callbackPath is durable and reused
+// across logins rather than single-use, which makes it a MORE valuable target for a
+// local co-resident process that manages to observe it once, not less — so both
+// keep the bounded attemptMatchingRoute lockout callback.go's ServeHTTP applies to
+// state-secret probing.
 func resolveCallbackMode(opts Options, callbackPath string, random io.Reader) (
 	path, address, callbackHost, redirectURL string, attemptPolicy callbackAttemptPolicy, err error,
 ) {
 	address = "127.0.0.1:0"
+	attemptPolicy = attemptMatchingRoute
 	switch {
 	case opts.RedirectURL != "":
 		fixed, _ := fixedRedirect(opts.RedirectURL)
@@ -372,12 +383,10 @@ func resolveCallbackMode(opts Options, callbackPath string, random io.Reader) (
 		attemptPolicy = attemptFixedRoute
 	case callbackPath != "":
 		path = callbackPath
-		attemptPolicy = attemptFixedRoute
 	case opts.PinCallbackPath:
 		path = fixedCallbackPath
 		attemptPolicy = attemptFixedRoute
 	default:
-		attemptPolicy = attemptMatchingRoute
 		path, err = randomCallbackPath(random)
 		if err != nil {
 			return "", "", "", "", 0, errors.New("generate OAuth callback path: failed")

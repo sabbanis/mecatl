@@ -940,6 +940,42 @@ func TestPinCallbackPathDoesNotOverrideRegistrationBoundPath(t *testing.T) {
 	}
 }
 
+// TestAuthorizeWithCallbackPathKeepsBoundedAttemptPolicy mirrors
+// TestRequestAttemptBudget, driven through AuthorizeWithCallbackPath instead of the
+// plain random-path Authorize: a DCR registration-bound path is durable and reused
+// across every future login for that client, not single-use, which makes it a MORE
+// valuable target for a local co-resident process that manages to observe it once,
+// not less — so it must keep the bounded attemptMatchingRoute lockout against
+// wrong-state probing, the same as the random-path default, rather than the
+// unbounded attemptFixedRoute policy reserved for genuinely public, pre-registered
+// routes (Options.RedirectURL, Options.PinCallbackPath).
+func TestAuthorizeWithCallbackPathKeepsBoundedAttemptPolicy(t *testing.T) {
+	path := callbackPrefix + base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{3}, callbackBytes))
+	var redirect string
+	runtime, err := New(Options{
+		Launcher: launcherFunc(func(_ context.Context, _ string) error {
+			for range maxRequestAttempts {
+				req, _ := http.NewRequest(http.MethodGet, callbackURL(redirect, "c", "wrong-state", testIssuer), nil)
+				request(t, req)
+			}
+			return nil
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	err = runtime.AuthorizeWithCallbackPath(ctx, testIssuer, path, func(ctx context.Context, got string, present func(context.Context, string) (Result, error)) error {
+		redirect = got
+		_, presentErr := present(ctx, "https://as.example.test/authorize?state=s")
+		return presentErr
+	})
+	if !errors.Is(err, ErrCallbackAttempts) {
+		t.Fatalf("error = %v, want ErrCallbackAttempts (bounded attempt policy)", err)
+	}
+}
+
 func TestCancellationWhileWaitingForCallback(t *testing.T) {
 	started := make(chan struct{})
 	var redirect string
