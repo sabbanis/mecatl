@@ -66,6 +66,7 @@ task studio:install          # pnpm install --frozen-lockfile (fingerprinted; no
 task studio:lint             # Biome lint + format check, all three packages
 task studio:typecheck        # tsc --noEmit for contracts, server, web
 task studio:test             # Vitest (offline; never spawns mecated)
+task studio:test:integration # Vitest over the REAL SDK against a spawned `mecated --mock`; runs `task build` first (needs Go)
 task studio:generated-check  # regenerate contracts artifacts, fail if the committed copies differ
 task studio:check            # lint + typecheck + test + generated-check — what CI runs
 task studio:format           # apply Biome formatting / import organization
@@ -192,3 +193,5 @@ TLS-terminating Ingress. Minimum environment: `MECATL_BASE_URL`, `STUDIO_PUBLIC_
   `X-Studio-CSRF` header equal to the `studio_csrf` cookie; every response carries a CSP
   whose `default-src` is `'self'` and no CORS allow-origin header is ever emitted.
 - `/api/health` is the one route exempt from session gating and rate limiting.
+
+
