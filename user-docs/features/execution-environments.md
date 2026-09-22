@@ -311,6 +311,10 @@ intentionally smaller than the sum of all subordinate build, rollout, and test
 bounds. Hitting one fails qualification; it does not prove completion. Per-agent
 token limits remain unchanged and are not a hard dollar cap.
 
+The live phase preserves the qualified cluster's local-path storage helper and
+security configuration; rebuilding the executor image does not replace the
+storage provisioner's helper image.
+
 The live script attempts to restore mock configuration and delete its Secret by
 recorded UID using an independent cleanup context. A signal or stage deadline can
 interrupt that attempt. An always-run workflow step has a separate 10-minute

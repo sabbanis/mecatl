@@ -75,9 +75,6 @@ kube() {
 helm_kube() {
   if [ -n "$MECATL_EXECUTION_K8S_TOOLBOX" ]; then toolbox run -c "$MECATL_EXECUTION_K8S_TOOLBOX" helm --kubeconfig "$kubeconfig" --kube-context "$context" "$@"; else helm --kubeconfig "$kubeconfig" --kube-context "$context" "$@"; fi
 }
-kube_jq() {
-  if [ -n "$MECATL_EXECUTION_K8S_TOOLBOX" ]; then toolbox run -c "$MECATL_EXECUTION_K8S_TOOLBOX" jq "$@"; else jq "$@"; fi
-}
 [ "$(kube config current-context)" = "$context" ] || { echo "owned kube context mismatch" >&2; exit 1; }
 build_ko() { package=$1 repo=$2; dev env KIND_EXPERIMENTAL_PROVIDER="${KIND_EXPERIMENTAL_PROVIDER:-}" KO_DOCKER_REPO="$repo" ko build --local --bare "$package" | tail -n 1; }
 . "$root/deploy/mecatl-execution-kind/images.sh"
@@ -107,14 +104,9 @@ agent_image=$(load_image "$agent_tag")
 workload_image=$(load_image "$workload_tag")
 printf 'provider=%s\nagent=%s\nworkload=%s\ngo_base=%s\n' "$provider_image" "$agent_image" "$workload_image" "$go_image" >"$state/images/live-proof"
 
-# This owned Kind fixture uses the workload image as local-path's helper image so
-# rootless Podman never needs a second unpinned helper pull. Keep it in lockstep.
-kube -n local-path-storage get configmap local-path-config -o json \
-  | kube_jq --arg image "$workload_image" '.data["helperPod.yaml"] |= sub("image: [^\\n]+"; "image: " + $image)' \
-  | kube replace -f -
-
-# Consume the already-qualified synthetic security state. Live mode never
-# regenerates or replaces the execution Secret/keyring, and never reads it back.
+# Consume the already-qualified storage and synthetic security state. Preserve
+# Kind's local-path helper configuration; the non-root workload is not its helper.
+# Live mode never regenerates or replaces the execution Secret/keyring, or reads it back.
 # A real provider credential is staged only after this deterministic rerun passes.
 kube -n execution-qualification create configmap execution-mock --from-file=mock-script.json="$root/deploy/mecatl-execution-kind/mock-script.json" --dry-run=client -o yaml | kube apply -f -
 kube -n execution-qualification rollout status deployment/mecatl-execution --timeout=240s

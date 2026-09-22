@@ -99,15 +99,44 @@ esac
 	}
 }
 
-func TestLiveHelmDigestExclusiveThroughRestoration(t *testing.T) {
-	live := scriptRange(t, "live.sh", "helm_kube upgrade --install", "\necho \"live qualification passed")
+func TestLivePreservesQualifiedStorageAndHelmDigestThroughRestoration(t *testing.T) {
+	live := scriptRange(t, "live.sh", "printf 'provider=%s", "\necho \"live qualification passed")
 	root := t.TempDir()
+	if err := os.Mkdir(filepath.Join(root, "images"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	marker := filepath.Join(root, "helm-calls")
+	kubeMarker := filepath.Join(root, "kube-calls")
+	devMarker := filepath.Join(root, "dev-calls")
 	digest := "sha256:" + strings.Repeat("a", 64)
 	out, err := runStep(t, root, `
 set -u
-kube() { :; }
-dev() { :; }
+kube() {
+  case "$*" in
+  "-n execution-qualification create configmap execution-mock --from-file=mock-script.json=$root/deploy/mecatl-execution-kind/mock-script.json --dry-run=client -o yaml")
+    printf 'mock-config\n' >> "$KUBE_MARKER"
+    printf 'synthetic mock config\n' ;;
+  'apply -f -')
+    payload=$(cat)
+    test "$payload" = 'synthetic mock config' || { echo 'forbidden applied manifest' >&2; return 1; } ;;
+  '-n execution-qualification rollout status deployment/mecatl-execution --timeout=240s')
+    printf 'provider-ready\n' >> "$KUBE_MARKER" ;;
+  '-n execution-qualification rollout restart deployment/mecak8s')
+    printf 'agent-restart\n' >> "$KUBE_MARKER" ;;
+  '-n execution-qualification rollout status deployment/mecak8s --timeout=240s')
+    printf 'agent-ready\n' >> "$KUBE_MARKER" ;;
+  *) echo "forbidden Kubernetes operation: $*" >&2; return 1 ;;
+  esac
+}
+kube_jq() { jq "$@"; }
+dev() {
+  case "$*" in
+  *'go test -tags kind_execution_e2e -run ^TestKindExecutionQualification$ '*) printf 'mock-test\n' >> "$DEV_MARKER" ;;
+  *'go run -tags kind_execution_e2e ./e2e/k8s_execution/fixture/credentialloader stage '*) printf 'stage\n' >> "$DEV_MARKER" ;;
+  *'go test -tags kind_execution_e2e -run ^TestKindExecutionLiveQualification$ '*) printf 'live-test\n' >> "$DEV_MARKER" ;;
+  *) echo "unexpected dev operation: $*" >&2; return 1 ;;
+  esac
+}
 helm_kube() {
   test "$1 $2 $3" = 'upgrade --install mecak8s' || return 1
   # Model a nonempty inherited tag; apply the actual CLI overrides in order.
@@ -128,15 +157,24 @@ helm_kube() {
   test -z "$tag" && test "$repository@$digest" = "$agent_image" || return 1
   printf '%s\n' "$profile" >> "$MARKER"
 }
-`+live, "root="+root, "state="+root, "MARKER="+marker,
-		"agent_image=ko.local/mecak8s@"+digest, "kubeconfig=synthetic", "context=synthetic",
+`+live, "root="+root, "state="+root, "MARKER="+marker, "KUBE_MARKER="+kubeMarker, "DEV_MARKER="+devMarker,
+		"agent_image=ko.local/mecak8s@"+digest, "provider_image=synthetic", "workload_image=synthetic", "go_image=synthetic",
+		"kubeconfig=synthetic", "context=synthetic",
 		"cluster=owned", "MECATL_EXECUTION_CREDENTIAL_FILE=unused")
 	if err != nil {
-		t.Fatalf("digest-only Helm lifecycle failed: %v: %s", err, out)
+		t.Fatalf("live must preserve qualified storage and use digest-only Helm images: %v: %s", err, out)
 	}
 	calls, err := os.ReadFile(marker)
 	if err != nil || string(calls) != "mock\nlive\nmock\n" {
 		t.Fatalf("expected digest-only mock setup, live upgrade, and mock restoration: %q: %v", calls, err)
+	}
+	calls, err = os.ReadFile(kubeMarker)
+	if err != nil || string(calls) != "mock-config\nprovider-ready\nagent-restart\nagent-ready\nagent-ready\n" {
+		t.Fatalf("expected only mock configuration and readiness operations: %q: %v", calls, err)
+	}
+	calls, err = os.ReadFile(devMarker)
+	if err != nil || string(calls) != "mock-test\nstage\nlive-test\n" {
+		t.Fatalf("expected mock qualification before credential staging and live qualification: %q: %v", calls, err)
 	}
 }
 

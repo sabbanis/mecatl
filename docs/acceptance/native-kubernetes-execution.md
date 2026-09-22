@@ -562,6 +562,45 @@ and the offline demo. Local actionlint passed with ShellCheck explicitly disable
 ShellCheck was unavailable on the host and in the existing dev toolbox. CI remains
 the authority for ShellCheck and final runtime qualification.
 
+**Live-only storage repair (offline, after `2ff780a64145f427ee6ec49f181fe6d0abb97134`):**
+the operator reports production green in run
+[35692050845](https://github.com/stacklok/mecatl/actions/runs/35692050845), followed by
+same-session-hash ID probe success (0 ms), Ensure success (87 ms), and Attach call 1
+`not_ready_nonretryable`, with no Attach end, factory, or save. Resource evidence
+reports Ready=False/Reconciled, a Pending executor, and ProvisioningFailed. These
+reports were not independently re-fetched here; the safe projection omits the
+provisioning message and does not correlate that event to the session binding.
+
+Source inspection found an independent live-only storage mutation: `live.sh`
+replaced local-path's helper image with the executor image, while `run.sh` leaves
+Kind's installed storage configuration intact. [Kind v0.33.0's manifest](https://github.com/kubernetes-sigs/kind/blob/v0.33.0/pkg/build/nodeimage/const_storage.go)
+uses a Kind helper image (not BusyBox), no helper Pod/container `runAsUser`, and
+`mkdir -m 0777 -p "$VOL_DIR"` for setup. Its
+[pinned provisioner build](https://github.com/kubernetes-sigs/kind/blob/69b56db7/images/local-path-provisioner/Makefile)
+selects v0.0.34; [helper construction](https://github.com/rancher/local-path-provisioner/blob/v0.0.34/provisioner.go#L616-L726)
+copies the template without adding a UID override and mounts the parent directory
+as HostPath DirectoryOrCreate. [Kubernetes v1.35.8](https://github.com/kubernetes/kubernetes/blob/v1.35.8/pkg/kubelet/kuberuntime/security_context.go#L51-L57)
+uses the image UID without an override; its [host-path creation](https://github.com/kubernetes/kubernetes/blob/v1.35.8/pkg/volume/hostpath/host_path.go#L501-L511)
+uses mode 0755. `build/execution-workload/Dockerfile` sets USER 65532:65532, so the
+rewritten helper runs as UID 65532 and cannot create a child in the normal
+root-owned parent. The recovery-only `local-path.yaml` does specify UID 0, but
+neither production nor live applies it. No root override is added by this repair.
+
+`TestLivePreservesQualifiedStorageAndHelmDigestThroughRestoration` failed on the
+old script's forbidden local-path ConfigMap read and replacement, then passed
+with `-race` after removing that entire mutation. Its fake CLI allows only mock
+configuration/readiness operations and verifies mock test, synthetic credential
+staging, live test, and digest-only mock/live/mock Helm transitions. Cleanup and
+credential-loader failure tests remain unchanged. This establishes the source
+regression, not the exact historical ProvisioningFailed cause or why mock passed.
+`internal/adapter/executioncontroller/store.go` (`Store.Attach`) returns NotReady
+without Retryable when Ready is false; `internal/adapter/executionclient/client.go`
+(`waitForBinding`) still polls all NotReady errors until context cancellation,
+logging only state changes. A single logged nonretryable state therefore does not
+mean only one Attach request occurred. This classification mismatch and the
+local-fallback policy are unchanged. Final native runtime qualification and
+existing human reviews remain **PENDING**.
+
 [PR #1728](https://github.com/stacklok/mecatl/pull/1728), commit
 `6501b5924`, is already integrated in the implementation ancestry. Its generic live-compaction
 repair is not native-provider qualification. Final-candidate native-provider live and amended
