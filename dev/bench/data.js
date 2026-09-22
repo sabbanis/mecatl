@@ -254240,6 +254240,45 @@ window.BENCHMARK_DATA = {
         },
         "date": 1790036811148,
         "tool": "customSmallerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "joe@stacklok.com",
+            "name": "Joe Beda",
+            "username": "jbeda"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "09edca11a426cfed0004dd7fc54fe55c16805990",
+          "message": "revert(mecatui): remove configurable terminal titles (#1743)\n\nCo-authored-by: mecatl <noreply@mecatl.dev>",
+          "timestamp": "2026-09-21T17:46:26-07:00",
+          "tree_id": "aa959c945153a58067378c1f047dbb1448ddac14",
+          "url": "https://github.com/stacklok/mecatl/commit/09edca11a426cfed0004dd7fc54fe55c16805990"
+        },
+        "date": 1790038636320,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3282.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 77,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1154,
+            "unit": "allocs/op"
+          }
+        ]
       }
     ],
     "mecatl scenarios (smaller-is-better)": [
@@ -333394,6 +333433,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1790038633820,
+  "lastUpdate": 1790038637301,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
