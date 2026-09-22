@@ -254974,6 +254974,45 @@ window.BENCHMARK_DATA = {
         },
         "date": 1790076025475,
         "tool": "customSmallerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "joe@stacklok.com",
+            "name": "Joe Beda",
+            "username": "jbeda"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "11caafc21c721afab62f7e62176762971830eb67",
+          "message": "fix(mecatui): preserve TTY output through title controller (#1745)\n\nCo-authored-by: mecatl <noreply@mecatl.dev>",
+          "timestamp": "2026-09-22T08:45:58-07:00",
+          "tree_id": "0fdaa69537ac63f40f1301017f042fdb67a6d083",
+          "url": "https://github.com/stacklok/mecatl/commit/11caafc21c721afab62f7e62176762971830eb67"
+        },
+        "date": 1790092633828,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3320.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 113,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1153,
+            "unit": "allocs/op"
+          }
+        ]
       }
     ],
     "mecatl scenarios (smaller-is-better)": [
@@ -334356,6 +334395,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1790092630839,
+  "lastUpdate": 1790092635134,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
