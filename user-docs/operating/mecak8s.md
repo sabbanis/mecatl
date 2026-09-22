@@ -148,7 +148,7 @@ not send workspace paths or private environment references. By default, new
 sessions have no filesystem access. Schedules retain that placement, and
 delegation cannot add filesystem access that the parent lacks.
 
-See [Execution environments](/features/execution-environments.md) for the
+See [Execution environments](/features/security-and-execution/execution-environments.md) for the
 shared placement, no-FS, child-environment, and reattachment model.
 
 The no-FS default is intentional. A standard mecak8s pod is storage-free and has
@@ -878,7 +878,7 @@ lease TTL expires. Retry the request after the TTL to confirm that it returns
 
 Enable OIDC to authenticate every request and isolate sessions, schedules,
 teams, and memory by the verified `(issuer, subject)` owner. See
-[Caller identity and OIDC](/features/caller-identity.md) for the shared behavior
+[Caller identity and OIDC](/features/security-and-execution/caller-identity.md) for the shared behavior
 and client workflows.
 
 ### Check existing data first

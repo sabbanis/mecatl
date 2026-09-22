@@ -593,7 +593,7 @@ explicit/declarative/remembered trust works on both roots. Thus every valid trus
 steering and shell, and a headless untrusted repo gets neither. No second synchronized ingestion or
 shell grant exists. `narratePosture` runs after `resolveTrust`, so its `trust_project` and
 `project_ingestion` fields are authoritative and cannot contradict `narrateTrust`. No engine API
-change — composition-only. See ADR 0095 and `user-docs/features/permissions-and-posture.md`.
+change — composition-only. See ADR 0095 and `user-docs/features/security-and-execution/permissions-and-posture.md`.
 
 `AllowAllTools` is still implemented as a **rule** (a single `ScopeCLI` allow-all from the shared
 `yoloAllowAllRule` in `internal/app/build.go`), NOT a `PermissionMode` and NOT an evaluator bypass —
@@ -1317,7 +1317,7 @@ ever reached `cfg.Model`) — the review must-fix that closed the chain.
 **Per-slot scoping (deliberate non-goal this slice).** The allowlist is a FLAT set with no per-slot
 dimension: a model allowlisted as a cheap default may also be bound by a trusted project to the
 `guardrail`/`ask-reviewer` safety-checker slots. Acceptable (the operator approved the model) but
-coarser than "approved models" implies — documented in `user-docs/features/choose-models.md` + ADR 0030 as an operator caveat;
+coarser than "approved models" implies — documented in `user-docs/features/sessions/choose-models.md` + ADR 0030 as an operator caveat;
 per-slot scoping is a future follow-up.
 
 **CLI-key survival (the precedence mechanism).** `captureCLIModelKeys(cfg)` snapshots which model keys
@@ -2534,7 +2534,7 @@ design promoted to `docs/adr/0015-background-subagents.md` (as-built, amendments
 hashes), architecture §8 gained the background/SubagentStatus/cancel paragraph (+ the stale
 forking-only-gate and blanket-auto-deny bullets corrected to the childGate/4-step reality),
 docs/tui.md gained the marker/notice/footer-count notes, and
-`user-docs/features/subagents-and-teams.md` gained
+`user-docs/features/agent-behavior/subagents-and-teams.md` gained
 background + per-child cancel (and the child-concurrency default corrected 10→4). Guards:
 `client.TestEventToMsg` (background decode), `ui.TestSubagentRosterLineBackgroundMarker` /
 `TestSubagentRosterBackgroundMarkerEndToEnd` / `TestSubagentFocusBackgroundNote` /
