@@ -229586,6 +229586,40 @@ window.BENCHMARK_DATA = {
         },
         "date": 1790036806696,
         "tool": "customBiggerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "joe@stacklok.com",
+            "name": "Joe Beda",
+            "username": "jbeda"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "09edca11a426cfed0004dd7fc54fe55c16805990",
+          "message": "revert(mecatui): remove configurable terminal titles (#1743)\n\nCo-authored-by: mecatl <noreply@mecatl.dev>",
+          "timestamp": "2026-09-21T17:46:26-07:00",
+          "tree_id": "aa959c945153a58067378c1f047dbb1448ddac14",
+          "url": "https://github.com/stacklok/mecatl/commit/09edca11a426cfed0004dd7fc54fe55c16805990"
+        },
+        "date": 1790038632844,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
       }
     ],
     "mecatl scenarios (render allocs, advisory)": [
@@ -333360,6 +333394,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1790038630207,
+  "lastUpdate": 1790038633820,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
