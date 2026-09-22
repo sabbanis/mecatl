@@ -19,31 +19,33 @@ Press `ctrl+t` again to return to the preview.
 
 ## Attach a local file
 
-Type `@` to complete and attach a file. Ordinary `@path` and `@./path` completion
-search the client workspace, preserving a leading `./` on insertion. One or more
-leading `../` components search the corresponding parent of that workspace and remain
-in the inserted path, so they may select files outside the workspace. A token starting
-with literal `~/` instead searches the home directory of the **mecatui client process**,
-retains `~/` when inserted, supports leading `./` and `../` components after `~/`, and
-also works when the client workspace is empty. With no client workspace, non-home
-completion has no implicit process-cwd fallback. Completion lists files only, prunes
-hidden files and directories, and is bounded; use `↑`/`↓` then `tab` or `enter` to
-select a result.
+Type `@` to complete and attach a file. Ordinary `@path` and `@./path`
+completion search the client workspace, preserving a leading `./` on insertion.
+One or more leading `../` components search the corresponding parent of that
+workspace and remain in the inserted path, so they may select files outside the
+workspace. A token starting with literal `~/` instead searches the home
+directory of the **mecatui client process**, retains `~/` when inserted,
+supports leading `./` and `../` components after `~/`, and also works when the
+client workspace is empty. With no client workspace, non-home completion has no
+implicit process-cwd fallback. Completion lists files only, prunes hidden files
+and directories, and is bounded; use `↑`/`↓` then `tab` or `enter` to select a
+result.
 
 On send, mecatui reads a mentioned regular file and uploads its bytes into the
-conversation: text files are inlined and supported media becomes an attachment. The
-source path is not a server workspace path and is never mounted, materialized, or made
-readable/editable through server tools. Therefore in a remote, containerized, or no-FS
-session, `~` still means the machine running mecatui, not the server/container.
-Traversal outside the client workspace still uploads content only and grants no
-execution-environment filesystem access. Treat this as sharing local content and avoid
-attaching sensitive home-directory files.
+conversation: text files are inlined and supported media becomes an attachment.
+The source path is not a server workspace path and is never mounted,
+materialized, or made readable/editable through server tools. Therefore in a
+remote, containerized, or no-FS session, `~` still means the machine running
+mecatui, not the server/container. Traversal outside the client workspace still
+uploads content only and grants no execution-environment filesystem access.
+Treat this as sharing local content and avoid attaching sensitive home-directory
+files.
 
 Only literal leading `~/` has this home-expansion meaning. `~user` receives no
-home expansion, but can still attach as an ordinary workspace-relative mention when
-such a file exists. Quoted paths and embedded tildes remain ordinary prose; a path
-containing whitespace cannot be one mention token. If mecatui cannot determine its
-home directory, `@~/…` also remains prose.
+home expansion, but can still attach as an ordinary workspace-relative mention
+when such a file exists. Quoted paths and embedded tildes remain ordinary prose;
+a path containing whitespace cannot be one mention token. If mecatui cannot
+determine its home directory, `@~/…` also remains prose.
 
 ## Keep working while a run is active
 
@@ -77,8 +79,8 @@ Press `ctrl+v` to paste an image from the clipboard. If the clipboard does not
 contain an image, `ctrl+v` pastes its text. Large text pastes appear as compact
 placeholders in the editor and expand when you send the prompt.
 
-See [Multimodal input](/features/sessions/multimodal-input.md) for model capability and
-validation behavior.
+See [Multimodal input](/features/sessions/multimodal-input.md) for model
+capability and validation behavior.
 
 ## When a model stream fails
 
@@ -105,11 +107,11 @@ Run `mecatui` in a terminal provided by a supported editor and the editor can
 tell you when the agent needs an approval and when a run ends. You configure
 nothing in `mecatui` for this.
 
-`mecatui` reports three lifecycle points to the editor's agent hook: the start of
-a turn, an approval request from the main session, and the run's terminal state.
-The editor decides how to present them. Approval requests raised by a subagent
-stay out of the report, so delegated work does not compete with the main session
-for your attention.
+`mecatui` reports three lifecycle points to the editor's agent hook: the start
+of a turn, an approval request from the main session, and the run's terminal
+state. The editor decides how to present them. Approval requests raised by a
+subagent stay out of the report, so delegated work does not compete with the
+main session for your attention.
 
 Superset is the supported editor. The reports reach it only once Superset
 registers `mecatl` as a hook-emitting agent. Until that registration ships,
@@ -145,8 +147,8 @@ commands supported by the connected server.
 |Review learning and maintain memory|`/learning`, `/reflections`, `/reflect`, and `/dream`|[Use learning and memory commands](./commands-and-memory.md)|
 
 The palette also includes workspace-defined slash commands. See
-[Skills, commands, and soul](/features/agent-behavior/skills-commands-and-soul.md) for how the
-server discovers and expands them.
+[Skills, commands, and soul](/features/agent-behavior/skills-commands-and-soul.md)
+for how the server discovers and expands them.
 
 ## Monitor delegated work
 
@@ -181,11 +183,11 @@ for it to settle, then retry `/clear`.
 ## A short key reference
 
 Use `?` on an empty prompt for the live help overlay. The everyday defaults are
-`enter` to send or steer, `shift+enter` or `ctrl+j` to insert a newline, `ctrl+t`
-to inspect details, `pgup`/`pgdn` to scroll, and `/` to open commands. If the server does
-not support steering, `enter` queues a follow-up while a run is active. See
-[Keybindings](./keybindings.md) for approval controls, remapping, and the
-complete reference.
+`enter` to send or steer, `shift+enter` or `ctrl+j` to insert a newline,
+`ctrl+t` to inspect details, `pgup`/`pgdn` to scroll, and `/` to open commands.
+If the server does not support steering, `enter` queues a follow-up while a run
+is active. See [Keybindings](./keybindings.md) for approval controls, remapping,
+and the complete reference.
 
 ## Next steps
 

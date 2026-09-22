@@ -17,28 +17,28 @@ Use **Up/Down** to move one line, **Page Up/Page Down** to move one page, and
 
 ## Everyday keys
 
-| Key | Action |
-| --- | --- |
-| `enter` | Send a prompt; while work is running, steer when the server supports it or queue a follow-up otherwise. |
-| `shift+enter`, `ctrl+j`, `ctrl+enter`, or `alt+enter` | Insert a newline. Your terminal decides which of these chords it can send; see [Newline chords and your terminal](#newline-chords-and-your-terminal). |
-| `↑` | With empty input, bring queued follow-ups back for editing. |
-| `ctrl+u` | Clear the unsent draft, including staged attachments and large-paste placeholders (`ClearPrompt`; remappable). |
-| physical `esc` twice within 500ms | While idle with a focused draft containing text, staged attachments, large-paste content, or pending media, clear it through `ClearPrompt`; attachment-only drafts qualify. This gesture requires enhanced key-event support, so it is unavailable in terminals that do not report it. The first press is silent and only arms; an `esc` key release must establish a distinct press before a second non-repeat press can clear. A key repeat or another press before release cannot complete it. Selection, palette, mention, approval, overlay, modal, and running-turn owners take precedence and disarm it, as do another key or expiry. This physical gesture is not remappable; use the universal remappable `ClearPrompt` / `ctrl+u` alternative. |
-| `esc` | Clear an active selection first. While work is running, cancel directly and preserve the draft, queued follow-ups, and steer. While idle with a paused queue, clear that queue but preserve the draft. |
-| `ctrl+t` | Expand a focused tool card or approval details. For a collapsed tool card, the expanded view shows the complete tool arguments and result; press it again to return to the width-bounded preview. |
-| `shift+tab` | Cycle the current session permission mode: **default → plan → accept-edits → default**. In an MCP prompt argument form, it instead moves to the previous required field. |
-| `ctrl+g` | Select all prompt text. |
-| `ctrl+a` / `ctrl+e` | Move to the start / end of the current prompt line. |
-| `ctrl+p` | Move to the previous prompt line. |
-| `ctrl+y` | Copy the active prompt or conversation selection; no selection is a no-op. |
-| `f6` / `f7` / `f8` | Open Agents / Effort / MCP Prompts. |
-| Agents overlay controls | At terminal heights of 24 rows or more, remappable `Up`, `Down`, `ScrollU`, `ScrollD`, `JumpTop`, and `JumpEnd` move selection in Subagent and Team rosters and focused Parallel groups, or scroll Subagent/Team activity, tasks, and findings. `enter` focuses a roster item; `esc` goes back or closes. If the conversation area cannot fit the minimal card, an unframed `vp short` line preserves the active context and `esc` action. Below 24 terminal rows, a compact line identifies the active roster tab or focused child/group/member (or Tasks/Findings); only `esc` is active. |
-| `pgup` / `pgdn` | Scroll the conversation. |
-| `home` / `end` | Jump to the top or bottom; `end` resumes auto-follow. |
-| `/` | Open the slash-command palette. |
-| `ctrl+c` twice on an empty prompt | Quit safely. |
-| `/quit` (or `/exit`) | Quit immediately and cancel an active run. `/quit` appears in the slash palette; `/exit` is a dispatch-only alias. |
-| `ctrl+z` | Suspend to the shell; use `fg` to return. |
+|Key|Action|
+|-|-|
+|`enter`|Send a prompt; while work is running, steer when the server supports it or queue a follow-up otherwise.|
+|`shift+enter`, `ctrl+j`, `ctrl+enter`, or `alt+enter`|Insert a newline. Your terminal decides which of these chords it can send; see [Newline chords and your terminal](#newline-chords-and-your-terminal).|
+|`↑`|With empty input, bring queued follow-ups back for editing.|
+|`ctrl+u`|Clear the unsent draft, including staged attachments and large-paste placeholders (`ClearPrompt`; remappable).|
+|physical `esc` twice within 500ms|While idle with a focused draft containing text, staged attachments, large-paste content, or pending media, clear it through `ClearPrompt`; attachment-only drafts qualify. This gesture requires enhanced key-event support, so it is unavailable in terminals that do not report it. The first press is silent and only arms; an `esc` key release must establish a distinct press before a second non-repeat press can clear. A key repeat or another press before release cannot complete it. Selection, palette, mention, approval, overlay, modal, and running-turn owners take precedence and disarm it, as do another key or expiry. This physical gesture is not remappable; use the universal remappable `ClearPrompt` / `ctrl+u` alternative.|
+|`esc`|Clear an active selection first. While work is running, cancel directly and preserve the draft, queued follow-ups, and steer. While idle with a paused queue, clear that queue but preserve the draft.|
+|`ctrl+t`|Expand a focused tool card or approval details. For a collapsed tool card, the expanded view shows the complete tool arguments and result; press it again to return to the width-bounded preview.|
+|`shift+tab`|Cycle the current session permission mode: **default → plan → accept-edits → default**. In an MCP prompt argument form, it instead moves to the previous required field.|
+|`ctrl+g`|Select all prompt text.|
+|`ctrl+a` / `ctrl+e`|Move to the start / end of the current prompt line.|
+|`ctrl+p`|Move to the previous prompt line.|
+|`ctrl+y`|Copy the active prompt or conversation selection; no selection is a no-op.|
+|`f6` / `f7` / `f8`|Open Agents / Effort / MCP Prompts.|
+|Agents overlay controls|At terminal heights of 24 rows or more, remappable `Up`, `Down`, `ScrollU`, `ScrollD`, `JumpTop`, and `JumpEnd` move selection in Subagent and Team rosters and focused Parallel groups, or scroll Subagent/Team activity, tasks, and findings. `enter` focuses a roster item; `esc` goes back or closes. If the conversation area cannot fit the minimal card, an unframed `vp short` line preserves the active context and `esc` action. Below 24 terminal rows, a compact line identifies the active roster tab or focused child/group/member (or Tasks/Findings); only `esc` is active.|
+|`pgup` / `pgdn`|Scroll the conversation.|
+|`home` / `end`|Jump to the top or bottom; `end` resumes auto-follow.|
+|`/`|Open the slash-command palette.|
+|`ctrl+c` twice on an empty prompt|Quit safely.|
+|`/quit` (or `/exit`)|Quit immediately and cancel an active run. `/quit` appears in the slash palette; `/exit` is a dispatch-only alias.|
+|`ctrl+z`|Suspend to the shell; use `fg` to return.|
 
 Suspending does not stop an embedded server or active run. Cancel the run first
 if it should stop.
@@ -71,17 +71,17 @@ keyboard enhancements, or it does not answer the capability query at all.
 
 Silence is not proof. `mecatui` reads the Kitty protocol's reply, and a terminal
 that supports only `modifyOtherKeys` can deliver `shift+enter` while staying
-silent here. So read the switch to `ctrl+j` as "here is a chord that works",
-not as "`shift+enter` is broken". Try `shift+enter` anyway if you prefer it.
-Press `?` to see every bound newline chord at once.
+silent here. So read the switch to `ctrl+j` as "here is a chord that works", not
+as "`shift+enter` is broken". Try `shift+enter` anyway if you prefer it. Press
+`?` to see every bound newline chord at once.
 
-If you remap `Newline`, list your chords in preference order. The hint shows your
-first chord, and falls back to the first chord that survives a terminal without
-key disambiguation. That fallback is conservative: a chord qualifies only when
-its encoding is unambiguous on a legacy terminal, which means an unmodified key,
-`ctrl` plus a letter other than `h`, `i`, or `m`, or either of those behind a
-single `alt`. A chord such as `ctrl+shift+x` does not qualify, because a legacy
-terminal encodes it as a plain `ctrl+x`.
+If you remap `Newline`, list your chords in preference order. The hint shows
+your first chord, and falls back to the first chord that survives a terminal
+without key disambiguation. That fallback is conservative: a chord qualifies
+only when its encoding is unambiguous on a legacy terminal, which means an
+unmodified key, `ctrl` plus a letter other than `h`, `i`, or `m`, or either of
+those behind a single `alt`. A chord such as `ctrl+shift+x` does not qualify,
+because a legacy terminal encodes it as a plain `ctrl+x`.
 
 If none of your chords qualify, the hint keeps naming your first one. It has
 nothing better to offer, and naming no chord at all would be worse.
@@ -101,7 +101,8 @@ add this to `keybindings.json`:
 }
 ```
 
-Zed uses `{ "context": "Terminal", "bindings": { "shift-enter": ["terminal::SendText", "\u001b\r"] } }`,
+Zed uses
+`{ "context": "Terminal", "bindings": { "shift-enter": ["terminal::SendText", "\u001b\r"] } }`,
 and Alacritty takes a `[[keyboard.bindings]]` entry with `key = "Return"`,
 `mods = "Shift"`, and `chars = "\u001B\r"`. On macOS Terminal.app, turn on **Use
 Option as Meta Key** and press `option+enter`.

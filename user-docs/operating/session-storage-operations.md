@@ -52,9 +52,9 @@ retention:
   acknowledge_main_deletion: false
 ```
 
-Keep the settings file mode `0600` and its parent directory mode `0700`.
-Unknown keys, negative values, and unsupported versions prevent startup.
-Explicit retention flags override file settings.
+Keep the settings file mode `0600` and its parent directory mode `0700`. Unknown
+keys, negative values, and unsupported versions prevent startup. Explicit
+retention flags override file settings.
 
 Main-session retention also requires `acknowledge_main_deletion: true` or the
 equivalent flag. Review the effective retention summary before enabling it.
@@ -68,8 +68,8 @@ Install `mecated`, then confirm its absolute path. The example uses
 `/home/linuxbrew/.linuxbrew/bin/mecated`. systemd does not search `PATH` or
 expand shell expressions in `ExecStart`.
 
-Create the configuration and state directories before enabling the service.
-Save the following unit as `~/.config/systemd/user/mecated.service`. `%h` is the
+Create the configuration and state directories before enabling the service. Save
+the following unit as `~/.config/systemd/user/mecated.service`. `%h` is the
 systemd home-directory specifier.
 
 {/* scenario9-systemd */}
@@ -202,9 +202,9 @@ Before changing the store:
 
 Discard a stale plan and create a new one.
 
-For an unsupported backend, use the maintenance and backup procedure supplied
-by that backend's operator. Do not infer safety from empty fields or fall back
-to filesystem deletion.
+For an unsupported backend, use the maintenance and backup procedure supplied by
+that backend's operator. Do not infer safety from empty fields or fall back to
+filesystem deletion.
 
 ## Quiesced backup, migration, and restore runbook
 
@@ -221,9 +221,9 @@ stopped.
    contract. Successful sync probes show syscall support, but the underlying
    storage must still honor sync and atomic rename. Temporary filesystems do not
    survive host failure. Event-log append, deletion, retention, and migration
-   fail before mutation when directory sync is unavailable. A malformed
-   complete JSONL record requires operator recovery; only an interrupted final
-   record can be treated as a torn tail.
+   fail before mutation when directory sync is unavailable. A malformed complete
+   JSONL record requires operator recovery; only an interrupted final record can
+   be treated as a torn tail.
 1. **Back up the complete state directory.** Include snapshots, legacy files,
    event and tool sidecars, catalog data, maintenance state, and lock sentinels.
    Preserve ownership, permissions, timestamps, and filesystem boundaries.
