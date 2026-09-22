@@ -1010,9 +1010,10 @@ func resolveTransport(ctx context.Context, cfg config) (target string, dial clie
 	// ~/.local/state/...), or io.Discard under --quiet / on any open failure — NEVER
 	// stderr, which would corrupt the Bubble Tea alt-screen. The same writer backs
 	// BOTH the app.Diagnostics sink and the perf surface's slog.Logger, so neither
-	// path leaks a line to the terminal. The file handle (when one was opened) is
-	// closed by the returned cleanup alongside the server.
-	diagSink := openDiagLogWriter(xdgconfig.OSEnv, cfg.quiet, cfg.diagnosticsLog)
+	// path leaks a line to the terminal. Lock contention is reported immediately,
+	// before trust prompting or embedded startup can block or fail. The file handle
+	// (when one was opened) is closed by the returned cleanup alongside the server.
+	diagSink := openDiagLogWriterAndReport(xdgconfig.OSEnv, cfg.quiet, cfg.diagnosticsLog, os.Stderr)
 	diagW, diagCloser := diagSink.Writer, diagSink.Closer
 	diag := slogdiag.New(diagW, false, port.LevelInfo)
 	// A dedicated slog.Logger over the SAME writer for the perf surface's Logger field.
@@ -1059,14 +1060,6 @@ func resolveTransport(ctx context.Context, cfg config) (target string, dial clie
 		// override and the per-process fallback included.
 		diag.Log(ctx, port.LevelInfo, "mecatui: embedded server diagnostics log opened",
 			"path", diagSink.Path)
-	}
-	// Say out loud when this instance is NOT writing to the shared log. stderr is
-	// still plain terminal output here: resolveTransport runs well before
-	// tea.NewProgram enters the alt-screen, the same window the first-run
-	// product-metrics notice and the "hosting an embedded mecated" line below
-	// already use. The wording and the quiet matrix live in the pure helper.
-	if notice := diagLogContentionNotice(diagSink, cfg.quiet); notice != "" {
-		fmt.Fprintln(os.Stderr, notice)
 	}
 	fmt.Fprintf(os.Stderr, "mecatui: hosting an embedded mecated at %s\n", srv.Target())
 	if addr := srv.AdminAddr(); addr != "" {

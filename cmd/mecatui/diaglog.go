@@ -267,6 +267,17 @@ func diagLogContentionNotice(sink diagLogSink, quiet bool) string {
 	return "mecatui: another mecatui holds the shared diagnostics log and the per-process fallback could not be opened; diagnostics are disabled for this instance"
 }
 
+// openDiagLogWriterAndReport opens the diagnostics sink and immediately reports
+// contention while stderr is still plain terminal output. Reporting here keeps
+// the fallback discoverable even when later startup work blocks or fails.
+func openDiagLogWriterAndReport(env xdgconfig.ResolveEnv, quiet bool, overridePath string, stderr io.Writer) diagLogSink {
+	sink := openDiagLogWriter(env, quiet, overridePath)
+	if notice := diagLogContentionNotice(sink, quiet); notice != "" {
+		_, _ = io.WriteString(stderr, notice+"\n")
+	}
+	return sink
+}
+
 // openDiagLogWriter resolves the destination for the embedded server's operational
 // diagnostics. The contract (and the render-leak fix it exists for):
 //

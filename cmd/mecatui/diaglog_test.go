@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"flag"
 	"io"
 	"log/slog"
 	"os"
@@ -74,12 +75,11 @@ func TestOpenDiagLogWriterQuietDiscards(t *testing.T) {
 	// no file (the dir/file must NOT be created).
 	dir := t.TempDir()
 	sink1 := openDiagLogWriter(stateEnv(dir), true, "")
-	w, closer, toFile := sink1.Writer, sink1.Closer, sink1.Path != ""
-	defer func() { _ = closer.Close() }()
-	if w != io.Discard {
-		t.Fatalf("--quiet writer = %T, want io.Discard", w)
+	defer func() { _ = sink1.Closer.Close() }()
+	if sink1.Writer != io.Discard {
+		t.Fatalf("--quiet writer = %T, want io.Discard", sink1.Writer)
 	}
-	if toFile {
+	if sink1.Path != "" {
 		t.Fatal("--quiet must not open a file")
 	}
 	if _, err := os.Stat(filepath.Join(dir, "mecatl")); !os.IsNotExist(err) {
@@ -90,17 +90,16 @@ func TestOpenDiagLogWriterQuietDiscards(t *testing.T) {
 func TestOpenDiagLogWriterOpensFileForAppend(t *testing.T) {
 	dir := t.TempDir()
 	sink2 := openDiagLogWriter(stateEnv(dir), false, "")
-	w, closer, toFile := sink2.Writer, sink2.Closer, sink2.Path != ""
-	t.Cleanup(func() { _ = closer.Close() })
-	if !toFile {
+	t.Cleanup(func() { _ = sink2.Closer.Close() })
+	if sink2.Path == "" {
 		t.Fatal("a resolvable state base (not quiet) must open a file")
 	}
-	if w == io.Discard {
+	if sink2.Writer == io.Discard {
 		t.Fatal("non-quiet with a resolvable state base must NOT discard")
 	}
 	// The dir must be created 0700 and the file writable.
 	path := filepath.Join(dir, "mecatl", "mecatui.log")
-	if _, err := w.Write([]byte("hello\n")); err != nil {
+	if _, err := sink2.Writer.Write([]byte("hello\n")); err != nil {
 		t.Fatalf("write to diag log: %v", err)
 	}
 	data, err := os.ReadFile(path)
@@ -136,10 +135,9 @@ func TestOpenDiagLogWriterDiscardsWhenUnresolvable(t *testing.T) {
 		ReadFile:    os.ReadFile,
 	}
 	sink3 := openDiagLogWriter(env, false, "")
-	w, closer, toFile := sink3.Writer, sink3.Closer, sink3.Path != ""
-	defer func() { _ = closer.Close() }()
-	if w != io.Discard || toFile {
-		t.Fatalf("no resolvable state base must discard (w=%T toFile=%v)", w, toFile)
+	defer func() { _ = sink3.Closer.Close() }()
+	if sink3.Writer != io.Discard || sink3.Path != "" {
+		t.Fatalf("no resolvable state base must discard (w=%T toFile=%v)", sink3.Writer, sink3.Path != "")
 	}
 }
 
@@ -150,12 +148,11 @@ func TestOpenDiagLogWriterOverridePath(t *testing.T) {
 	dir := t.TempDir()
 	override := filepath.Join(dir, "custom", "steer-test.log")
 	sink4 := openDiagLogWriter(stateEnv(dir), false, override)
-	w, closer, toFile := sink4.Writer, sink4.Closer, sink4.Path != ""
-	t.Cleanup(func() { _ = closer.Close() })
-	if !toFile {
+	t.Cleanup(func() { _ = sink4.Closer.Close() })
+	if sink4.Path == "" {
 		t.Fatal("an override path (not quiet) must open a file")
 	}
-	if _, err := w.Write([]byte("x\n")); err != nil {
+	if _, err := sink4.Writer.Write([]byte("x\n")); err != nil {
 		t.Fatalf("write to override log: %v", err)
 	}
 	if _, err := os.Stat(override); err != nil {
@@ -223,12 +220,11 @@ func TestDiagLogRetention_Scenario1_ExactRetainedTail(t *testing.T) {
 	}
 
 	sink5 := openDiagLogWriter(stateEnv(dir), false, path)
-	w, closer, toFile := sink5.Writer, sink5.Closer, sink5.Path != ""
-	t.Cleanup(func() { _ = closer.Close() })
-	if !toFile {
+	t.Cleanup(func() { _ = sink5.Closer.Close() })
+	if sink5.Path == "" {
 		t.Fatal("oversized regular file must open after retention")
 	}
-	if _, err := w.Write([]byte("next\n")); err != nil {
+	if _, err := sink5.Writer.Write([]byte("next\n")); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(path)
@@ -285,14 +281,13 @@ func TestDiagLogRetention_DefaultPathIsRetained(t *testing.T) {
 		t.Fatal(err)
 	}
 	sink6 := openDiagLogWriter(stateEnv(dir), false, "")
-	w, closer, toFile := sink6.Writer, sink6.Closer, sink6.Path != ""
-	if !toFile {
+	if sink6.Path == "" {
 		t.Fatal("default diagnostics path must use retention wiring")
 	}
-	if _, err := w.Write([]byte("next\n")); err != nil {
+	if _, err := sink6.Writer.Write([]byte("next\n")); err != nil {
 		t.Fatal(err)
 	}
-	if err := closer.Close(); err != nil {
+	if err := sink6.Closer.Close(); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(path)
@@ -309,15 +304,14 @@ func TestDiagLogRetention_RetainedTailThenAppendNearCap(t *testing.T) {
 		t.Fatal(err)
 	}
 	sink7 := openDiagLogWriter(stateEnv(filepath.Dir(path)), false, path)
-	w, closer, toFile := sink7.Writer, sink7.Closer, sink7.Path != ""
-	if !toFile {
+	if sink7.Path == "" {
 		t.Fatal("oversized log must open after retention")
 	}
 	appended := []byte("+append+")
-	if _, err := w.Write(appended); err != nil {
+	if _, err := sink7.Writer.Write(appended); err != nil {
 		t.Fatal(err)
 	}
-	if err := closer.Close(); err != nil {
+	if err := sink7.Closer.Close(); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(path)
@@ -348,13 +342,14 @@ func TestDiagLogRetention_PreservesMode(t *testing.T) {
 	}
 }
 
-const diagLogLockHelperPath = "MECATL_DIAGLOG_LOCK_HELPER_PATH"
+const diagLogLockHelperArg = "diaglog-lock-helper"
 
 func TestDiagLogWriterLockHelper(t *testing.T) {
-	path := os.Getenv(diagLogLockHelperPath)
-	if path == "" {
+	args := flag.Args()
+	if len(args) != 2 || args[0] != diagLogLockHelperArg {
 		return
 	}
+	path := args[1]
 	sink := openDiagLogWriter(stateEnv(filepath.Dir(path)), false, path)
 	defer func() { _ = sink.Closer.Close() }()
 	// The parent holds the shared log, so this process must NOT write to it —
@@ -385,11 +380,10 @@ func TestDiagLogWriterLockHeldForWriterLifetime(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "mecatui.log")
 	sink9 := openDiagLogWriter(stateEnv(dir), false, path)
-	first, firstCloser, ok := sink9.Writer, sink9.Closer, sink9.Path != ""
-	if !ok {
+	if sink9.Path == "" {
 		t.Fatal("first writer did not open")
 	}
-	if _, err := first.Write(bytes.Repeat([]byte("a"), int(maxDiagLogBytes)+1)); err != nil {
+	if _, err := sink9.Writer.Write(bytes.Repeat([]byte("a"), int(maxDiagLogBytes)+1)); err != nil {
 		t.Fatal(err)
 	}
 	before, err := os.Stat(path)
@@ -411,15 +405,14 @@ func TestDiagLogWriterLockHeldForWriterLifetime(t *testing.T) {
 	if err != nil || !os.SameFile(before, after) {
 		t.Fatalf("concurrent open replaced the active log: %v", err)
 	}
-	cmd := exec.Command(os.Args[0], "-test.run=^TestDiagLogWriterLockHelper$") //nolint:gosec // fixed current test binary.
-	cmd.Env = append(os.Environ(), diagLogLockHelperPath+"="+path)
+	cmd := exec.Command(os.Args[0], "-test.run=^TestDiagLogWriterLockHelper$", "--", diagLogLockHelperArg, path) //nolint:gosec // fixed current test binary and test-owned path.
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("cross-process lock check failed: %v\n%s", err, out)
 	}
-	if _, err := first.Write([]byte("still-active")); err != nil {
+	if _, err := sink9.Writer.Write([]byte("still-active")); err != nil {
 		t.Fatal(err)
 	}
-	if err := firstCloser.Close(); err != nil {
+	if err := sink9.Closer.Close(); err != nil {
 		t.Fatal(err)
 	}
 
@@ -462,9 +455,8 @@ func TestDiagLogRetention_Scenario1_SmallAndNewFilesUnchanged(t *testing.T) {
 				}
 			}
 			sink12 := openDiagLogWriter(stateEnv(dir), false, path)
-			_, closer, toFile := sink12.Writer, sink12.Closer, sink12.Path != ""
-			t.Cleanup(func() { _ = closer.Close() })
-			if !toFile {
+			t.Cleanup(func() { _ = sink12.Closer.Close() })
+			if sink12.Path == "" {
 				t.Fatal("small or new regular file must open")
 			}
 			got, err := os.ReadFile(path)
@@ -487,12 +479,11 @@ func TestDiagLogRetention_Scenario1_AppendAfterCap(t *testing.T) {
 		t.Fatal(err)
 	}
 	sink13 := openDiagLogWriter(stateEnv(dir), false, path)
-	w, closer, toFile := sink13.Writer, sink13.Closer, sink13.Path != ""
-	t.Cleanup(func() { _ = closer.Close() })
-	if !toFile {
+	t.Cleanup(func() { _ = sink13.Closer.Close() })
+	if sink13.Path == "" {
 		t.Fatal("oversized regular file must open after retention")
 	}
-	if _, err := w.Write([]byte("+append")); err != nil {
+	if _, err := sink13.Writer.Write([]byte("+append")); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(path)
@@ -549,11 +540,17 @@ func TestInvariant_diagnostic_log_retention_atomic_failure(t *testing.T) {
 	if err != nil || !bytes.Equal(got, original) {
 		t.Fatalf("original was not preserved after failed retention: %v", err)
 	}
-	sink14 := openDiagLogWriterWithRetainer(stateEnv(filepath.Dir(path)), false, path, func(string) error { return errors.New("retention failed") })
-	w, closer, toFile := sink14.Writer, sink14.Closer, sink14.Path != ""
-	defer func() { _ = closer.Close() }()
-	if w != io.Discard || toFile {
+	var retained []string
+	sink14 := openDiagLogWriterWithRetainer(stateEnv(filepath.Dir(path)), false, path, func(got string) error {
+		retained = append(retained, got)
+		return errors.New("retention failed")
+	})
+	defer func() { _ = sink14.Closer.Close() }()
+	if sink14.Writer != io.Discard || sink14.Path != "" {
 		t.Fatal("retention failure must degrade the writer to io.Discard")
+	}
+	if len(retained) != 1 || retained[0] != path {
+		t.Fatalf("retention failure tried paths %q, want only %q", retained, path)
 	}
 }
 
@@ -569,11 +566,10 @@ func TestDiagLogRetention_Scenario1_SymlinkAndNonRegularFailClosed(t *testing.T)
 	}
 	for _, path := range []string{link, dir} {
 		sink15 := openDiagLogWriter(stateEnv(dir), false, path)
-		w, closer, toFile := sink15.Writer, sink15.Closer, sink15.Path != ""
-		if err := closer.Close(); err != nil {
+		if err := sink15.Closer.Close(); err != nil {
 			t.Fatal(err)
 		}
-		if w != io.Discard || toFile {
+		if sink15.Writer != io.Discard || sink15.Path != "" {
 			t.Fatalf("unsafe path %q must discard", path)
 		}
 	}
@@ -591,9 +587,8 @@ func TestDiagLogRetention_Scenario1_SymlinkAndNonRegularFailClosed(t *testing.T)
 		t.Fatal(err)
 	}
 	sink16 := openDiagLogWriter(stateEnv(dir), false, lockedPath)
-	w, closer, toFile := sink16.Writer, sink16.Closer, sink16.Path != ""
-	_ = closer.Close()
-	if w != io.Discard || toFile {
+	_ = sink16.Closer.Close()
+	if sink16.Writer != io.Discard || sink16.Path != "" {
 		t.Fatal("symlinked lock sentinel must fail closed")
 	}
 	if contents, readErr := os.ReadFile(lockTarget); readErr != nil || string(contents) != "lock target" {
@@ -610,12 +605,11 @@ func TestDiagLogRetention_Scenario1_OverridePath(t *testing.T) {
 		t.Fatal(err)
 	}
 	sink17 := openDiagLogWriter(stateEnv(dir), false, path)
-	w, closer, toFile := sink17.Writer, sink17.Closer, sink17.Path != ""
-	t.Cleanup(func() { _ = closer.Close() })
-	if !toFile {
+	t.Cleanup(func() { _ = sink17.Closer.Close() })
+	if sink17.Path == "" {
 		t.Fatal("override must receive the same retention behavior")
 	}
-	if _, err := w.Write([]byte("+next")); err != nil {
+	if _, err := sink17.Writer.Write([]byte("+next")); err != nil {
 		t.Fatal(err)
 	}
 	got, err := os.ReadFile(path)
@@ -739,6 +733,32 @@ func TestDiagLogSymlinkedLockNeverMintsFallback(t *testing.T) {
 	}
 	if got, err := os.ReadFile(target); err != nil || string(got) != "lock target" {
 		t.Fatalf("lock symlink target changed: %q, %v", got, err)
+	}
+}
+
+func TestOpenDiagLogWriterAndReport(t *testing.T) {
+	dir := t.TempDir()
+	shared := filepath.Join(dir, "mecatui.log")
+	owner := openDiagLogWriter(stateEnv(dir), false, shared)
+	t.Cleanup(func() { _ = owner.Closer.Close() })
+
+	var stderr bytes.Buffer
+	fallback := openDiagLogWriterAndReport(stateEnv(dir), false, shared, &stderr)
+	t.Cleanup(func() { _ = fallback.Closer.Close() })
+	wantPath := fallbackDiagLogPath(shared, os.Getpid())
+	if fallback.Path != wantPath || !fallback.Contended {
+		t.Fatalf("reported sink path=%q contended=%v, want path=%q contended=true", fallback.Path, fallback.Contended, wantPath)
+	}
+	wantNotice := "mecatui: another mecatui holds the shared diagnostics log; this instance logs to " + wantPath + "\n"
+	if stderr.String() != wantNotice {
+		t.Fatalf("stderr = %q, want %q", stderr.String(), wantNotice)
+	}
+
+	stderr.Reset()
+	quiet := openDiagLogWriterAndReport(stateEnv(dir), true, shared, &stderr)
+	defer func() { _ = quiet.Closer.Close() }()
+	if quiet.Writer != io.Discard || quiet.Path != "" || stderr.Len() != 0 {
+		t.Fatalf("quiet sink path=%q stderr=%q, want discard and silence", quiet.Path, stderr.String())
 	}
 }
 
