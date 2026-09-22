@@ -230242,6 +230242,40 @@ window.BENCHMARK_DATA = {
         },
         "date": 1790076021415,
         "tool": "customBiggerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "joe@stacklok.com",
+            "name": "Joe Beda",
+            "username": "jbeda"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "11caafc21c721afab62f7e62176762971830eb67",
+          "message": "fix(mecatui): preserve TTY output through title controller (#1745)\n\nCo-authored-by: mecatl <noreply@mecatl.dev>",
+          "timestamp": "2026-09-22T08:45:58-07:00",
+          "tree_id": "0fdaa69537ac63f40f1301017f042fdb67a6d083",
+          "url": "https://github.com/stacklok/mecatl/commit/11caafc21c721afab62f7e62176762971830eb67"
+        },
+        "date": 1790092629559,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
       }
     ],
     "mecatl scenarios (render allocs, advisory)": [
@@ -334322,6 +334356,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1790092626816,
+  "lastUpdate": 1790092630839,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
