@@ -5,6 +5,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 
+	"github.com/stacklok/mecatl/cmd/mecatui/internal/terminaltext"
 	statusline "github.com/stacklok/mecatl/cmd/mecatui/statusline"
 	"github.com/stacklok/mecatl/cmd/mecatui/theme"
 )
@@ -12,7 +13,7 @@ import (
 func statusSpansText(spans []statusline.Span) string {
 	var b strings.Builder
 	for _, span := range spans {
-		b.WriteString(sanitizeTerminal(span.Text))
+		b.WriteString(terminaltext.SanitizeSingleLine(span.Text))
 	}
 	return b.String()
 }
@@ -34,7 +35,7 @@ func renderStatusSurface(th theme.Theme, surface statusline.Surface, width int, 
 func renderStatusSpans(th theme.Theme, spans []statusline.Span) string {
 	var b strings.Builder
 	for _, span := range spans {
-		text := sanitizeTerminal(span.Text)
+		text := terminaltext.SanitizeSingleLine(span.Text)
 		if text == "" {
 			continue
 		}

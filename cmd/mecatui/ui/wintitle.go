@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/stacklok/mecatl/cmd/mecatui/client"
+	"github.com/stacklok/mecatl/cmd/mecatui/internal/terminaltext"
 )
 
 // windowTitleRunes caps the title SEGMENT of the terminal window/tab title (the
@@ -94,15 +95,15 @@ func phaseStatusWord(p phase) string {
 }
 
 // clampWindowTitle sanitizes a session title for a one-line terminal title:
-// sanitizeTerminal strips C0/ESC/DEL (CWE-150), then strings.Fields collapses
-// any surviving newlines/tabs (sanitizeTerminal preserves \n/\t for layout,
+// terminaltext.Sanitize strips C0/ESC/DEL (CWE-150), then strings.Fields collapses
+// any surviving newlines/tabs (terminaltext.Sanitize preserves \n/\t for layout,
 // but a window title is a single line) and trims surrounding whitespace. The
 // result is clamped to windowTitleRunes via truncate (the shared rune-safe
 // ellipsis clamp, view.go). An empty/whitespace-only input yields "" (the
 // caller falls back to bare "mecatui"). It mirrors session.ClampTitle's
 // contract at a tab-sized bound.
 func clampWindowTitle(s string) string {
-	s = sanitizeTerminal(s)
+	s = terminaltext.Sanitize(s)
 	s = strings.TrimSpace(strings.Join(strings.Fields(s), " "))
 	if s == "" {
 		return ""

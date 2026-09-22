@@ -152,7 +152,7 @@ func TestWindowTitle(t *testing.T) {
 				sessionTitle: "pwn\x1b]0;evil\x07title",
 			},
 			want:   "pwn]0;eviltitle — mecatui",
-			reason: "ESC (0x1b) and BEL (0x07) stripped (C0/ESC/DEL removed by sanitizeTerminal); the remaining printable chars are inert",
+			reason: "ESC (0x1b) and BEL (0x07) stripped (C0/ESC/DEL removed by terminaltext.Sanitize); the remaining printable chars are inert",
 		},
 		{
 			name: "NoWindowTitle gate collapses to bare 'mecatui' even with a title",

@@ -16,6 +16,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/stacklok/mecatl/cmd/mecatui/client"
+	"github.com/stacklok/mecatl/cmd/mecatui/internal/terminaltext"
 	statusline "github.com/stacklok/mecatl/cmd/mecatui/statusline"
 	"github.com/stacklok/mecatl/cmd/mecatui/theme"
 	"github.com/stacklok/mecatl/cmd/mecatui/ui/platform"
@@ -1106,7 +1107,7 @@ func New(deps Deps) Model {
 		m.conv = conversationFromTranscript(resume.Transcript.Messages)
 		m.startupAdopted = true
 		m.restartedThisRun = true
-		m.statusMsg = "continuing chat " + sanitizeTerminal(resume.Row.Title) + " — type to add a turn"
+		m.statusMsg = "continuing chat " + terminaltext.Sanitize(resume.Row.Title) + " — type to add a turn"
 		m.refreshView()
 	}
 	return m

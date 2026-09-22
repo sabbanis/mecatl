@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/stacklok/mecatl/cmd/mecatui/internal/terminaltext"
 )
 
 // SurfaceTemplates contains the three independently selected variants for one
@@ -289,5 +291,5 @@ func newTemplateInput(input Input) templateInput {
 	}
 }
 func escapeTemplateText(value string) templateText {
-	return templateText(html.EscapeString(sanitizeTerminal(value)))
+	return templateText(html.EscapeString(terminaltext.SanitizeSingleLine(value)))
 }
