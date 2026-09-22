@@ -1012,7 +1012,8 @@ func resolveTransport(ctx context.Context, cfg config) (target string, dial clie
 	// BOTH the app.Diagnostics sink and the perf surface's slog.Logger, so neither
 	// path leaks a line to the terminal. The file handle (when one was opened) is
 	// closed by the returned cleanup alongside the server.
-	diagW, diagCloser, toFile := openDiagLogWriter(xdgconfig.OSEnv, cfg.quiet, cfg.diagnosticsLog)
+	diagSink := openDiagLogWriter(xdgconfig.OSEnv, cfg.quiet, cfg.diagnosticsLog)
+	diagW, diagCloser := diagSink.Writer, diagSink.Closer
 	diag := slogdiag.New(diagW, false, port.LevelInfo)
 	// A dedicated slog.Logger over the SAME writer for the perf surface's Logger field.
 	// Explicit injection (rather than relying on the redirected default below) keeps the
@@ -1051,11 +1052,21 @@ func resolveTransport(ctx context.Context, cfg config) (target string, dial clie
 		_ = diagCloser.Close()
 		return target, client.DialConfig{}, noop, fmt.Errorf("start embedded server: %w", err)
 	}
-	if toFile {
+	if diagSink.Path != "" {
 		// One line, written to the FILE sink (never the TUI), so an operator can find
-		// where the embedded server's diagnostics went.
+		// where the embedded server's diagnostics went. The path comes from the sink
+		// itself, so it names the file actually opened — the --diagnostics-log
+		// override and the per-process fallback included.
 		diag.Log(ctx, port.LevelInfo, "mecatui: embedded server diagnostics log opened",
-			"path", resolveDiagLogPath(xdgconfig.OSEnv))
+			"path", diagSink.Path)
+	}
+	// Say out loud when this instance is NOT writing to the shared log. stderr is
+	// still plain terminal output here: resolveTransport runs well before
+	// tea.NewProgram enters the alt-screen, the same window the first-run
+	// product-metrics notice and the "hosting an embedded mecated" line below
+	// already use. The wording and the quiet matrix live in the pure helper.
+	if notice := diagLogContentionNotice(diagSink, cfg.quiet); notice != "" {
+		fmt.Fprintln(os.Stderr, notice)
 	}
 	fmt.Fprintf(os.Stderr, "mecatui: hosting an embedded mecated at %s\n", srv.Target())
 	if addr := srv.AdminAddr(); addr != "" {

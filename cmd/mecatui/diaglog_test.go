@@ -73,7 +73,8 @@ func TestOpenDiagLogWriterQuietDiscards(t *testing.T) {
 	// --quiet must yield io.Discard regardless of a resolvable state base, and open
 	// no file (the dir/file must NOT be created).
 	dir := t.TempDir()
-	w, closer, toFile := openDiagLogWriter(stateEnv(dir), true, "")
+	sink1 := openDiagLogWriter(stateEnv(dir), true, "")
+	w, closer, toFile := sink1.Writer, sink1.Closer, sink1.Path != ""
 	defer func() { _ = closer.Close() }()
 	if w != io.Discard {
 		t.Fatalf("--quiet writer = %T, want io.Discard", w)
@@ -88,7 +89,8 @@ func TestOpenDiagLogWriterQuietDiscards(t *testing.T) {
 
 func TestOpenDiagLogWriterOpensFileForAppend(t *testing.T) {
 	dir := t.TempDir()
-	w, closer, toFile := openDiagLogWriter(stateEnv(dir), false, "")
+	sink2 := openDiagLogWriter(stateEnv(dir), false, "")
+	w, closer, toFile := sink2.Writer, sink2.Closer, sink2.Path != ""
 	t.Cleanup(func() { _ = closer.Close() })
 	if !toFile {
 		t.Fatal("a resolvable state base (not quiet) must open a file")
@@ -133,7 +135,8 @@ func TestOpenDiagLogWriterDiscardsWhenUnresolvable(t *testing.T) {
 		UserHomeDir: func() (string, error) { return "", errors.New("no home") },
 		ReadFile:    os.ReadFile,
 	}
-	w, closer, toFile := openDiagLogWriter(env, false, "")
+	sink3 := openDiagLogWriter(env, false, "")
+	w, closer, toFile := sink3.Writer, sink3.Closer, sink3.Path != ""
 	defer func() { _ = closer.Close() }()
 	if w != io.Discard || toFile {
 		t.Fatalf("no resolvable state base must discard (w=%T toFile=%v)", w, toFile)
@@ -146,7 +149,8 @@ func TestOpenDiagLogWriterOverridePath(t *testing.T) {
 	// its diagnostics to an operator-chosen location (multi-instance testing).
 	dir := t.TempDir()
 	override := filepath.Join(dir, "custom", "steer-test.log")
-	w, closer, toFile := openDiagLogWriter(stateEnv(dir), false, override)
+	sink4 := openDiagLogWriter(stateEnv(dir), false, override)
+	w, closer, toFile := sink4.Writer, sink4.Closer, sink4.Path != ""
 	t.Cleanup(func() { _ = closer.Close() })
 	if !toFile {
 		t.Fatal("an override path (not quiet) must open a file")
@@ -218,7 +222,8 @@ func TestDiagLogRetention_Scenario1_ExactRetainedTail(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	w, closer, toFile := openDiagLogWriter(stateEnv(dir), false, path)
+	sink5 := openDiagLogWriter(stateEnv(dir), false, path)
+	w, closer, toFile := sink5.Writer, sink5.Closer, sink5.Path != ""
 	t.Cleanup(func() { _ = closer.Close() })
 	if !toFile {
 		t.Fatal("oversized regular file must open after retention")
@@ -279,7 +284,8 @@ func TestDiagLogRetention_DefaultPathIsRetained(t *testing.T) {
 	if err := os.WriteFile(path, original, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	w, closer, toFile := openDiagLogWriter(stateEnv(dir), false, "")
+	sink6 := openDiagLogWriter(stateEnv(dir), false, "")
+	w, closer, toFile := sink6.Writer, sink6.Closer, sink6.Path != ""
 	if !toFile {
 		t.Fatal("default diagnostics path must use retention wiring")
 	}
@@ -302,7 +308,8 @@ func TestDiagLogRetention_RetainedTailThenAppendNearCap(t *testing.T) {
 	if err := os.WriteFile(path, original, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	w, closer, toFile := openDiagLogWriter(stateEnv(filepath.Dir(path)), false, path)
+	sink7 := openDiagLogWriter(stateEnv(filepath.Dir(path)), false, path)
+	w, closer, toFile := sink7.Writer, sink7.Closer, sink7.Path != ""
 	if !toFile {
 		t.Fatal("oversized log must open after retention")
 	}
@@ -348,17 +355,37 @@ func TestDiagLogWriterLockHelper(t *testing.T) {
 	if path == "" {
 		return
 	}
-	w, closer, ok := openDiagLogWriter(stateEnv(filepath.Dir(path)), false, path)
-	_ = closer.Close()
-	if w != io.Discard || ok {
-		t.Fatal("subprocess unexpectedly opened a diagnostics log locked by its parent")
+	sink := openDiagLogWriter(stateEnv(filepath.Dir(path)), false, path)
+	defer func() { _ = sink.Closer.Close() }()
+	// The parent holds the shared log, so this process must NOT write to it —
+	// but it must not lose its diagnostics either (issue #1696).
+	if !sink.Contended {
+		t.Fatal("a log locked by the parent process must report contention")
+	}
+	if sink.Path == path {
+		t.Fatalf("subprocess opened the shared log its parent holds: %s", sink.Path)
+	}
+	want := fallbackDiagLogPath(path, os.Getpid())
+	if sink.Path != want {
+		t.Fatalf("fallback path = %q, want %q", sink.Path, want)
+	}
+	if sink.Writer == io.Discard {
+		t.Fatal("a contended shared log must fall back to a per-process file, not io.Discard")
+	}
+	if _, err := sink.Writer.Write([]byte("child-line\n")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(want)
+	if err != nil || string(got) != "child-line\n" {
+		t.Fatalf("fallback log = %q, %v", got, err)
 	}
 }
 
 func TestDiagLogWriterLockHeldForWriterLifetime(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "mecatui.log")
-	first, firstCloser, ok := openDiagLogWriter(stateEnv(dir), false, path)
+	sink9 := openDiagLogWriter(stateEnv(dir), false, path)
+	first, firstCloser, ok := sink9.Writer, sink9.Closer, sink9.Path != ""
 	if !ok {
 		t.Fatal("first writer did not open")
 	}
@@ -370,11 +397,16 @@ func TestDiagLogWriterLockHeldForWriterLifetime(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	second, secondCloser, secondOK := openDiagLogWriter(stateEnv(dir), false, path)
-	if second != io.Discard || secondOK {
-		t.Fatal("concurrent writer must fail safely while the lifetime lock is held")
+	// A concurrent open must never touch the active inode. It no longer discards
+	// its stream, though: it takes the per-process sibling (issue #1696).
+	sink10 := openDiagLogWriter(stateEnv(dir), false, path)
+	if !sink10.Contended {
+		t.Fatal("concurrent open must report contention on the held log")
 	}
-	_ = secondCloser.Close()
+	if sink10.Path == path {
+		t.Fatal("concurrent open must not open the log held by the first writer")
+	}
+	_ = sink10.Closer.Close()
 	after, err := os.Stat(path)
 	if err != nil || !os.SameFile(before, after) {
 		t.Fatalf("concurrent open replaced the active log: %v", err)
@@ -391,11 +423,11 @@ func TestDiagLogWriterLockHeldForWriterLifetime(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, thirdCloser, thirdOK := openDiagLogWriter(stateEnv(dir), false, path)
-	if !thirdOK {
-		t.Fatal("lock was not released when the writer closed")
+	sink11 := openDiagLogWriter(stateEnv(dir), false, path)
+	if sink11.Path != path || sink11.Contended {
+		t.Fatalf("lock was not released when the writer closed: path=%q contended=%v", sink11.Path, sink11.Contended)
 	}
-	_ = thirdCloser.Close()
+	_ = sink11.Closer.Close()
 }
 
 func TestDiagLogRetention_SyncsDirectoryAfterRename(t *testing.T) {
@@ -429,7 +461,8 @@ func TestDiagLogRetention_Scenario1_SmallAndNewFilesUnchanged(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			_, closer, toFile := openDiagLogWriter(stateEnv(dir), false, path)
+			sink12 := openDiagLogWriter(stateEnv(dir), false, path)
+			_, closer, toFile := sink12.Writer, sink12.Closer, sink12.Path != ""
 			t.Cleanup(func() { _ = closer.Close() })
 			if !toFile {
 				t.Fatal("small or new regular file must open")
@@ -453,7 +486,8 @@ func TestDiagLogRetention_Scenario1_AppendAfterCap(t *testing.T) {
 	if err := os.WriteFile(path, original, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	w, closer, toFile := openDiagLogWriter(stateEnv(dir), false, path)
+	sink13 := openDiagLogWriter(stateEnv(dir), false, path)
+	w, closer, toFile := sink13.Writer, sink13.Closer, sink13.Path != ""
 	t.Cleanup(func() { _ = closer.Close() })
 	if !toFile {
 		t.Fatal("oversized regular file must open after retention")
@@ -515,7 +549,8 @@ func TestInvariant_diagnostic_log_retention_atomic_failure(t *testing.T) {
 	if err != nil || !bytes.Equal(got, original) {
 		t.Fatalf("original was not preserved after failed retention: %v", err)
 	}
-	w, closer, toFile := openDiagLogWriterWithRetainer(stateEnv(filepath.Dir(path)), false, path, func(string) error { return errors.New("retention failed") })
+	sink14 := openDiagLogWriterWithRetainer(stateEnv(filepath.Dir(path)), false, path, func(string) error { return errors.New("retention failed") })
+	w, closer, toFile := sink14.Writer, sink14.Closer, sink14.Path != ""
 	defer func() { _ = closer.Close() }()
 	if w != io.Discard || toFile {
 		t.Fatal("retention failure must degrade the writer to io.Discard")
@@ -533,7 +568,8 @@ func TestDiagLogRetention_Scenario1_SymlinkAndNonRegularFailClosed(t *testing.T)
 		t.Fatal(err)
 	}
 	for _, path := range []string{link, dir} {
-		w, closer, toFile := openDiagLogWriter(stateEnv(dir), false, path)
+		sink15 := openDiagLogWriter(stateEnv(dir), false, path)
+		w, closer, toFile := sink15.Writer, sink15.Closer, sink15.Path != ""
 		if err := closer.Close(); err != nil {
 			t.Fatal(err)
 		}
@@ -554,7 +590,8 @@ func TestDiagLogRetention_Scenario1_SymlinkAndNonRegularFailClosed(t *testing.T)
 	if err := os.Symlink(lockTarget, lockedPath+".lock"); err != nil {
 		t.Fatal(err)
 	}
-	w, closer, toFile := openDiagLogWriter(stateEnv(dir), false, lockedPath)
+	sink16 := openDiagLogWriter(stateEnv(dir), false, lockedPath)
+	w, closer, toFile := sink16.Writer, sink16.Closer, sink16.Path != ""
 	_ = closer.Close()
 	if w != io.Discard || toFile {
 		t.Fatal("symlinked lock sentinel must fail closed")
@@ -572,7 +609,8 @@ func TestDiagLogRetention_Scenario1_OverridePath(t *testing.T) {
 	if err := os.WriteFile(path, original, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	w, closer, toFile := openDiagLogWriter(stateEnv(dir), false, path)
+	sink17 := openDiagLogWriter(stateEnv(dir), false, path)
+	w, closer, toFile := sink17.Writer, sink17.Closer, sink17.Path != ""
 	t.Cleanup(func() { _ = closer.Close() })
 	if !toFile {
 		t.Fatal("override must receive the same retention behavior")
@@ -583,5 +621,154 @@ func TestDiagLogRetention_Scenario1_OverridePath(t *testing.T) {
 	got, err := os.ReadFile(path)
 	if err != nil || string(got) != "override-tail+next" {
 		t.Fatalf("override retained log = %q, %v", got, err)
+	}
+}
+
+// --- issue #1696: a contended shared log must not silently discard ----------
+
+func TestFallbackDiagLogPath(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		in   string
+		pid  int
+		want string
+	}{
+		{"conventional log", "/state/mecatl/mecatui.log", 42, "/state/mecatl/mecatui.42.log"},
+		{"no extension", "/state/mecatl/mecatui", 7, "/state/mecatl/mecatui.7"},
+		{"multi-dot stem keeps every dot but the last", "/state/custom.diag.log", 9, "/state/custom.diag.9.log"},
+		{"dotted directory is untouched", "/state/v1.2/mecatui.log", 3, "/state/v1.2/mecatui.3.log"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := fallbackDiagLogPath(tc.in, tc.pid); got != tc.want {
+				t.Fatalf("fallbackDiagLogPath(%q, %d) = %q, want %q", tc.in, tc.pid, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDiagLogFallsBackWhenSharedLogIsHeld is the regression oracle for issue
+// #1696: the second instance keeps a recoverable stream, the two streams stay
+// separate, and the held inode is never touched.
+func TestDiagLogFallsBackWhenSharedLogIsHeld(t *testing.T) {
+	dir := t.TempDir()
+	shared := filepath.Join(dir, "mecatui.log")
+
+	owner := openDiagLogWriter(stateEnv(dir), false, shared)
+	if owner.Path != shared || owner.Contended {
+		t.Fatalf("first open must own the shared log: path=%q contended=%v", owner.Path, owner.Contended)
+	}
+	t.Cleanup(func() { _ = owner.Closer.Close() })
+	if _, err := owner.Writer.Write([]byte("owner\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	second := openDiagLogWriter(stateEnv(dir), false, shared)
+	t.Cleanup(func() { _ = second.Closer.Close() })
+	if !second.Contended {
+		t.Fatal("a held shared log must report contention")
+	}
+	want := fallbackDiagLogPath(shared, os.Getpid())
+	if second.Path != want {
+		t.Fatalf("fallback path = %q, want %q", second.Path, want)
+	}
+	if second.Writer == io.Discard {
+		t.Fatal("contended open must fall back to a file, not io.Discard (the issue-#1696 bug)")
+	}
+	if _, err := second.Writer.Write([]byte("fallback\n")); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, err := os.ReadFile(shared); err != nil || string(got) != "owner\n" {
+		t.Fatalf("shared log = %q, %v; the fallback must not write into it", got, err)
+	}
+	if got, err := os.ReadFile(want); err != nil || string(got) != "fallback\n" {
+		t.Fatalf("fallback log = %q, %v", got, err)
+	}
+}
+
+// TestDiagLogDiscardsWhenFallbackIsAlsoHeld pins the bounded end of the fallback:
+// one process has one diagnostics stream, so a third open inside the same process
+// (shared held, pid sibling held) still fails closed — but reports contention so
+// the operator is told rather than left guessing.
+func TestDiagLogDiscardsWhenFallbackIsAlsoHeld(t *testing.T) {
+	dir := t.TempDir()
+	shared := filepath.Join(dir, "mecatui.log")
+
+	owner := openDiagLogWriter(stateEnv(dir), false, shared)
+	t.Cleanup(func() { _ = owner.Closer.Close() })
+	fallback := openDiagLogWriter(stateEnv(dir), false, shared)
+	t.Cleanup(func() { _ = fallback.Closer.Close() })
+	if owner.Path == "" || fallback.Path == "" {
+		t.Fatalf("setup failed: owner=%q fallback=%q", owner.Path, fallback.Path)
+	}
+
+	third := openDiagLogWriter(stateEnv(dir), false, shared)
+	t.Cleanup(func() { _ = third.Closer.Close() })
+	if third.Writer != io.Discard || third.Path != "" {
+		t.Fatalf("both destinations held must fail closed; got path=%q", third.Path)
+	}
+	if !third.Contended {
+		t.Fatal("failing closed must still report contention so the operator is told")
+	}
+}
+
+// TestDiagLogSymlinkedLockNeverMintsFallback keeps the security fail-closed
+// separate from contention: a symlinked lock sentinel is an ERROR, not a busy
+// peer, so it must discard WITHOUT creating a per-process file.
+func TestDiagLogSymlinkedLockNeverMintsFallback(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "lock-target")
+	if err := os.WriteFile(target, []byte("lock target"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "mecatui.log")
+	if err := os.Symlink(target, path+".lock"); err != nil {
+		t.Fatal(err)
+	}
+
+	sink := openDiagLogWriter(stateEnv(dir), false, path)
+	t.Cleanup(func() { _ = sink.Closer.Close() })
+	if sink.Writer != io.Discard || sink.Path != "" {
+		t.Fatalf("symlinked lock sentinel must fail closed; got path=%q", sink.Path)
+	}
+	if sink.Contended {
+		t.Fatal("a symlinked sentinel is not contention and must not be reported as it")
+	}
+	if _, err := os.Stat(fallbackDiagLogPath(path, os.Getpid())); !os.IsNotExist(err) {
+		t.Fatalf("fail-closed path must not create a fallback log: %v", err)
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != "lock target" {
+		t.Fatalf("lock symlink target changed: %q, %v", got, err)
+	}
+}
+
+func TestDiagLogContentionNotice(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		sink  diagLogSink
+		quiet bool
+		want  string
+	}{
+		{"uncontended shared log owes nothing", diagLogSink{Path: "/s/mecatui.log"}, false, ""},
+		{"discarding without contention owes nothing", diagLogSink{}, false, ""},
+		{
+			"fallback names the file actually written",
+			diagLogSink{Path: "/s/mecatui.42.log", Contended: true},
+			false,
+			"mecatui: another mecatui holds the shared diagnostics log; this instance logs to /s/mecatui.42.log",
+		},
+		{
+			"contended with no fallback says diagnostics are off",
+			diagLogSink{Contended: true},
+			false,
+			"mecatui: another mecatui holds the shared diagnostics log and the per-process fallback could not be opened; diagnostics are disabled for this instance",
+		},
+		{"quiet stays silent even when contended", diagLogSink{Path: "/s/mecatui.42.log", Contended: true}, true, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := diagLogContentionNotice(tc.sink, tc.quiet); got != tc.want {
+				t.Fatalf("notice = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
