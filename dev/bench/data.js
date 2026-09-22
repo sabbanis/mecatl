@@ -253873,6 +253873,45 @@ window.BENCHMARK_DATA = {
         },
         "date": 1790021177805,
         "tool": "customSmallerIsBetter"
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "joe@stacklok.com",
+            "name": "Joe Beda",
+            "username": "jbeda"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8306a8ebdeff928fb35e1501c7bec8193b68b3e7",
+          "message": "feat(mecatui): own configurable terminal titles (#1674)\n\nCo-authored-by: mecatl <noreply@mecatl.dev>",
+          "timestamp": "2026-09-21T17:15:22-07:00",
+          "tree_id": "1248363c2ffce21fd12bac9cec7854f34e958c85",
+          "url": "https://github.com/stacklok/mecatl/commit/8306a8ebdeff928fb35e1501c7bec8193b68b3e7"
+        },
+        "date": 1790036811148,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3309.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 101.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1153,
+            "unit": "allocs/op"
+          }
+        ]
       }
     ],
     "mecatl scenarios (smaller-is-better)": [
@@ -332913,6 +332952,6 @@ window.BENCHMARK_DATA = {
       }
     ]
   },
-  "lastUpdate": 1790036808259,
+  "lastUpdate": 1790036812539,
   "repoUrl": "https://github.com/stacklok/mecatl"
 }
