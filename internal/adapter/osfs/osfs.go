@@ -476,36 +476,28 @@ func (f *FileSystem) Glob(ctx context.Context, pattern string) ([]string, error)
 }
 
 // globWalkFS makes cancellation visible to doublestar as an I/O error at every
-// traversal boundary. Ordinary filesystem errors keep GlobWalk's historical
-// ignore-and-continue semantics.
+// traversal boundary while masking ordinary filesystem errors to preserve
+// GlobWalk's historical ignore-and-continue semantics. It exposes only the
+// interfaces doublestar currently consults: fs.FS, fs.ReadDirFS, and fs.StatFS.
+// Deliberately do not forward optional interfaces from base; doing so would
+// couple cancellation behavior to speculative traversal paths instead of
+// doublestar's current Open/ReadDir/Stat contract.
 type globWalkFS struct {
 	ctx  context.Context
 	base fs.FS
 }
 
-func (f globWalkFS) Open(name string) (fs.File, error) {
-	if err := f.ctx.Err(); err != nil {
-		return nil, err
-	}
-	file, err := f.base.Open(name)
-	if ctxErr := f.ctx.Err(); ctxErr != nil {
-		if file != nil {
-			_ = file.Close()
-		}
-		return nil, ctxErr
-	}
-	if err != nil {
-		return nil, globNotExist("open", name)
-	}
-	return file, nil
+// Open satisfies fs.FS. doublestar v4.10.0 uses ReadDir and Stat for GlobWalk.
+func (g globWalkFS) Open(name string) (fs.File, error) {
+	return g.base.Open(name)
 }
 
-func (f globWalkFS) ReadDir(name string) ([]fs.DirEntry, error) {
-	if err := f.ctx.Err(); err != nil {
+func (g globWalkFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	if err := g.ctx.Err(); err != nil {
 		return nil, err
 	}
-	entries, err := fs.ReadDir(f.base, name)
-	if ctxErr := f.ctx.Err(); ctxErr != nil {
+	entries, err := fs.ReadDir(g.base, name)
+	if ctxErr := g.ctx.Err(); ctxErr != nil {
 		return nil, ctxErr
 	}
 	if err != nil {
@@ -514,12 +506,12 @@ func (f globWalkFS) ReadDir(name string) ([]fs.DirEntry, error) {
 	return entries, nil
 }
 
-func (f globWalkFS) Stat(name string) (fs.FileInfo, error) {
-	if err := f.ctx.Err(); err != nil {
+func (g globWalkFS) Stat(name string) (fs.FileInfo, error) {
+	if err := g.ctx.Err(); err != nil {
 		return nil, err
 	}
-	info, err := fs.Stat(f.base, name)
-	if ctxErr := f.ctx.Err(); ctxErr != nil {
+	info, err := fs.Stat(g.base, name)
+	if ctxErr := g.ctx.Err(); ctxErr != nil {
 		return nil, ctxErr
 	}
 	if err != nil {
@@ -528,12 +520,21 @@ func (f globWalkFS) Stat(name string) (fs.FileInfo, error) {
 	return info, nil
 }
 
+// globNotExist preserves GlobWalk's historical ignore-and-continue behavior for
+// ordinary Stat errors while WithFailOnIOErrors propagates context cancellation.
+// This masking depends on not enabling doublestar.WithFailOnPatternNotExist.
 func globNotExist(op, name string) error {
 	return &fs.PathError{Op: op, Path: name, Err: fs.ErrNotExist}
 }
 
 // globWalk visits root-relative matches without first materializing them.
 func (f *FileSystem) globWalk(ctx context.Context, pattern string, visit func(string, fs.DirEntry) error) error {
+	return walkGlob(ctx, f.r.FS(), pattern, visit)
+}
+
+// walkGlob contains the production traversal options while allowing tests to
+// supply deterministic filesystems.
+func walkGlob(ctx context.Context, base fs.FS, pattern string, visit func(string, fs.DirEntry) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -547,12 +548,12 @@ func (f *FileSystem) globWalk(ctx context.Context, pattern string, visit func(st
 		return nil
 	}
 
-	// Walk the os.Root-confined fs.FS. f.r.FS() (Go 1.24+) returns an fs.FS that
-	// refuses to traverse any symlink that would leave the root, so escaping
-	// intermediate-directory components are rejected by construction — closing
-	// the filename-enumeration leak filepath.Glob had. WithNoFollow keeps the
-	// walk from descending into symlinked directories.
-	err := doublestar.GlobWalk(globWalkFS{ctx: ctx, base: f.r.FS()}, pat, func(path string, entry fs.DirEntry) error {
+	// In production the FileSystem method supplies its os.Root-confined fs.FS.
+	// That FS (Go 1.24+) refuses to traverse any symlink that would leave the
+	// root, so escaping intermediate-directory components are rejected by
+	// construction — closing the filename-enumeration leak filepath.Glob had.
+	// WithNoFollow keeps the walk from descending into symlinked directories.
+	err := doublestar.GlobWalk(globWalkFS{ctx: ctx, base: base}, pat, func(path string, entry fs.DirEntry) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -571,7 +572,13 @@ func (f *FileSystem) globWalk(ctx context.Context, pattern string, visit func(st
 		// path is already root-relative and slash-separated. Returning the visitor
 		// error stops GlobWalk immediately.
 		return visit(path, entry)
-	}, doublestar.WithNoFollow(), doublestar.WithFailOnIOErrors())
+	},
+		// Cancellation enters GlobWalk through ReadDir/Stat errors. Without this
+		// option doublestar would swallow those errors and continue traversing.
+		doublestar.WithFailOnIOErrors(),
+		// Preserve the FileSystem contract: never descend through symlinks.
+		doublestar.WithNoFollow(),
+	)
 	if err != nil {
 		return err
 	}
