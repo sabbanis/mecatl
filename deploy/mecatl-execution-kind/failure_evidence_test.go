@@ -70,10 +70,20 @@ func TestCreateStageProjectionRejectsRawAndPrivateData(t *testing.T) {
 		t.Fatal("projection leaked or lost discriminating state")
 	}
 	cmd = exec.CommandContext(t.Context(), "jq", "-Rnc", "--arg", "source", "mecak8s", "-f", "create-stages.jq")
-	cmd.Stdin = strings.NewReader(strings.Repeat(valid+"\n", 1500))
+	churn := valid + "\n" + strings.ReplaceAll(valid, "not_ready_nonretryable", "not_ready_retryable") + "\n"
+	terminal := strings.ReplaceAll(valid, "not_ready_nonretryable", "error")
+	input = strings.Repeat(churn, 750) + strings.ReplaceAll(terminal, "attach_poll", "attach_poll_end") + "\n" + strings.ReplaceAll(terminal, "attach_poll", "engine_factory") + "\n"
+	input += sentinel + "\n" + strings.ReplaceAll(valid, "attach_poll", sentinel) + "\n"
+	cmd.Stdin = strings.NewReader(input)
 	out, err = cmd.CombinedOutput()
 	if err != nil || strings.Count(string(out), `"kind":"create_stage"`) != 512 || len(out) > 262144 {
 		t.Fatal("projection did not drain and bound the input")
+	}
+	if !strings.Contains(string(out), `"stage":"attach_poll_end","reason":"error"`) || !strings.Contains(string(out), `"stage":"engine_factory","reason":"error"`) {
+		t.Fatal("projection lost latest terminal stages")
+	}
+	if strings.Contains(string(out), sentinel) || strings.Contains(string(out), "grant") {
+		t.Fatal("bounded projection leaked raw or private data")
 	}
 }
 
