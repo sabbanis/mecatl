@@ -33,6 +33,7 @@ import (
 	"github.com/stacklok/mecatl/internal/adapter/scheduler"
 	"github.com/stacklok/mecatl/internal/adapter/skills"
 	"github.com/stacklok/mecatl/internal/adapter/tools"
+	"github.com/stacklok/mecatl/internal/creatediag"
 	brokercontract "github.com/stacklok/mecatl/internal/mcpbroker"
 )
 
@@ -2187,7 +2188,10 @@ func (s *Service) persistNewSession(ctx context.Context, sess *session.Session) 
 }
 
 func (s *Service) persistCreatedSession(ctx context.Context, sess *session.Session, owner *session.Principal, request *createRequest) (*session.Session, error) {
-	if err := s.persistNewSession(ctx, sess); err != nil {
+	persistDone := creatediag.Begin(ctx, "session_persist")
+	persistErr := s.persistNewSession(ctx, sess)
+	persistDone(persistErr)
+	if err := persistErr; err != nil {
 		if existing, ok, collisionErr := s.resolveCreateCollision(ctx, sess.ID, owner, request, err); ok || collisionErr != nil {
 			return existing, collisionErr
 		}
@@ -2302,6 +2306,8 @@ func (s *Service) createSession(ctx context.Context, mode session.PermissionMode
 	if !opts.idSet {
 		finalID = s.cfg.NewID()
 	}
+	creatediag.Session(ctx, string(finalID))
+	probeDone := creatediag.Begin(ctx, "session_id_probe")
 	var existingCreate *session.Session
 	var releaseCreate func()
 	if generatedID {
@@ -2309,6 +2315,7 @@ func (s *Service) createSession(ctx context.Context, mode session.PermissionMode
 	} else {
 		existingCreate, releaseCreate, err = s.reserveCreateID(ctx, finalID, owner)
 	}
+	probeDone(err)
 	if err != nil {
 		return nil, err
 	}
@@ -2459,7 +2466,9 @@ func (s *Service) createPerSessionEngine(ctx context.Context, mintID func() sess
 			}
 			defer s.finalizeBrokerAttachment(broker, &committed)
 		}
+		factoryDone := creatediag.Begin(ctx, "engine_factory")
 		res, err = s.callSessionEngine(ctx, sel, specs, profile, workspace, mode, brokerTools(broker))
+		factoryDone(err)
 	}
 	if err != nil {
 		// Factory maps an unknown/unavailable provider to ErrInvalidArgument; any

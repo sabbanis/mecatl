@@ -140,7 +140,7 @@ func TestNativeWorkflowCommitAndCredentialBoundary(t *testing.T) {
 
 func TestNativeWorkflowCleanupOwnership(t *testing.T) {
 	steps := nativeSteps(t)
-	for _, fault := range []string{"", "owner", "context", "label", "duplicate", "symlink", "delete", "list", "switched-pointer", "captured-cluster", "missing-kubeconfig", "missing-ownership", "missing-output", "partial-with-kubeconfig", "collector-error", "collector-timeout", "collector-error-delete", "collector-timeout-delete"} {
+	for _, fault := range []string{"", "owner", "context", "label", "duplicate", "symlink", "delete", "list", "switched-pointer", "captured-cluster", "missing-kubeconfig", "missing-ownership", "missing-output", "partial-with-kubeconfig", "collector-error", "collector-timeout", "collector-error-delete", "collector-timeout-delete", "live-failed", "live-failed-preserved"} {
 		t.Run("fault="+fault, func(t *testing.T) {
 			collectorFails := strings.HasPrefix(fault, "collector-")
 			root := t.TempDir()
@@ -201,7 +201,7 @@ func TestNativeWorkflowCleanupOwnership(t *testing.T) {
 			writeFixture(t, filepath.Join(bin, "docker"), "#!/bin/sh\nif [ \"$FAULT\" = label ]; then exit 1; fi\nprintf '%s\\n' '"+cluster+"'\n", 0o700)
 			writeFixture(t, filepath.Join(bin, "kind"), "#!/bin/sh\nif [ \"$1\" = delete ]; then\n  test \"$*\" = 'delete cluster --name "+cluster+"' || exit 1\n  printf '%s\\n' \"$*\" >> \"$MARKER.attempt\"\n  case \"$FAULT\" in delete|collector-*-delete) exit 1 ;; esac\n  printf deleted > \"$MARKER\"\nelse\n  test \"$FAULT\" != list || exit 1\nfi\n", 0o700)
 			marker := filepath.Join(root, "deleted")
-			if fault == "delete" || fault == "list" || fault == "partial-with-kubeconfig" || collectorFails {
+			if fault == "delete" || fault == "list" || fault == "partial-with-kubeconfig" || collectorFails || fault == "live-failed" {
 				scripts := filepath.Join(root, "deploy/mecatl-execution-kind")
 				if err := os.MkdirAll(scripts, 0o700); err != nil {
 					t.Fatal(err)
@@ -212,8 +212,25 @@ func TestNativeWorkflowCleanupOwnership(t *testing.T) {
 			if strings.HasPrefix(fault, "missing-") || fault == "partial-with-kubeconfig" || fault == "delete" || fault == "list" || collectorFails {
 				outcome = "failure"
 			}
-			out, err := runStep(t, root, steps["cleanup"].Run, "PATH="+bin+":"+os.Getenv("PATH"), "NATIVE_CI_DIR="+dir, "GITHUB_WORKSPACE="+root, "USER=fixture", "PRODUCTION_OUTCOME="+outcome, "MECATL_EXECUTION_QUAL_STATE="+capturedState, "NATIVE_CLUSTER="+capturedCluster, "FAULT="+fault, "MARKER="+marker)
-			wantOK := fault == "" || fault == "switched-pointer" || fault == "partial-with-kubeconfig" || fault == "collector-error" || fault == "collector-timeout"
+			liveOutcome := "success"
+			if strings.HasPrefix(fault, "live-failed") {
+				liveOutcome = "failure"
+			}
+			if fault == "live-failed-preserved" {
+				writeFixture(t, filepath.Join(state, "live-diagnostics.jsonl"), "{\"kind\":\"create_stage\",\"stage\":\"bind_ensure\"}\n", 0o600)
+				writeFixture(t, filepath.Join(state, "live-diagnostics.status"), "complete\n", 0o600)
+			}
+			out, err := runStep(t, root, steps["cleanup"].Run, "PATH="+bin+":"+os.Getenv("PATH"), "NATIVE_CI_DIR="+dir, "GITHUB_WORKSPACE="+root, "USER=fixture", "PRODUCTION_OUTCOME="+outcome, "LIVE_OUTCOME="+liveOutcome, "MECATL_EXECUTION_QUAL_STATE="+capturedState, "NATIVE_CLUSTER="+capturedCluster, "FAULT="+fault, "MARKER="+marker)
+			wantOK := fault == "" || fault == "switched-pointer" || fault == "partial-with-kubeconfig" || fault == "collector-error" || fault == "collector-timeout" || strings.HasPrefix(fault, "live-failed")
+			if fault == "live-failed-preserved" {
+				data, err := os.ReadFile(filepath.Join(dir, "live-diagnostics.jsonl"))
+				if err != nil || !strings.Contains(string(data), "bind_ensure") {
+					t.Fatal("pre-restoration real evidence lost")
+				}
+				if _, err := os.Stat(filepath.Join(dir, "production-diagnostics.jsonl")); !os.IsNotExist(err) {
+					t.Fatal("mock fallback should not replace complete real evidence")
+				}
+			}
 			if collectorFails {
 				if !strings.Contains(string(out), "::warning::Bounded production diagnostics incomplete") {
 					t.Fatal("collector failure must warn")
@@ -231,7 +248,7 @@ func TestNativeWorkflowCleanupOwnership(t *testing.T) {
 			if _, err := os.Stat(filepath.Join(dir, "provider-key")); !os.IsNotExist(err) {
 				t.Fatal("CI credential was not removed independently")
 			}
-			if fault == "delete" || fault == "list" || fault == "partial-with-kubeconfig" {
+			if fault == "delete" || fault == "list" || fault == "partial-with-kubeconfig" || fault == "live-failed" {
 				if data, err := os.ReadFile(filepath.Join(dir, "production-diagnostics.jsonl")); err != nil || !strings.Contains(string(data), "collection") {
 					t.Fatal("failure evidence must be captured before cleanup, even when cleanup fails")
 				}

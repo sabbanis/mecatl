@@ -143,24 +143,42 @@ helm_kube() {
 func TestLiveSignalPreservesFailureAndAttemptsCleanup(t *testing.T) {
 	restore := scriptRange(t, "live.sh", "restore() {", "\ndev env -i HOME=\"$HOME\" PATH=\"$PATH\" KUBECONFIG=\"$kubeconfig\" MECATL_KUBE_CONTEXT=\"$context\" MECATL_EXECUTION_CREDENTIAL_FILE=")
 	for _, signal := range []struct {
-		name string
-		code string
-	}{{"INT", "130"}, {"TERM", "143"}} {
+		name    string
+		code    string
+		command string
+	}{{"INT", "130", "kill -INT $$"}, {"TERM", "143", "kill -TERM $$"}, {"live-failed", "1", "exit 1"}, {"collector-failed", "1", "exit 1"}} {
 		t.Run(signal.name, func(t *testing.T) {
 			root := t.TempDir()
+			scripts := filepath.Join(root, "deploy/mecatl-execution-kind")
+			if err := os.MkdirAll(scripts, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			collector := "#!/bin/sh\nset -eu\ntest \"$1 $2\" = 'synthetic kind-owned'\nprintf 'collect\\n' >> \"$MARKER\"\nprintf '{\"kind\":\"collection\"}\\n' > \"$3\"\n"
+			if signal.name == "collector-failed" {
+				collector += "exit 17\n"
+			}
+			writeFixture(t, filepath.Join(scripts, "collect-failure.sh"), collector, 0o700)
 			writeFixture(t, filepath.Join(root, "receipt"), "synthetic", 0o600)
 			writeFixture(t, filepath.Join(root, "signal.sh"), "#!/bin/sh\nset -eu\n"+`
 helm_kube() { printf 'restore\n' >> "$MARKER"; }
 dev() { printf 'delete\n' >> "$MARKER"; }
 restore_needed=1
-`+restore+"\nkill -"+signal.name+" $$\nexit 99\n", 0o700)
-			out, err := runStep(t, root, "if sh ./signal.sh; then exit 1; else test \"$?\" -eq "+signal.code+"; fi", "root="+root, "MARKER="+filepath.Join(root, "cleanup"), "receipt="+filepath.Join(root, "receipt"), "agent_image=synthetic@sha256:fake", "kubeconfig=synthetic", "context=synthetic", "secret=synthetic")
+`+restore+"\n"+signal.command+"\nexit 99\n", 0o700)
+			out, err := runStep(t, root, "if sh ./signal.sh; then exit 1; else test \"$?\" -eq "+signal.code+"; fi", "root="+root, "state="+root, "MARKER="+filepath.Join(root, "cleanup"), "receipt="+filepath.Join(root, "receipt"), "agent_image=synthetic@sha256:fake", "kubeconfig=synthetic", "context=kind-owned", "secret=synthetic")
 			if err != nil {
 				t.Fatalf("signal was reported as success: %v: %s", err, out)
 			}
 			calls, err := os.ReadFile(filepath.Join(root, "cleanup"))
-			if err != nil || string(calls) != "restore\ndelete\n" {
-				t.Fatalf("cleanup must run once after signal: %q: %v", calls, err)
+			if err != nil || string(calls) != "collect\nrestore\ndelete\n" {
+				t.Fatalf("evidence must precede restoration and UID cleanup, even on collection failure: %q: %v", calls, err)
+			}
+			status, err := os.ReadFile(filepath.Join(root, "live-diagnostics.status"))
+			want := "complete\n"
+			if signal.name == "collector-failed" {
+				want = "incomplete\n"
+			}
+			if err != nil || string(status) != want {
+				t.Fatal("diagnostic failure status lost")
 			}
 		})
 	}

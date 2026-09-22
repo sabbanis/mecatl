@@ -325,16 +325,32 @@ Cleanup is bounded best effort: hard cancellation or runner loss can prevent it.
 Hosted-runner disposal is the fallback, not evidence that cleanup succeeded.
 
 Artifacts are retained for seven days: a size-bounded `live-summary.json` when
-available, a sanitized `qualification-status.txt`, and `production-diagnostics.jsonl`
-when production fails and owned-cluster validation succeeds. Cleanup collects the
-production diagnostics before deleting the cluster, with a 60-second bound and
-10-second API request deadlines. The 1 MiB diagnostic file contains only known
-condition/reason classes, deletion and UID-match booleans, known finalizers, Pod
-phases, container exit reasons, lease-expiry status, quota key names, and event
-reason counts. It remains available if cluster deletion subsequently fails.
-PKI, kubeconfigs, Secret receipts, Helm values, full scratch directories, raw
-resource manifests, and transcripts are never uploaded by the native job. Check
-both live and cleanup outcomes before treating the recorded commit as qualified.
+available and a sanitized `qualification-status.txt`. On live failure,
+`live-diagnostics.jsonl` captures the real process before mock restoration and
+Secret cleanup. If this capture is missing or incomplete, or production fails,
+workflow cleanup collects separate `production-diagnostics.jsonl` evidence before
+cluster deletion. `diagnostics-status.txt` distinguishes pre-restoration and
+fallback collection outcomes. Collection failure warns and still attempts cleanup.
+
+Each collector has a 45-second bound, 5-second API deadlines, and a 1 MiB output
+limit. Resource evidence contains known condition/reason classes, deletion and
+UID-match booleans, known finalizers, Pod phases, container exit reasons,
+lease-expiry status, quota key names, and event reason counts. Log evidence passes
+through a strict JSON allowlist in memory; only create stages, fixed reason
+classes, elapsed milliseconds, call counts, and hashed session correlation survive.
+Raw logs, stacks, PKI, kubeconfigs, Secret receipts, Helm values, resource manifests,
+transcripts, and surrounding scratch directories are excluded from artifacts.
+
+The fixture enables `--log-level=debug`; native-execution debug diagnostics use
+JSON. Create stages distinguish handler entry after authentication, session-ID
+storage probing, remote Ensure, Attach polling, engine construction, persistence,
+reference publication, and HTTP response construction. Polling logs its first
+state, state changes, and final count rather than every retry. The live test first
+checks authenticated HTTP reachability separately, then reports when create
+headers were sent and a response started. A last `begin` stage without a matching
+completion identifies the boundary to investigate; it does not establish the root
+cause. Check live, diagnostics, and cleanup outcomes before treating the recorded
+commit as qualified.
 
 ## Limitations
 

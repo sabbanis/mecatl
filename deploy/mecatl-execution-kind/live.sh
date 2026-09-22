@@ -134,6 +134,20 @@ restore() {
   cleanup_failed=0
   mock_restored=0
   secret_cleaned=0
+  if [ "$status" -ne 0 ] && [ "$restore_needed" -eq 1 ]; then
+    # Ownership was verified before staging. Capture the real process before
+    # Helm replaces it, independently of Secret cleanup and mock restoration.
+    set -- sh "$root/deploy/mecatl-execution-kind/collect-failure.sh" "$kubeconfig" "$context" "$state/live-diagnostics.jsonl"
+    if [ -n "${MECATL_EXECUTION_K8S_TOOLBOX:-}" ]; then
+      set -- toolbox run -c "$MECATL_EXECUTION_K8S_TOOLBOX" "$@"
+    fi
+    if timeout --kill-after=5s 45s "$@"; then
+      printf 'complete\n' > "$state/live-diagnostics.status" || echo 'warning: diagnostic status unavailable' >&2
+    else
+      printf 'incomplete\n' > "$state/live-diagnostics.status" || echo 'warning: diagnostic status unavailable' >&2
+      echo 'warning: bounded pre-restoration diagnostics incomplete' >&2
+    fi
+  fi
   if [ "$restore_needed" -eq 1 ]; then
     if helm_kube upgrade --install mecak8s "$root/deploy/helm/mecak8s" --namespace execution-qualification -f "$root/deploy/mecatl-execution-kind/mecak8s-values.yaml" \
       --set-string image.repository="${agent_image%@*}" --set-string image.tag= --set-string image.digest="${agent_image#*@}" --wait --timeout=5m >/dev/null 2>&1; then
@@ -172,7 +186,7 @@ restore_needed=1
 helm_kube upgrade --install mecak8s "$root/deploy/helm/mecak8s" --namespace execution-qualification -f "$root/deploy/mecatl-execution-kind/mecak8s-values.yaml" \
   --set-string image.repository="${agent_image%@*}" --set-string image.tag= --set-string image.digest="${agent_image#*@}" \
   --set mockProvider=false --set security.allowUnsafeRealProvider=true --set defaultProvider=openrouter --set-string model=anthropic/claude-haiku-4.5 --set maxRunTokens=32000 \
-  --set-json 'extraArgs=["--no-soul","--no-user-model","--permissions-conventional=false","--agents-conventional=false"]' \
+  --set-json 'extraArgs=["--log-level=debug","--no-soul","--no-user-model","--permissions-conventional=false","--agents-conventional=false"]' \
   --set extraVolumes=null --set extraVolumeMounts=null \
   --set-string extraEnv[0].name=OPENROUTER_API_KEY --set-string extraEnv[0].valueFrom.secretKeyRef.name="$secret" --set-string extraEnv[0].valueFrom.secretKeyRef.key=OPENROUTER_API_KEY \
   --wait --timeout=5m

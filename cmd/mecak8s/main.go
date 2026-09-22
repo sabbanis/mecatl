@@ -10,6 +10,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/internal/adapter/executionclient"
 	"github.com/stacklok/mecatl/internal/adapter/mockscript"
 	"github.com/stacklok/mecatl/internal/adapter/slogdiag"
@@ -68,6 +69,11 @@ func run() error {
 	// port.Diagnostics (ban-guarded). Mirrors cmd/mecated.
 	slog.SetDefault(logger)
 	diag := slogdiag.NewFromLogger(logger)
+	// Native debug qualification consumes structured diagnostics only. Keep the
+	// ordinary daemon/third-party logger unchanged; no new operator flag is needed.
+	if cfg.executionEnabled && cfg.logLevel == slog.LevelDebug {
+		diag = slogdiag.New(os.Stderr, true, port.LevelDebug)
+	}
 	cfg.diagnostics = diag
 
 	ctx, stop := signalCtx()

@@ -22,6 +22,7 @@ oidc:
   caSecret: execution-client-tls
   caKey: ca.crt
 extraArgs:
+- --log-level=debug
 - --mock-script=/var/run/mecatl-execution/mock-script.json
 - --no-soul
 - --no-user-model

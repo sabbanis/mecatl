@@ -30,6 +30,7 @@ import (
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/tool"
 	"github.com/stacklok/mecatl/internal/adapter/server"
+	"github.com/stacklok/mecatl/internal/creatediag"
 	"github.com/stacklok/mecatl/internal/executionenv"
 )
 
@@ -756,7 +757,9 @@ func (p *Provider) Bind(ctx context.Context, req server.PlacementBindRequest) (s
 	if err != nil {
 		return server.PlacementBinding{}, server.ErrPlacementUnavailable
 	}
+	ensureDone := creatediag.Begin(ctx, "bind_ensure")
 	ensured, err := p.client.Ensure(ctx, string(req.BindingID), p.profile, owner, operationID)
+	ensureDone(err)
 	if err != nil {
 		return server.PlacementBinding{}, mapPlacementError(err)
 	}
@@ -789,8 +792,17 @@ func (p *Provider) Reattach(ctx context.Context, req server.PlacementReattachReq
 func (p *Provider) waitForBinding(ctx context.Context, owner executionenv.Owner, binding string, ref executionenv.EnvironmentRef, operationID string) (server.PlacementBinding, error) {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
+	calls, last := 0, "begin"
+	creatediag.Note(ctx, "attach_poll", last, calls)
+	defer func() { creatediag.Note(ctx, "attach_poll_end", last, calls) }()
 	for {
+		calls++
 		attached, err := p.client.Attach(ctx, executionenv.AttachEnvironmentRequest{Context: executionenv.RequestContext{Environment: ref, Owner: owner, BindingID: binding}, Purpose: executionenv.PurposeSession})
+		state := bindingPollState(ctx, attached.Ready, err)
+		if state != last {
+			last = state
+			creatediag.Note(ctx, "attach_poll", state, calls)
+		}
 		if err == nil && attached.Ready {
 			if attached.Environment != ref {
 				return server.PlacementBinding{}, server.ErrPlacementChanged
@@ -809,10 +821,40 @@ func (p *Provider) waitForBinding(ctx context.Context, owner executionenv.Owner,
 		}
 		select {
 		case <-ctx.Done():
+			last = bindingPollState(ctx, false, ctx.Err())
 			return server.PlacementBinding{}, server.ErrPlacementUnavailable
 		case <-ticker.C:
 		}
 	}
+}
+
+func bindingPollState(ctx context.Context, ready bool, err error) string {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return "deadline"
+	}
+	if ctx.Err() != nil {
+		return "cancelled"
+	}
+	var remote *executionenv.Error
+	if errors.As(err, &remote) {
+		if remote.Code == executionenv.CodeNotReady {
+			if remote.Retryable {
+				return "not_ready_retryable"
+			}
+			return "not_ready_nonretryable"
+		}
+		if remote.Retryable {
+			return "remote_retryable"
+		}
+		return "remote_terminal"
+	}
+	if err != nil {
+		return "transport_error"
+	}
+	if ready {
+		return "ready"
+	}
+	return "pending"
 }
 
 func (p *Provider) binding(owner executionenv.Owner, binding string, attached executionenv.AttachEnvironmentResponse) (server.PlacementBinding, error) {
@@ -842,7 +884,10 @@ func (p *Provider) withReferenceTransaction(binding server.PlacementBinding, own
 		// Once dispatched, a missing response is ambiguous: the provider may have
 		// committed. Close must never turn that uncertainty into an abort.
 		finalized = true
-		return p.client.CommitReference(ctx, executionenv.ReferenceRequest{Environment: ref, Owner: owner, BindingID: bindingID, OperationID: operationID})
+		commitDone := creatediag.Begin(ctx, "reference_commit")
+		err := p.client.CommitReference(ctx, executionenv.ReferenceRequest{Environment: ref, Owner: owner, BindingID: bindingID, OperationID: operationID})
+		commitDone(err)
+		return err
 	}
 	binding.Close = func() error {
 		mu.Lock()

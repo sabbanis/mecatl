@@ -2,7 +2,7 @@
 # messages, UIDs, spec data, lease identities and timestamps stay in memory.
 def known($allowed): . as $v | if ($allowed | index($v)) != null then $v else "other" end;
 def finalizers:
-  [.metadata.finalizers[]? | select(. == "execution.mecatl.dev/retain-workspace" or . == "execution.mecatl.dev/verify-termination" or . == "kubernetes.io/pvc-protection")];
+  [.metadata.finalizers[]? | select(. == "execution.mecatl.dev/retain-workspace" or . == "execution.mecatl.dev/verify-termination" or . == "kubernetes.io/pvc-protection")] | unique;
 def quota_keys:
   ["pods", "persistentvolumeclaims", "count/executionenvironments.execution.mecatl.dev", "requests.cpu", "requests.memory", "requests.storage", "requests.ephemeral-storage", "limits.cpu", "limits.memory", "limits.ephemeral-storage"];
 [.[] | .items[]?] as $items |
@@ -27,6 +27,7 @@ def quota_keys:
  phase:(.status.phase | known(["Pending","Running","Succeeded","Failed","Unknown"])),
  containers:([.status.containerStatuses[]?, .status.initContainerStatuses[]?, .status.ephemeralContainerStatuses[]?][:16] | map({terminated:(.state.terminated != null), reason:((.state.terminated.reason // .state.waiting.reason) | known(["Completed","Error","OOMKilled","ContainerStatusUnknown","CrashLoopBackOff","ImagePullBackOff","ErrImagePull","ContainerCreating"]))}))}),
 ($pvcs[:64][] | {kind:"pvc", deleting:(.metadata.deletionTimestamp != null), finalizers:finalizers}),
-($items[] | select(.kind == "ResourceQuota") | . as $q |
+($items | map(select(.kind == "ResourceQuota")) | .[:32][] | . as $q |
  {kind:"quota", missing_or_mismatched_keys:[quota_keys[] | . as $key | select($q.spec.hard[$key] != null and ($q.status.hard[$key] != $q.spec.hard[$key] or $q.status.used[$key] == null))]}),
-($items | map(select(.kind == "Event") | .reason | known(["FailedScheduling","FailedMount","FailedAttachVolume","FailedBinding","ProvisioningFailed","FailedCreate","Failed","BackOff","Killing","Scheduled","Pulled","Created","Started"])) | group_by(.)[] | {kind:"event", reason:.[0], count:length})
+($items | map(select(.kind == "Event") | .reason | known(["FailedScheduling","FailedMount","FailedAttachVolume","FailedBinding","ProvisioningFailed","FailedCreate","Failed","BackOff","Killing","Scheduled","Pulled","Created","Started"])) | group_by(.)[] | {kind:"event", reason:.[0], count:length}),
+(if any(.[]; .unavailable == true) then "" | halt_error(1) else empty end)

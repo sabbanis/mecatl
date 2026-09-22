@@ -372,6 +372,7 @@ jobs:
         if: always() && steps.prepare.outcome == 'success'
         env:
           PRODUCTION_OUTCOME: ${{ steps.production.outcome }}
+          LIVE_OUTCOME: ${{ steps.live.outcome }}
           MECATL_EXECUTION_QUAL_STATE: ${{ steps.production.outputs.state }}
           NATIVE_CLUSTER: ${{ steps.production.outputs.cluster }}
         run: |
@@ -409,12 +410,28 @@ jobs:
           test "$(stat -c '%a' "$kubeconfig")" = 600
           test "$(kubectl --kubeconfig "$kubeconfig" --context "$context" config current-context)" = "$context"
           test "$(docker inspect "${cluster}-control-plane" --format '{{index .Config.Labels "io.x-k8s.kind.cluster"}}')" = "$cluster"
-          if [ "$PRODUCTION_OUTCOME" != success ]; then
-            # Collect before deletion, independently of whether cleanup succeeds.
-            # The helper emits closed-vocabulary JSON only, capped at 1 MiB.
-            timeout --kill-after=5s 60s sh ./deploy/mecatl-execution-kind/collect-failure.sh \
-              "$kubeconfig" "$context" "$NATIVE_CI_DIR/production-diagnostics.jsonl" \
-              || echo '::warning::Bounded production diagnostics incomplete'
+          if [ "$PRODUCTION_OUTCOME" != success ] || [ "${LIVE_OUTCOME:-}" = failure ] || [ "${LIVE_OUTCOME:-}" = cancelled ]; then
+            # Keep pre-restoration real-process evidence distinct from any fallback
+            # collected after Helm has restored the mock process.
+            diagnostic_status=missing
+            evidence="$state/live-diagnostics.jsonl"
+            if [ -f "$evidence" ] && [ ! -L "$evidence" ] && [ "$(stat -c '%s' "$evidence")" -le 1048576 ] && \
+              cp -- "$evidence" "$NATIVE_CI_DIR/live-diagnostics.jsonl"; then
+              if [ -f "$state/live-diagnostics.status" ] && [ ! -L "$state/live-diagnostics.status" ]; then
+                IFS= read -r diagnostic_status < "$state/live-diagnostics.status" || diagnostic_status=incomplete
+              fi
+            fi
+            case "$diagnostic_status" in complete|incomplete|missing) ;; *) diagnostic_status=incomplete ;; esac
+            printf 'pre_restore=%s\n' "$diagnostic_status" > "$NATIVE_CI_DIR/diagnostics-status.txt" || echo '::warning::Diagnostic status unavailable'
+            if [ "$diagnostic_status" != complete ]; then
+              if timeout --kill-after=5s 45s sh ./deploy/mecatl-execution-kind/collect-failure.sh \
+                "$kubeconfig" "$context" "$NATIVE_CI_DIR/production-diagnostics.jsonl"; then
+                printf 'fallback=complete\n' >> "$NATIVE_CI_DIR/diagnostics-status.txt" || echo '::warning::Diagnostic status unavailable'
+              else
+                printf 'fallback=incomplete\n' >> "$NATIVE_CI_DIR/diagnostics-status.txt" || echo '::warning::Diagnostic status unavailable'
+                echo '::warning::Bounded production diagnostics incomplete'
+              fi
+            fi
           fi
           kind delete cluster --name "$cluster"
           clusters=$(kind get clusters)
@@ -450,6 +467,8 @@ jobs:
             ${{ env.NATIVE_CI_DIR }}/live-summary.json
             ${{ env.NATIVE_CI_DIR }}/qualification-status.txt
             ${{ env.NATIVE_CI_DIR }}/production-diagnostics.jsonl
+            ${{ env.NATIVE_CI_DIR }}/live-diagnostics.jsonl
+            ${{ env.NATIVE_CI_DIR }}/diagnostics-status.txt
           include-hidden-files: true
           retention-days: 7
           if-no-files-found: error

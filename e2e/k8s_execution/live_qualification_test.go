@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptrace"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,6 +46,14 @@ func TestKindExecutionLiveQualification(t *testing.T) {
 	agentForward := portForward(t, ctx, kubeconfig, "service/mecak8s", 8081)
 	defer agentForward.stop()
 
+	preflightCtx, preflightCancel := context.WithTimeout(ctx, 15*time.Second)
+	t.Log("live stage=authenticated_http_preflight reason=begin")
+	preflightStatus, _ := request(t, preflightCtx, http.MethodGet, "http://"+agentForward.addr+"/v1/info", alice, nil)
+	preflightCancel()
+	if preflightStatus != http.StatusOK {
+		t.Fatalf("live stage=authenticated_http_preflight reason=rejected status=%d", preflightStatus)
+	}
+	t.Log("live stage=authenticated_http_preflight reason=ok")
 	created := createLiveSession(t, ctx, agentForward.addr, alice)
 	secretName := os.Getenv("MECATL_EXECUTION_LIVE_SECRET")
 	if !strings.HasPrefix(secretName, "mecak8s-live-") {
@@ -334,6 +343,11 @@ type liveCreateResponse struct {
 
 func createLiveSession(t *testing.T, ctx context.Context, addr, token string) liveCreateResponse {
 	t.Helper()
+	t.Log("live stage=http_create reason=begin")
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		WroteHeaders:         func() { t.Log("live stage=http_create reason=headers_sent") },
+		GotFirstResponseByte: func() { t.Log("live stage=http_create reason=response_started") },
+	})
 	status, body := request(t, ctx, http.MethodPost, "http://"+addr+"/v1/sessions", token, []byte(`{"mode":"default","limits":{"max_turns":8,"max_tool_calls":20,"max_consecutive_failures":3}}`))
 	if status != http.StatusCreated {
 		t.Fatalf("live session creation failed (HTTP %d)", status)
