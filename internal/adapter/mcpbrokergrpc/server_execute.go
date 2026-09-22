@@ -28,7 +28,7 @@ func preDispatchError(err error) error {
 func (s *Server) Execute(ctx context.Context, req *brokerv1.ExecuteRequest) (*brokerv1.ExecuteResponse, error) {
 	ctx, cancel := context.WithTimeout(ctx, s.cfg.ExecuteDeadline)
 	defer cancel()
-	if err := s.checkIncarnation(req.GetBrokerIncarnation(), false); err != nil {
+	if err := s.checkInstanceID(req.GetBrokerIncarnation(), false); err != nil {
 		return nil, err
 	}
 	call, err := callFrom(req.GetName(), req.GetCallId(), req.GetArgs(), req.GetItemId())

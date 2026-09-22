@@ -209,7 +209,7 @@ func authorizeHandle(ctx context.Context, handle *serverHandle) error {
 	return nil
 }
 
-func (s *Server) checkIncarnation(got string, allowEmpty bool) error {
+func (s *Server) checkInstanceID(got string, allowEmpty bool) error {
 	s.mu.Lock()
 	closed := s.closed
 	s.mu.Unlock()
@@ -235,8 +235,8 @@ func signalHandle(a *serverHandle) {
 // get admits an ordinary operation on an open handle and increments active so
 // lifecycle operations and expiry cleanup wait for it. The caller must invoke
 // the returned release function exactly once, even if its operation fails.
-func (s *Server) get(ctx context.Context, incarnation, handle string) (*serverHandle, func(), error) {
-	if err := s.checkIncarnation(incarnation, false); err != nil {
+func (s *Server) get(ctx context.Context, instanceID, handle string) (*serverHandle, func(), error) {
+	if err := s.checkInstanceID(instanceID, false); err != nil {
 		return nil, nil, err
 	}
 	if handle == "" {
@@ -269,8 +269,8 @@ func (s *Server) get(ctx context.Context, incarnation, handle string) (*serverHa
 // attempt blocks ordinary operations until its caller invokes finishLifecycle.
 // Admission reserves control capacity before any waiting, including duplicate
 // calls joining a running lifecycle attempt. Settled terminal replay needs no slot.
-func (s *Server) beginLifecycle(ctx context.Context, incarnation, handle string, operation lifecycleOperation) (*serverHandle, mcpbroker.CloseOutcome, bool, error) {
-	if err := s.checkIncarnation(incarnation, false); err != nil {
+func (s *Server) beginLifecycle(ctx context.Context, instanceID, handle string, operation lifecycleOperation) (*serverHandle, mcpbroker.CloseOutcome, bool, error) {
+	if err := s.checkInstanceID(instanceID, false); err != nil {
 		return nil, "", false, err
 	}
 	if handle == "" {

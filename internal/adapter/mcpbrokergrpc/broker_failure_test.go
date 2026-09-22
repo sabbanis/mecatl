@@ -162,7 +162,7 @@ func TestRemoteBrokerTransport_RestartBoundaryStateLoss(t *testing.T) {
 		t.Fatalf("restart rebound or dispatched: binding=%q auth=%d execute=%d", attached.Binding(), newBroker.authCalls.Load(), newBroker.executeCalls.Load())
 	}
 	// A replacement client may enroll only before a call is parked; it is a
-	// different attachment on the replacement incarnation, never a rebind of
+	// different attachment on the replacement instance, never a rebind of
 	// the interrupted continuation above.
 	freshClient, err := mcpbrokergrpc.NewClientWithConfig(newConn, shortConfig())
 	if err != nil {

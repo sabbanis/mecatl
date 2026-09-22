@@ -261,7 +261,7 @@ type workspaceResultResponse interface {
 	GetTools() []*brokerv1.ToolDescriptor
 }
 
-func workspaceResultFromWire(c *Client, handle, incarnation string, r workspaceResultResponse) (mcpbroker.WorkspaceEnrollmentResult, error) {
+func workspaceResultFromWire(c *Client, handle, instanceID string, r workspaceResultResponse) (mcpbroker.WorkspaceEnrollmentResult, error) {
 	if r == nil {
 		return mcpbroker.WorkspaceEnrollmentResult{}, errors.New("mcpbrokergrpc: malformed workspace result")
 	}
@@ -271,7 +271,7 @@ func workspaceResultFromWire(c *Client, handle, incarnation string, r workspaceR
 	}
 	out := mcpbroker.WorkspaceEnrollmentResult{Ref: ref, Status: mcpbroker.WorkspaceEnrollmentStatus(r.GetStatus())}
 	if out.Status == mcpbroker.WorkspaceEnrollmentConnected {
-		attach := &brokerv1.AttachResponse{Handle: handle, BrokerIncarnation: incarnation, Tools: r.GetTools()}
+		attach := &brokerv1.AttachResponse{Handle: handle, BrokerIncarnation: instanceID, Tools: r.GetTools()}
 		tools, toolsErr := remoteTools(c, attach)
 		if toolsErr != nil {
 			return mcpbroker.WorkspaceEnrollmentResult{}, toolsErr

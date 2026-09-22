@@ -21,7 +21,7 @@ func (s *Server) Attach(ctx context.Context, req *brokerv1.AttachRequest) (*brok
 	if req.GetSessionId() == "" {
 		return nil, invalid("session_id is required")
 	}
-	if err := s.checkIncarnation(req.GetBrokerIncarnation(), true); err != nil {
+	if err := s.checkInstanceID(req.GetBrokerIncarnation(), true); err != nil {
 		return nil, err
 	}
 	logicalID := session.SessionID(req.GetSessionId())
@@ -149,7 +149,7 @@ func (s *Server) Delete(ctx context.Context, req *brokerv1.DeleteRequest) (*brok
 	if req.GetBinding() == "" {
 		return nil, invalid("binding is required")
 	}
-	if err := s.checkIncarnation(req.GetBrokerIncarnation(), true); err != nil {
+	if err := s.checkInstanceID(req.GetBrokerIncarnation(), true); err != nil {
 		return nil, err
 	}
 	owner, err := s.beginSessionDelete(ctx, session.SessionID(req.GetSessionId()))
@@ -364,10 +364,10 @@ type workspaceResultWire struct {
 	tools  []*brokerv1.ToolDescriptor
 }
 
-func (s *Server) workspaceResult(ctx context.Context, incarnation, handle string, wireRef *brokerv1.WorkspaceRef, cancel bool) (workspaceResultWire, error) {
+func (s *Server) workspaceResult(ctx context.Context, instanceID, handle string, wireRef *brokerv1.WorkspaceRef, cancel bool) (workspaceResultWire, error) {
 	ctx, stop := context.WithTimeout(ctx, s.cfg.RPCDeadline)
 	defer stop()
-	a, release, err := s.get(ctx, incarnation, handle)
+	a, release, err := s.get(ctx, instanceID, handle)
 	if err != nil {
 		return workspaceResultWire{}, err
 	}

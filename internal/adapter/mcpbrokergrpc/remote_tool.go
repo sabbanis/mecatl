@@ -11,11 +11,11 @@ import (
 )
 
 type remoteTool struct {
-	client      *Client
-	handle      string
-	incarnation string
-	spec        tool.ToolSpec
-	readOnly    bool
+	client     *Client
+	handle     string
+	instanceID string
+	spec       tool.ToolSpec
+	readOnly   bool
 }
 
 func (t *remoteTool) Spec() tool.ToolSpec {
@@ -33,7 +33,7 @@ func (t *remoteTool) Execute(ctx context.Context, call session.ToolCall, _ tool.
 	}
 	rpcCtx, cancel := context.WithTimeout(ctx, t.client.cfg.ExecuteDeadline)
 	defer cancel()
-	r, e := t.client.rpc.Execute(rpcCtx, &brokerv1.ExecuteRequest{Handle: t.handle, Name: call.Name, CallId: string(call.ID), Args: append([]byte(nil), call.Args...), ItemId: call.ItemID, BrokerIncarnation: t.incarnation})
+	r, e := t.client.rpc.Execute(rpcCtx, &brokerv1.ExecuteRequest{Handle: t.handle, Name: call.Name, CallId: string(call.ID), Args: append([]byte(nil), call.Args...), ItemId: call.ItemID, BrokerIncarnation: t.instanceID})
 	if e != nil {
 		if isDefinitiveSessionLoss(e) {
 			return session.NewToolError(call.ID, sessionUnavailableMessage), nil
@@ -62,7 +62,7 @@ type remoteAuthorizationTool struct{ *remoteTool }
 func (t *remoteAuthorizationTool) RequestAuthorization(ctx context.Context, call session.ToolCall) (session.ExternalAuthorization, bool, error) {
 	rpcCtx, cancel := context.WithTimeout(ctx, t.client.cfg.RPCDeadline)
 	defer cancel()
-	r, e := t.client.rpc.RequestAuthorization(rpcCtx, &brokerv1.RequestAuthorizationRequest{Handle: t.handle, Name: call.Name, CallId: string(call.ID), Args: append([]byte(nil), call.Args...), ItemId: call.ItemID, BrokerIncarnation: t.incarnation})
+	r, e := t.client.rpc.RequestAuthorization(rpcCtx, &brokerv1.RequestAuthorizationRequest{Handle: t.handle, Name: call.Name, CallId: string(call.ID), Args: append([]byte(nil), call.Args...), ItemId: call.ItemID, BrokerIncarnation: t.instanceID})
 	if e != nil {
 		return session.ExternalAuthorization{}, false, clientError(e)
 	}
@@ -78,7 +78,7 @@ func (t *remoteAuthorizationTool) RequestAuthorization(ctx context.Context, call
 func (t *remoteAuthorizationTool) AbortAuthorization(ctx context.Context, a session.ExternalAuthorization) error {
 	rpcCtx, cancel := context.WithTimeout(ctx, t.client.cfg.RPCDeadline)
 	defer cancel()
-	_, e := t.client.rpc.AbortAuthorization(rpcCtx, &brokerv1.AbortAuthorizationRequest{Handle: t.handle, Authorization: authToWire(a), BrokerIncarnation: t.incarnation})
+	_, e := t.client.rpc.AbortAuthorization(rpcCtx, &brokerv1.AbortAuthorizationRequest{Handle: t.handle, Authorization: authToWire(a), BrokerIncarnation: t.instanceID})
 	return clientError(e)
 }
 
@@ -93,7 +93,7 @@ func remoteTools(c *Client, r *brokerv1.AttachResponse) ([]tool.Tool, error) {
 			return nil, errors.New("mcpbrokergrpc: malformed tool descriptor")
 		}
 		seen[d.GetName()] = true
-		base := &remoteTool{client: c, handle: r.GetHandle(), incarnation: r.GetBrokerIncarnation(), spec: tool.ToolSpec{Name: d.GetName(), Description: d.GetDescription(), Schema: append([]byte(nil), d.GetSchema()...)}, readOnly: d.GetReadOnly()}
+		base := &remoteTool{client: c, handle: r.GetHandle(), instanceID: r.GetBrokerIncarnation(), spec: tool.ToolSpec{Name: d.GetName(), Description: d.GetDescription(), Schema: append([]byte(nil), d.GetSchema()...)}, readOnly: d.GetReadOnly()}
 		if d.GetAuthorizationCapable() {
 			a := &remoteAuthorizationTool{remoteTool: base}
 			if d.GetDispatchSerial() {

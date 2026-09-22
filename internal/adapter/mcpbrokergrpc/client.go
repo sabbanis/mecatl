@@ -16,10 +16,10 @@ import (
 
 // Client implements mcpbroker.Service over the generated RPC client.
 type Client struct {
-	rpc         brokerv1.BrokerServiceClient
-	cfg         Config
-	mu          sync.Mutex
-	incarnation string
+	rpc        brokerv1.BrokerServiceClient
+	cfg        Config
+	mu         sync.Mutex
+	instanceID string
 }
 
 // NewClient constructs a client with finite default deadlines.
@@ -39,14 +39,14 @@ func NewClientWithConfig(conn grpc.ClientConnInterface, cfg Config) (*Client, er
 	return &Client{rpc: brokerv1.NewBrokerServiceClient(conn), cfg: cfg}, nil
 }
 
-func (c *Client) brokerIncarnation() string { c.mu.Lock(); defer c.mu.Unlock(); return c.incarnation }
+func (c *Client) brokerInstanceID() string { c.mu.Lock(); defer c.mu.Unlock(); return c.instanceID }
 
-// AttachSession opens a handle while pinning the first observed broker incarnation.
+// AttachSession opens a handle while pinning the first observed broker instance ID.
 func (c *Client) AttachSession(ctx context.Context, id session.SessionID) (mcpbroker.SessionHandle, mcpbroker.AttachOutcome, error) {
 	if id == "" {
 		return nil, "", errors.New("mcpbrokergrpc: session id is required")
 	}
-	expected := c.brokerIncarnation()
+	expected := c.brokerInstanceID()
 	rpcCtx, cancel := context.WithTimeout(ctx, c.cfg.RPCDeadline)
 	defer cancel()
 	r, e := c.rpc.Attach(rpcCtx, &brokerv1.AttachRequest{SessionId: string(id), BrokerIncarnation: expected})
@@ -61,14 +61,14 @@ func (c *Client) AttachSession(ctx context.Context, id session.SessionID) (mcpbr
 		c.discardAttachResponse(r)
 		return nil, "", e
 	}
-	base := &clientSessionHandle{client: c, handle: r.GetHandle(), binding: session.ExternalBinding(r.GetBinding()), incarnation: r.GetBrokerIncarnation(), tools: tools}
+	base := &clientSessionHandle{client: c, handle: r.GetHandle(), binding: session.ExternalBinding(r.GetBinding()), instanceID: r.GetBrokerIncarnation(), tools: tools}
 	c.mu.Lock()
-	if c.incarnation != "" && c.incarnation != r.GetBrokerIncarnation() {
+	if c.instanceID != "" && c.instanceID != r.GetBrokerIncarnation() {
 		c.mu.Unlock()
 		c.discardAttachResponse(r)
 		return nil, "", errors.Join(mcpbroker.ErrStateUnavailable, mcpbroker.ErrBrokerIncarnationLost)
 	}
-	c.incarnation = r.GetBrokerIncarnation()
+	c.instanceID = r.GetBrokerIncarnation()
 	c.mu.Unlock()
 	if r.GetWorkspaceEnrollment() {
 		return &clientEnrollmentSessionHandle{clientSessionHandle: base}, mcpbroker.AttachOutcome(r.GetOutcome()), nil
@@ -78,9 +78,9 @@ func (c *Client) AttachSession(ctx context.Context, id session.SessionID) (mcpbr
 
 func (c *Client) discardAttachResponse(response *brokerv1.AttachResponse) {
 	handle := &clientSessionHandle{
-		client:      c,
-		handle:      response.GetHandle(),
-		incarnation: response.GetBrokerIncarnation(),
+		client:     c,
+		handle:     response.GetHandle(),
+		instanceID: response.GetBrokerIncarnation(),
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), c.cfg.RPCDeadline)
 	defer cancel()
@@ -107,7 +107,7 @@ func (c *Client) DeleteSessionIfBinding(ctx context.Context, id session.SessionI
 func (c *Client) delete(ctx context.Context, id session.SessionID, binding session.ExternalBinding) (mcpbroker.DeleteOutcome, error) {
 	rpcCtx, cancel := context.WithTimeout(ctx, c.cfg.RPCDeadline)
 	defer cancel()
-	r, e := c.rpc.Delete(rpcCtx, &brokerv1.DeleteRequest{SessionId: string(id), Binding: string(binding), BrokerIncarnation: c.brokerIncarnation()})
+	r, e := c.rpc.Delete(rpcCtx, &brokerv1.DeleteRequest{SessionId: string(id), Binding: string(binding), BrokerIncarnation: c.brokerInstanceID()})
 	if e != nil {
 		return "", clientError(e)
 	}
@@ -118,13 +118,13 @@ func (c *Client) delete(ctx context.Context, id session.SessionID, binding sessi
 }
 
 type clientSessionHandle struct {
-	client      *Client
-	handle      string
-	binding     session.ExternalBinding
-	incarnation string
-	tools       []tool.Tool
-	mu          sync.Mutex
-	closed      bool
+	client     *Client
+	handle     string
+	binding    session.ExternalBinding
+	instanceID string
+	tools      []tool.Tool
+	mu         sync.Mutex
+	closed     bool
 }
 
 func (a *clientSessionHandle) Binding() session.ExternalBinding { return a.binding }
@@ -132,13 +132,13 @@ func (a *clientSessionHandle) Tools() []tool.Tool               { return append(
 func (a *clientSessionHandle) Commit(ctx context.Context) error {
 	rpcCtx, cancel := context.WithTimeout(ctx, a.client.cfg.RPCDeadline)
 	defer cancel()
-	_, e := a.client.rpc.Commit(rpcCtx, &brokerv1.CommitRequest{Handle: a.handle, BrokerIncarnation: a.incarnation})
+	_, e := a.client.rpc.Commit(rpcCtx, &brokerv1.CommitRequest{Handle: a.handle, BrokerIncarnation: a.instanceID})
 	return clientError(e)
 }
 func (a *clientSessionHandle) Abort(ctx context.Context) error {
 	rpcCtx, cancel := context.WithTimeout(ctx, a.client.cfg.RPCDeadline)
 	defer cancel()
-	_, e := a.client.rpc.Abort(rpcCtx, &brokerv1.AbortRequest{Handle: a.handle, BrokerIncarnation: a.incarnation})
+	_, e := a.client.rpc.Abort(rpcCtx, &brokerv1.AbortRequest{Handle: a.handle, BrokerIncarnation: a.instanceID})
 	return clientError(e)
 }
 func (a *clientSessionHandle) Close(ctx context.Context) (mcpbroker.CloseOutcome, error) {
@@ -150,7 +150,7 @@ func (a *clientSessionHandle) Close(ctx context.Context) (mcpbroker.CloseOutcome
 	a.mu.Unlock()
 	rpcCtx, cancel := context.WithTimeout(ctx, a.client.cfg.RPCDeadline)
 	defer cancel()
-	r, e := a.client.rpc.Close(rpcCtx, &brokerv1.CloseRequest{Handle: a.handle, BrokerIncarnation: a.incarnation})
+	r, e := a.client.rpc.Close(rpcCtx, &brokerv1.CloseRequest{Handle: a.handle, BrokerIncarnation: a.instanceID})
 	if e != nil {
 		return "", clientError(e)
 	}
@@ -165,7 +165,7 @@ func (a *clientSessionHandle) Close(ctx context.Context) (mcpbroker.CloseOutcome
 func (a *clientSessionHandle) PresentAuthorization(ctx context.Context, auth session.ExternalAuthorization) (string, error) {
 	rpcCtx, cancel := context.WithTimeout(ctx, a.client.cfg.RPCDeadline)
 	defer cancel()
-	r, err := a.client.rpc.PresentAuthorization(rpcCtx, &brokerv1.PresentAuthorizationRequest{Handle: a.handle, Authorization: authToWire(auth), BrokerIncarnation: a.incarnation})
+	r, err := a.client.rpc.PresentAuthorization(rpcCtx, &brokerv1.PresentAuthorizationRequest{Handle: a.handle, Authorization: authToWire(auth), BrokerIncarnation: a.instanceID})
 	if err != nil {
 		return "", clientError(err)
 	}
@@ -177,7 +177,7 @@ func (a *clientSessionHandle) PresentAuthorization(ctx context.Context, auth ses
 func (a *clientSessionHandle) AuthorizationStatus(ctx context.Context, auth session.ExternalAuthorization) (session.AuthorizationStatus, error) {
 	rpcCtx, cancel := context.WithTimeout(ctx, a.client.cfg.RPCDeadline)
 	defer cancel()
-	r, err := a.client.rpc.AuthorizationStatus(rpcCtx, &brokerv1.AuthorizationStatusRequest{Handle: a.handle, Authorization: authToWire(auth), BrokerIncarnation: a.incarnation})
+	r, err := a.client.rpc.AuthorizationStatus(rpcCtx, &brokerv1.AuthorizationStatusRequest{Handle: a.handle, Authorization: authToWire(auth), BrokerIncarnation: a.instanceID})
 	if err != nil {
 		return "", clientError(err)
 	}
@@ -190,7 +190,7 @@ func (a *clientSessionHandle) AuthorizationStatus(ctx context.Context, auth sess
 func (a *clientSessionHandle) CancelAuthorization(ctx context.Context, auth session.ExternalAuthorization) (mcpbroker.CancelOutcome, error) {
 	rpcCtx, cancel := context.WithTimeout(ctx, a.client.cfg.RPCDeadline)
 	defer cancel()
-	r, err := a.client.rpc.CancelAuthorization(rpcCtx, &brokerv1.CancelAuthorizationRequest{Handle: a.handle, Authorization: authToWire(auth), BrokerIncarnation: a.incarnation})
+	r, err := a.client.rpc.CancelAuthorization(rpcCtx, &brokerv1.CancelAuthorizationRequest{Handle: a.handle, Authorization: authToWire(auth), BrokerIncarnation: a.instanceID})
 	if err != nil {
 		return "", clientError(err)
 	}
@@ -206,7 +206,7 @@ type clientEnrollmentSessionHandle struct{ *clientSessionHandle }
 func (a *clientEnrollmentSessionHandle) BeginWorkspaceEnrollment(ctx context.Context) (mcpbroker.WorkspaceEnrollmentPresentation, error) {
 	rpcCtx, cancel := context.WithTimeout(ctx, a.client.cfg.RPCDeadline)
 	defer cancel()
-	r, err := a.client.rpc.BeginWorkspaceEnrollment(rpcCtx, &brokerv1.BeginWorkspaceEnrollmentRequest{Handle: a.handle, BrokerIncarnation: a.incarnation})
+	r, err := a.client.rpc.BeginWorkspaceEnrollment(rpcCtx, &brokerv1.BeginWorkspaceEnrollmentRequest{Handle: a.handle, BrokerIncarnation: a.instanceID})
 	if err != nil {
 		return mcpbroker.WorkspaceEnrollmentPresentation{}, clientError(err)
 	}
@@ -232,14 +232,14 @@ func (a *clientEnrollmentSessionHandle) workspaceResult(ctx context.Context, ref
 	var r workspaceResultResponse
 	var err error
 	if cancelOperation {
-		r, err = a.client.rpc.CancelWorkspaceEnrollment(rpcCtx, &brokerv1.CancelWorkspaceEnrollmentRequest{Handle: a.handle, Ref: workspaceRefToWire(ref), BrokerIncarnation: a.incarnation})
+		r, err = a.client.rpc.CancelWorkspaceEnrollment(rpcCtx, &brokerv1.CancelWorkspaceEnrollmentRequest{Handle: a.handle, Ref: workspaceRefToWire(ref), BrokerIncarnation: a.instanceID})
 	} else {
-		r, err = a.client.rpc.ObserveWorkspaceEnrollment(rpcCtx, &brokerv1.ObserveWorkspaceEnrollmentRequest{Handle: a.handle, Ref: workspaceRefToWire(ref), BrokerIncarnation: a.incarnation})
+		r, err = a.client.rpc.ObserveWorkspaceEnrollment(rpcCtx, &brokerv1.ObserveWorkspaceEnrollmentRequest{Handle: a.handle, Ref: workspaceRefToWire(ref), BrokerIncarnation: a.instanceID})
 	}
 	if err != nil {
 		return mcpbroker.WorkspaceEnrollmentResult{}, clientError(err)
 	}
-	return workspaceResultFromWire(a.client, a.handle, a.incarnation, r)
+	return workspaceResultFromWire(a.client, a.handle, a.instanceID, r)
 }
 
 var _ mcpbroker.Service = (*Client)(nil)

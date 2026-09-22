@@ -42,7 +42,7 @@ that demonstration unambiguous.
   `authorization_capable`. The client reconstructs frozen `tool.Tool` wrappers and all
   applicable markers, including `tool.DispatchSerial` and
   `tool.AuthorizationRequester`. If the attachment implements
-  `WorkspaceEnrollmentAttachment`, expose and map all three methods:
+  `WorkspaceEnrollmentHandle`, expose and map all three methods:
   Begin, Observe, and Cancel workspace enrollment.
 - Tool Execute is a transient RPC containing the frozen tool name, call ID, and raw
   argument bytes. Provider-local invocation bookkeeping stays client-side; the client
