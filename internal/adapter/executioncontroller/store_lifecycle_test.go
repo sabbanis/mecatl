@@ -11,6 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	dynamicfake "k8s.io/client-go/dynamic/fake"
 
 	"github.com/stacklok/mecatl/internal/executionenv"
@@ -41,6 +42,63 @@ func TestEnsurePendingOwnedPersistsOwnerAttestation(t *testing.T) {
 	}
 	if textNested(env.Object, "spec", "ownerIssuer") != owner.Issuer || textNested(env.Object, "spec", "ownerSubject") != owner.Subject {
 		t.Fatalf("owner attestation was not persisted: %v", env.Object["spec"])
+	}
+}
+
+func TestPublishedBindingReattachesWithoutNewEnsureOperation(t *testing.T) {
+	ctx := t.Context()
+	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(runtime.NewScheme(), map[schema.GroupVersionResource]string{ExecutionEnvironmentGVR: "ExecutionEnvironmentList"})
+	store := NewStore(client, "ns", testProfiles(), nil)
+	owner := executionenv.Owner{Issuer: "https://issuer.example", Subject: "alice"}
+	allocation, err := store.EnsurePendingOwned(ctx, "client", ownerHash(owner), owner, "binding", "go", "fingerprint", "create-operation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := allocation.Environment
+	if err := store.CommitReference(ctx, ref, "client", ownerHash(owner), "binding", "create-operation"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.retryUpdateStatus(ctx, ref.ID, func(o *unstructured.Unstructured) error {
+		setConditionObject(o, "Ready", true, "Ready", "fixture ready")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	resources := client.Resource(ExecutionEnvironmentGVR).Namespace("ns")
+	before, err := resources.List(ctx, metav1.ListOptions{})
+	if err != nil || len(before.Items) != 1 {
+		t.Fatalf("allocation list: %v, err=%v", before, err)
+	}
+	_, err = store.EnsurePendingOwned(ctx, "client", ownerHash(owner), owner, "binding", "go", "fingerprint", "qualification-reattach")
+	var controlled *executionenv.Error
+	if !errors.As(err, &controlled) || controlled.Code != executionenv.CodeConflict {
+		t.Fatalf("changed Ensure operation used as lookup: err=%v", err)
+	}
+	lookup := executionenv.EnvironmentRef{ID: before.Items[0].GetName(), Revision: textNested(before.Items[0].Object, "spec", "revision")}
+	attached, err := store.Attach(ctx, lookup, "client", ownerHash(owner), "binding")
+	if err != nil || !attached.Ready || attached.Environment != ref || attached.BindingID != "binding" || attached.OwnerHash != ownerHash(owner) {
+		t.Fatalf("exact published binding did not reattach: %+v, err=%v", attached, err)
+	}
+	for _, tc := range []struct {
+		name    string
+		ref     executionenv.EnvironmentRef
+		owner   string
+		binding string
+	}{
+		{"wrong owner", lookup, "other-owner", "binding"},
+		{"wrong session", lookup, ownerHash(owner), "other-binding"},
+		{"wrong revision", executionenv.EnvironmentRef{ID: lookup.ID, Revision: "other-revision"}, ownerHash(owner), "binding"},
+		{"missing reference", executionenv.EnvironmentRef{}, ownerHash(owner), "binding"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := store.Attach(ctx, tc.ref, "client", tc.owner, tc.binding); err == nil {
+				t.Fatal("inexact lookup was accepted")
+			}
+		})
+	}
+	after, err := resources.List(ctx, metav1.ListOptions{})
+	if err != nil || !reflect.DeepEqual(before.Items, after.Items) {
+		t.Fatalf("lookup changed allocations or published identity: err=%v", err)
 	}
 }
 

@@ -101,6 +101,9 @@ func TestKindExecutionLiveQualification(t *testing.T) {
 		t.Fatal("real provider returned no positive token usage")
 	}
 
+	t.Logf("live stage=model_coding reason=ok input_tokens=%d output_tokens=%d shell_exit_code=0", usage.InputTokens, usage.OutputTokens)
+
+	t.Log("live stage=independent_typed_verification reason=begin")
 	providerForward := portForward(t, ctx, kubeconfig, "service/mecatl-execution", 8443)
 	defer providerForward.stop()
 	client, err := executionclient.New(providerForward.addr, loadTLS(t, filepath.Join(state, "pki"), "mecak8s", "mecatl-execution.execution-qualification.svc.cluster.local"))
@@ -109,11 +112,11 @@ func TestKindExecutionLiveQualification(t *testing.T) {
 	}
 	defer client.Close()
 	owner := executionenv.Owner{Issuer: "https://oidc-issuer.execution-qualification.svc.cluster.local:8443", Subject: "alice"}
-	ensured, err := client.Ensure(ctx, created.SessionId, "go", owner, "qualification-reattach")
-	if err != nil {
-		t.Fatal("typed execution reattachment lookup failed")
+	lookup := environmentForBinding(t, ctx, kubeconfig, created.SessionId)
+	attached := waitReady(t, ctx, client, owner, created.SessionId, lookup)
+	if attached.Environment != lookup {
+		t.Fatal("typed execution reattachment returned a different environment")
 	}
-	attached := waitReady(t, ctx, client, owner, created.SessionId, ensured.Environment)
 	rc, release := acquireRun(t, ctx, client, owner, created.SessionId, attached, fmt.Sprintf("live-verify-%d", time.Now().UnixNano()))
 	defer release()
 	artifactCount := 0
@@ -131,6 +134,7 @@ func TestKindExecutionLiveQualification(t *testing.T) {
 	if err != nil || command.State != executionenv.CommandSucceeded || command.Result.ExitCode != 0 {
 		t.Fatal("typed gRPC independent go test failed")
 	}
+	t.Logf("live stage=independent_typed_verification reason=ok artifact_count=%d command_exit_code=%d", artifactCount, command.Result.ExitCode)
 
 	observedTools := make([]string, 0, 4)
 	for _, name := range []string{"Write", "Read", "Edit", "Shell"} {
