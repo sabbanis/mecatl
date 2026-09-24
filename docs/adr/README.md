@@ -130,6 +130,8 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0011 — Soul & user-model](./0011-soul-and-user-model.md)
 - [0012 — Compaction](./0012-compaction.md)
 - [0276 — Count the full request and expose durable manual compaction](./0276-full-request-and-manual-compaction.md) *(supersedes ADR 0025's `/compact` deferral only)*
+- [0350 — Construction-time model-only sessions and explicit compaction-off](./0350-model-only-profile-and-compaction-off.md)
+- [0351 — Bounded one-shot model-only runs](./0351-bounded-one-shot-model-only-runs.md) *(supersedes ADR 0350 only for its deferred resource limits)*
 - [0106 — Optional completion-learning seam](./0106-optional-learning-seam.md)
 - [0107 — Operator-profile memory lifecycle](./0107-operator-profile-memory-lifecycle.md)
 - [0109 — Evidence-backed reflection and durable staged learning](./0109-staged-learning-proposals.md)
