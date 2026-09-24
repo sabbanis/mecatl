@@ -273,6 +273,11 @@ PR after verification. There is no cleanup or status-only PR.
   filesystem-path authority: composition binds default/no-FS/remote environments;
   alternate worktrees use fresh source-scoped opaque selectors only on clear/fork.
   Status: landed.
+- [Model-only one-shot profile](model-only-one-shot-profile.md) — proposes an
+  empty-catalog, compaction-off, one-attempt session with positive resource
+  ceilings and a pre-session compatibility signal for independently qualified
+  external clients. Status: proposed; local implementation is not an approved
+  or landed baseline.
 - [InspectSession scoped read isolation](inspect-session-read-isolation.md) — proposed
   bounded direct-edge lineage reads, self-routing opaque handles, and targeted maintenance that
   keep debugger inspection from blocking unrelated session operations. Status: in-progress.
