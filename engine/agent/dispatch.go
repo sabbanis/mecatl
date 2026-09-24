@@ -1997,7 +1997,10 @@ func (e *Engine) openCard(r *Run, turnIdx int, c session.ToolCall) {
 // injected EventSink when one is configured. The Run channel is the primary
 // surface; the sink is an optional secondary relay.
 func (e *Engine) emit(r *Run, ev session.Event) {
-	sequenced := r.emit(ev)
+	sequenced, delivered := r.emitChecked(ev)
+	if !delivered {
+		return
+	}
 	if e.deps.Sink != nil {
 		ctx := r.ctx
 		if ctx == nil {

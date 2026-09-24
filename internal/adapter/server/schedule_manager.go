@@ -392,7 +392,7 @@ func (m *scheduleManager) CreateSchedule(ctx context.Context, spec port.Schedule
 	if err != nil {
 		return port.Schedule{}, err
 	}
-	if spec.OriginSessionID != "" && SessionProfile(spec.Profile) != ProfileNoFS {
+	if spec.OriginSessionID != "" && !SessionProfile(spec.Profile).usesNoFSPlacement() {
 		if spec.EnvironmentRef.Valid() && spec.EnvironmentRef != originRef {
 			return port.Schedule{}, fmt.Errorf("%w: schedule placement does not match its origin session", ErrInvalidArgument)
 		}
@@ -552,12 +552,16 @@ func scheduleSingletonExplicit(_ port.ScheduleSpec) bool { return false }
 // ListModels advertises) and the cadence floor against the composition-
 // injected scheduler MinInterval — two deployment-level inputs the spec alone
 // cannot carry.
-// validateScheduleProfile accepts the two public attenuation profiles. Exact
-// placement is resolved separately and is never accepted from the public wire.
+// validateScheduleProfile accepts only profiles that permit repeated unattended
+// execution. model-only is deliberately one-shot and therefore cannot be saved
+// as a schedule. Exact placement is resolved separately and is never accepted
+// from the public wire.
 func (*scheduleManager) validateScheduleProfile(spec port.ScheduleSpec) error {
 	switch SessionProfile(spec.Profile) {
 	case ProfileDefault, ProfileNoFS:
 		return nil
+	case ProfileModelOnly:
+		return fmt.Errorf("%w: schedule profile %q is one-shot and does not permit scheduled runs", ErrInvalidArgument, spec.Profile)
 	default:
 		return fmt.Errorf("%w: unknown schedule profile %q (supported: \"\" (default) and %q)", ErrInvalidArgument, spec.Profile, ProfileNoFS)
 	}

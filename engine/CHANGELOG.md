@@ -13,6 +13,25 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
 
 ### Added
 
+- **Model-only compatibility feature** — the server feature registry and
+  TypeScript SDK expose `model_only_v1` so a client can reject an older server
+  before attempting to create the constrained model-only session. This signal
+  is additive and does not replace exact artifact/configuration qualification.
+  Added (minor).
+
+- **Explicit disabled-compaction error** — adds
+  `agent.ErrCompactionDisabled` so embedding composition can make a manual
+  compaction request fail closed when history rewriting is disabled. Added
+  (minor).
+
+- **Bounded run resources** — adds opt-in `agent.Deps` ceilings for event count,
+  individual and buffered event bytes, retained session bytes, and run duration,
+  plus a `DisableRunScopedTools` gate and the `ErrRunEventCountLimit`,
+  `ErrRunEventBytesLimit`, `ErrSessionBytesLimit`, `ErrRunDurationLimit`, and
+  `ErrRunScopedToolsDisabled` sentinels. Zero values retain prior behavior;
+  positive ceilings terminate with a declared result, and restricted hosts can
+  reject run-scoped tool overlays before provider execution. Added (minor).
+
 - **Request-manifest schema-byte evidence** — adds `session.RequestManifestPayload.AdvertisedToolSchemaBytes` and exposes it through the target-bound debugger manifest view. Adds catalog registration-key metadata accessors so manifest enumeration does not refresh live tool specifications. Added (minor).
 
 - **Atomic ordinary permission-ask resolution** — adds `agent.AskResolution`,

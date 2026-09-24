@@ -140,7 +140,14 @@ Before binding a non-loopback address, add TLS and caller authentication. See
 ### Server-owned session placement
 
 `--workspace` sets the server's default workspace. Clients can request the
-default or the `no-fs` profile, but cannot submit a path. `ListWorktrees`
+default, `no-fs`, or `model-only` profile, but cannot submit a path. `model-only`
+binds no filesystem and advertises no tools; start the daemon with
+`--compaction=off --llm-max-attempts=1 --no-prompt-cache` and a positive
+`--max-run-tokens` value or those session creates fail. Client MCP,
+host-attached tools, carryover, scheduled execution, non-default permission modes, reopen, and retry
+are rejected for that one-shot profile. Its request, response, event, buffered
+event, session, queue, concurrency, and duration limits have positive defaults
+and can be tightened with the `--model-only-*` flags below. `ListWorktrees`
 returns short-lived selectors for `ClearSession` and `ForkSession`; selectors
 expire when the server restarts. Mecatl stores the exact placement privately and
 reattaches it before each run. See
@@ -269,6 +276,29 @@ See [Scheduled tasks](/building/what-you-get/scheduled-tasks.md) for the in-chat
 
 The per-attempt timeout stops after the first chunk. The stream-idle timeout
 then bounds gaps between chunks without limiting an active turn.
+
+### Model-only resource envelope
+
+These limits apply only to `model-only` sessions. Request and response sizes are
+measured from provider-neutral JSON at Mecatl's final model boundary; event and
+session sizes use the corresponding neutral JSON values.
+
+|Flag|Default|Notes|
+|-|-|-|
+|`--model-only-max-request-bytes`|`1048576`|Maximum final neutral request bytes|
+|`--model-only-max-response-bytes`|`4194304`|Maximum cumulative neutral response-chunk bytes|
+|`--model-only-max-events`|`4096`|Maximum events including the reserved terminal result|
+|`--model-only-max-event-bytes`|`5242880`|Maximum bytes for one event|
+|`--model-only-max-buffered-event-bytes`|`10485760`|Maximum event payload bytes queued by one run|
+|`--model-only-max-session-bytes`|`8388608`|Maximum retained conversation bytes|
+|`--model-only-max-queued-runs`|`32`|Maximum runs waiting for a provider slot|
+|`--model-only-max-concurrent-runs`|`8`|Maximum active provider streams|
+|`--model-only-max-duration`|`5m`|Maximum complete run duration|
+
+Every value must be positive. The individual event limit must exceed both the
+request and response limits by at least 4096 bytes, and the buffered limit must
+be at least one event. An overrun emits a terminal budget/error result; Mecatl
+does not retry or silently continue that run.
 
 ### Provider and model
 

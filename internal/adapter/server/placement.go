@@ -260,7 +260,7 @@ func configuredPlacementBinder(ctx context.Context, cfg Config) (*PlacementBinde
 
 func (s *Service) bindPlacementForCreate(ctx context.Context, profile SessionProfile, owner *session.Principal) (string, *PlacementBinding, error) {
 	selector := DefaultPlacement()
-	if profile == ProfileNoFS {
+	if profile.usesNoFSPlacement() {
 		selector = NoFSPlacement()
 	}
 	binding, err := s.placementBinder.Bind(ctx, PlacementBindRequest{
@@ -271,7 +271,7 @@ func (s *Service) bindPlacementForCreate(ctx context.Context, profile SessionPro
 		return "", nil, err
 	}
 	boundRoot := binding.Environment.Workspace().Root()
-	if profile == ProfileNoFS && boundRoot != "" {
+	if profile.usesNoFSPlacement() && boundRoot != "" {
 		return "", nil, ErrInvalidPlacementBinding
 	}
 	return boundRoot, &binding, nil
@@ -288,6 +288,9 @@ func (s *Service) persistPlacedCreatedSession(ctx context.Context, sess *session
 }
 
 func (s *Service) resolveSchedulePlacement(ctx context.Context, ref session.EnvironmentRef, profile SessionProfile) (session.EnvironmentRef, string, SessionProfile, error) {
+	if profile == ProfileModelOnly {
+		return session.EnvironmentRef{}, "", profile, fmt.Errorf("%w: profile %q does not permit scheduled runs", ErrInvalidArgument, profile)
+	}
 	if profile == ProfileNoFS {
 		binding, err := s.BindPlacement(ctx, NoFSPlacement(), PlacementOperationCreate)
 		if err != nil {

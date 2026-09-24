@@ -1270,8 +1270,19 @@ backstop, CWE-918). See `docs/adr/0078-mcp-typed-tool-results.md`.
 
 **Server-owned placement.** Trusted composition installs one placement provider and
 scope before listeners serve. `CreateSession` accepts only the provider's deployment
-`default` or explicit `no-fs`; the public request has no workspace, cwd, placement ID,
-or selector. Local embedded and daemon deployments configure their root privately with
+`default` or explicit `no-fs`; the public request has no workspace, cwd,
+placement ID, or selector. The unapproved local `model-only` candidate proposes
+an additive third value under the
+[model-only acceptance plan](acceptance/model-only-one-shot-profile.md). It uses an exact no-FS
+placement and a construction-time empty model tool catalog, rejects client/host
+tool attachments, and requires daemon-wide `--compaction=off`. It is a one-shot,
+default-mode session: carryover, schedules, reopen, and retry fail closed. Composition also
+removes instruction/profile injection, hooks, learning, title generation,
+steering, secondary sinks, and auxiliary model routers, then applies the positive
+request/response/event/buffer/session/queue/concurrency/duration envelope from
+proposed ADR 0351. These statements describe candidate behavior, not a shipped
+or approved interface. Local embedded and
+daemon deployments configure their root privately with
 `--workspace`; remote/cloud-native providers may bind another backend without widening
 the public API. ACP's required cwd is only checked against the trusted local binding and
 cannot select authority.

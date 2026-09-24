@@ -111,6 +111,18 @@ var flagMetaByFlag = map[string]flagMeta{
 	"product-metrics":          {group: groupObservability, common: true, acp: acpInclude},
 	"product-metrics-dry-run":  {group: groupObservability, common: false, acp: acpExclude},
 
+	// Restricted remote model execution (serve-only). These are advanced daemon
+	// admission controls, not ACP client options.
+	"model-only-max-request-bytes":        {group: groupLLMResilience, common: false, acp: acpExclude},
+	"model-only-max-response-bytes":       {group: groupLLMResilience, common: false, acp: acpExclude},
+	"model-only-max-events":               {group: groupLLMResilience, common: false, acp: acpExclude},
+	"model-only-max-event-bytes":          {group: groupLLMResilience, common: false, acp: acpExclude},
+	"model-only-max-buffered-event-bytes": {group: groupLLMResilience, common: false, acp: acpExclude},
+	"model-only-max-session-bytes":        {group: groupLLMResilience, common: false, acp: acpExclude},
+	"model-only-max-queued-runs":          {group: groupLLMResilience, common: false, acp: acpExclude},
+	"model-only-max-concurrent-runs":      {group: groupLLMResilience, common: false, acp: acpExclude},
+	"model-only-max-duration":             {group: groupLLMResilience, common: false, acp: acpExclude},
+
 	// ── Driver connectivity (serve-only) ──────────────────────────────────
 	"driver-auth-token":            {group: groupDriver, common: false, acp: acpExclude},
 	"driver-tls":                   {group: groupDriver, common: false, acp: acpExclude},

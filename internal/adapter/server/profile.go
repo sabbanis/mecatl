@@ -21,17 +21,28 @@ const (
 	// bodies, and file-less delegation. It binds an exact no-FS EnvironmentRef and
 	// requires a per-session engine because the shared engine has FS tools.
 	ProfileNoFS SessionProfile = "no-fs"
+	// ProfileModelOnly is the zero-tool profile: no filesystem, shell, MCP,
+	// memory, web, delegation, scheduling, skills, or other model-visible tools.
+	// Composition constructs an empty catalog and requires compaction to be off.
+	// Like ProfileNoFS it binds an exact no-FS EnvironmentRef and always uses a
+	// per-session engine.
+	ProfileModelOnly SessionProfile = "model-only"
 )
 
+func (p SessionProfile) usesNoFSPlacement() bool {
+	return p == ProfileNoFS || p == ProfileModelOnly
+}
+
 // ParseSessionProfile validates a wire profile string. "" is the default
-// profile; "no-fs" is the no-filesystem profile; anything else is a loud
-// ErrInvalidArgument — never a silent fallback to the default profile (an
-// operator asking for a constrained surface must not silently get the full one).
+// profile; "no-fs" is the no-filesystem profile; "model-only" is the zero-tool
+// profile; anything else is a loud ErrInvalidArgument — never a silent fallback
+// to the default profile (an operator asking for a constrained surface must not
+// silently get the full one).
 func ParseSessionProfile(s string) (SessionProfile, error) {
 	switch p := SessionProfile(s); p {
-	case ProfileDefault, ProfileNoFS:
+	case ProfileDefault, ProfileNoFS, ProfileModelOnly:
 		return p, nil
 	default:
-		return "", fmt.Errorf("%w: unknown session profile %q (supported: \"\" (default) and %q)", ErrInvalidArgument, s, ProfileNoFS)
+		return "", fmt.Errorf("%w: unknown session profile %q (supported: \"\" (default), %q, and %q)", ErrInvalidArgument, s, ProfileNoFS, ProfileModelOnly)
 	}
 }

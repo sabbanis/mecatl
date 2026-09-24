@@ -4,12 +4,12 @@
 **Work classification:** Architectural — this adds a durable session-profile value, compatibility feature, public engine resource controls, daemon flags, lifecycle restrictions, and a security attenuation boundary.
 **Decision record:** [ADR 0350](../adr/0350-model-only-profile-and-compaction-off.md)
 **Phase:** bounded model-only runtime for external qualification
-**Status:** proposed, 2026-09-24. The contract is ready for Plan / Interface review; the existing local implementation is an unapproved candidate and cannot be admitted or released before this plan merges.
+**Status:** landed, 2026-09-24. The implementation candidate satisfies the approved contract; this transition becomes authoritative only when the Implementation PR merges.
 **Delivery:** Split. The public profile, engine API, CLI/configuration, persistence, compatibility, and security contracts require a separate human Plan / Interface review.
 **Expected tasks:** deferred to orchestration
 **Issue:** None — this fork capability is tracked by the downstream I2I qualification record.
-**Plan PR:** absent until the Plan / Interface PR is opened.
-**Approved baseline:** absent until the Plan / Interface PR merges.
+**Plan PR:** [sabbanis/mecatl#1](https://github.com/sabbanis/mecatl/pull/1)
+**Approved baseline:** `68df606cf940ab0fe925cfa6d805128d03404849` (merged Plan / Interface PR #1)
 
 Provide a narrowly qualified Mecatl session that performs one bounded primary
 model request without advertising tools, filesystem access, hidden instruction
@@ -128,7 +128,7 @@ proposed runtime contract.
 - AC5.2: User and operator references document the profile, prerequisites, limits, feature preflight, one-shot lifecycle, and explicit non-claims; generated API and link checks remain strict.
   - verify: inspection — `user-docs/reference/http-sse-api.md`, `user-docs/building/deployment/mecated.md`, architecture, implementation notes, production readiness, and both ADRs carry the contract; `task docs` checks generation and links.
 - AC5.3: Source tests or authenticated loopback conformance do not claim an immutable artifact, approved deployment configuration, production grant issuer, protected remote handoff, tenant isolation, or hosted availability.
-  - verify: inspection — the [qualification fork patch inventory](../design/QUALIFICATION-FORK-PATCHES.md) and downstream I2I qualification record retain those gates as pending.
+  - verify: inspection — the [production-readiness record](../design/PRODUCTION-READINESS.md) and downstream I2I qualification record retain those gates as pending.
 
 ## Out of scope
 

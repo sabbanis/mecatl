@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -40,8 +41,29 @@ func profileRecordingFactory(reply string, got *atomic.Value, calls *atomic.Int3
 	}
 }
 
-// TestParseSessionProfile pins the wire grammar: "" and "no-fs" parse; anything
-// else is a loud ErrInvalidArgument naming the value.
+func TestModelOnlyOneShotProfile_Scenario1_CompatibilityAndCreation(t *testing.T) {
+	t.Run("wire grammar", TestParseSessionProfile)
+	t.Run("compatibility preflight", TestModelOnlyProfileIsAdvertisedForCompatibilityPreflight)
+	t.Run("gRPC creation and one-shot lifecycle", TestGRPCCreateSessionModelOnlyProfileRoundTrip)
+	t.Run("HTTP creation", TestHTTPCreateSessionProfileRoundTrip)
+	t.Run("fail-closed creation", TestModelOnlyCreateRejectsModeCarryoverAndWiderTurnLimit)
+}
+
+func TestModelOnlyOneShotProfile_Scenario3_OneShotPersistence(t *testing.T) {
+	t.Run("persist attempt and reject replay", TestGRPCCreateSessionModelOnlyProfileRoundTrip)
+	t.Run("reject widened lifecycle", TestModelOnlyCreateRejectsModeCarryoverAndWiderTurnLimit)
+}
+
+func TestModelOnlyOneShotProfile_Scenario5_CompatibilityAndQualificationBoundaries(t *testing.T) {
+	t.Run("existing no-fs round trip", TestGRPCCreateSessionProfileRoundTrip)
+	t.Run("existing no-fs placement", TestNoFSSessionUsesWorkspaceOverride)
+	t.Run("existing no-fs restart", TestNoFSSessionRehydratesAfterRestart)
+	t.Run("existing no-fs fails closed", TestNoFSRehydrationWithoutFactoryFailsLoudly)
+	t.Run("existing MCP profile derivation", TestLoadSessionWithMCPDerivesNoFSProfile)
+}
+
+// TestParseSessionProfile pins the wire grammar: "", "no-fs", and "model-only"
+// parse; anything else is a loud ErrInvalidArgument naming the value.
 func TestParseSessionProfile(t *testing.T) {
 	if p, err := server.ParseSessionProfile(""); err != nil || p != server.ProfileDefault {
 		t.Fatalf(`ParseSessionProfile("") = (%v, %v), want (ProfileDefault, nil)`, p, err)
@@ -49,8 +71,99 @@ func TestParseSessionProfile(t *testing.T) {
 	if p, err := server.ParseSessionProfile("no-fs"); err != nil || p != server.ProfileNoFS {
 		t.Fatalf(`ParseSessionProfile("no-fs") = (%v, %v), want (ProfileNoFS, nil)`, p, err)
 	}
+	if p, err := server.ParseSessionProfile("model-only"); err != nil || p != server.ProfileModelOnly {
+		t.Fatalf(`ParseSessionProfile("model-only") = (%v, %v), want (ProfileModelOnly, nil)`, p, err)
+	}
 	if _, err := server.ParseSessionProfile("ram-only"); err == nil || !strings.Contains(err.Error(), `"ram-only"`) {
 		t.Fatalf("unknown profile must fail loudly naming the value, got: %v", err)
+	}
+}
+
+func TestModelOnlyProfileIsAdvertisedForCompatibilityPreflight(t *testing.T) {
+	info := newMCPService(t, "SHARED", profileRecordingFactory("MODEL", nil, nil)).CompatibilityInfo(t.Context())
+	if !slices.Contains(info.GetFeatures(), server.FeatureModelOnlyV1) {
+		t.Fatalf("compatibility features = %v, want %q", info.GetFeatures(), server.FeatureModelOnlyV1)
+	}
+}
+
+func TestGRPCCreateSessionModelOnlyProfileRoundTrip(t *testing.T) {
+	var (
+		gotProfile atomic.Value
+		calls      atomic.Int32
+	)
+	svc := newMCPService(t, "SHARED-REPLY", profileRecordingFactory("MODEL-ONLY-REPLY", &gotProfile, &calls))
+	client, cleanup := dialGRPC(t, svc)
+	defer cleanup()
+
+	resp, err := client.CreateSession(context.Background(), &mecatlv1.CreateSessionRequest{Profile: "model-only"})
+	if err != nil {
+		t.Fatalf("CreateSession(model-only): %v", err)
+	}
+	if calls.Load() != 1 || gotProfile.Load() != server.ProfileModelOnly {
+		t.Fatalf("factory calls/profile = %d/%v, want 1/%v", calls.Load(), gotProfile.Load(), server.ProfileModelOnly)
+	}
+	created, err := svc.GetSession(context.Background(), session.SessionID(resp.GetSessionId()))
+	if err != nil {
+		t.Fatalf("GetSession(model-only): %v", err)
+	}
+	if created.Limits != (session.Limits{MaxTurns: 1, MaxToolCalls: 1, MaxConsecutiveFailures: 1}) {
+		t.Fatalf("model-only limits = %+v, want exact one-turn bounded limits", created.Limits)
+	}
+	if created.TitleGeneration != session.TitleGenerationDisabled {
+		t.Fatalf("model-only title generation = %q, want disabled", created.TitleGeneration)
+	}
+	run, err := svc.StartRun(context.Background(), session.SessionID(resp.GetSessionId()), "hi")
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	fenced, err := svc.GetSession(context.Background(), session.SessionID(resp.GetSessionId()))
+	if err != nil {
+		t.Fatalf("GetSession after StartRun: %v", err)
+	}
+	if fenced.RunID() == "" {
+		t.Fatal("model-only run attempt was not persisted before provider launch")
+	}
+	if got := drainServerRun(run); got != "MODEL-ONLY-REPLY" {
+		t.Fatalf("model-only turn routed to %q, want per-session engine reply", got)
+	}
+	svc.Persist(context.Background(), session.SessionID(resp.GetSessionId()))
+	svc.FinishRun(session.SessionID(resp.GetSessionId()), run)
+	if _, err := svc.StartRun(context.Background(), session.SessionID(resp.GetSessionId()), "again"); err == nil || !strings.Contains(err.Error(), "exactly one run") {
+		t.Fatalf("second model-only run error = %v, want one-shot rejection", err)
+	}
+	if _, err := svc.LoadSession(context.Background(), session.SessionID(resp.GetSessionId())); err == nil || !strings.Contains(err.Error(), "exactly one run") {
+		t.Fatalf("model-only reopen error = %v, want one-shot rejection", err)
+	}
+}
+
+func TestModelOnlyCreateRejectsModeCarryoverAndWiderTurnLimit(t *testing.T) {
+	var (
+		gotProfile atomic.Value
+		calls      atomic.Int32
+	)
+	svc := newMCPService(t, "SHARED", profileRecordingFactory("MODEL", &gotProfile, &calls))
+	cases := []struct {
+		name   string
+		mode   session.PermissionMode
+		limits session.Limits
+		opts   []server.CreateSessionOption
+		want   string
+	}{
+		{name: "plan mode", mode: session.ModePlan, want: "requires default permission mode"},
+		{name: "wider turn limit", mode: session.ModeDefault, limits: session.Limits{MaxTurns: 2}, want: "requires max_turns=1"},
+		{name: "carryover", mode: session.ModeDefault, opts: []server.CreateSessionOption{server.WithSourceSession("source")}, want: "does not permit session carryover"},
+		{name: "scheduled", mode: session.ModeDefault, opts: []server.CreateSessionOption{server.WithScheduledRelationship("schedule", "origin")}, want: "does not permit scheduled runs"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := svc.CreateSessionWithProfile(context.Background(), tc.mode, tc.limits, server.ProviderSelector{}, server.ProfileModelOnly, tc.opts...)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("factory calls after rejected creates = %d, want 0", calls.Load())
 	}
 }
 
@@ -152,6 +265,12 @@ func TestHTTPCreateSessionProfileRoundTrip(t *testing.T) {
 	}
 	if got := gotProfile.Load(); got != server.ProfileNoFS {
 		t.Fatalf("factory saw profile %v, want ProfileNoFS", got)
+	}
+	if resp := post(`{"profile":"model-only"}`); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("model-only + empty workspace = %d, want 201", resp.StatusCode)
+	}
+	if got := gotProfile.Load(); got != server.ProfileModelOnly {
+		t.Fatalf("factory saw profile %v, want ProfileModelOnly", got)
 	}
 	if resp := post(`{}`); resp.StatusCode != http.StatusCreated {
 		t.Fatalf("default placement create = %d, want 201", resp.StatusCode)

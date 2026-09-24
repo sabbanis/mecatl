@@ -1260,6 +1260,7 @@ export type ServerErrorCode = (typeof MECATL_ERROR_CODES)[number] | "unknown";
 export const ServerFeature: {
     readonly HttpSteer: "http_steer";
     readonly McpServersOnCreate: "mcp_servers_on_create";
+    readonly ModelOnlyV1: "model_only_v1";
     readonly PromptFreeControls: "prompt_free_controls";
     readonly ServerInfo: "server_info";
     readonly SessionActivityInventory: "session_activity_inventory";

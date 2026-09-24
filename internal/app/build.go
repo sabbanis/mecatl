@@ -377,6 +377,10 @@ type Config struct {
 	// via --max-run-tokens.
 	MaxRunTokens int
 
+	// ModelOnlyLimits is the complete positive resource envelope enforced by
+	// ProfileModelOnly at the final provider and run-event boundaries.
+	ModelOnlyLimits ModelOnlyResourceLimits
+
 	// MaxTeamTokens is the TEAM-WIDE cumulative token budget threaded into every team
 	// (agent.WithTeamToolTokenBudget for the in-catalog Team tool, server.Config.TeamTokenBudget
 	// for the gRPC CreateTeam path). It is checked at the ROUND boundary: when crossed the
@@ -3010,6 +3014,7 @@ func sessionEngineFactory(
 	}
 }
 
+//nolint:gocyclo // Central factory keeps profile gates and all per-session composition in one fail-closed transaction.
 func sessionEngineFactoryWithTools(
 	cfg Config,
 	reg *providerRegistry,
@@ -3022,6 +3027,7 @@ func sessionEngineFactoryWithTools(
 	assets catalogAssets,
 	guardrailWaiver *modelhook.WaiverHolder,
 ) server.SessionEngineWithToolsFactory {
+	modelOnlyGate := newModelOnlyRunGate(cfg.ModelOnlyLimits)
 	return func(ctx context.Context, sel server.ProviderSelector, specs []mcp.ServerConfig, profile server.SessionProfile, workspace string, mode session.PermissionMode, sessionTools []tool.Tool) (server.SessionEngineResult, error) {
 		// Pin the CHILD permission resolver to THIS session's base root (issue
 		// #32): a per-session engine's subagents/members/branches must resolve
@@ -3035,11 +3041,35 @@ func sessionEngineFactoryWithTools(
 		// build-time pin over cfg.Workspace (the server's own root — the one
 		// the shared engine was assembled for).
 		cfg.childPermResolver = childPermResolverFor(cfg, workspace)
+		// Constrained profiles always route through this factory. model-only is a
+		// construction-time empty catalog and must not accept attachment-supplied
+		// tools or run with compaction enabled.
+		modelOnly := profile == server.ProfileModelOnly
+		if modelOnly && cfg.Compaction != "off" {
+			return server.SessionEngineResult{}, fmt.Errorf("%w: profile %q requires compaction=off", server.ErrInvalidArgument, profile)
+		}
+		if modelOnly {
+			if err := cfg.ModelOnlyLimits.validate(); err != nil {
+				return server.SessionEngineResult{}, fmt.Errorf("%w: profile %q resource limits: %v", server.ErrInvalidArgument, profile, err)
+			}
+			if cfg.LLMMaxAttempts != 1 {
+				return server.SessionEngineResult{}, fmt.Errorf("%w: profile %q requires llm-max-attempts=1", server.ErrInvalidArgument, profile)
+			}
+			if !cfg.PromptCacheDisabled {
+				return server.SessionEngineResult{}, fmt.Errorf("%w: profile %q requires provider prompt caching to be disabled", server.ErrInvalidArgument, profile)
+			}
+			if cfg.MaxRunTokens <= 0 {
+				return server.SessionEngineResult{}, fmt.Errorf("%w: profile %q requires a positive max-run-tokens ceiling", server.ErrInvalidArgument, profile)
+			}
+		}
+		if modelOnly && (len(specs) > 0 || len(sessionTools) > 0) {
+			return server.SessionEngineResult{}, fmt.Errorf("%w: profile %q does not permit client MCP or host-attached tools", server.ErrInvalidArgument, profile)
+		}
 		// The NO-FS profile (issue #55): the service routes every no-fs session
 		// through this factory unconditionally (the shared engine has the FS tools
 		// baked in), and the profile selects the no-FS catalog assembly + the
 		// no-FS prompt posture below. The selector/MCP inputs compose orthogonally.
-		noFS := profile == server.ProfileNoFS
+		noFS := profile == server.ProfileNoFS || modelOnly
 		// Resolve the provider/model selector FIRST (before any MCP connect), so an
 		// unknown provider fails fast without a wasted connection. The zero selector
 		// keeps the default provider + cfg.Model (pre-S3 behaviour). resolvedProviderID
@@ -3138,6 +3168,9 @@ func sessionEngineFactoryWithTools(
 				resolvedProvider = entry.remint(resolvedEffort, sessionCaps)
 			}
 		}
+		if modelOnly {
+			resolvedProvider = boundedModelOnlyProvider{inner: resolvedProvider, limits: cfg.ModelOnlyLimits, gate: modelOnlyGate}
+		}
 		// The compaction window is the LIVE-FIRST resolver over the resolved
 		// (provider, model) — the SAME reg.windowResolver the shared and child engines
 		// use, evaluated at the point of use. So the live ListModels picker, the session
@@ -3212,10 +3245,15 @@ func sessionEngineFactoryWithTools(
 			clientMgr:       mgr,
 			narrate:         false,
 			noFS:            noFS,
+			modelOnly:       modelOnly,
 			mode:            mode,
 			skillPartitions: skillPartitions,
 			sessionTools:    sessionTools,
 		})
+		if modelOnly && len(cat.Names()) != 0 {
+			_ = closeFn()
+			return server.SessionEngineResult{}, fmt.Errorf("%w: profile %q assembled a non-empty model tool catalog", server.ErrInvalidArgument, profile)
+		}
 
 		// Identical to the main engine in every NON-provider Deps field except the
 		// catalog (which carries the extra client MCP + per-session sub-agent tools):
@@ -3230,14 +3268,48 @@ func sessionEngineFactoryWithTools(
 		learningCfg.automaticAdmissionLedger = assets.automaticAdmissionLedger
 		learningCfg.learningSourceStore = store
 		deps := engineDepsForProvider(cfg, resolvedProvider, resolvedModel, windowFn, store, policy, hooks, mcpProvider, instructions)
-		attachOperatorProfile(&deps, assets.userModelStore)
+		if !modelOnly {
+			attachOperatorProfile(&deps, assets.userModelStore)
+		}
 		deps.LearningMode = learningCfg.LearningMode
 		deps.LearningObserver = bindMaterializationLifecycle(buildReflectionObserver(learningCfg, resolvedProvider, learningCfg.Model, assets.userModelStore, assets.memStore, assets.reflectionRepository, assets.reflectionCoordinator, assets.learningAdmission, buildProcedureProcessor(learningCfg, assets)), assets.reflectionLifecycle)
 		deps.Catalog = cat
+		if modelOnly {
+			// The model-only path is intentionally inert around the single primary
+			// provider request. No instruction discovery, prompt hooks, durable
+			// evidence, background delivery, learning, steering, reviewer, or
+			// classifier is allowed to create hidden context or auxiliary model calls.
+			deps.Hooks = hookexec.New(nil)
+			deps.Store = nil
+			deps.Instructions = nil
+			deps.CommandExpander = prompt.NoopExpander{}
+			deps.OperatorProfileSource = nil
+			deps.ProgressiveTools = false
+			deps.LearningMode = learning.Off
+			deps.LearningObserver = nil
+			deps.DeliveryQueue = nil
+			deps.Sink = nil
+			deps.ToolCallRecorder = nil
+			deps.EnableDurableEvidence = false
+			deps.EnableSteer = false
+			deps.Interactive = false
+			deps.PlanModeAutoApprove = false
+			deps.ChildAskReviewer = nil
+			deps.SubagentModelRouter = nil
+			deps.MaxNoProgressNudges = -1
+			deps.MaxEvents = cfg.ModelOnlyLimits.MaxEvents
+			deps.MaxEventBytes = cfg.ModelOnlyLimits.MaxEventBytes
+			deps.MaxBufferedEventBytes = cfg.ModelOnlyLimits.MaxBufferedEventBytes
+			deps.DisableRunScopedTools = true
+			deps.MaxSessionBytes = cfg.ModelOnlyLimits.MaxSessionBytes
+			deps.MaxRunDuration = cfg.ModelOnlyLimits.MaxDuration
+		}
 		// Fire-result delivery drain (ADR 0075): the per-session engine's Step 2a
 		// drain reads the SAME durable queue as the main engine. nil (no
 		// schedule-capable store) is the byte-identical no-delivery path.
-		deps.DeliveryQueue = assets.deliveryQueue
+		if !modelOnly {
+			deps.DeliveryQueue = assets.deliveryQueue
+		}
 		// MODEL-VISIBLE plan-approval contract (issue #206): the gate only fires
 		// when the model CALLS PresentPlan, and nothing else tells it to — an
 		// uninstructed model treats an inline "acceptable" as approval and keeps
@@ -3245,43 +3317,49 @@ func sessionEngineFactoryWithTools(
 		// like applyNoFSPosture does for the no-FS profile. Fires on creation AND
 		// on the CASE-1 rebuild when the session flips into plan mode. When mode
 		// is not ModePlan the helper returns the Config unchanged.
-		deps.PromptConfig = applyPlanModePosture(deps.PromptConfig, mode)
-		// MODEL-VISIBLE Schedule affordance (ADR 0073, the ADR-0070 gate): when
-		// this session's catalog carries the Schedule tool (a scheduleManager
-		// resolves non-nil — the SAME gate registerScheduleTool uses), tell the
-		// model the tool exists + the exact verb workflow up front, on the Role
-		// (the StablePrefix layer). A session whose store backs no ScheduleStore
-		// has no tool, so the note is withheld (the model is never told about a
-		// tool it cannot call).
-		deps.PromptConfig = applySchedulePosture(deps.PromptConfig, scheduleManagerPresent(assets))
-		deps.PromptConfig = applyAgentModelDiscoveryPosture(deps.PromptConfig, deps.Catalog)
-		deps.PromptConfig = applyTemporaryStoragePosture(deps.PromptConfig, shellAvailable(cfg))
-		deps.PromptConfig = applyDiagnosticsPosture(deps.PromptConfig)
-		deps.PromptConfig = applyLearningPosture(deps.PromptConfig, learningCfg.LearningMode, learningCfg.SkillActivationPolicy, learningCfg.automaticAdmissionLedger)
-		// MODEL-VISIBLE memory self-description: a session that carries project or
-		// user memory must tell the model the ladder exists so it CALLS the tools
-		// rather than improvising. Gated by catalog presence so a no-fs or
-		// store-less session is never told about a store it cannot reach; the Grep
-		// escalation rung is withheld when Grep itself is absent.
-		deps.PromptConfig = applyMemoryPosture(deps.PromptConfig, deps.Catalog)
-		// MODEL-VISIBLE self-knowledge: a question about mecatl itself is not a
-		// codebase search. Unconditional (every session can be asked) with the
-		// workspace-search and depth clauses gated on the catalog, so the note
-		// never claims a reach this session lacks.
-		deps.PromptConfig = applySelfKnowledgePosture(deps.PromptConfig, deps.Catalog)
-		// MODEL-VISIBLE no-FS posture (ADR 0070, the #40 pattern): tell the model up
-		// front there is no filesystem — and stop the prompt <env> claiming the
-		// SERVER's cwd/shell/git state, none of which this session can touch. The
-		// shell-less default-FS posture is NOT handled here: it is truthed per-request
-		// against the LIVE tool.Environment in engine/agent.buildRequest (issue #462
-		// review), so an ACP override or any shell-less Environment converges there
-		// regardless of the shared engine's catalog/prompt — baking it into the
-		// cache-stable Role here would duplicate that clause and disagree with an
-		// override that changes the capability mid-session.
-		if noFS {
-			deps.PromptConfig = applyNoFSPosture(deps.PromptConfig, noFSPostureNote)
+		if !modelOnly {
+			deps.PromptConfig = applyPlanModePosture(deps.PromptConfig, mode)
+			// MODEL-VISIBLE Schedule affordance (ADR 0073, the ADR-0070 gate): when
+			// this session's catalog carries the Schedule tool (a scheduleManager
+			// resolves non-nil — the SAME gate registerScheduleTool uses), tell the
+			// model the tool exists + the exact verb workflow up front, on the Role
+			// (the StablePrefix layer). A session whose store backs no ScheduleStore
+			// has no tool, so the note is withheld (the model is never told about a
+			// tool it cannot call).
+			deps.PromptConfig = applySchedulePosture(deps.PromptConfig, scheduleManagerPresent(assets))
+			deps.PromptConfig = applyAgentModelDiscoveryPosture(deps.PromptConfig, deps.Catalog)
+			deps.PromptConfig = applyTemporaryStoragePosture(deps.PromptConfig, shellAvailable(cfg))
+			deps.PromptConfig = applyDiagnosticsPosture(deps.PromptConfig)
+			deps.PromptConfig = applyLearningPosture(deps.PromptConfig, learningCfg.LearningMode, learningCfg.SkillActivationPolicy, learningCfg.automaticAdmissionLedger)
+			// MODEL-VISIBLE memory self-description: a session that carries project or
+			// user memory must tell the model the ladder exists so it CALLS the tools
+			// rather than improvising. Gated by catalog presence so a no-fs or
+			// store-less session is never told about a store it cannot reach; the Grep
+			// escalation rung is withheld when Grep itself is absent.
+			deps.PromptConfig = applyMemoryPosture(deps.PromptConfig, deps.Catalog)
+			// MODEL-VISIBLE self-knowledge: a question about mecatl itself is not a
+			// codebase search. Unconditional (every session can be asked) with the
+			// workspace-search and depth clauses gated on the catalog, so the note
+			// never claims a reach this session lacks.
+			deps.PromptConfig = applySelfKnowledgePosture(deps.PromptConfig, deps.Catalog)
+			// MODEL-VISIBLE no-FS posture (ADR 0070, the #40 pattern): tell the model up
+			// front there is no filesystem — and stop the prompt <env> claiming the
+			// SERVER's cwd/shell/git state, none of which this session can touch. The
+			// shell-less default-FS posture is NOT handled here: it is truthed per-request
+			// against the LIVE tool.Environment in engine/agent.buildRequest (issue #462
+			// review), so an ACP override or any shell-less Environment converges there
+			// regardless of the shared engine's catalog/prompt — baking it into the
+			// cache-stable Role here would duplicate that clause and disagree with an
+			// override that changes the capability mid-session.
+			if noFS {
+				deps.PromptConfig = applyNoFSPosture(deps.PromptConfig, noFSPostureNote)
+			}
+		} else {
+			deps.PromptConfig = applyNoFSPosture(deps.PromptConfig, modelOnlyPostureNote)
 		}
-		deps.PromptConfig = applyRedisWorkspacePosture(deps.PromptConfig, redisWorkspacePostureEnabled(cfg, noFS))
+		if !modelOnly {
+			deps.PromptConfig = applyRedisWorkspacePosture(deps.PromptConfig, redisWorkspacePostureEnabled(cfg, noFS))
+		}
 		// Guardrails (issue #27), RE-DERIVED per session so a FRESH per-session checker
 		// budget is built: decorate THIS session's main hooks with the LLM-backed
 		// content checker, over the session's resolved provider/model. OFF-by-default
@@ -3290,16 +3368,18 @@ func sessionEngineFactoryWithTools(
 		// The three utility engines pin utilityProvider (the OPERATOR-DEFAULT effort), NOT
 		// resolvedProvider — reasoning effort binds the agent, not the harness's internal
 		// classifier/one-turn calls (ADR 0055).
-		deps.Hooks = buildGuardrailsHooks(cfg, reg, utilityProvider, resolvedProviderID, resolvedModel, deps.Hooks, guardrailWaiver)
-		// The OPT-IN child-ask reviewer (issue #31), RE-DERIVED on this session's
-		// resolved (provider, model) through the same attachAskAdjudicator the shared
-		// engine uses — never a clone-and-swap of the build-time reviewer.
-		deps = attachAskAdjudicator(deps, cfg, reg, utilityProvider, resolvedProviderID, resolvedModel)
-		// The OPT-IN semantic model router (ADR 0031), RE-DERIVED on this session's
-		// resolved (provider, model) through the same buildModelRouterTask the shared
-		// engine uses — the classifier compacts/counts on the session's provider, never a
-		// clone-and-swap. nil (the field stays nil) when the router is OFF.
-		deps.SubagentModelRouter = buildModelRouterTask(cfg, reg, utilityProvider, resolvedProviderID, resolvedModel)
+		if !modelOnly {
+			deps.Hooks = buildGuardrailsHooks(cfg, reg, utilityProvider, resolvedProviderID, resolvedModel, deps.Hooks, guardrailWaiver)
+			// The OPT-IN child-ask reviewer (issue #31), RE-DERIVED on this session's
+			// resolved (provider, model) through the same attachAskAdjudicator the shared
+			// engine uses — never a clone-and-swap of the build-time reviewer.
+			deps = attachAskAdjudicator(deps, cfg, reg, utilityProvider, resolvedProviderID, resolvedModel)
+			// The OPT-IN semantic model router (ADR 0031), RE-DERIVED on this session's
+			// resolved (provider, model) through the same buildModelRouterTask the shared
+			// engine uses — the classifier compacts/counts on the session's provider, never a
+			// clone-and-swap. nil (the field stays nil) when the router is OFF.
+			deps.SubagentModelRouter = buildModelRouterTask(cfg, reg, utilityProvider, resolvedProviderID, resolvedModel)
+		}
 		return server.SessionEngineResult{
 			Engine:       agent.NewEngine(deps),
 			Capabilities: sessionCaps,
@@ -4525,6 +4605,10 @@ func engineDepsForProvider(
 		compactorCfg.Model = cm
 		compactorCounter = buildTokenCounter(compactorCfg)
 	}
+	contextWindow := windowFn
+	if cfg.Compaction == "off" {
+		contextWindow = nil
+	}
 	return agent.Deps{
 		LLM:                provider,
 		Policy:             policy,
@@ -4548,7 +4632,7 @@ func engineDepsForProvider(
 		Diagnostics:           cfg.diag(),
 		PromptConfig:          promptConfig(modelCfg, cfg.gitStatus),
 		Model:                 model,
-		ContextWindow:         windowFn,
+		ContextWindow:         contextWindow,
 		CompactionRatio:       defaultCompactionRatio,
 		OperatorProfileSource: cfg.operatorProfileSource,
 		TokenCounter:          counter,
@@ -5310,6 +5394,8 @@ func buildTokenCounterWithDecision(cfg Config) (agent.TokenCounter, diagFact) {
 // session AND per child engine.
 func buildCompactor(cfg Config, provider port.LLMProvider, counter agent.TokenCounter) agent.Compactor {
 	switch cfg.Compaction {
+	case "off":
+		return disabledCompactor{}
 	case "cascade":
 		return agent.CascadeCompactor{
 			Counter:      counter,
@@ -5322,11 +5408,19 @@ func buildCompactor(cfg Config, provider port.LLMProvider, counter agent.TokenCo
 	}
 }
 
+type disabledCompactor struct{}
+
+func (disabledCompactor) Compact(_ context.Context, conv *session.Conversation) ([]session.Message, string, error) {
+	return conv.Messages, "", agent.ErrCompactionDisabled
+}
+
 // compactionDecision describes the compaction-strategy selection from cfg, so
 // Build can log it ONCE. It mirrors buildCompactor's switch but takes no provider
 // (the human-readable fact depends only on cfg.Compaction).
 func compactionDecision(cfg Config) diagFact {
 	switch cfg.Compaction {
+	case "off":
+		return diagFact{level: port.LevelInfo, msg: "compaction strategy: off"}
 	case "cascade":
 		return diagFact{level: port.LevelInfo, msg: "compaction strategy: cascade (snip→strip→collapse→summarize)"}
 	default:
@@ -8133,6 +8227,9 @@ const noFSPostureNote = "This session has NO filesystem: there is no workspace, 
 	"commands against files — nothing is there to lose or find. Work through your other tools " +
 	"(MCP tools, memory, web fetch) and your own reasoning; delegate only file-free investigations. " +
 	"Skills provide their instruction text only — a skill's bundled asset files are not readable here."
+
+const modelOnlyPostureNote = "This is a model-only session with NO filesystem and NO tools. " +
+	"Answer only from the request content and your model capabilities; do not claim to browse, read files, call services, use memory, delegate, or execute commands."
 
 // noFSMemberNote is the CHILD-engine sibling of untrustedMemberShellNote for the
 // no-FS profile: every no-FS delegation child (team member, Subagent explorer)
