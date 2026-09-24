@@ -8,7 +8,7 @@
 **Delivery:** Split. The public profile, engine API, CLI/configuration, persistence, compatibility, and security contracts require a separate human Plan / Interface review.
 **Expected tasks:** deferred to orchestration
 **Issue:** None — this fork capability is tracked by the downstream I2I qualification record.
-**Plan PR:** absent until the Plan / Interface PR is opened.
+**Plan PR:** [sabbanis/mecatl#1](https://github.com/sabbanis/mecatl/pull/1)
 **Approved baseline:** absent until the Plan / Interface PR merges.
 
 Provide a narrowly qualified Mecatl session that performs one bounded primary
