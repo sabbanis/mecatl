@@ -43,6 +43,8 @@ const (
 // advanced NextFireAt, so a failed fire is NOT retried). Model pinning is
 // fail-closed at the provider call — there is NO pre-flight ListModels check (a
 // live network call, deferred); an unknown model surfaces as StopError.
+//
+//nolint:gocyclo // One scheduler fire transaction deliberately keeps validation, lifecycle, delivery, and persistence together.
 func makeFireFunc(svc *server.Service, store port.ScheduleStore, defaultTimeout time.Duration, deliverStarted func(ctx context.Context, sched port.Schedule, fire port.ScheduleFire)) scheduler.FireFunc {
 	return func(ctx context.Context, sched port.Schedule, now time.Time) (port.ScheduleFire, error) {
 		// The scheduler passes the physical store key so RecordFire* remains in the
@@ -54,9 +56,13 @@ func makeFireFunc(svc *server.Service, store port.ScheduleStore, defaultTimeout 
 			ProviderID: sched.Spec.Selector.ProviderID,
 			ModelID:    sched.Spec.Selector.ModelID,
 		}
-		profile := server.ProfileDefault
-		if sched.Spec.Profile == string(server.ProfileNoFS) {
-			profile = server.ProfileNoFS
+		profile := server.SessionProfile(sched.Spec.Profile)
+		if profile == server.ProfileModelOnly {
+			err := fmt.Errorf("model-only scheduled run rejected: profile is one-shot")
+			return fireFailed(sched, now, "", err), err
+		}
+		if profile != server.ProfileNoFS {
+			profile = server.ProfileDefault
 		}
 		// Read-leaning default (decision #3): a schedule that does NOT opt into
 		// mutating (Mutating=false) runs in plan mode (read-only toolset) — the

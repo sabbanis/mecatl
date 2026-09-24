@@ -61,6 +61,12 @@ pre-compaction safety decision is recorded in [ADR 0342](../adr/0342-context-win
   cascade budget remains the manual-pass behavior. This 0.8/0.6 trigger/target hysteresis
   avoids thrash and prevents a fixed 128k target from no-oping on a smaller live window.
 
+  `--compaction=off` is the explicit no-rewrite posture. Composition removes the
+  context-window resolver so automatic compaction cannot trigger and installs a
+  disabled compactor so a manual request returns `agent.ErrCompactionDisabled`
+  without changing history or making a summarization call. A `model-only` session
+  requires this setting and fails creation when another strategy is active.
+
   Both compactors **back-snap the kept-tail boundary to recent user turns** (the
   shared `snapCutToRecentUserTurn` helper) so the most-recent user instruction(s)
   survive verbatim instead of falling into the summarised head — the role-blind
@@ -95,6 +101,9 @@ running and awaiting sessions, delegation and scheduled sessions, and any same-p
 live run. The per-session run-entry lock serializes it with prompt start, and a
 configured mutation lease excludes another server replica. Rehydrated sessions use
 their persisted provider/model/profile engine rather than the shared default.
+
+When `--compaction=off` is active, the operation returns an explicit disabled
+error. It is not reported as a successful no-op.
 
 An empty, identical, pairing-invalid, or non-reducing candidate is never applied (pairing
 invalidity is reported; the other cases are successful no-ops). Automatic compaction uses

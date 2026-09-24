@@ -1,6 +1,6 @@
 # ADR 0350 — Construction-time model-only sessions and explicit compaction-off
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-09-22
 - Scope: session tool-surface profiles and context-management configuration
 - Supersedes: none

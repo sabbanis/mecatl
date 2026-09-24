@@ -21,6 +21,11 @@ import (
 // ignores the sentinel still gets a safe slice.
 var ErrCompactionWouldOrphan = errors.New("agent: compaction would orphan a tool result or dangle a tool call")
 
+// ErrCompactionDisabled is returned by an explicitly disabled compactor. The
+// automatic path never invokes that compactor because composition also removes
+// the context-window resolver; the sentinel makes manual compaction fail closed.
+var ErrCompactionDisabled = errors.New("agent: compaction is disabled")
+
 // Compactor compresses a Conversation that has grown past the context-window
 // threshold into a shorter, semantically-equivalent history. It is a seam
 // (ARCHITECTURE.md §8, gauntlet #12): the default implementation is a pure,

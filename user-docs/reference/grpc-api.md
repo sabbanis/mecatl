@@ -92,7 +92,13 @@ the process holding the watchers leaves a gap nothing can report.
 **Server-owned placement.** `CreateSessionRequest` has no workspace, cwd, exact
 EnvironmentRef, placement ID, or worktree selector. Omitted `profile` binds the
 trusted deployment default; `profile:"no-fs"` explicitly attenuates filesystem
-access. The response and `GetSession` expose bounded `PlacementMetadata` only.
+access; `profile:"model-only"` additionally constructs an empty model-visible
+tool catalog and requires daemon-wide `--compaction=off`. Client MCP and
+host-attached tools are rejected for that profile. It also requires one provider
+attempt, disabled prompt caching, a positive token budget, and the positive
+model-only resource envelope. The session is one-shot: carryover, schedules, non-default
+mode, reopen, and retry fail closed. The response and `GetSession`
+expose bounded `PlacementMetadata` only.
 Exact `EnvironmentRef{Kind, ID, Revision}` remains private in the session
 snapshot and trusted driver storage and is reattached exactly at run entry—never
 inferred from a current default.
@@ -183,6 +189,9 @@ configured compactor once even when the automatic 0.8 threshold has not been
 reached. It does not start `Converse`, add a user message, or create a model
 turn. A cascade pass may still invoke its summarization model through the
 compaction slot.
+
+When the daemon uses `--compaction=off`, manual compaction returns an explicit
+disabled error without changing history or invoking a model.
 
 `compacted=true` means the shorter history was saved. `compacted=false` is a
 successful no-op for an empty, identical, or non-reducing candidate; nothing is

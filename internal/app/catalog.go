@@ -168,6 +168,10 @@ type catalogSession struct {
 	// which pins the EXACT name-set delta. Always false for the build-time shared
 	// catalog (a process always has a default-profile shared engine).
 	noFS bool
+	// modelOnly selects a deliberately empty model-visible catalog. It is an
+	// independent, construction-time profile rather than a denylist over the
+	// ordinary catalog: new tool families therefore stay absent by default.
+	modelOnly bool
 	// mode is the session's permission mode (the per-session factory passes the
 	// session's resolved mode; the build-time shared catalog leaves it
 	// ModeDefault). The Schedule registration reads it to register the
@@ -208,10 +212,16 @@ type catalogSession struct {
 // why it must come from the catalog itself rather than a second manager
 // read) -- nil whenever s.clientMgr is nil, i.e. every build-time/shared call.
 func assembleCatalog(ctx context.Context, cfg Config, reg *providerRegistry, store port.SessionStore, hooks port.HookRunner, a *catalogAssets, s catalogSession) (*tool.Catalog, func() error, []string) {
+	classified := newClassifiedCatalog()
+	if s.modelOnly {
+		if cfg.catalogClassificationObserver != nil {
+			cfg.catalogClassificationObserver(classified.snapshot())
+		}
+		return classified.catalog, func() error { return nil }, nil
+	}
 	if profile, ok := a.userModelStore.(prompt.OperatorProfileSource); ok {
 		cfg.operatorProfileSource = profile
 	}
-	classified := newClassifiedCatalog()
 	cat := classified.catalog
 	classified.captureEach(coreToolClassification, func() {
 		registerCoreTools(cfg, cat, s.narrate, s.noFS, a.searchProvider)

@@ -1974,8 +1974,8 @@ func setSessionLabels(sess *session.Session, sel ProviderSelector, profile Sessi
 	return sess.RestoreLabels(owner, authority)
 }
 
-func (s *Service) setTitleGenerationEligibility(sess *session.Session, sel ProviderSelector) {
-	if s.cfg.TitleGenerationEligible != nil && s.cfg.TitleGenerationEligible(sel) {
+func (s *Service) setTitleGenerationEligibility(sess *session.Session, sel ProviderSelector, profile SessionProfile) {
+	if profile != ProfileModelOnly && s.cfg.TitleGenerationEligible != nil && s.cfg.TitleGenerationEligible(sel) {
 		sess.SetTitleGeneration(session.TitleGenerationPending)
 	}
 }
@@ -2237,11 +2237,17 @@ func (s *Service) bindRelatedIncarnations(ctx context.Context, opts *createSessi
 
 //nolint:gocyclo // Creation intentionally keeps placement, ownership, limits, engine selection, and persistence in one transaction.
 func (s *Service) createSession(ctx context.Context, mode session.PermissionMode, limits session.Limits, sel ProviderSelector, specs []mcp.ServerConfig, profile SessionProfile, opts createSessionOpts) (*session.Session, error) {
-	if profile != ProfileDefault && profile != ProfileNoFS {
+	if profile != ProfileDefault && profile != ProfileNoFS && profile != ProfileModelOnly {
 		return nil, fmt.Errorf("%w: unknown session profile %q", ErrInvalidArgument, profile)
 	}
 	if err := s.validateDebugCreate(ctx, profile, specs, opts); err != nil {
 		return nil, err
+	}
+	if profile == ProfileModelOnly && opts.sourceSessionID != "" {
+		return nil, fmt.Errorf("%w: profile %q does not permit session carryover", ErrInvalidArgument, profile)
+	}
+	if profile == ProfileModelOnly && opts.scheduled != nil {
+		return nil, fmt.Errorf("%w: profile %q does not permit scheduled runs", ErrInvalidArgument, profile)
 	}
 	var (
 		err       error
@@ -2250,12 +2256,21 @@ func (s *Service) createSession(ctx context.Context, mode session.PermissionMode
 	if mode == "" {
 		mode = s.cfg.DefaultMode
 	}
+	if profile == ProfileModelOnly && mode != session.ModeDefault {
+		return nil, fmt.Errorf("%w: profile %q requires default permission mode", ErrInvalidArgument, profile)
+	}
+	if profile == ProfileModelOnly && limits.MaxTurns != 0 && limits.MaxTurns != 1 {
+		return nil, fmt.Errorf("%w: profile %q requires max_turns=1", ErrInvalidArgument, profile)
+	}
 	// Fill any UNSET (zero) limit field from the injected defaults, per-field. An
 	// all-zero Limits inherits every default (so a default session cannot run
 	// unbounded); a Limits that pins only some caps keeps those and inherits the
 	// rest, rather than the old all-or-nothing substitution that silently disabled
 	// the unset caps. A zero field means "unset", not "explicitly unlimited".
 	limits = limits.WithDefaults(s.cfg.DefaultLimits)
+	if profile == ProfileModelOnly {
+		limits = session.Limits{MaxTurns: 1, MaxToolCalls: 1, MaxConsecutiveFailures: 1}
+	}
 
 	// The owner stamped on the new session: the explicit WithOwner injection, else
 	// the verified principal on the context, else nil (the ownerless no-auth path).
@@ -2267,7 +2282,7 @@ func (s *Service) createSession(ctx context.Context, mode session.PermissionMode
 		}
 		placement = opts.placement
 		workspace = placement.Environment.Workspace().Root()
-		if profile == ProfileNoFS && workspace != "" || profile != ProfileNoFS && workspace == "" {
+		if profile.usesNoFSPlacement() && workspace != "" || !profile.usesNoFSPlacement() && workspace == "" {
 			return nil, ErrInvalidPlacementBinding
 		}
 	} else {
@@ -2275,7 +2290,7 @@ func (s *Service) createSession(ctx context.Context, mode session.PermissionMode
 		if err != nil {
 			return nil, err
 		}
-		if placement != nil && placement.Ref.Kind == session.EnvKindNoFS {
+		if profile == ProfileDefault && placement != nil && placement.Ref.Kind == session.EnvKindNoFS {
 			profile = ProfileNoFS
 		}
 	}
@@ -2380,7 +2395,7 @@ func (s *Service) createSession(ctx context.Context, mode session.PermissionMode
 		if err := setSessionLabels(sess, sel, profile, owner, s.rootAuthority(sess.Kind, carriedAuthority, carriedAuthorityBound)); err != nil {
 			return nil, err
 		}
-		s.setTitleGenerationEligibility(sess, sel)
+		s.setTitleGenerationEligibility(sess, sel, profile)
 		if err := seedCarryover(sess, carrySnap); err != nil {
 			return nil, err
 		}
@@ -2494,7 +2509,7 @@ func (s *Service) createPerSessionEngine(ctx context.Context, mintID func() sess
 	if placement != nil {
 		sess.Placement = canonicalPlacementMetadata(*placement)
 	}
-	s.setTitleGenerationEligibility(sess, sel)
+	s.setTitleGenerationEligibility(sess, sel, profile)
 	if err := seedCarryover(sess, carrySnap); err != nil {
 		if closeFn != nil {
 			_ = closeFn()
@@ -4095,8 +4110,22 @@ func (s *Service) loadAndReopen(ctx context.Context, id session.SessionID) (*ses
 	if err != nil {
 		return nil, err
 	}
+	if err := requireFreshModelOnlySession(sess); err != nil {
+		return nil, err
+	}
 	// Persisted workspace authority is enforced at the top of reopenLoadedSession.
 	return s.reopenLoadedSession(ctx, sess)
+}
+
+// requireFreshModelOnlySession makes the constrained profile one-shot for its
+// entire durable lifetime, not merely one-turn-per-Reopen. A created idle
+// session with no run id is fresh; every attempted or terminal run fails closed
+// instead of being recovered, retried, or silently granted another model call.
+func requireFreshModelOnlySession(sess *session.Session) error {
+	if sess.Profile == string(ProfileModelOnly) && (sess.State != session.StateIdle || sess.RunID() != "") {
+		return fmt.Errorf("%w: profile %q permits exactly one run", ErrFailedPrecondition, ProfileModelOnly)
+	}
+	return nil
 }
 
 // validatePersistedWorkspace keeps the run-entry call sites explicit while
@@ -4304,7 +4333,7 @@ func (s *Service) LoadSessionWithMCP(ctx context.Context, id session.SessionID, 
 		builtForMode:    res.BuiltForMode,
 		close:           res.Close,
 	}
-	if profile == ProfileNoFS && (s.placementBinder == nil || !sess.EnvironmentRef.Valid()) {
+	if profile.usesNoFSPlacement() && (s.placementBinder == nil || !sess.EnvironmentRef.Valid()) {
 		// A no-fs session's environment override is re-registered with the engine
 		// under the same lock (the create-time discipline), so StartRun never
 		// consults the shared factory with the empty root. It is a complete
@@ -4388,6 +4417,9 @@ func (s *Service) RetryFailedRun(ctx context.Context, id session.SessionID) (*ag
 
 	sess, err := s.GetSession(ctx, id)
 	if err != nil {
+		return nil, err
+	}
+	if err := requireFreshModelOnlySession(sess); err != nil {
 		return nil, err
 	}
 	if err := s.validatePersistedWorkspace(sess); err != nil {
@@ -4546,6 +4578,9 @@ func (s *Service) startRunContent(ctx context.Context, id session.SessionID, tex
 	if err != nil {
 		return nil, err
 	}
+	if err := requireFreshModelOnlySession(sess); err != nil {
+		return nil, err
+	}
 	// Validate the persisted root EARLY — before the purpose gate and the run-
 	// registry cleanup below — so an off-root session is rejected before any side
 	// effect. reopenLoadedSession also enforces this (the shared choke point), so
@@ -4683,6 +4718,14 @@ func (s *Service) startRunContent(ctx context.Context, id session.SessionID, tex
 	sess.BeginRun(runID)
 	if !leaseHeld() {
 		return nil, fmt.Errorf("%w: %q", ErrSessionLeasedElsewhere, id)
+	}
+	if sess.Profile == string(ProfileModelOnly) {
+		// Persist the attempt fence before the provider can start. A crash after
+		// this save cannot restore an apparently fresh one-shot session and submit
+		// the same workload a second time.
+		if err := s.saveSession(ctx, sess); err != nil {
+			return nil, fmt.Errorf("server: persist model-only run attempt: %w", err)
+		}
 	}
 	ctx = memory.WithWorkspace(ctx, env.Workspace().Root())
 	run, err := s.promoteRunAdmission(id, st, stopAdmission, func() *agent.Run {
@@ -5558,7 +5601,7 @@ func (s *Service) engineAndEnvironmentFor(ctx context.Context, sess *session.Ses
 // with an unresolved intent-driven default model, so the per-session build
 // resolves it at session-build time instead of freezing "".
 func (s *Service) sessionNeedsPerFactory(sel ProviderSelector, specs []mcp.ServerConfig, profile SessionProfile, workspace string) bool {
-	return sel != (ProviderSelector{}) || len(specs) > 0 || profile == ProfileNoFS ||
+	return sel != (ProviderSelector{}) || len(specs) > 0 || profile.usesNoFSPlacement() ||
 		s.cfg.DefaultModelPending || workspace != s.cfg.SharedEngineRoot
 }
 
@@ -5571,7 +5614,7 @@ func (s *Service) sessionNeedsPerFactory(sel ProviderSelector, specs []mcp.Serve
 func (s *Service) needsRehydration(sess *session.Session) bool {
 	return s.cfg.MCPBroker != nil || s.cfg.LearnedSkills != nil ||
 		sess.Kind == session.SessionKindDebug ||
-		sess.Profile == string(ProfileNoFS) ||
+		sess.Profile == string(ProfileNoFS) || sess.Profile == string(ProfileModelOnly) ||
 		sess.ProviderID != "" || sess.ModelID != "" ||
 		sess.ReasoningEffort != "" ||
 		s.cfg.DefaultModelPending
@@ -5583,6 +5626,8 @@ func (s *Service) needsRehydration(sess *session.Session) bool {
 // No path, workspace emptiness, or current deployment default participates.
 func profileForSession(sess *session.Session) SessionProfile {
 	switch {
+	case sess.Profile == string(ProfileModelOnly):
+		return ProfileModelOnly
 	case sess.Profile == string(ProfileNoFS):
 		return ProfileNoFS
 	case sess.Profile == "" && sess.EnvironmentRef.Kind == session.EnvKindNoFS:
@@ -5772,7 +5817,7 @@ func (s *Service) buildAndRegisterSessionEngineWithBrokerTools(ctx context.Conte
 		}
 	}
 	s.sessionEngines[id] = se
-	if profile == ProfileNoFS && (s.placementBinder == nil || !sess.EnvironmentRef.Valid()) {
+	if profile.usesNoFSPlacement() && (s.placementBinder == nil || !sess.EnvironmentRef.Valid()) {
 		// Re-register the no-fs environment override under the SAME lock as the engine
 		// (the create-time discipline), so the run below — and every later run —
 		// resolves its environment here and never consults the shared factory with the

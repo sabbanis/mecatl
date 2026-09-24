@@ -1023,3 +1023,56 @@ func TestAdminMuxMountsPerfMCP(t *testing.T) {
 		t.Errorf("POST /mcp status = %d, want 404 when --perf-mcp is off", resp.StatusCode)
 	}
 }
+
+func TestValidateEffectiveConfigCompaction(t *testing.T) {
+	for _, strategy := range []string{"", "heuristic", "cascade", "off"} {
+		cfg := config{compaction: strategy}
+		if err := validateEffectiveConfig(cfg); err != nil {
+			t.Errorf("compaction %q rejected: %v", strategy, err)
+		}
+	}
+	cfg := config{compaction: "unknown"}
+	if err := validateEffectiveConfig(cfg); err == nil || !strings.Contains(err.Error(), "invalid --compaction") {
+		t.Fatalf("unknown compaction error = %v, want explicit validation failure", err)
+	}
+}
+
+func TestModelOnlyResourceLimitFlagsAndAppConfig(t *testing.T) {
+	parsed, err := parseFlags(nil)
+	if err != nil {
+		t.Fatalf("parse defaults: %v", err)
+	}
+	if parsed.modelOnlyLimits != app.DefaultModelOnlyResourceLimits() {
+		t.Fatalf("default model-only limits = %+v, want %+v", parsed.modelOnlyLimits, app.DefaultModelOnlyResourceLimits())
+	}
+
+	parsed, err = parseFlags([]string{
+		"--model-only-max-request-bytes=1048577",
+		"--model-only-max-response-bytes=4194305",
+		"--model-only-max-events=4097",
+		"--model-only-max-event-bytes=5246977",
+		"--model-only-max-buffered-event-bytes=10493954",
+		"--model-only-max-session-bytes=8388609",
+		"--model-only-max-queued-runs=33",
+		"--model-only-max-concurrent-runs=9",
+		"--model-only-max-duration=6m",
+	})
+	if err != nil {
+		t.Fatalf("parse model-only overrides: %v", err)
+	}
+	got := appConfig(parsed, nil, nil, nil, nil, nil).ModelOnlyLimits
+	want := app.ModelOnlyResourceLimits{
+		MaxRequestBytes:       1048577,
+		MaxResponseBytes:      4194305,
+		MaxEvents:             4097,
+		MaxEventBytes:         5246977,
+		MaxBufferedEventBytes: 10493954,
+		MaxSessionBytes:       8388609,
+		MaxQueuedRuns:         33,
+		MaxConcurrentRuns:     9,
+		MaxDuration:           6 * time.Minute,
+	}
+	if got != want {
+		t.Fatalf("app model-only limits = %+v, want %+v", got, want)
+	}
+}

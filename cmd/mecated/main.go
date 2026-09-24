@@ -171,6 +171,9 @@ type config struct {
 	// maxRunTokens is the loop-level cumulative token ceiling for a single run (the
 	// shared runaway brake). 0 (default) disables it.
 	maxRunTokens int
+	// modelOnlyLimits is the positive resource envelope applied only to
+	// remote model-only sessions.
+	modelOnlyLimits app.ModelOnlyResourceLimits
 
 	// maxTeamTokens is the team-wide cumulative token ceiling for a single team run
 	// (the round-boundary brake). 0 (default) disables it.
@@ -1191,6 +1194,7 @@ func appConfig(cfg config, sink port.EventSink, recorder port.ToolCallRecorder, 
 		LLMBreakerThreshold:           cfg.llmBreakerThreshold,
 		LLMBreakerCooldown:            cfg.llmBreakerCooldown,
 		MaxRunTokens:                  cfg.maxRunTokens,
+		ModelOnlyLimits:               cfg.modelOnlyLimits,
 		MaxTeamTokens:                 cfg.maxTeamTokens,
 		PromptCacheDisabled:           cfg.noPromptCache,
 		AnthropicCacheTTL:             cfg.anthropicCacheTTL,
@@ -1585,6 +1589,11 @@ func validateEffectiveConfig(cfg config) error {
 	if err := validateDeploymentID(cfg.deploymentID); err != nil {
 		return err
 	}
+	switch cfg.compaction {
+	case "", "heuristic", "cascade", "off":
+	default:
+		return fmt.Errorf("invalid --compaction %q: want heuristic, cascade, or off", cfg.compaction)
+	}
 	// Daemon-hosting topology (issue #821 Scenario 8): the socket/TCP exclusion,
 	// the socket path bounds, the lifetime-pipe descriptor, and the ready-file
 	// path. Validated here so a file-supplied value cannot bypass it either.
@@ -1695,7 +1704,7 @@ func parseFlagsModeOut(mode commandMode, argv []string, out io.Writer) (*flag.Fl
 	fs.StringVar(&cfg.cedarAuthorityPolicy, "cedar-authority-policy", "", "path to the static operator Cedar authority policy; read once at startup when --authority-evaluator=cedar")
 	fs.BoolVar(&cfg.noShell, "no-shell", false, "disable the Shell tool entirely (shell-less mode); overrides --shell")
 
-	fs.StringVar(&cfg.compaction, "compaction", "heuristic", "compaction strategy: \"heuristic\" (default, single-summary) or \"cascade\" (tiered snip→strip→collapse→summarize)")
+	fs.StringVar(&cfg.compaction, "compaction", "heuristic", "compaction strategy: \"heuristic\" (default, single-summary), \"cascade\" (tiered snip→strip→collapse→summarize), or \"off\" (automatic and manual compaction disabled)")
 	fs.StringVar(&cfg.tokenizer, "tokenizer", "heuristic", "token counter for the compaction trigger: \"heuristic\" (default, dependency-free) or \"tiktoken\" (offline tiktoken vocab)")
 	fs.IntVar(&cfg.contextWindowOverride, "context-window-override", 0, "override the model context window in tokens for compaction and the client context meter. Default 0 uses the configured, reported, cataloged, or 128k value.")
 
@@ -1705,6 +1714,16 @@ func parseFlagsModeOut(mode commandMode, argv []string, out io.Writer) (*flag.Fl
 	fs.IntVar(&cfg.llmBreakerThreshold, "llm-breaker-threshold", 5, "consecutive LLM failures that open the circuit breaker (0 disables)")
 	fs.DurationVar(&cfg.llmBreakerCooldown, "llm-breaker-cooldown", 30*time.Second, "how long the LLM circuit breaker stays open before half-opening")
 	fs.IntVar(&cfg.maxRunTokens, "max-run-tokens", 0, "maximum cumulative input and output tokens per run. Child agents inherit the limit. Default 0 allows unlimited tokens.")
+	modelOnlyDefaults := app.DefaultModelOnlyResourceLimits()
+	fs.IntVar(&cfg.modelOnlyLimits.MaxRequestBytes, "model-only-max-request-bytes", modelOnlyDefaults.MaxRequestBytes, "maximum JSON-encoded provider-neutral request bytes for a model-only run")
+	fs.IntVar(&cfg.modelOnlyLimits.MaxResponseBytes, "model-only-max-response-bytes", modelOnlyDefaults.MaxResponseBytes, "maximum cumulative JSON-encoded provider-neutral response chunk bytes for a model-only run")
+	fs.IntVar(&cfg.modelOnlyLimits.MaxEvents, "model-only-max-events", modelOnlyDefaults.MaxEvents, "maximum published events per model-only run, including the terminal result")
+	fs.IntVar(&cfg.modelOnlyLimits.MaxEventBytes, "model-only-max-event-bytes", modelOnlyDefaults.MaxEventBytes, "maximum JSON-encoded bytes for one model-only run event")
+	fs.IntVar(&cfg.modelOnlyLimits.MaxBufferedEventBytes, "model-only-max-buffered-event-bytes", modelOnlyDefaults.MaxBufferedEventBytes, "maximum JSON event payload bytes buffered per model-only run")
+	fs.IntVar(&cfg.modelOnlyLimits.MaxSessionBytes, "model-only-max-session-bytes", modelOnlyDefaults.MaxSessionBytes, "maximum JSON-encoded persisted conversation bytes for a model-only session")
+	fs.IntVar(&cfg.modelOnlyLimits.MaxQueuedRuns, "model-only-max-queued-runs", modelOnlyDefaults.MaxQueuedRuns, "maximum model-only runs waiting for a provider concurrency slot")
+	fs.IntVar(&cfg.modelOnlyLimits.MaxConcurrentRuns, "model-only-max-concurrent-runs", modelOnlyDefaults.MaxConcurrentRuns, "maximum concurrent model-only provider streams")
+	fs.DurationVar(&cfg.modelOnlyLimits.MaxDuration, "model-only-max-duration", modelOnlyDefaults.MaxDuration, "maximum wall-clock duration of one model-only run")
 	fs.IntVar(&cfg.maxTeamTokens, "max-team-tokens", 0, "maximum cumulative input and output tokens across a team run; checked between rounds. A per-call team limit can only lower it. Default 0 allows unlimited tokens.")
 
 	fs.BoolVar(&cfg.noPromptCache, "no-prompt-cache", false, "disable provider-side prompt caching. Caching is enabled by default.")

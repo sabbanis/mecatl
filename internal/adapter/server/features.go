@@ -64,6 +64,12 @@ const (
 	// ADR 0237).
 	FeatureMCPServersOnCreate = "mcp_servers_on_create"
 
+	// FeatureModelOnlyV1 reports the constrained one-shot model-only session
+	// profile used by I2I's remote-read-only-v1 execution boundary. Clients gate
+	// on this identifier before sending profile:"model-only" so an older server
+	// fails compatibility discovery without creating a probe session.
+	FeatureModelOnlyV1 = "model_only_v1"
+
 	// FeaturePromptFreeControls is the run-ID-addressed unary control family:
 	// resolve-ask, cancel, steer, and cancel-steer (ADR 0347).
 	FeaturePromptFreeControls = "prompt_free_controls"
@@ -105,6 +111,7 @@ type FeatureScope struct {
 var allFeatures = []string{
 	FeatureHTTPSteer,
 	FeatureMCPServersOnCreate,
+	FeatureModelOnlyV1,
 	FeaturePromptFreeControls,
 	FeatureServerInfo,
 	FeatureSessionActivityInventory,

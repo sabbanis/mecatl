@@ -334,6 +334,28 @@ type Deps struct {
 	// per-call override may only TIGHTEN it.
 	MaxRunTokens int
 
+	// MaxEvents caps the number of events published by one run, including its
+	// terminal result. MaxEventBytes caps one event's JSON-encoded size, and
+	// MaxBufferedEventBytes bounds the JSON payload bytes that can be queued on
+	// the run channel at once. Zero disables the corresponding ceiling. When an
+	// event ceiling is crossed the offending event is not published, the run is
+	// cancelled, and the reserved final slot reports StopBudget.
+	MaxEvents             int
+	MaxEventBytes         int
+	MaxBufferedEventBytes int
+	// DisableRunScopedTools rejects a RunRequest carrying ExtraTools before any
+	// hook, prompt mutation, or provider call. The zero value preserves the
+	// ordinary overlay contract; restricted composition profiles opt in.
+	DisableRunScopedTools bool
+	// MaxSessionBytes caps the JSON-encoded persisted conversation after adding
+	// either the submitted user message or the model's assistant message. Zero
+	// disables the ceiling.
+	MaxSessionBytes int
+	// MaxRunDuration bounds the complete run. Zero disables the deadline. A
+	// deadline installed here terminates as StopBudget, distinct from caller
+	// cancellation or a caller-owned deadline.
+	MaxRunDuration time.Duration
+
 	// SubagentModelRouter, when non-nil, is the OPT-IN semantic model router (ADR
 	// 0031, the Phase 5 headline feature): given a Subagent call's (model-authored,
 	// untrusted) task prompt it returns the ALREADY-RESOLVED concrete model id to mint
@@ -593,11 +615,12 @@ const (
 // Cancel aborts the run). The Events channel is closed exactly once, when the run
 // terminates.
 type Run struct {
-	events  chan session.Event
-	asks    *askRegistry
-	cancel  context.CancelFunc
-	seq     atomic.Int64
-	outcome atomic.Int32
+	events   chan session.Event
+	asks     *askRegistry
+	cancel   context.CancelFunc
+	seq      atomic.Int64
+	outcome  atomic.Int32
+	resource *runResourceLimits
 
 	// closureMu linearizes the final authorization.required publication against
 	// Cancel. That publication is the one nonterminal way an event stream closes.
@@ -1019,12 +1042,16 @@ func (r *Run) Cancel() {
 	r.cancelRequested = true
 	r.closureMu.Unlock()
 
+	r.armHardAbort()
+	r.cancel()
+}
+
+func (r *Run) armHardAbort() {
 	r.hardAbortOnce.Do(func() {
 		if r.hardAbort != nil {
 			time.AfterFunc(hardAbortGrace, func() { close(r.hardAbort) })
 		}
 	})
-	r.cancel()
 }
 
 // CancelChild requests cancellation of ONE child of this run, addressed by its
@@ -1413,7 +1440,12 @@ func (e *Engine) startRun(ctx context.Context, sess *session.Session, req RunReq
 }
 
 func (e *Engine) prepareRun(ctx context.Context, sess *session.Session, req RunRequest, budgetBaseline session.Usage, body func(context.Context, *Run)) *PreparedRun {
-	ctx, cancel := context.WithCancel(ctx)
+	var cancel context.CancelFunc
+	if e.deps.MaxRunDuration > 0 {
+		ctx, cancel = context.WithTimeoutCause(ctx, e.deps.MaxRunDuration, ErrRunDurationLimit)
+	} else {
+		ctx, cancel = context.WithCancel(ctx)
+	}
 	serial := runSerial.Add(1)
 	ctx = port.WithRunAttemptContext(ctx, sess.ID, serial)
 	ctx = withSessionOrigin(ctx, sess.ID)
@@ -1428,10 +1460,12 @@ func (e *Engine) prepareRun(ctx context.Context, sess *session.Session, req RunR
 		attribution.Source.SessionID = string(sess.ID)
 	}
 	ctx = tool.WithMemoryAttribution(ctx, attribution)
+	resources := newRunResourceLimits(e.deps.MaxEvents, e.deps.MaxEventBytes)
 	r := &Run{
-		events:         make(chan session.Event, 64),
+		events:         make(chan session.Event, eventBufferCapacity(e.deps.MaxEventBytes, e.deps.MaxBufferedEventBytes)),
 		asks:           newAskRegistry(),
 		cancel:         cancel,
+		resource:       resources,
 		ctx:            ctx,
 		req:            req,
 		budgetBaseline: budgetBaseline,
@@ -1443,6 +1477,17 @@ func (e *Engine) prepareRun(ctx context.Context, sess *session.Session, req RunR
 		// only the "session" key is bound. With on NopDiagnostics returns Nop, so an
 		// engine with no injected sink stays silent.
 		diag: e.bindRunDiag(sess.ID),
+	}
+	if e.deps.MaxRunDuration > 0 {
+		// A duration limit is an engine-owned hard ceiling. Unlike caller Cancel,
+		// there is no consumer expected to keep draining during a grace period, so
+		// release a send blocked on a full event channel as soon as the deadline
+		// fires. A normally cancelled context does not take this path.
+		context.AfterFunc(ctx, func() {
+			if errors.Is(context.Cause(ctx), ErrRunDurationLimit) {
+				r.hardAbortOnce.Do(func() { close(r.hardAbort) })
+			}
+		})
 	}
 	// Resolve the trailing askID discriminator once (ADR-0044 / ADR-0249); see
 	// askDiscriminatorFor for the precedence and the colon rule.
@@ -1544,6 +1589,10 @@ func (e *Engine) drive(ctx context.Context, r *Run, sess *session.Session, env t
 	// honest rather than relying on their defensive fallback. It must precede the
 	// SessionStart hook events and the first turn.start.
 	e.emit(r, session.Event{Type: session.EvSessionInit})
+	if e.deps.DisableRunScopedTools && len(r.req.ExtraTools) != 0 {
+		e.terminate(ctx, r, sess, session.StopError, "", session.Usage{}, ErrRunScopedToolsDisabled, true)
+		return
+	}
 
 	// Step 0b: fire SessionStart once before any work, before the prompt is even
 	// recorded. This is a BLOCKING run-level gate (symmetric with
@@ -1563,6 +1612,10 @@ func (e *Engine) drive(ctx context.Context, r *Run, sess *session.Session, env t
 	// any model call; ok=false signals that without recording anything.
 	ok, reason, err := e.recordPrompt(ctx, r, sess, env, userText, parts)
 	if err != nil {
+		if errors.Is(err, ErrSessionBytesLimit) {
+			e.terminate(ctx, r, sess, session.StopBudget, "", session.Usage{}, err, false)
+			return
+		}
 		e.terminate(ctx, r, sess, session.StopError, "", session.Usage{}, err, false)
 		return
 	}
@@ -1593,7 +1646,7 @@ func (e *Engine) drive(ctx context.Context, r *Run, sess *session.Session, env t
 // of total. skipFirstBoundaryInjections is used only by failed-step retry reuses conversation state; live instruction sources are re-resolved.
 // while every later iteration resumes the ordinary boundary drains.
 //
-//nolint:unparam // total is a seed seam shared by prompt and resumed-entry callers.
+//nolint:unparam,gocyclo // total is a shared seed; the central loop keeps ordered lifecycle and resource boundaries in one state machine.
 func (e *Engine) runLoop(ctx context.Context, r *Run, sess *session.Session, env tool.Environment, total session.Usage, lastText string, skipFirstBoundaryInjections bool) {
 	// no-progress nudge accounting (Workstream A). noProgressNudges counts the
 	// continuation messages injected this run; nudgeCap is the budget (defaulted in
@@ -1678,6 +1731,10 @@ func (e *Engine) runLoop(ctx context.Context, r *Run, sess *session.Session, env
 		total = total.Add(usage)
 		_ = sess.RecordUsage(usage)
 		if err != nil {
+			if cause := runResourceCause(ctx, r); cause != nil {
+				e.terminate(ctx, r, sess, session.StopBudget, "", total, cause, false)
+				return
+			}
 			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
 				e.terminate(ctx, r, sess, session.StopCancelled, lastText, total, err, false)
 				return
@@ -1706,6 +1763,10 @@ func (e *Engine) runLoop(ctx context.Context, r *Run, sess *session.Session, env
 		}
 		// Cumulative and per-run usage were recorded immediately after runTurn so the
 		// same accounting applies to both successful and failed streams.
+		if err := e.checkSessionMessageBytes(sess, asst); err != nil {
+			e.terminate(ctx, r, sess, session.StopBudget, "", total, err, false)
+			return
+		}
 		if asst.Text != "" {
 			lastText = asst.Text
 		}
@@ -1729,6 +1790,10 @@ func (e *Engine) runLoop(ctx context.Context, r *Run, sess *session.Session, env
 				InterTokenMeanMs: timing.interTokenMeanMs,
 				InterTokenMaxMs:  timing.interTokenMaxMs,
 			}})
+		if cause := r.resourceLimitCause(); cause != nil {
+			e.terminate(ctx, r, sess, session.StopBudget, "", total, cause, false)
+			return
+		}
 
 		if err := sess.RecordAssistant(asst); err != nil {
 			e.terminate(ctx, r, sess, session.StopError, lastText, total, err, false)
@@ -2258,6 +2323,10 @@ func (e *Engine) preTurnTerminal(ctx context.Context, r *Run, sess *session.Sess
 		}
 		return true
 	}
+	if cause := runResourceCause(ctx, r); cause != nil {
+		e.terminate(ctx, r, sess, session.StopBudget, "", total, cause, false)
+		return true
+	}
 	if ctx.Err() != nil {
 		// Cancellation explicitly abandons retry intent through Session.Cancel.
 		e.terminate(ctx, r, sess, session.StopCancelled, lastText, total, nil, false)
@@ -2306,6 +2375,9 @@ func (e *Engine) recordPrompt(ctx context.Context, r *Run, sess *session.Session
 	finalText, blocked, reason := e.fireUserPromptSubmit(ctx, r, sess, userText)
 	if blocked {
 		return false, reason, nil
+	}
+	if err := e.checkSessionMessageBytes(sess, session.NewUserMessageWithParts(finalText, parts)); err != nil {
+		return false, "", err
 	}
 	// The turn-0 context fragments (project instructions / soul / memory index /
 	// user model) are NO LONGER persisted into the conversation (ADR 0043). They are
@@ -2888,8 +2960,10 @@ func (r *Run) emitAuthorizationRequired(ev session.Event) (session.Event, bool, 
 	if r.cancelRequested {
 		return ev, false, true
 	}
-	ev.Seq = r.seq.Add(1)
-	ev.RunID = r.runID
+	ev, admitted := r.sequenceAndAdmit(ev)
+	if !admitted {
+		return ev, false, false
+	}
 	select {
 	case r.events <- ev:
 		r.setOutcome(RunOutcomeAuthorizationPending)
@@ -2900,14 +2974,10 @@ func (r *Run) emitAuthorizationRequired(ev session.Event) (session.Event, bool, 
 }
 
 func (r *Run) emitChecked(ev session.Event) (session.Event, bool) {
-	ev.Seq = r.seq.Add(1)
-	// The run labels its own events with run-scoped identity. Seq answers "where
-	// in this run", RunID answers "which run" — Seq restarts every run, so it
-	// cannot distinguish two runs of one session. Stamping here rather than at a
-	// relay is ADR 0249 decision 4: there is no single downstream chokepoint that
-	// feeds BOTH the durable log and the client wire, so any other placement means
-	// stamping at ~9 sites by hand. Empty when the host minted no id.
-	ev.RunID = r.runID
+	ev, admitted := r.sequenceAndAdmit(ev)
+	if !admitted {
+		return ev, false
+	}
 	select {
 	case r.events <- ev:
 		return ev, true
@@ -2917,7 +2987,7 @@ func (r *Run) emitChecked(ev session.Event) (session.Event, bool) {
 	case r.events <- ev:
 		return ev, true
 	case <-r.hardAbort:
-		return ev, false
+		return ev, true
 	}
 }
 
@@ -2946,10 +3016,10 @@ func (r *Run) emitChecked(ev session.Event) (session.Event, bool) {
 // emit: delivery is deterministic whenever the buffer has room, so the abort
 // arms only ever claim a send that would genuinely park.
 func (r *Run) emitOrAbort(ev session.Event, abort <-chan struct{}) bool {
-	ev.Seq = r.seq.Add(1)
-	// Same stamp as emit — see the note there. These two are the ONLY sites a run
-	// hands an event outward, which is what makes the guarantee structural.
-	ev.RunID = r.runID
+	ev, admitted := r.sequenceAndAdmit(ev)
+	if !admitted {
+		return false
+	}
 	select {
 	case r.events <- ev:
 		return true

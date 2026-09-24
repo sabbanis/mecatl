@@ -60,11 +60,17 @@ Clients must tolerate an absent or blank `server_implementation` in an otherwise
 valid response as `unknown`, and preserve an unfamiliar non-empty family for
 forward compatibility. `build_id` is not a semantic-version API.
 
+Before creating a `model-only` session, clients must read
+`GET /v1/compatibility` and require the `model_only_v1` feature. The identifier
+means this build exposes the constrained one-shot profile documented below; it
+does not replace exact build, protocol, configuration, or deployment pinning.
+An absent identifier must fail closed without creating a probe session.
+
 **Sessions & runs:**
 
 |Method & path|Body|Response|
 |-|-|-|
-|`POST /v1/sessions`|`{mode?, limits?, provider_id?, model_id?, profile?, mcp_servers?}`; `profile` omitted = server default, `"no-fs"` = explicit attenuation|`201` `{session_id, placement}` where placement is bounded display metadata; no path or exact private ref|
+|`POST /v1/sessions`|`{mode?, limits?, provider_id?, model_id?, profile?, mcp_servers?}`; `profile` omitted = server default, `"no-fs"` = filesystem attenuation, `"model-only"` = no filesystem or model-visible tools|`201` `{session_id, placement}` where placement is bounded display metadata; no path or exact private ref|
 |`GET /v1/sessions`|—|`200` `{sessions: [...]}` — path-free stored-session inventory|
 |`GET /v1/sessions/{id}`|—|`200` authoritative session snapshot, including title/provenance, title-generation lifecycle, and canonical durable token usage when present|
 |`GET /v1/sessions/{id}/events`|—|`200` `text/event-stream` — replay a session's durable event log (including `session.title` changes and the log-only `approval`/`compaction_archive`/`user_prompt` a live prompt stream skips). A replayed `user_prompt.synthetic` value of `true` identifies a server-authored continuation; absent/false means genuine or legacy-unknown. Never infer origin from text. Empty for an unknown id; `501` when no durable `EventLog` is wired|
@@ -238,7 +244,7 @@ A `workspace`, `cwd`, placement ID, or exact environment ref is an unknown field
 and the strict decoder returns `400`; configure local `--workspace` on the
 server.
 
-### Create a no-filesystem session (`profile: "no-fs"`)
+### Create a constrained session
 
 A session can opt out of the filesystem entirely — useful for pure
 research/coordination agents (MCP tools + memory + web fetch) that should never
@@ -251,7 +257,8 @@ $ curl -s -X POST http://127.0.0.1:8081/v1/sessions \
 ```
 
 The same `profile` field exists on the gRPC `CreateSessionRequest` (enum-as-
-string: `""` = default, `"no-fs"`). Rules, all enforced server-side:
+string: `""` = default, `"no-fs"`, or `"model-only"`). Rules, all enforced
+server-side:
 
 - `"no-fs"` binds the server's filesystem-free placement; no workspace field
   exists. Omitted profile binds the server's deployment default.
@@ -268,6 +275,31 @@ string: `""` = default, `"no-fs"`). Rules, all enforced server-side:
   instead of burning turns on unknown-tool errors.
 - The profile composes with `provider_id`/`model_id` and is FIXED for the
   session lifetime.
+
+Use `model-only` when the model must receive the request without any advertised
+tool surface:
+
+```sh
+$ mecated serve --compaction=off --llm-max-attempts=1 \
+    --no-prompt-cache --max-run-tokens=8192
+$ curl -s -X POST http://127.0.0.1:8081/v1/sessions \
+       -d '{"profile":"model-only"}'
+{"session_id":"..."}
+```
+
+The profile binds the filesystem-free placement and constructs an empty catalog:
+no core, web, MCP, memory, schedule, skill, delegation, shell, filesystem, or
+host-attached tool is advertised. Client MCP input is rejected. Command expansion
+and completion-learning observation are disabled for the session, and the model is
+told that it has no tools. Creation fails unless the daemon was started with
+`--compaction=off`, `--llm-max-attempts=1`, `--no-prompt-cache`, and a positive
+`--max-run-tokens`; compaction off disables automatic history rewrites and makes
+the manual compact endpoint return an error. Model-only sessions are one-shot,
+default-mode sessions: carryover, schedules, reopen, retry, title generation, hidden
+instruction/profile sources, hooks, learning, steering, secondary sinks, and
+auxiliary model routers are disabled or rejected. Positive request, response,
+event, buffered-event, session, queue, concurrency, and duration ceilings use
+the documented `--model-only-*` defaults and can be tightened by the operator.
 
 ### Inspect a session
 
@@ -296,6 +328,9 @@ cancelled, and failed; state is preserved. Running/awaiting, scheduled, child,
 or same-process live sessions return `412`. A lease held by another replica
 returns `409`. Missing and foreign-owned IDs both return `404`; configured HTTP
 authentication still applies before ownership checks.
+
+With `--compaction=off`, the endpoint returns an explicit error and does not
+change history or make a model call.
 
 On change, the compacted snapshot is saved before the existing compaction notice
 and archive are appended. Save failure returns `500` without appending them. An

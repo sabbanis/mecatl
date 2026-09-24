@@ -75,7 +75,10 @@ pass. Choose the strategy with `--compaction`:
   messages while truncating large tool bodies;
 - `cascade` tries cheaper reductions first: snip, strip tool bodies, collapse
   large file contents, and then summarize. It uses separate trigger and target
-  thresholds to avoid compacting repeatedly at the boundary.
+  thresholds to avoid compacting repeatedly at the boundary;
+- `off` disables both automatic and manual compaction. Manual requests return an
+  explicit error rather than a successful no-op. The `model-only` session profile
+  requires this setting.
 
 The token estimate is selected with `--tokenizer`:
 

@@ -1,6 +1,6 @@
 # ADR 0351 — Bounded one-shot model-only runs
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-09-24
 - Scope: model-only session lifecycle and resource admission
 - Supersedes: ADR 0350 only where it deferred provider, event, state, queue,

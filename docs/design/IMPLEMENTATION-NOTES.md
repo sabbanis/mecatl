@@ -6326,6 +6326,43 @@ because the shared engine has FS tools baked in.
   files are body-only in a no-fs session: the body injects fine, asset reads fail honestly
   with not-exist through the nofs workspace (and the posture note tells the model so).
 
+### Local candidate — `"model-only"` and compaction off (ADR 0350)
+
+This section records the implementation candidate for the approved
+[model-only acceptance plan](../acceptance/model-only-one-shot-profile.md). It
+does not establish a shipped interface before separate implementation review
+and merge. `model-only` is a stricter sibling of `no-fs`, not another exclusion
+list.
+`assembleCatalog` creates its classified catalog and returns immediately when
+`catalogSession.modelOnly` is set, before core, extra, global/client MCP,
+resource, web, memory, schedule, skill, delegation, or host-attached tools can
+register. The session factory rejects client MCP and host tools before connection,
+asserts the returned catalog has no names, disables command expansion, progressive
+disclosure, and learning observation, and applies a no-FS/no-tools prompt posture.
+
+The profile uses exact no-FS placement, always routes through the per-session
+factory, and persists its explicit label so rehydration cannot widen it to ordinary
+`no-fs`. It requires `Config.Compaction == "off"`; otherwise creation fails with
+`ErrInvalidArgument`. `engineDepsForProvider` represents off by a nil
+`Deps.ContextWindow`, closing the automatic trigger, plus `disabledCompactor`,
+which returns `agent.ErrCompactionDisabled` from the manual path without mutation.
+Unknown profile and strategy strings fail closed. The default and `no-fs` catalog
+paths are unchanged unless the operator explicitly selects compaction off.
+
+ADR 0351 makes that profile one-shot and resource-bounded. Creation additionally
+requires one provider attempt, provider caching disabled, and a positive run-token
+ceiling. Default permission mode, no carryover, exact one-turn limits, and the
+reopen/retry gate ensure a session cannot mint a second run. The engine receives
+no instructions, operator profile, hooks, learning, delivery, steering, durable
+evidence, secondary sink, title-generation path, reviewer, or semantic router.
+
+`boundedModelOnlyProvider` measures final neutral request JSON and cumulative
+neutral response-chunk JSON, then admits streams through a factory-shared
+concurrency semaphore and bounded wait queue. Engine `Deps` apply event-count,
+individual-event, buffered-event, retained-session, and duration ceilings. Event
+admission reserves one terminal slot; violations cancel the run and report a
+typed terminal rather than silently dropping and continuing.
+
 ### Version-aware Workspace mutation and the execution-environment seam (ADR 0208 + ADR 0211 + ADR 0214)
 
 A coding agent ultimately needs one execution environment whose filesystem and command namespace are
