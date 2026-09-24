@@ -1042,12 +1042,16 @@ func (r *Run) Cancel() {
 	r.cancelRequested = true
 	r.closureMu.Unlock()
 
+	r.armHardAbort()
+	r.cancel()
+}
+
+func (r *Run) armHardAbort() {
 	r.hardAbortOnce.Do(func() {
 		if r.hardAbort != nil {
 			time.AfterFunc(hardAbortGrace, func() { close(r.hardAbort) })
 		}
 	})
-	r.cancel()
 }
 
 // CancelChild requests cancellation of ONE child of this run, addressed by its
@@ -2983,7 +2987,7 @@ func (r *Run) emitChecked(ev session.Event) (session.Event, bool) {
 	case r.events <- ev:
 		return ev, true
 	case <-r.hardAbort:
-		return ev, false
+		return ev, true
 	}
 }
 

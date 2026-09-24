@@ -101,7 +101,7 @@ truncate, retry, or continue after overrun.
 
 **Acceptance:**
 - AC4.1: Request and cumulative response byte ceilings stop work at the final provider-neutral boundary.
-  - verify: `TestADR_0351_BoundedOneShotModelOnlyRuns`; `TestModelOnlyOneShotProfile_Scenario4_ResourceEnvelope`; `TestBoundedModelOnlyProviderRequestAndResponseBytes`
+  - verify: `TestADR_0351_BoundedOneShotModelOnlyRuns`; `TestModelOnlyOneShotProfile_Scenario4_ResourceEnvelope`; `TestBoundedModelOnlyProviderRequestAndResponseBytes`; `TestModelOnlyFactoryWiresProviderByteLimits`
 - AC4.2: Event-count admission reserves one terminal result; oversized events are not published and terminate with the stable event-limit cause.
   - verify: `TestRunEventCountLimitReservesTerminalResult`; `TestRunEventByteLimitFailsClosed`
 - AC4.3: Buffered-event bytes determine a bounded channel capacity, and the engine-owned duration ceiling releases an undrained full buffer and reaches a declared terminal outcome.

@@ -77,6 +77,10 @@ func (r *Run) sequenceAndAdmit(ev session.Event) (session.Event, bool) {
 
 	r.resource.mu.Lock()
 	terminal := ev.Type == session.EvResult
+	if r.resource.cause != nil && !terminal {
+		r.resource.mu.Unlock()
+		return ev, false
+	}
 	var cause error
 	if r.resource.maxEventBytes > 0 && len(encoded) > r.resource.maxEventBytes {
 		cause = fmt.Errorf("%w: got %d, maximum %d", ErrRunEventBytesLimit, len(encoded), r.resource.maxEventBytes)
@@ -98,9 +102,7 @@ func (r *Run) sequenceAndAdmit(ev session.Event) (session.Event, bool) {
 		r.resource.cause = cause
 	}
 	r.resource.mu.Unlock()
-	if r.cancel != nil {
-		r.cancel()
-	}
+	r.cancelForResourceLimit()
 	return ev, false
 }
 
@@ -113,6 +115,14 @@ func (r *Run) failResourceLimit(cause error) {
 		r.resource.cause = cause
 	}
 	r.resource.mu.Unlock()
+	r.cancelForResourceLimit()
+}
+
+func (r *Run) cancelForResourceLimit() {
+	// Resource exhaustion is engine-owned cancellation. Arm the same bounded
+	// unwedge used by caller cancellation without taking closureMu: event
+	// admission can run while emitAuthorizationRequired holds that mutex.
+	r.armHardAbort()
 	if r.cancel != nil {
 		r.cancel()
 	}

@@ -149,3 +149,67 @@ func TestModelOnlyFactoryFailsClosedAndRunsWithoutToolsOrCompaction(t *testing.T
 		t.Fatalf("run-scoped tool terminal = %+v, want StopError with disabled-tools cause", extraResult)
 	}
 }
+
+func TestModelOnlyFactoryWiresProviderByteLimits(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		configure func(*ModelOnlyResourceLimits)
+		want      error
+		wantCalls int
+	}{
+		{
+			name: "request",
+			configure: func(limits *ModelOnlyResourceLimits) {
+				limits.MaxRequestBytes = 1
+			},
+			want: errModelOnlyRequestBytes,
+		},
+		{
+			name: "response",
+			configure: func(limits *ModelOnlyResourceLimits) {
+				limits.MaxResponseBytes = 1
+			},
+			want:      errModelOnlyResponseBytes,
+			wantCalls: 1,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			provider := mockllm.NewWith([]mockllm.Option{mockllm.WithRequestObserver(func(port.LLMRequest) {
+				calls++
+			})}, mockllm.TextTurn("answer"))
+			reg := regForTest(provider, providerOpenAI, "test-model")
+			cfg := Config{
+				Model:               "test-model",
+				Compaction:          "off",
+				LLMMaxAttempts:      1,
+				PromptCacheDisabled: true,
+				MaxRunTokens:        4096,
+				ModelOnlyLimits:     DefaultModelOnlyResourceLimits(),
+			}
+			tc.configure(&cfg.ModelOnlyLimits)
+			factory := sessionEngineFactory(cfg, reg, provider, memstore.New(), permpolicy.NewPolicy(defaultRules(), nil), hookexec.New(nil), nil, prompt.RootAssembler{}, catalogAssets{}, nil)
+			res, err := factory(context.Background(), server.ProviderSelector{}, nil, server.ProfileModelOnly, "", session.ModeDefault)
+			if err != nil {
+				t.Fatalf("build model-only engine: %v", err)
+			}
+			defer func() { _ = res.Close() }()
+
+			sess := session.New("model-only-limit", session.ModeDefault, session.EnvironmentRef{Kind: session.EnvKindNoFS, ID: "none", Revision: "nofs-v1"}, session.Limits{MaxTurns: 1}, time.Unix(0, 0))
+			env := tool.MustEnvironment(sess.EnvironmentRef, nofs.New(), memledger.New(), nil)
+			run := res.Engine.Run(context.Background(), sess, env, agent.RunRequest{Text: "bounded input"})
+			var result *session.ResultPayload
+			for event := range run.Events() {
+				if event.Result != nil {
+					result = event.Result
+				}
+			}
+			if calls != tc.wantCalls {
+				t.Fatalf("provider calls = %d, want %d", calls, tc.wantCalls)
+			}
+			if result == nil || result.Stop != session.StopError || !strings.Contains(result.Error, tc.want.Error()) {
+				t.Fatalf("terminal result = %+v, want StopError containing %q", result, tc.want)
+			}
+		})
+	}
+}

@@ -74,6 +74,11 @@ func TestRunEventByteLimitFailsClosed(t *testing.T) {
 	if result.Stop != session.StopBudget || !strings.Contains(result.Error, agent.ErrRunEventBytesLimit.Error()) {
 		t.Fatalf("terminal result = %+v, want StopBudget with event-byte cause", result)
 	}
+	for i, event := range events[:len(events)-1] {
+		if event.Type == session.EvTurnEnd {
+			t.Fatalf("event[%d] = %s after event-byte rejection; want only the reserved terminal result", i, event.Type)
+		}
+	}
 }
 
 func TestSessionByteLimitRejectsBeforeProviderCall(t *testing.T) {

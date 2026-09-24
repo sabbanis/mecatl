@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -87,6 +88,41 @@ func TestEngineEmitForwardsRunCtxToSink(t *testing.T) {
 		if v, _ := c.Value(ctxMarkerKey{}).(string); v != "from-request" {
 			t.Fatalf("sink ctx[%d] missing request marker (got %q)", i, v)
 		}
+	}
+}
+
+func TestEngineEmitMirrorsAdmittedEventAfterChannelHardAbort(t *testing.T) {
+	sink := &recordingSink{}
+	e := NewEngine(Deps{Sink: sink})
+	hardAbort := make(chan struct{})
+	close(hardAbort)
+	r := &Run{
+		events:    make(chan session.Event),
+		hardAbort: hardAbort,
+		ctx:       context.Background(),
+	}
+
+	e.emit(r, session.Event{Type: session.EvTurnStart})
+
+	if got := len(sink.snapshot()); got != 1 {
+		t.Fatalf("sink events = %d, want 1 admitted event even when the primary channel has unwound", got)
+	}
+}
+
+func TestEngineEmitDoesNotMirrorResourceRejectedEvent(t *testing.T) {
+	sink := &recordingSink{}
+	e := NewEngine(Deps{Sink: sink})
+	r := &Run{
+		events:    make(chan session.Event, 1),
+		hardAbort: make(chan struct{}),
+		resource:  newRunResourceLimits(10, 64),
+		ctx:       context.Background(),
+	}
+
+	e.emit(r, session.Event{Type: session.EvMessageDelta, Text: strings.Repeat("x", 256)})
+
+	if got := len(sink.snapshot()); got != 0 {
+		t.Fatalf("sink events = %d, want 0 for a resource-rejected event", got)
 	}
 }
 
