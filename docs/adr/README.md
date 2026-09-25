@@ -268,6 +268,7 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0028 — mecatequi (single-shot GitHub Action)](./0028-mecatequi.md) *(hardcoded-ref pinning superseded by 0327)*
 - [0327 — Self-repository refs for the mecatequi sibling actions](./0327-self-repository-action-refs.md) *(Accepted; supersedes ADR 0028's hardcoded-ref pinning decision only)*
 - [0319 — Signed release archives and Homebrew tap distribution](./0319-release-archives-and-homebrew-tap.md) *(Accepted; recorded after implementation under an explicit spine waiver)*
+- [0352 — Controlled fork qualification releases](./0352-controlled-fork-qualification-release.md) *(proposed; fork-only `v0.0.39-i2i.N` artifact and provenance channel)*
 - [0082 — Factory MCP wiring for the one-shot mains](./0082-factory-mcp-wiring.md)
 - [0090 — Per-server opt-in for plain-http token-bearing MCP endpoints](./0090-mcp-insecure-http-optin.md)
 - [0032 — First-class worktree binding for a session](./0032-worktree-binding.md)
