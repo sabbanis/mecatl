@@ -8,7 +8,7 @@
 **Delivery:** Split. Tag authority, supply-chain identity, repository permissions, artifact contents, and conflict recovery require human review before a workflow can mint trusted release evidence.
 **Expected tasks:** 4
 **Issue:** None — this fork capability is tracked by the downstream I2I qualification record.
-**Plan PR:** absent until opened.
+**Plan PR:** [sabbanis/mecatl#3](https://github.com/sabbanis/mecatl/pull/3)
 **Approved baseline:** absent until the Plan / Interface PR merges.
 
 Publish one narrowly scoped, immutable, fork-owned `mecated` prerelease that an
