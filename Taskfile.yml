@@ -319,6 +319,56 @@ tasks:
           echo "==> brew style dist/homebrew/Formula/mecatl.rb"
           brew style dist/homebrew/Formula/mecatl.rb
 
+  # --- Fork-only mecated qualification prerelease -------------------------
+  # Independent of the general release path above. These tasks never publish.
+  qualification-release:check:
+    desc: Validate the fork-only qualification release config and contract offline
+    cmds:
+      - task: release:require-goreleaser
+      - goreleaser check --config .goreleaser-qualification.yaml
+      - go test ./internal/qualificationrelease
+      - bash -n .github/scripts/publish-qualification-release.sh
+
+  qualification-release:snapshot:
+    desc: Build the four mecated-only qualification archives locally without signing, SBOM, tokens, or upload
+    cmds:
+      - task: release:require-goreleaser
+      - cmd: |
+          set -eu
+          tag=v0.0.39-i2i.1
+          commit=$(git rev-parse HEAD)
+          QUALIFICATION_BUILD_ID="$tag" \
+          GORELEASER_CURRENT_TAG="$tag" \
+            goreleaser release \
+              --clean \
+              --config .goreleaser-qualification.yaml \
+              --skip=publish,sign,sbom,validate
+          go run ./internal/qualificationrelease/cmd generate \
+            --dist dist/qualification \
+            --tag "$tag" \
+            --commit "$commit" \
+            --require-sboms=false
+
+  qualification-release:verify:
+    desc: Verify the local qualification snapshot archive set, manifest, checksums, build identity, and quiet posture
+    cmds:
+      - cmd: |
+          set -eu
+          tag=v0.0.39-i2i.1
+          commit=$(git rev-parse HEAD)
+          go run ./internal/qualificationrelease/cmd verify \
+            --dist dist/qualification \
+            --tag "$tag" \
+            --commit "$commit" \
+            --require-sboms=false
+          test "$(find dist/qualification -maxdepth 1 -name '*.tar.gz' | wc -l | tr -d ' ')" = 4
+          test "$(find dist/qualification -maxdepth 1 -name '*.spdx.json' | wc -l | tr -d ' ')" = 0
+          grep -q 'product_metrics_enabled.*false' dist/qualification/qualification-manifest.json
+          if grep -q 'MECATL_METRICS_KEY' .goreleaser-qualification.yaml; then
+            echo "qualification config must not read the product-metrics secret" >&2
+            exit 1
+          fi
+
   test:root-race-partition:
     desc: Test and validate the static root-module race package partition
     cmds:

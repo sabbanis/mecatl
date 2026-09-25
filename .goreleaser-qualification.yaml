@@ -1,0 +1,59 @@
+# Fork-only mecated qualification artifacts. This configuration never publishes;
+# .github/workflows/qualification-release.yml owns signing, attestation, and the
+# append-only GitHub prerelease transaction.
+version: 2
+project_name: mecated
+dist: dist/qualification
+
+builds:
+  - id: mecated-qualification
+    main: ./cmd/mecated
+    binary: mecated
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    ldflags:
+      - -s -w
+      - -X github.com/stacklok/mecatl/internal/buildinfo.BuildID={{ .Env.QUALIFICATION_BUILD_ID }}
+      # Qualification artifacts are quiet by construction. This value is
+      # intentionally empty and must never be replaced with a secret/template.
+      - -X github.com/stacklok/mecatl/internal/adapter/productmetrics.bakedKey=
+
+archives:
+  - id: mecated-qualification
+    ids:
+      - mecated-qualification
+    formats:
+      - tar.gz
+    name_template: "mecated_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+
+# The manifest tool owns checksums so it can cover archive SBOMs and its own
+# machine-readable qualification manifest in one signed root.
+checksum:
+  disable: true
+
+sboms:
+  - id: qualification-archive-sbom
+    artifacts: archive
+    documents:
+      - "${artifact}.spdx.json"
+    args:
+      - "$artifact"
+      - "--output"
+      - "spdx-json=$document"
+
+changelog:
+  disable: true
+
+release:
+  disable: true
