@@ -97,7 +97,10 @@ if [[ $(jq -r '.isPrerelease' "$release_json") != true ]]; then
   echo "release is not marked prerelease" >&2
   exit 1
 fi
-jq -r '.body' "$release_json" >"$tmpdir/remote-notes.md"
+# -r appends its own newline even when the JSON string already ends in one.
+# -j preserves the release body byte-for-byte, so a safe rerun compares the
+# exact GitHub value instead of manufacturing a second trailing newline.
+jq -j '.body' "$release_json" >"$tmpdir/remote-notes.md"
 if ! cmp -s "$notes" "$tmpdir/remote-notes.md"; then
   echo "release notes conflict with the qualification contract" >&2
   exit 1
