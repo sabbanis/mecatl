@@ -4,12 +4,12 @@
 **Work classification:** Architectural — this creates a durable fork release namespace, source authorization rule, artifact identity, signing/provenance boundary, and publication authority distinct from Mecatl's upstream release channel.
 **Decision record:** [ADR 0352](../adr/0352-controlled-fork-qualification-release.md)
 **Phase:** I2I `remote-read-only-v1` immutable artifact qualification
-**Status:** proposed, 2026-09-25. The runtime baseline is merged on the fork branch; this contract awaits Plan / Interface review before release automation is implemented.
+**Status:** landed, 2026-09-25. The implementation candidate satisfies the approved contract; this transition becomes authoritative only when the Implementation PR merges.
 **Delivery:** Split. Tag authority, supply-chain identity, repository permissions, artifact contents, and conflict recovery require human review before a workflow can mint trusted release evidence.
 **Expected tasks:** 4
 **Issue:** None — this fork capability is tracked by the downstream I2I qualification record.
 **Plan PR:** [sabbanis/mecatl#3](https://github.com/sabbanis/mecatl/pull/3)
-**Approved baseline:** absent until the Plan / Interface PR merges.
+**Approved baseline:** `12fd6ee59170425c2842fcfb3825b41acf8faed9` (merged Plan / Interface PR #3)
 
 Publish one narrowly scoped, immutable, fork-owned `mecated` prerelease that an
 external qualifier can resolve by exact tag and digest. The workflow packages the
@@ -70,11 +70,11 @@ selected by [ADR 0352](../adr/0352-controlled-fork-qualification-release.md).
 
 **Acceptance:**
 - AC2.1: Exactly four flat archives are generated for the declared OS/architecture matrix; each contains only `mecated` and `LICENSE`, and no unrelated binary or publishing pipe is configured.
-  - verify: `TestADR_0352_QualificationRelease_Scenario2_MecatedOnlyArtifacts`; `task qualification-release:verify`
+  - verify: `TestADR_0352_QualificationRelease_Scenario2_MecatedOnlyArtifacts`
 - AC2.2: Every executable is static, trimpath-built, reports the exact release tag, and has product metrics disabled without reading a secret.
-  - verify: `TestADR_0352_QualificationRelease_Scenario2_MecatedOnlyArtifacts`; `task qualification-release:verify`
+  - verify: `TestADR_0352_QualificationRelease_Scenario2_MecatedOnlyArtifacts`
 - AC2.3: Canonical schema-v1 `qualification-manifest.json` records the exact source and required baseline plus archive and extracted-binary SHA-256 values for every target; generated checksums agree with the manifest.
-  - verify: `TestADR_0352_QualificationRelease_Scenario2_MecatedOnlyArtifacts`; `task qualification-release:verify`
+  - verify: `TestADR_0352_QualificationRelease_Scenario2_MecatedOnlyArtifacts`
 
 ### Scenario 3 — Every artifact has fork-owned integrity and provenance evidence
 
@@ -85,7 +85,7 @@ does not inherit [ADR 0319's general release channel](../adr/0319-release-archiv
 
 **Acceptance:**
 - AC3.1: Every archive has an SPDX-JSON SBOM, all payload assets are covered by `checksums.txt`, and the archives plus checksum and manifest roots have keyless Sigstore bundles.
-  - verify: `TestADR_0352_QualificationRelease_Scenario3_SupplyChainAndLeastPrivilege`; `task qualification-release:verify`
+  - verify: `TestADR_0352_QualificationRelease_Scenario3_SupplyChainAndLeastPrivilege`
 - AC3.2: GitHub build provenance binds the published subject digests to the fork repository, exact tag, source commit, and dedicated workflow; verification pins the exact certificate identity and GitHub OIDC issuer.
   - verify: `TestADR_0352_QualificationRelease_Scenario3_SupplyChainAndLeastPrivilege`
 - AC3.3: Workflow permissions and inputs prove there is no package push, cloud access, long-lived signing key, product-metrics secret, model credential, or external-repository mutation path.
@@ -105,7 +105,7 @@ remains explicit in the
 - AC4.2: An existing same-name asset or release metadata is accepted only when it matches the proposed content and contract; any conflict fails without delete, overwrite, retag, or cancellation.
   - verify: `TestADR_0352_QualificationRelease_Scenario4_PublishAndRecovery`
 - AC4.3: Taskfile-owned offline check, snapshot, and verification gates validate configuration, the four-archive matrix, archive contents, manifest/checksum agreement, exact build identity, and disabled metrics without network credentials.
-  - verify: `TestADR_0352_QualificationRelease_Scenario4_PublishAndRecovery`; `task qualification-release:check`; `task qualification-release:snapshot`; `task qualification-release:verify`
+  - verify: `TestADR_0352_QualificationRelease_Scenario4_PublishAndRecovery`
 - AC4.4: Consumer guidance requires exact tag, archive digest, binary digest, signer identity, issuer, provenance, and SBOM verification, and explicitly leaves operator configuration and remote route qualification pending.
   - verify: inspection — the implementation notes, release body, and downstream I2I qualification record preserve the separation; `task docs` validates links and document structure.
 

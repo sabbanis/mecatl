@@ -1,0 +1,179 @@
+# Fork-only, mecated-only qualification artifacts for I2I remote-read-only-v1.
+# This does not replace or call the general Mecatl release workflow.
+name: Fork qualification release
+
+on:
+  push:
+    tags:
+      - 'v0.0.39-i2i.*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qualification-release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  QUALIFICATION_TAG: ${{ github.ref_name }}
+  REQUIRED_BASELINE: a607746a59b1ad61ac2331db7827b31b0a03919d
+  QUALIFICATION_BRANCH: origin/i2i/model-only-one-shot-v0.0.39-baseline
+
+jobs:
+  guard:
+    name: Authorize exact tag and fork source line
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          filter: blob:none
+          ref: ${{ env.QUALIFICATION_TAG }}
+
+      - name: Fail closed outside the qualification authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$QUALIFICATION_TAG" =~ ^v0\.0\.39-i2i\.[1-9][0-9]*$ ]]; then
+            echo "::error::tag does not match exact v0.0.39-i2i.N grammar: $QUALIFICATION_TAG"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$REQUIRED_BASELINE" HEAD; then
+            echo "::error::tag commit does not contain required model-only merge $REQUIRED_BASELINE"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor HEAD "$QUALIFICATION_BRANCH"; then
+            echo "::error::tag commit is not contained by $QUALIFICATION_BRANCH"
+            exit 1
+          fi
+          echo "authorized $(git rev-parse HEAD) for $QUALIFICATION_TAG"
+
+  publish:
+    name: Build, verify, sign, attest, and publish mecated
+    needs: guard
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          filter: blob:none
+          ref: ${{ env.QUALIFICATION_TAG }}
+
+      - name: Reconfirm source authority in the publishing job
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$QUALIFICATION_TAG" =~ ^v0\.0\.39-i2i\.[1-9][0-9]*$ ]]
+          git merge-base --is-ancestor "$REQUIRED_BASELINE" HEAD
+          git merge-base --is-ancestor HEAD "$QUALIFICATION_BRANCH"
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            engine/go.sum
+            authn/oidc/go.sum
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+      - uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+
+      - name: Build four daemon-only archives and SBOMs
+        uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
+        with:
+          version: v2.16.0
+          args: release --clean --config .goreleaser-qualification.yaml --skip=publish,sign
+        env:
+          GORELEASER_CURRENT_TAG: ${{ env.QUALIFICATION_TAG }}
+          QUALIFICATION_BUILD_ID: ${{ env.QUALIFICATION_TAG }}
+
+      - name: Generate and verify qualification manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit=$(git rev-parse HEAD)
+          go run ./internal/qualificationrelease/cmd generate \
+            --dist dist/qualification \
+            --tag "$QUALIFICATION_TAG" \
+            --commit "$commit" \
+            --require-sboms=true
+          go run ./internal/qualificationrelease/cmd verify \
+            --dist dist/qualification \
+            --tag "$QUALIFICATION_TAG" \
+            --commit "$commit" \
+            --require-sboms=true
+
+      - name: Keyless-sign archives and manifest roots
+        shell: bash
+        run: |
+          set -euo pipefail
+          for artifact in \
+            dist/qualification/*.tar.gz \
+            dist/qualification/checksums.txt \
+            dist/qualification/qualification-manifest.json
+          do
+            cosign sign-blob --yes --bundle="${artifact}.sigstore.json" "$artifact"
+          done
+
+      - name: Verify exact fork signing identity before publication
+        shell: bash
+        run: |
+          set -euo pipefail
+          identity="https://github.com/sabbanis/mecatl/.github/workflows/qualification-release.yml@refs/tags/${QUALIFICATION_TAG}"
+          issuer="https://token.actions.githubusercontent.com"
+          for bundle in dist/qualification/*.sigstore.json; do
+            artifact=${bundle%.sigstore.json}
+            cosign verify-blob \
+              --certificate-identity "$identity" \
+              --certificate-oidc-issuer "$issuer" \
+              --bundle "$bundle" \
+              "$artifact"
+          done
+
+      - name: Attest qualification payload provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: dist/qualification/checksums.txt
+
+      - name: Verify GitHub provenance before publication
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          while read -r _ name; do
+            gh attestation verify "dist/qualification/$name" --repo "$GITHUB_REPOSITORY"
+          done < dist/qualification/checksums.txt
+
+      - name: Publish or verify the append-only prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          QUALIFICATION_DIST: dist/qualification
+        run: bash .github/scripts/publish-qualification-release.sh
+
+      - name: Qualification summary
+        if: ${{ always() && hashFiles('dist/qualification/qualification-manifest.json') != '' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## Fork qualification release"
+            echo
+            echo "Tag: $QUALIFICATION_TAG"
+            echo
+            echo '```json'
+            cat dist/qualification/qualification-manifest.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

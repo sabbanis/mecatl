@@ -281,7 +281,8 @@ PR after verification. There is no cleanup or status-only PR.
   the narrow `v0.0.39-i2i.N` source authority, `mecated`-only artifact set,
   disabled product metrics, fork-owned signatures and provenance, and
   append-only publication semantics required for external qualification.
-  Status: proposed.
+  Status: landed in the implementation candidate; authoritative only when the
+  Implementation PR merges.
 - [InspectSession scoped read isolation](inspect-session-read-isolation.md) — proposed
   bounded direct-edge lineage reads, self-routing opaque handles, and targeted maintenance that
   keep debugger inspection from blocking unrelated session operations. Status: in-progress.

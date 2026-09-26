@@ -1,6 +1,6 @@
 # ADR 0352 — Controlled fork qualification releases
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-09-25
 - Scope: immutable fork artifact publication for independently qualified model-only deployments
 - Supersedes: none
