@@ -196,6 +196,7 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0332 — Mecatui local provider enrollment preserves existing credential custody](./0332-mecatui-local-provider-enrollment.md) *(proposed; outcome-typed ordered commits)*
 
 - [0333 — Unified provider configuration and Mecatui provider commands](./0333-unified-provider-configuration-and-mecatui-provider-commands.md) *(proposed; supersedes the `llm.endpoints` facade and unifies the local provider CLI)*
+- [0353 — Opaque provider usage-reference event](./0353-provider-usage-reference-event.md) *(Proposed; fork-only successful-response correlation metadata)*
 
 ### MCP
 - [0056 — MCP client reconnect](./0056-mcp-client-reconnect.md)
