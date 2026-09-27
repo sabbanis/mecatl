@@ -129,6 +129,7 @@ func TestADR_0352_QualificationRelease_Scenario4_PublishAndRecovery(t *testing.T
 		"gh release download",
 		"gh release upload",
 		"cmp -s",
+		"jq -j '.body'",
 		"shasum -a 256",
 		"sabbanis/mecatl",
 	} {
@@ -136,7 +137,15 @@ func TestADR_0352_QualificationRelease_Scenario4_PublishAndRecovery(t *testing.T
 			t.Errorf("publisher does not contain append-only fragment %q", want)
 		}
 	}
-	for _, forbidden := range []string{"--clobber", "release delete", "asset delete", "ghcr.io", "homebrew", " latest"} {
+	for _, forbidden := range []string{
+		"--clobber",
+		"release delete",
+		"asset delete",
+		"ghcr.io",
+		"homebrew",
+		" latest",
+		"jq -r '.body'",
+	} {
 		if strings.Contains(strings.ToLower(publisher+workflow), forbidden) {
 			t.Errorf("qualification release contains forbidden publication fragment %q", forbidden)
 		}

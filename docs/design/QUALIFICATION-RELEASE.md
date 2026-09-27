@@ -61,6 +61,16 @@ original tag event may complete missing draft assets or verify an identical
 published release. Any metadata or digest conflict fails without overwriting or
 deleting evidence.
 
+The first exercise published
+[`v0.0.39-i2i.1`](https://github.com/sabbanis/mecatl/releases/tag/v0.0.39-i2i.1)
+from exact commit `fe3fdb5177dae60fc8e004b5c593b4d102c614ca` in workflow run
+[`36251206431`](https://github.com/sabbanis/mecatl/actions/runs/36251206431).
+The first publisher attempt stopped with zero assets because `jq -r` added a
+second newline while reconstructing the already newline-terminated release
+body. The rerun path now uses `jq -j` so metadata comparison is byte-exact and
+does not manufacture output. The existing append-only, no-clobber and
+no-tag-movement rules remain unchanged.
+
 ## Verify from a clean consumer
 
 Download the release assets and pin their observed digests outside the release
