@@ -2657,6 +2657,10 @@ func (e *Engine) runTurn(ctx context.Context, r *Run, req port.LLMRequest, turnI
 			// message, never branched on, never replayed. It anchors no TTFT and
 			// feeds no usage (like ChunkPhase). Absent on a cache hit.
 			e.emit(r, session.Event{Type: session.EvProviderRoute, Turn: turnIdx, Text: chunk.Text})
+		case port.ChunkProviderUsageReference:
+			// Provider-issued correlation metadata. It remains outside the model
+			// message and usage accounting and is relayed byte-for-byte to clients.
+			e.emit(r, session.Event{Type: session.EvProviderUsageReference, Turn: turnIdx, Text: chunk.Text})
 		case port.ChunkDone:
 			stop = chunk.Stop
 		}

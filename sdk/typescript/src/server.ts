@@ -22,6 +22,7 @@ export const ServerFeature = {
   McpServersOnCreate: "mcp_servers_on_create",
   ModelOnlyV1: "model_only_v1",
   PromptFreeControls: "prompt_free_controls",
+  ProviderUsageReferenceV1: "provider_usage_reference_v1",
   ServerInfo: "server_info",
   SessionActivityInventory: "session_activity_inventory",
   WatchSessionEvents: "watch_session_events",

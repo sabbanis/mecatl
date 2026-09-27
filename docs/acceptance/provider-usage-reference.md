@@ -4,12 +4,12 @@
 **Work classification:** Architectural — this adds durable engine chunk and session-event vocabulary, a public client event, a compatibility feature, and a trust boundary for provider-issued correlation metadata.
 **Decision record:** [ADR 0353](../adr/0353-provider-usage-reference-event.md)
 **Phase:** I2I `remote-read-only-v1` provider-usage correlation
-**Status:** proposed, 2026-09-27. The contract is ready for fork-only Plan / Interface review; no implementation or release is claimed.
+**Status:** in-progress, 2026-09-27. Fork-only implementation is underway from the exact human-approved merge baseline; no release or downstream qualification is claimed.
 **Delivery:** Split. The exported Go constants, client-visible event semantics, compatibility signal, persistence treatment, and billing non-claims require human review before implementation.
 **Expected tasks:** 3
 **Issue:** None — this fork capability is tracked by the downstream I2I qualification and cost-accounting records.
-**Plan PR:** absent until opened.
-**Approved baseline:** absent until the Plan / Interface PR merges.
+**Plan PR:** [sabbanis/mecatl#6](https://github.com/sabbanis/mecatl/pull/6), merged.
+**Approved baseline:** `e6312061d3744e29a77cf54fccc79af561a853b8`.
 
 Expose the successful OpenAI Responses identity that the adapter already observes
 as one bounded, opaque, client-visible correlation reference. An independently

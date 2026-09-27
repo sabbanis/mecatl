@@ -15,6 +15,7 @@ func TestADR_0302_DistinctIdentitiesEmitOrderedChunkText(t *testing.T) {
 		{Kind: port.ChunkText, Text: "-output"},
 		{Kind: port.ChunkText, Text: "-content"},
 		{Kind: port.ChunkText, Text: "-ordered"},
+		{Kind: port.ChunkProviderUsageReference, Text: "resp_parts"},
 		{Kind: port.ChunkUsage, Usage: &session.Usage{InputTokens: 7, OutputTokens: 4, CacheReadTokens: 2}},
 		{Kind: port.ChunkDone, Stop: session.StopEndTurn},
 	}
@@ -23,8 +24,8 @@ func TestADR_0302_DistinctIdentitiesEmitOrderedChunkText(t *testing.T) {
 
 func TestADR_0302_InterleavedPhaseReasoningAndToolCallPreserveChunkSemantics(t *testing.T) {
 	got := decodeFixture(t, "interleaved_multipart_turn.sse")
-	if len(got) != 8 {
-		t.Fatalf("got %d chunks, want 8: %+v", len(got), got)
+	if len(got) != 9 {
+		t.Fatalf("got %d chunks, want 9: %+v", len(got), got)
 	}
 	wantKinds := []port.ChunkKind{
 		port.ChunkReasoning,
@@ -32,6 +33,7 @@ func TestADR_0302_InterleavedPhaseReasoningAndToolCallPreserveChunkSemantics(t *
 		port.ChunkToolCall,
 		port.ChunkText,
 		port.ChunkPhase,
+		port.ChunkProviderUsageReference,
 		port.ChunkReasoningItem,
 		port.ChunkUsage,
 		port.ChunkDone,
@@ -51,16 +53,19 @@ func TestADR_0302_InterleavedPhaseReasoningAndToolCallPreserveChunkSemantics(t *
 	if got[4].Text != "future_phase" {
 		t.Fatalf("phase = %q, want opaque future_phase", got[4].Text)
 	}
-	items := unpackReasoningItems(got[5].Text, got[5].ReasoningItemID)
+	if got[5].Text != "resp_interleaved" {
+		t.Fatalf("provider usage reference = %q, want resp_interleaved", got[5].Text)
+	}
+	items := unpackReasoningItems(got[6].Text, got[6].ReasoningItemID)
 	if len(items) != 1 || items[0].ID != "rs_1" || items[0].Blob != "OPAQUE_REASONING" || items[0].After != 0 {
-		t.Fatalf("reasoning replay = %q (%+v), want rs_1 opaque item before call", got[5].Text, items)
+		t.Fatalf("reasoning replay = %q (%+v), want rs_1 opaque item before call", got[6].Text, items)
 	}
 	wantUsage := session.Usage{InputTokens: 13, OutputTokens: 8, CacheReadTokens: 3, ReasoningTokens: 2}
-	if got[6].Usage == nil || *got[6].Usage != wantUsage {
-		t.Fatalf("usage = %+v, want %+v", got[6].Usage, wantUsage)
+	if got[7].Usage == nil || *got[7].Usage != wantUsage {
+		t.Fatalf("usage = %+v, want %+v", got[7].Usage, wantUsage)
 	}
-	if got[7].Stop != session.StopEndTurn {
-		t.Fatalf("stop = %q, want %q", got[7].Stop, session.StopEndTurn)
+	if got[8].Stop != session.StopEndTurn {
+		t.Fatalf("stop = %q, want %q", got[8].Stop, session.StopEndTurn)
 	}
 	if !json.Valid(call.Args) {
 		t.Fatalf("tool args are not valid JSON: %q", call.Args)

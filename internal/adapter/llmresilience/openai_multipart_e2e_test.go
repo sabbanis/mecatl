@@ -110,7 +110,8 @@ func TestADR_0302_VisibleMultipartFailureIsTerminalWithoutReplayOrPersistence(t 
 		if got := requests.Load(); got != 2 {
 			t.Fatalf("HTTP requests = %d, want precommit retry", got)
 		}
-		if len(chunks) != 3 || chunks[0].Kind != port.ChunkText || chunks[0].Text != "recovered" || chunks[2].Kind != port.ChunkDone {
+		if len(chunks) != 4 || chunks[0].Kind != port.ChunkText || chunks[0].Text != "recovered" ||
+			chunks[1].Kind != port.ChunkProviderUsageReference || chunks[1].Text != "resp_2" || chunks[3].Kind != port.ChunkDone {
 			t.Fatalf("retry chunks = %+v, want recovered completed turn", chunks)
 		}
 	})

@@ -2002,6 +2002,7 @@ func TestAdvancesVisiblePredicate(t *testing.T) {
 		{port.Chunk{Kind: port.ChunkDone}, false},
 		{port.Chunk{Kind: port.ChunkPhase}, false},
 		{port.Chunk{Kind: port.ChunkProviderRoute}, false},
+		{port.Chunk{Kind: port.ChunkProviderUsageReference}, false},
 	}
 	for _, tc := range cases {
 		if got := advancesVisible(tc.chunk); got != tc.want {

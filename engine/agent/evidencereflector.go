@@ -326,7 +326,8 @@ func (r *EvidenceReflector) callProvider(ctx context.Context, request port.LLMRe
 				cancel()
 				return nil, fmt.Errorf("%w: output tokens exceed %d", ErrReflectionOutput, r.limits.Tokens)
 			}
-		case port.ChunkReasoning, port.ChunkReasoningItem, port.ChunkPhase, port.ChunkProviderRoute:
+		case port.ChunkReasoning, port.ChunkReasoningItem, port.ChunkPhase,
+			port.ChunkProviderRoute, port.ChunkProviderUsageReference:
 			// Reflection output is text-only; provider metadata is harmless and ignored.
 		case port.ChunkDone:
 			if !isBenignReflectionStop(chunk.Stop) {
