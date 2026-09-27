@@ -1873,6 +1873,12 @@ readonly "permission.retract": PermissionAskEventPayload;
 readonly "provider.route": undefined;
 ```
 
+<Heading as="h4" id="api-eventpayloads-provider-usage-reference-propertysignature"><code>EventPayloads["provider.usage_reference"]</code></Heading>
+
+```ts
+readonly "provider.usage_reference": undefined;
+```
+
 <Heading as="h4" id="api-eventpayloads-reasoning-delta-propertysignature"><code>EventPayloads["reasoning.delta"]</code></Heading>
 
 ```ts
@@ -7126,7 +7132,7 @@ MECATL_ERROR_CODES: readonly ["activity_gap", "ask_not_pending", "attempt_live_c
 Stable event kinds, kept in parity with the Go server vocabulary.
 
 ```ts
-MECATL_EVENT_KINDS: readonly ["approval", "authorization.required", "authorization.resolved", "compaction", "compaction.archive", "hook", "message.delta", "model.retry", "network.attempt", "no_progress", "parallel.branch", "parallel.end", "parallel.start", "permission.ask", "permission.retract", "provider.route", "reasoning.delta", "recover_notice", "request.manifest", "result", "schedule.failed", "schedule.fired", "schedule.skipped", "session.init", "session.title", "steer", "steer.outcome", "subagent.end", "subagent.start", "subagent.tool", "team.end", "team.findings", "team.member", "team.start", "team.tasks", "tool.call", "tool.progress", "tool.result", "turn.end", "turn.start", "user_prompt"]
+MECATL_EVENT_KINDS: readonly ["approval", "authorization.required", "authorization.resolved", "compaction", "compaction.archive", "hook", "message.delta", "model.retry", "network.attempt", "no_progress", "parallel.branch", "parallel.end", "parallel.start", "permission.ask", "permission.retract", "provider.route", "provider.usage_reference", "reasoning.delta", "recover_notice", "request.manifest", "result", "schedule.failed", "schedule.fired", "schedule.skipped", "session.init", "session.title", "steer", "steer.outcome", "subagent.end", "subagent.start", "subagent.tool", "team.end", "team.findings", "team.member", "team.start", "team.tasks", "tool.call", "tool.progress", "tool.result", "turn.end", "turn.start", "user_prompt"]
 ```
 
 <Heading as="h3" id="api-mecatl-watch-phases-variable"><code>MECATL_WATCH_PHASES</code></Heading>
@@ -7147,6 +7153,7 @@ ServerFeature: {
     readonly McpServersOnCreate: "mcp_servers_on_create";
     readonly ModelOnlyV1: "model_only_v1";
     readonly PromptFreeControls: "prompt_free_controls";
+    readonly ProviderUsageReferenceV1: "provider_usage_reference_v1";
     readonly ServerInfo: "server_info";
     readonly SessionActivityInventory: "session_activity_inventory";
     readonly WatchSessionEvents: "watch_session_events";

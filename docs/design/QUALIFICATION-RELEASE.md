@@ -103,11 +103,15 @@ that target has passed runtime qualification.
 
 ## Downstream gates remain separate
 
-The immutable release resolves only the Mecatl artifact blocker. I2I must still
-bind and verify its own client artifact, approved non-mock model route and
-operator configuration, protected transport and authorization, bounded event
-sequence, usage, result, and cleanup. No route is admitted from release evidence
-alone.
+The immutable release resolves only the Mecatl artifact blocker. A release that
+claims provider-response correlation must use the exact merged implementation
+commit, advertise `provider_usage_reference_v1`, and preserve its source and
+artifact digests in the qualification report. I2I must still bind and verify its
+own client artifact, approved non-mock model route and operator configuration,
+protected transport and authorization, bounded event sequence, exactly one
+route-bound `provider.usage_reference`, usage, result, and cleanup. The reference
+must be reconciled against independently authenticated provider evidence; it is
+not cost proof by itself. No route is admitted from release evidence alone.
 
 Infrastructure provisioning, ephemeral compute, scheduling, metering, billing,
 and Factory Compiler integration remain outside this workflow. Upstream

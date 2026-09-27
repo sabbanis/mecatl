@@ -11,6 +11,7 @@ security, compatibility, or production-readiness claim.
 | Explicit compaction-off | Disable automatic compaction and make manual compaction fail closed without history mutation or a model call | `internal/app/model_only_profile_test.go`, `cmd/mecated/main_test.go`, ADR 0350 | Launch-critical fork capability; upstream contribution is explicitly deferred until after product launch |
 | One-shot runtime and resource envelope | Permit one primary model attempt with no auxiliary model paths or run-scoped tool injection; reject scheduling; persist the attempt fence before launch; enforce positive request, response, event, buffered-event, session, queue, concurrency, token, and duration ceilings | `engine/agent/resource_limits_test.go`, `internal/app/model_only_limits_test.go`, `internal/app/model_only_profile_test.go`, `internal/app/scheduler_fire_model_only_test.go`, `internal/adapter/server/profile_test.go`, `internal/adapter/server/schedule_model_only_test.go`, ADR 0351 | Launch-critical fork capability; upstream contribution is explicitly deferred until after product launch |
 | Fork-only qualification release | Publish exact `mecated` archives, manifest, checksums, SBOMs, fork-owned signatures, and provenance without granting image, package, cloud, model, or external-repository authority | `.github/workflows/qualification-release.yml`, `internal/qualificationrelease`, `.github/scripts/publish-qualification-release.sh`, ADR 0352 | Fork-only launch capability; no upstream work is planned before product launch |
+| Provider usage-reference event | Validate one successful OpenAI Responses identity and relay it as metadata-only `provider.usage_reference`; advertise `provider_usage_reference_v1` without claiming endpoint availability, authenticated billing evidence, or execution authority | `provider/openai/provider_usage_reference_test.go`, `internal/adapter/server/provider_usage_reference_test.go`, ADR 0353 | Launch-critical root-artifact capability; the fork does not publish provider modules, and upstream engine-first release work is explicitly deferred until after product launch |
 
 The pinned external client remains a separate consumer artifact and is not
 imported into this fork as an implicit interface. Requalification must bind its
@@ -24,4 +25,5 @@ Related decisions: [ADR 0350](../adr/0350-model-only-profile-and-compaction-off.
 defines the empty catalog and compaction-off profile, and
 [ADR 0351](../adr/0351-bounded-one-shot-model-only-runs.md) defines the one-shot
 resource envelope. [ADR 0352](../adr/0352-controlled-fork-qualification-release.md)
-defines the fork artifact and publication authority.
+defines the fork artifact and publication authority. [ADR 0353](../adr/0353-provider-usage-reference-event.md)
+defines successful provider-response correlation metadata and its non-claims.

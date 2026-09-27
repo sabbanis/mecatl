@@ -2651,16 +2651,10 @@ func (e *Engine) runTurn(ctx context.Context, r *Run, req port.LLMRequest, turnI
 			if chunk.Usage != nil {
 				usage = usage.Add(*chunk.Usage)
 			}
-		case port.ChunkProviderRoute:
-			// The downstream provider slug that routed this turn (issue #480).
-			// Relayed verbatim onto a client-visible event; never stored on the
-			// message, never branched on, never replayed. It anchors no TTFT and
-			// feeds no usage (like ChunkPhase). Absent on a cache hit.
-			e.emit(r, session.Event{Type: session.EvProviderRoute, Turn: turnIdx, Text: chunk.Text})
-		case port.ChunkProviderUsageReference:
-			// Provider-issued correlation metadata. It remains outside the model
-			// message and usage accounting and is relayed byte-for-byte to clients.
-			e.emit(r, session.Event{Type: session.EvProviderUsageReference, Turn: turnIdx, Text: chunk.Text})
+		case port.ChunkProviderRoute, port.ChunkProviderUsageReference:
+			// Provider metadata is relayed verbatim onto a client-visible event. It
+			// remains outside the model message, TTFT, and usage accounting.
+			e.emit(r, session.Event{Type: providerMetadataEventType(chunk.Kind), Turn: turnIdx, Text: chunk.Text})
 		case port.ChunkDone:
 			stop = chunk.Stop
 		}
@@ -2678,6 +2672,13 @@ func (e *Engine) runTurn(ctx context.Context, r *Run, req port.LLMRequest, turnI
 	msg.ProviderPhase = phase
 	msg.ReasoningItemID = reasoningItemID
 	return msg, usage, stop, timing, nil
+}
+
+func providerMetadataEventType(kind port.ChunkKind) session.EventType {
+	if kind == port.ChunkProviderUsageReference {
+		return session.EvProviderUsageReference
+	}
+	return session.EvProviderRoute
 }
 
 // buildRequest assembles the provider-neutral LLMRequest for the current turn:

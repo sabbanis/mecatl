@@ -66,6 +66,11 @@ means this build exposes the constrained one-shot profile documented below; it
 does not replace exact build, protocol, configuration, or deployment pinning.
 An absent identifier must fail closed without creating a probe session.
 
+Clients that require provider response correlation must also require the
+`provider_usage_reference_v1` feature. This identifier reports build support
+for the event contract. It does not guarantee that the configured endpoint
+returns response identities; verify the event on the actual route.
+
 **Sessions & runs:**
 
 |Method & path|Body|Response|
@@ -360,6 +365,37 @@ data: {"type":"result","seq":3,"result":{"stop":"end_turn","text":"Mock provider
 
 Disconnecting the client (closing the curl connection) cancels the run. `text`
 is required — omitting it returns `400` `{"error":"text is required"}`.
+
+### Provider usage-reference event
+
+On a successful OpenAI Responses call, Mecatl emits one
+`provider.usage_reference` event when the provider supplies a response
+identity. The event uses the common fields:
+
+```json
+{
+  "type": "provider.usage_reference",
+  "turn": 0,
+  "text": "resp_01HXYZ",
+  "run_id": "<RUN_ID>"
+}
+```
+
+`text` is the exact provider value. It must match
+`^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$`. Mecatl rejects a stream that contains an
+invalid identity or different non-empty identities in the same response
+lifecycle.
+
+The terminal event order is `provider.route` when present,
+`provider.usage_reference` when present, reasoning replay metadata, usage, and
+completion. A direct compatible endpoint can emit the usage reference without
+a `provider.route` event. Identity-free, failed, incomplete, and cancelled
+responses do not emit a usage reference.
+
+The normal event recorder retains this event when durable event recording is
+configured, so it appears on the session event and watch routes. The value is
+opaque provider metadata. It is not authenticated usage or cost evidence and
+does not grant execution, billing, refund, support, or provider-query authority.
 
 ### Retry the failed model step
 

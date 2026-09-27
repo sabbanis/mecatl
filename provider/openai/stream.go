@@ -69,6 +69,17 @@ type streamState struct {
 // posture as the openaichat adapter's identically-named error.
 var errTruncatedStream = fmt.Errorf("openai: responses stream ended without a terminal event: %w", io.ErrUnexpectedEOF)
 
+// chunkProviderUsageReference is the independently versioned provider module's
+// forward-compatible spelling of engine port.ChunkProviderUsageReference.
+//
+// The launch fork builds the provider and engine together through go.work, but
+// the provider's standalone module must continue compiling against its latest
+// published engine dependency (v0.14.0) until a later upstream engine release
+// carries the additive constant. Keep this ordinal in lockstep with the engine
+// API snapshot; root integration tests compare emitted chunks with the exported
+// engine constant. Do not publish the provider module from this fork.
+const chunkProviderUsageReference port.ChunkKind = 8
+
 // translate converts a single Responses SSE event into zero or more
 // provider-neutral chunks. It is a pure function (apart from the small carried
 // streamState) so it can be driven directly from recorded fixtures in tests,
@@ -117,14 +128,8 @@ var errTruncatedStream = fmt.Errorf("openai: responses stream ended without a te
 func translate(event responses.ResponseStreamEventUnion, st *streamState) ([]port.Chunk, error) {
 	// Response IDs only enter state from a known Responses lifecycle event's typed
 	// Response field; raw SSE fields and arbitrary metadata are never inspected.
-	if responseID := observedResponseID(event); responseID != "" {
-		if !validProviderUsageReference(responseID) {
-			return nil, errors.New("openai: invalid response identity")
-		}
-		if st.responseID != "" && st.responseID != responseID {
-			return nil, errors.New("openai: conflicting response identities")
-		}
-		st.responseID = responseID
+	if err := st.observeResponseID(event); err != nil {
+		return nil, err
 	}
 
 	switch event.Type {
@@ -276,7 +281,7 @@ func translateCompleted(event responses.ResponseStreamEventUnion, st *streamStat
 	// precedes replay/accounting metadata. Absence is honest: compatible endpoints
 	// may omit it, so the adapter never derives or fabricates a replacement.
 	if st.responseID != "" {
-		chunks = append(chunks, port.Chunk{Kind: port.ChunkProviderUsageReference, Text: st.responseID})
+		chunks = append(chunks, port.Chunk{Kind: chunkProviderUsageReference, Text: st.responseID})
 	}
 	// The turn's buffered reasoning items, packed into one replay blob. It
 	// rides out here — the only point at which the full ordered list is known.
@@ -314,6 +319,21 @@ func observedResponseID(event responses.ResponseStreamEventUnion) string {
 	default:
 		return ""
 	}
+}
+
+func (st *streamState) observeResponseID(event responses.ResponseStreamEventUnion) error {
+	responseID := observedResponseID(event)
+	if responseID == "" {
+		return nil
+	}
+	if !validProviderUsageReference(responseID) {
+		return errors.New("openai: invalid response identity")
+	}
+	if st.responseID != "" && st.responseID != responseID {
+		return errors.New("openai: conflicting response identities")
+	}
+	st.responseID = responseID
+	return nil
 }
 
 func validProviderUsageReference(id string) bool {

@@ -4,7 +4,7 @@
 **Work classification:** Architectural — this adds durable engine chunk and session-event vocabulary, a public client event, a compatibility feature, and a trust boundary for provider-issued correlation metadata.
 **Decision record:** [ADR 0353](../adr/0353-provider-usage-reference-event.md)
 **Phase:** I2I `remote-read-only-v1` provider-usage correlation
-**Status:** in-progress, 2026-09-27. Fork-only implementation is underway from the exact human-approved merge baseline; no release or downstream qualification is claimed.
+**Status:** in-progress, 2026-09-27. The implementation candidate resolves all 11 plan criteria, but the repository-wide strict trace gate remains blocked by the baseline's unrelated missing `TestInvariant_custom_provider_live_metadata_conservative` proof. No waiver, fork release, or downstream qualification is claimed.
 **Delivery:** Split. The exported Go constants, client-visible event semantics, compatibility signal, persistence treatment, and billing non-claims require human review before implementation.
 **Expected tasks:** 3
 **Issue:** None — this fork capability is tracked by the downstream I2I qualification and cost-accounting records.

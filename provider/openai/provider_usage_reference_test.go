@@ -18,7 +18,7 @@ func TestADR_0353_ProviderUsageReference_Scenario1_CompletedResponseEmitsExactRe
 	if err != nil {
 		t.Fatalf("decodeSSE: %v", err)
 	}
-	refs := chunksOfKind(got, port.ChunkProviderUsageReference)
+	refs := chunksOfKind(got, chunkProviderUsageReference)
 	if len(refs) != 1 || refs[0].Text != "resp_AZ09._:-" {
 		t.Fatalf("usage-reference chunks = %+v, want one byte-exact reference", refs)
 	}
@@ -38,7 +38,7 @@ func TestADR_0353_ProviderUsageReference_Scenario1_TerminalChunkOrder(t *testing
 	}
 	want := []port.ChunkKind{
 		port.ChunkProviderRoute,
-		port.ChunkProviderUsageReference,
+		chunkProviderUsageReference,
 		port.ChunkReasoningItem,
 		port.ChunkUsage,
 		port.ChunkDone,
@@ -98,7 +98,7 @@ func TestADR_0353_ProviderUsageReference_Scenario1_AbsentOrUnsuccessfulResponseE
 	for name, sse := range tests {
 		t.Run(name, func(t *testing.T) {
 			got, _ := decodeSSE(strings.NewReader(sse))
-			if refs := chunksOfKind(got, port.ChunkProviderUsageReference); len(refs) != 0 {
+			if refs := chunksOfKind(got, chunkProviderUsageReference); len(refs) != 0 {
 				t.Fatalf("usage-reference chunks = %+v, want none", refs)
 			}
 		})
@@ -114,7 +114,7 @@ func TestADR_0353_ProviderUsageReference_Scenario3_ExistingAdapterAndProfileComp
 	if err != nil {
 		t.Fatalf("decodeSSE: %v", err)
 	}
-	if refs := chunksOfKind(got, port.ChunkProviderUsageReference); len(refs) != 0 {
+	if refs := chunksOfKind(got, chunkProviderUsageReference); len(refs) != 0 {
 		t.Fatalf("ID-free compatible response emitted usage reference: %+v", refs)
 	}
 	if len(got) != 3 || got[0].Kind != port.ChunkText || got[1].Kind != port.ChunkUsage || got[2].Kind != port.ChunkDone {
@@ -135,7 +135,7 @@ func chunksOfKind(chunks []port.Chunk, kind port.ChunkKind) []port.Chunk {
 func assertNoSuccessfulReferenceTerminal(t *testing.T, chunks []port.Chunk) {
 	t.Helper()
 	for _, chunk := range chunks {
-		if chunk.Kind == port.ChunkProviderUsageReference || chunk.Kind == port.ChunkDone {
+		if chunk.Kind == chunkProviderUsageReference || chunk.Kind == port.ChunkDone {
 			t.Fatalf("failed-closed stream emitted successful terminal metadata: %+v", chunks)
 		}
 	}

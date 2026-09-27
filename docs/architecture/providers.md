@@ -68,15 +68,26 @@ directly from recorded fixtures by `decodeSSE` in tests):
   assistant message item — issue #46)
 - `response.output_item.done` (function_call) → `ChunkToolCall` (acts on the
   assembled `.done` payload, not concatenated deltas)
-- `response.completed` → the packed `ChunkReasoningItem` (the turn's buffered
+- typed response lifecycle identities are validated against exact ASCII grammar
+  `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$` and must remain byte-identical across
+  the stream; malformed or conflicting non-empty identities fail the stream
+- `response.completed` → `ChunkProviderUsageReference` when one valid identity
+  was observed, then the packed `ChunkReasoningItem` (the turn's buffered
   reasoning items, flushed here because only now is the full ordered list known),
-  then `ChunkUsage` and `ChunkDone(end_turn)` (cached tokens map into
-  `Usage.CacheReadTokens`)
+  `ChunkUsage`, and `ChunkDone(end_turn)` (cached tokens map into
+  `Usage.CacheReadTokens`). A routed-provider chunk, when available, precedes
+  the usage reference.
 - `response.incomplete` → `ChunkUsage` then `ChunkDone(error)`
 - `response.failed` / `error` → a non-nil stream **error** carrying the
   provider's in-band message verbatim; HTTP API rejections instead render only
   their structured `code` (or `type`) and message as `code: message`, never the
   SDK's raw response body, request URL, or correlation ID.
+
+Failed, incomplete, cancelled, and identity-free responses emit no usage
+reference. `provider.usage_reference` is opaque correlation metadata, not
+authenticated billing evidence or execution authority. Supporting builds
+advertise `provider_usage_reference_v1`; endpoint availability is established
+only by a successful run.
 
 **Cancellation**: `Stream` (`openai.go`) selects on `ctx.Done()` each iteration
 and abandons the underlying stream; a deliberate `ctx` cancel is **not** reported
@@ -290,6 +301,15 @@ prompt-cache prefix untouched. The routed downstream echoes back as
 `openrouter_metadata`, fail-empty) → the client-visible `session.EvProviderRoute`
 (`"provider.route"`), absent on a cache hit — never fabricated. See
 [`docs/adr/0210-openrouter-downstream-provider-steering.md`](../adr/0210-openrouter-downstream-provider-steering.md).
+
+Successful Responses correlation is independent of OpenRouter routing. The
+adapter validates one typed lifecycle response identity and, on completion,
+emits `port.ChunkProviderUsageReference` after any route and before reasoning
+replay, usage, and done. The loop relays it as
+`session.EvProviderUsageReference` (`"provider.usage_reference"`) without adding
+it to conversation or snapshot state. The event recorder retains it through
+the ordinary client-event path. See
+[`docs/adr/0353-provider-usage-reference-event.md`](../adr/0353-provider-usage-reference-event.md).
 
 **Intent-driven availability (issue #262, ADR 0064; ADR 0334).** Every provider above
 is **key-driven** — available iff a credential resolves. One ToolHive gateway identity

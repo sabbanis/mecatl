@@ -15,7 +15,7 @@ func TestADR_0302_DistinctIdentitiesEmitOrderedChunkText(t *testing.T) {
 		{Kind: port.ChunkText, Text: "-output"},
 		{Kind: port.ChunkText, Text: "-content"},
 		{Kind: port.ChunkText, Text: "-ordered"},
-		{Kind: port.ChunkProviderUsageReference, Text: "resp_parts"},
+		{Kind: chunkProviderUsageReference, Text: "resp_parts"},
 		{Kind: port.ChunkUsage, Usage: &session.Usage{InputTokens: 7, OutputTokens: 4, CacheReadTokens: 2}},
 		{Kind: port.ChunkDone, Stop: session.StopEndTurn},
 	}
@@ -33,7 +33,7 @@ func TestADR_0302_InterleavedPhaseReasoningAndToolCallPreserveChunkSemantics(t *
 		port.ChunkToolCall,
 		port.ChunkText,
 		port.ChunkPhase,
-		port.ChunkProviderUsageReference,
+		chunkProviderUsageReference,
 		port.ChunkReasoningItem,
 		port.ChunkUsage,
 		port.ChunkDone,
