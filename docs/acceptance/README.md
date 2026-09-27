@@ -283,6 +283,10 @@ PR after verification. There is no cleanup or status-only PR.
   append-only publication semantics required for external qualification.
   Status: landed in the implementation candidate; authoritative only when the
   Implementation PR merges.
+- [Provider usage-reference event](provider-usage-reference.md) — exposes one
+  bounded opaque successful-response identity for downstream usage correlation,
+  with explicit feature discovery, persistence treatment, and billing/authority
+  non-claims. Status: proposed for fork-only Plan / Interface review.
 - [InspectSession scoped read isolation](inspect-session-read-isolation.md) — proposed
   bounded direct-edge lineage reads, self-routing opaque handles, and targeted maintenance that
   keep debugger inspection from blocking unrelated session operations. Status: in-progress.
