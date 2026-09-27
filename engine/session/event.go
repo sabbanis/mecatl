@@ -121,6 +121,12 @@ const (
 	// maps to the proto event-type string verbatim (no proto enum; the wire type
 	// field is a string passthrough, like EvNoProgress — no task generate).
 	EvProviderRoute EventType = "provider.route"
+	// EvProviderUsageReference exposes the exact validated provider response
+	// identity for a successful model call. Text is an opaque correlation
+	// candidate, not authenticated usage/cost evidence or execution authority.
+	// It is client-visible run metadata, excluded from conversation/snapshot state,
+	// and maps through the existing open-string Event.type and Event.text fields.
+	EvProviderUsageReference EventType = "provider.usage_reference"
 	// EvRecoverNotice is emitted at the run-entry funnel (in the Service layer,
 	// NOT the agent loop) when a session that failed on a PERMANENT provider error is
 	// recovered for re-entry. Text carries a short human-readable advisory (e.g.

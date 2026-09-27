@@ -24,6 +24,37 @@ function terminal(runId: string) {
 }
 
 describe("event unions", () => {
+  it("recognizes provider usage references as metadata-only text events", async () => {
+    const transport = createRouterTransport((router) => {
+      router.service(HarnessService, {
+        createSession: () => ({ sessionId: "session-reference" }),
+        getCompatibilityInfo: () => ({ apiMajor: 1, capabilities: {}, features: ["server_info"] }),
+        converse: async function* () {
+          yield {
+            event: {
+              runId: "run-reference",
+              text: "resp_AZ09._:-",
+              type: "provider.usage_reference",
+            },
+          };
+          yield terminal("run-reference");
+        },
+      });
+    });
+    const client = connect({ transport });
+    const session = await client.sessions.create({});
+    const events: Event[] = [];
+    for await (const event of await session.run("reference")) events.push(event);
+
+    const reference = events[0];
+    if (reference?.kind !== "provider.usage_reference") {
+      throw new Error("expected provider.usage_reference");
+    }
+    expectTypeOf(reference.payload).toEqualTypeOf<undefined>();
+    expect(reference.text).toBe("resp_AZ09._:-");
+    await client.close();
+  });
+
   it("known kinds narrow by literal kind", async () => {
     const transport = createRouterTransport((router) => {
       router.service(HarnessService, {

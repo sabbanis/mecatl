@@ -709,7 +709,8 @@ func advancesVisible(chunk port.Chunk) bool {
 	case port.ChunkText:
 		return strings.TrimSpace(chunk.Text) != ""
 	case port.ChunkReasoning, port.ChunkReasoningItem, port.ChunkToolCall,
-		port.ChunkUsage, port.ChunkPhase, port.ChunkProviderRoute, port.ChunkDone:
+		port.ChunkUsage, port.ChunkPhase, port.ChunkProviderRoute,
+		port.ChunkProviderUsageReference, port.ChunkDone:
 		return false
 	default:
 		return true

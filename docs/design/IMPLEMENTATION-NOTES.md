@@ -3521,6 +3521,29 @@ scoped to the openrouter registry entry and never touching provider-neutral
   `<model>/<display-name>` header suffix for the current turn, clearing the suffix
   at the next turn start. `llmresilience.isCommitting` classifies the kind
   non-committing.
+- **Successful-response correlation.** `provider/openai/stream.go`
+  (`validProviderUsageReference`) validates every non-empty identity observed on
+  a typed Responses lifecycle event against
+  `^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$` and requires one byte-identical value
+  across the stream. `translateCompleted` emits
+  `port.ChunkProviderUsageReference` after any route and before reasoning replay,
+  usage, and done. `engine/agent/loop.go` relays the exact value as
+  `session.EvProviderUsageReference` (`"provider.usage_reference"`) without
+  adding it to the assistant message or session snapshot. The ordinary recorder
+  persists the client-visible event, resource ceilings count it, and
+  `internal/adapter/llmresilience/llmresilience.go` (`advancesVisible`) classifies
+  it as non-committing. `internal/adapter/server/features.go` advertises
+  `provider_usage_reference_v1` as build support, while the actual successful
+  run remains the proof that an endpoint supplies an identity. The value is
+  correlation metadata only; Mecatl performs no billing lookup and grants no
+  authority from it. The independently versioned OpenAI provider module still
+  pins the latest published engine (`v0.14.0`) for its `GOWORK=off` proof. Until
+  an upstream engine release contains the additive constant,
+  `provider/openai/stream.go` uses the exact forward-compatible chunk ordinal
+  `8`; the root Codex integration fixture compares that emitted value with
+  `port.ChunkProviderUsageReference`. This fork publishes the root qualification
+  artifact only, never the provider module. A later upstream release sequence
+  replaces the bridge with the exported name after publishing the engine first.
 
 Strict wire guard: `internal/app/openrouter_route_e2e_test.go` runs the REAL openai
 adapter against an httptest OpenRouter server (offline) and asserts the body key +

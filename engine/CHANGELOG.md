@@ -13,6 +13,13 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
 
 ### Added
 
+- **Provider usage-reference metadata** — adds
+  `port.ChunkProviderUsageReference` and
+  `session.EvProviderUsageReference` (`"provider.usage_reference"`) so an
+  adapter can relay one validated provider-issued correlation identifier as
+  client-visible run metadata without placing it in conversation state or
+  treating it as billing evidence or execution authority. Added (minor).
+
 - **Model-only compatibility feature** — the server feature registry and
   TypeScript SDK expose `model_only_v1` so a client can reject an older server
   before attempting to create the constrained model-only session. This signal

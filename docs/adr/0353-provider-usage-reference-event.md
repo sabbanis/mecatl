@@ -1,6 +1,6 @@
 # ADR 0353 — Opaque provider usage-reference event
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-09-27
 - Scope: successful-response correlation metadata from the OpenAI Responses adapter to external clients
 - Supersedes: none

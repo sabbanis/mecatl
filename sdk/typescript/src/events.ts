@@ -23,6 +23,7 @@ export const MECATL_EVENT_KINDS = [
   "permission.ask",
   "permission.retract",
   "provider.route",
+  "provider.usage_reference",
   "reasoning.delta",
   "recover_notice",
   "request.manifest",
@@ -365,6 +366,7 @@ export interface EventPayloads {
   readonly "permission.ask": PermissionAskEventPayload;
   readonly "permission.retract": PermissionAskEventPayload;
   readonly "provider.route": undefined;
+  readonly "provider.usage_reference": undefined;
   readonly "reasoning.delta": undefined;
   readonly recover_notice: undefined;
   readonly "request.manifest": undefined;
@@ -525,6 +527,7 @@ function payload(
     case "network.attempt":
     case "no_progress":
     case "provider.route":
+    case "provider.usage_reference":
     case "reasoning.delta":
     case "recover_notice":
     case "request.manifest":

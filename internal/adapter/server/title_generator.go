@@ -130,7 +130,8 @@ func (g *sessionTitleGenerator) Generate(ctx context.Context, sources []string) 
 				return titleGeneratorFailureResult(usage, titleFailureInvalidOutput, titleStageParsing, "server: title output exceeds limit")
 			}
 			output.WriteString(chunk.Text)
-		case port.ChunkReasoning, port.ChunkReasoningItem, port.ChunkPhase, port.ChunkProviderRoute:
+		case port.ChunkReasoning, port.ChunkReasoningItem, port.ChunkPhase,
+			port.ChunkProviderRoute, port.ChunkProviderUsageReference:
 			// Title generation is text-only: opaque reasoning and route metadata do
 			// not contribute to the strict JSON output.
 		case port.ChunkUsage:

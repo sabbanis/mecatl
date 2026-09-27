@@ -70,6 +70,12 @@ const (
 	// fails compatibility discovery without creating a probe session.
 	FeatureModelOnlyV1 = "model_only_v1"
 
+	// FeatureProviderUsageReferenceV1 reports build-level support for the
+	// provider.usage_reference event contract. Endpoint-specific availability is
+	// proven by a successful run; this feature does not promise every endpoint
+	// supplies an identity.
+	FeatureProviderUsageReferenceV1 = "provider_usage_reference_v1"
+
 	// FeaturePromptFreeControls is the run-ID-addressed unary control family:
 	// resolve-ask, cancel, steer, and cancel-steer (ADR 0347).
 	FeaturePromptFreeControls = "prompt_free_controls"
@@ -113,6 +119,7 @@ var allFeatures = []string{
 	FeatureMCPServersOnCreate,
 	FeatureModelOnlyV1,
 	FeaturePromptFreeControls,
+	FeatureProviderUsageReferenceV1,
 	FeatureServerInfo,
 	FeatureSessionActivityInventory,
 	FeatureWatchSessionEvents,

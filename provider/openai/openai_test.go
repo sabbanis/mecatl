@@ -55,6 +55,7 @@ func TestTranslateTextTurn(t *testing.T) {
 	want := []port.Chunk{
 		{Kind: port.ChunkText, Text: "Hello"},
 		{Kind: port.ChunkText, Text: ", world"},
+		{Kind: chunkProviderUsageReference, Text: "resp_1"},
 		{Kind: port.ChunkUsage, Usage: &session.Usage{InputTokens: 12, OutputTokens: 4, CacheReadTokens: 0}},
 		{Kind: port.ChunkDone, Stop: session.StopEndTurn},
 	}
@@ -70,6 +71,7 @@ func TestTranslateFunctionCallTurn(t *testing.T) {
 			Args:   json.RawMessage(`{"path":"main.go"}`),
 			ItemID: "fc_1", // the provider-assigned item id from the fixture
 		}},
+		{Kind: chunkProviderUsageReference, Text: "resp_2"},
 		{Kind: port.ChunkUsage, Usage: &session.Usage{InputTokens: 40, OutputTokens: 9, CacheReadTokens: 32}},
 		{Kind: port.ChunkDone, Stop: session.StopEndTurn},
 	}
@@ -230,6 +232,7 @@ func TestTranslateReasoningTurnWithCachedTokens(t *testing.T) {
 		{Kind: port.ChunkReasoning, Text: "Let me think"},
 		{Kind: port.ChunkReasoning, Text: " about this."},
 		{Kind: port.ChunkText, Text: "Answer."},
+		{Kind: chunkProviderUsageReference, Text: "resp_3"},
 		// The turn's reasoning items, packed into ONE replay blob at the terminal
 		// event: each encrypted_content paired with the item id it is bound to
 		// (see reasoning.go). ReasoningItemID is empty on the chunk — the ids

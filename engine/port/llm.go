@@ -95,6 +95,12 @@ const (
 	// OpenRouter routed to. The label is human-readable and is not a routing slug or
 	// round-trippable identifier. Same discipline as ChunkPhase.
 	ChunkProviderRoute
+	// ChunkProviderUsageReference carries a provider-issued opaque correlation
+	// identifier on Text. It is metadata-only: the loop relays it to clients but
+	// never records it in conversation state, interprets it as billing evidence,
+	// or uses it as execution authority. Adapters must validate their provider's
+	// value before emitting this chunk.
+	ChunkProviderUsageReference
 )
 
 // Chunk is a single provider-neutral unit of a model stream. The loop assembles
@@ -108,7 +114,8 @@ type Chunk struct {
 	// summary on ChunkReasoning (display-only), the provider's opaque reasoning
 	// replay blob on ChunkReasoningItem (e.g. OpenAI encrypted_content or Anthropic
 	// (thinking,signature); never displayed), and the provider's opaque phase
-	// marker on ChunkPhase (stored on Message.Phase, replayed verbatim).
+	// marker on ChunkPhase (stored on Message.Phase, replayed verbatim), and opaque
+	// provider metadata on ChunkProviderRoute/ChunkProviderUsageReference.
 	Text string
 	// ReasoningItemID is set on ChunkReasoningItem. It carries the provider's
 	// opaque reasoning ITEM id (e.g. OpenAI's "rs_…" id on a reasoning output

@@ -114,11 +114,12 @@ func TestOpenAICodexResponsesFixtures(t *testing.T) {
 			body:     readCodexFixture(t, "..", "..", "provider", "openai", "testdata", "subscription_compatibility_text.sse"),
 			messages: []session.Message{session.NewUserMessage("hello")},
 			assert: func(t *testing.T, chunks []port.Chunk, _ *codexCapturedRequest) {
-				assertCodexChunkKinds(t, chunks, port.ChunkText, port.ChunkPhase, port.ChunkUsage, port.ChunkDone)
+				assertCodexChunkKinds(t, chunks, port.ChunkText, port.ChunkPhase, port.ChunkProviderUsageReference, port.ChunkUsage, port.ChunkDone)
 				if chunks[0].Text != "TEXT_SYNTHETIC" || chunks[1].Text != "final_answer" {
 					t.Fatalf("text/phase = %q/%q, want TEXT_SYNTHETIC/final_answer", chunks[0].Text, chunks[1].Text)
 				}
-				assertCodexUsageAndDone(t, chunks[2], chunks[3], 1, 1, 0, 0)
+				assertCodexReference(t, chunks[2], "response_synthetic")
+				assertCodexUsageAndDone(t, chunks[3], chunks[4], 1, 1, 0, 0)
 			},
 		},
 		{
@@ -126,11 +127,12 @@ func TestOpenAICodexResponsesFixtures(t *testing.T) {
 			body:     readCodexFixture(t, "..", "..", "provider", "openai", "testdata", "subscription_compatibility_tool_call.sse"),
 			messages: []session.Message{session.NewUserMessage("call the tool")},
 			assert: func(t *testing.T, chunks []port.Chunk, _ *codexCapturedRequest) {
-				assertCodexChunkKinds(t, chunks, port.ChunkToolCall, port.ChunkUsage, port.ChunkDone)
+				assertCodexChunkKinds(t, chunks, port.ChunkToolCall, port.ChunkProviderUsageReference, port.ChunkUsage, port.ChunkDone)
 				if got := chunks[0].ToolCall; got == nil || got.ID != "call_synthetic" || got.ItemID != "function_synthetic" || got.Name != "compatibility_probe" || string(got.Args) != `{"value":"OK"}` {
 					t.Fatalf("translated tool call = %+v", got)
 				}
-				assertCodexUsageAndDone(t, chunks[1], chunks[2], 1, 1, 0, 0)
+				assertCodexReference(t, chunks[1], "response_synthetic")
+				assertCodexUsageAndDone(t, chunks[2], chunks[3], 1, 1, 0, 0)
 			},
 		},
 		{
@@ -146,11 +148,12 @@ func TestOpenAICodexResponsesFixtures(t *testing.T) {
 				session.NewToolMessage(session.NewToolResult("call_synthetic", `{"value":"OK"}`)),
 			},
 			assert: func(t *testing.T, chunks []port.Chunk, request *codexCapturedRequest) {
-				assertCodexChunkKinds(t, chunks, port.ChunkText, port.ChunkPhase, port.ChunkUsage, port.ChunkDone)
+				assertCodexChunkKinds(t, chunks, port.ChunkText, port.ChunkPhase, port.ChunkProviderUsageReference, port.ChunkUsage, port.ChunkDone)
 				if chunks[0].Text != "TOOL_RESULT_SYNTHETIC" || chunks[1].Text != "final_answer" {
 					t.Fatalf("continuation text/phase = %q/%q, want TOOL_RESULT_SYNTHETIC/final_answer", chunks[0].Text, chunks[1].Text)
 				}
-				assertCodexUsageAndDone(t, chunks[2], chunks[3], 1, 1, 0, 0)
+				assertCodexReference(t, chunks[2], "response_synthetic")
+				assertCodexUsageAndDone(t, chunks[3], chunks[4], 1, 1, 0, 0)
 				assertCodexToolReplay(t, request.body)
 			},
 		},
@@ -159,7 +162,7 @@ func TestOpenAICodexResponsesFixtures(t *testing.T) {
 			body:     readCodexFixture(t, "..", "..", "provider", "openai", "testdata", "reasoning_turn.sse"),
 			messages: []session.Message{session.NewUserMessage("reason")},
 			assert: func(t *testing.T, chunks []port.Chunk, _ *codexCapturedRequest) {
-				assertCodexChunkKinds(t, chunks, port.ChunkReasoning, port.ChunkReasoning, port.ChunkText, port.ChunkReasoningItem, port.ChunkUsage, port.ChunkDone)
+				assertCodexChunkKinds(t, chunks, port.ChunkReasoning, port.ChunkReasoning, port.ChunkText, port.ChunkProviderUsageReference, port.ChunkReasoningItem, port.ChunkUsage, port.ChunkDone)
 				wantText := []string{"Let me think", " about this.", "Answer."}
 				for i, want := range wantText {
 					if chunks[i].Text != want {
@@ -173,13 +176,14 @@ func TestOpenAICodexResponsesFixtures(t *testing.T) {
 						Blob string `json:"e"`
 					} `json:"items"`
 				}
-				if err := json.Unmarshal([]byte(chunks[3].Text), &envelope); err != nil {
+				assertCodexReference(t, chunks[3], "resp_3")
+				if err := json.Unmarshal([]byte(chunks[4].Text), &envelope); err != nil {
 					t.Fatalf("decode reasoning envelope: %v", err)
 				}
 				if envelope.Version != 1 || len(envelope.Items) != 1 || envelope.Items[0].ID != "rs_1" || envelope.Items[0].Blob != "ENCRYPTED_BLOB" {
 					t.Fatalf("reasoning envelope = %+v, want v1 rs_1/ENCRYPTED_BLOB", envelope)
 				}
-				assertCodexUsageAndDone(t, chunks[4], chunks[5], 100, 50, 80, 40)
+				assertCodexUsageAndDone(t, chunks[5], chunks[6], 100, 50, 80, 40)
 			},
 		},
 	}
@@ -239,6 +243,13 @@ func assertCodexChunkKinds(t *testing.T, chunks []port.Chunk, want ...port.Chunk
 		if chunks[i].Kind != want[i] {
 			t.Errorf("chunk %d kind = %v, want %v", i, chunks[i].Kind, want[i])
 		}
+	}
+}
+
+func assertCodexReference(t *testing.T, chunk port.Chunk, want string) {
+	t.Helper()
+	if chunk.Kind != port.ChunkProviderUsageReference || chunk.Text != want {
+		t.Fatalf("provider usage reference = %+v, want %q", chunk, want)
 	}
 }
 
